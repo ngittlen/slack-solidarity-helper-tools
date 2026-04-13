@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { POST, verifySlackSignature } from './+server.js';
+import { POST, _verifySlackSignature as verifySlackSignature } from './+server.js';
 
 // vi.mock factories are hoisted — use vi.hoisted() so the fn refs are ready.
 const mockGetUserByEmail = vi.hoisted(() => vi.fn());

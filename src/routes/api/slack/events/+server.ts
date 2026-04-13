@@ -9,7 +9,7 @@ import { SLACK_SIGNING_SECRET, SOLIDARITY_CHAPTER_CHANNEL_MAP } from '$lib/serve
 // Slack signature verification
 // ---------------------------------------------------------------------------
 
-export async function verifySlackSignature(request: Request, body: string): Promise<boolean> {
+export async function _verifySlackSignature(request: Request, body: string): Promise<boolean> {
 	if (!SLACK_SIGNING_SECRET) {
 		console.error('[slack-events] SLACK_SIGNING_SECRET is not set');
 		return false;
@@ -35,7 +35,7 @@ export async function verifySlackSignature(request: Request, body: string): Prom
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.text();
 
-	if (!(await verifySlackSignature(request, body))) {
+	if (!(await _verifySlackSignature(request, body))) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 
