@@ -23,6 +23,11 @@ export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
 
 export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
 
+// Slack custom profile field IDs for storing City and State from Solidarity.
+// Leave either unset to skip writing that field.
+export const SLACK_CITY_FIELD_ID = get('SLACK_CITY_FIELD_ID');
+export const SLACK_STATE_FIELD_ID = get('SLACK_STATE_FIELD_ID');
+
 // JSON object mapping solidarity chapter IDs (as strings) to Slack channel IDs.
 // Example: {"123": "C012AB3CD", "456": "C987XY6Z"}
 export const SOLIDARITY_CHAPTER_CHANNEL_MAP: Record<string, string> = (() => {

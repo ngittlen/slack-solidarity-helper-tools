@@ -3,6 +3,10 @@ import { SOLIDARITY_API_TOKEN } from './env.js';
 export interface SolidarityUser {
 	chapter_id: number | null;
 	chapter_ids: number[];
+	address: {
+		city: string | null;
+		state: string | null;
+	} | null;
 }
 
 export async function getUserByEmail(email: string): Promise<SolidarityUser | null> {

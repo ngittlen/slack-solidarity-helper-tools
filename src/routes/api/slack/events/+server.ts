@@ -3,7 +3,7 @@ import type { RequestHandler } from './$types';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { slack } from '$lib/server/slack.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
-import { SLACK_SIGNING_SECRET, SOLIDARITY_CHAPTER_CHANNEL_MAP } from '$lib/server/env.js';
+import { SLACK_SIGNING_SECRET, SOLIDARITY_CHAPTER_CHANNEL_MAP, SLACK_CITY_FIELD_ID, SLACK_STATE_FIELD_ID } from '$lib/server/env.js';
 
 // ---------------------------------------------------------------------------
 // Slack signature verification
@@ -159,4 +159,24 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 	});
 
 	console.log(`[slack-events] invited ${user.id} (${email}) to ${channelMentions} and sent DM`);
+
+	// Set City and State on their Slack profile from their Solidarity address
+	const { city, state } = solidarityUser.address ?? {};
+	if ((SLACK_CITY_FIELD_ID && city) || (SLACK_STATE_FIELD_ID && state)) {
+		const fields: Record<string, { value: string; alt: string }> = {};
+		if (SLACK_CITY_FIELD_ID && city) fields[SLACK_CITY_FIELD_ID] = { value: city, alt: '' };
+		if (SLACK_STATE_FIELD_ID && state) fields[SLACK_STATE_FIELD_ID] = { value: state, alt: '' };
+		try {
+			await slack.users.profile.set({
+				user: user.id,
+				profile: { fields },
+			});
+			console.log(`[slack-events] set city="${city}" state="${state}" on profile for ${user.id}`);
+		} catch (err) {
+			console.error(
+				`[slack-events] failed to set location fields for ${user.id}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
 }
