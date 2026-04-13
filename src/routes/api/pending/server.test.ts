@@ -19,7 +19,7 @@ function row(overrides: object = {}) {
 		name: 'Alice',
 		phone: null,
 		comment: null,
-		helped: 0,
+		status: 'uncontacted',
 		last_edited_by_id: null,
 		last_edited_by_name: null,
 		...overrides,
@@ -88,19 +88,19 @@ describe('GET /api/pending', () => {
 		expect(json.pending[0].in_slack).toBe(true);
 	});
 
-	it('excludes helped rows from total_pending', async () => {
+	it('excludes verified_in_slack rows from total_pending', async () => {
 		mockExecute.mockResolvedValue({
-			rows: [row({ id: 1 }), row({ id: 2, helped: 1 })],
+			rows: [row({ id: 1 }), row({ id: 2, status: 'verified_in_slack' })],
 		});
 		const json = await (await GET(authed as never)).json();
 		expect(json.total_requested).toBe(2);
 		expect(json.total_pending).toBe(1);
 	});
 
-	it('returns helped as a boolean', async () => {
-		mockExecute.mockResolvedValue({ rows: [row({ helped: 1 })] });
+	it('returns status as a string', async () => {
+		mockExecute.mockResolvedValue({ rows: [row({ status: 'contacted' })] });
 		const json = await (await GET(authed as never)).json();
-		expect(json.pending[0].helped).toBe(true);
+		expect(json.pending[0].status).toBe('contacted');
 	});
 
 	it('returns lastEditedByName from the database', async () => {

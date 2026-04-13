@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { subscribe, notifyNewRequest, notifyHelped, notifyComment } from './events.js';
+import { subscribe, notifyNewRequest, notifyStatus, notifyComment } from './events.js';
 
 // --- Tests ---
 
@@ -36,12 +36,12 @@ describe('events', () => {
 		expect(send).not.toHaveBeenCalled();
 	});
 
-	it('notifyHelped sends correct JSON', () => {
+	it('notifyStatus sends correct JSON', () => {
 		const send = vi.fn();
 		const unsub = subscribe(send);
-		notifyHelped(7, true, 'Alice');
+		notifyStatus(7, 'verified_in_slack', 'Alice');
 		expect(send).toHaveBeenCalledWith(
-			JSON.stringify({ type: 'helped', id: 7, helped: true, editedBy: 'Alice' }),
+			JSON.stringify({ type: 'status', id: 7, status: 'verified_in_slack', editedBy: 'Alice' }),
 		);
 		unsub();
 	});

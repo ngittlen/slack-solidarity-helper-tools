@@ -65,7 +65,6 @@ export const POST: RequestHandler = async ({ request }) => {
 
 interface SlackUser {
 	id: string;
-	profile?: { email?: string };
 }
 
 interface SlackEventPayload {
@@ -75,9 +74,11 @@ interface SlackEventPayload {
 }
 
 async function handleTeamJoin(user: SlackUser): Promise<void> {
-	const email = user.profile?.email;
+	// The team_join event payload does not include profile.email — fetch it via the API.
+	const info = await slack.users.info({ user: user.id });
+	const email = (info.user as { profile?: { email?: string } } | undefined)?.profile?.email;
 	if (!email) {
-		console.log(`[slack-events] team_join for ${user.id} — no email on profile, skipping`);
+		console.log(`[slack-events] team_join for ${user.id} — no email returned by users.info, skipping`);
 		return;
 	}
 

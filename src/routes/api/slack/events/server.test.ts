@@ -7,10 +7,12 @@ const mockGetUserByEmail = vi.hoisted(() => vi.fn());
 const mockConversationsInvite = vi.hoisted(() => vi.fn());
 const mockConversationsOpen = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
+const mockUsersInfo = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/solidarity', () => ({ getUserByEmail: mockGetUserByEmail }));
 vi.mock('$lib/server/slack', () => ({
 	slack: {
+		users: { info: mockUsersInfo },
 		conversations: {
 			invite: mockConversationsInvite,
 			open: mockConversationsOpen,
@@ -42,8 +44,8 @@ function makeSignedRequest(body: string, opts: { secret?: string; ageSeconds?: n
 	});
 }
 
-function teamJoinPayload(user: object) {
-	return JSON.stringify({ type: 'event_callback', event: { type: 'team_join', user } });
+function teamJoinPayload(userId = 'U_NEW') {
+	return JSON.stringify({ type: 'event_callback', event: { type: 'team_join', user: { id: userId } } });
 }
 
 // --- Tests ---
@@ -89,6 +91,7 @@ describe('verifySlackSignature', () => {
 describe('POST /api/slack/events', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockUsersInfo.mockResolvedValue({ user: { profile: { email: 'new@example.com' } } });
 		mockConversationsInvite.mockResolvedValue({ ok: true });
 		mockConversationsOpen.mockResolvedValue({ channel: { id: 'DM_CHANNEL' } });
 		mockPostMessage.mockResolvedValue({ ok: true });
@@ -117,17 +120,14 @@ describe('POST /api/slack/events', () => {
 	it('invites user to county channel and sends DM on team_join', async () => {
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
 
-		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'new@example.com' } });
-		const res = await POST({ request: makeSignedRequest(body) } as never);
+		const res = await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
 		expect(res.status).toBe(200);
 
 		// Wait for the entire async fire-and-forget handler to complete (postMessage is last)
 		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledOnce());
 
-		expect(mockConversationsInvite).toHaveBeenCalledWith({
-			channel: 'C_COUNTY',
-			users: 'U_NEW',
-		});
+		expect(mockUsersInfo).toHaveBeenCalledWith({ user: 'U_NEW' });
+		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
 		expect(mockConversationsOpen).toHaveBeenCalledWith({ users: 'U_NEW' });
 		expect(mockPostMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ channel: 'DM_CHANNEL' }),
@@ -137,45 +137,39 @@ describe('POST /api/slack/events', () => {
 	it('falls back to chapter_id when chapter_ids is empty', async () => {
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: 42, chapter_ids: [] });
 
-		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'new@example.com' } });
-		await POST({ request: makeSignedRequest(body) } as never);
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
 		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledOnce());
 
 		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
 	});
 
-	it('does nothing when the user has no email', async () => {
-		const body = teamJoinPayload({ id: 'U_NEW', profile: {} });
-		await POST({ request: makeSignedRequest(body) } as never);
-		// No async work to wait for — give a tick to confirm nothing fires
+	it('does nothing when users.info returns no email', async () => {
+		mockUsersInfo.mockResolvedValue({ user: { profile: {} } });
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
 		await new Promise((r) => setTimeout(r, 10));
 		expect(mockGetUserByEmail).not.toHaveBeenCalled();
 	});
 
 	it('does nothing when user is not in solidarity', async () => {
 		mockGetUserByEmail.mockResolvedValue(null);
-		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'ghost@example.com' } });
-		await POST({ request: makeSignedRequest(body) } as never);
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
 		await new Promise((r) => setTimeout(r, 10));
 		expect(mockConversationsInvite).not.toHaveBeenCalled();
 	});
 
 	it('does nothing when no channel is mapped for the user chapters', async () => {
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [999] });
-		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'new@example.com' } });
-		await POST({ request: makeSignedRequest(body) } as never);
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
 		await new Promise((r) => setTimeout(r, 10));
 		expect(mockConversationsInvite).not.toHaveBeenCalled();
 		expect(mockPostMessage).not.toHaveBeenCalled();
 	});
 
-	it('still sends DM when invite partially fails', async () => {
+	it('skips DM when all channel invites fail', async () => {
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
 		mockConversationsInvite.mockRejectedValue(new Error('already_in_channel'));
 
-		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'new@example.com' } });
-		await POST({ request: makeSignedRequest(body) } as never);
-		// Invite failed, so DM should be skipped too (no successful channels)
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
 		await new Promise((r) => setTimeout(r, 10));
 		expect(mockPostMessage).not.toHaveBeenCalled();
 	});

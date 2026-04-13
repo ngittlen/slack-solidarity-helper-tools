@@ -28,7 +28,10 @@ function makeEvent(params: Record<string, string>) {
 describe('GET /webhook', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockExecute.mockResolvedValue({ lastInsertRowid: 1n });
+		// First call is the SELECT (check for existing), second is the INSERT.
+		mockExecute
+			.mockResolvedValueOnce({ rows: [] })
+			.mockResolvedValue({ lastInsertRowid: 1n });
 		mockPostMessage.mockResolvedValue({ ok: true });
 	});
 
@@ -64,7 +67,10 @@ describe('GET /webhook', () => {
 
 	it('persists the record before posting to Slack', async () => {
 		const order: string[] = [];
-		mockExecute.mockImplementation(async () => { order.push('db'); return { lastInsertRowid: 1n }; });
+		mockExecute.mockReset();
+		mockExecute
+			.mockResolvedValueOnce({ rows: [] }) // SELECT — no existing record
+			.mockImplementation(async () => { order.push('db'); return { lastInsertRowid: 1n }; }); // INSERT
 		mockPostMessage.mockImplementation(async () => { order.push('slack'); return { ok: true }; });
 
 		await GET(makeEvent({ secret: 'secret123', email: 'a@b.com' }) as never);
@@ -85,14 +91,14 @@ describe('GET /webhook', () => {
 		mockPostMessage.mockRejectedValue(new Error('Slack down'));
 		const res = await GET(makeEvent({ secret: 'secret123', email: 'a@b.com' }) as never);
 		expect(res.status).toBe(502);
-		expect(mockExecute).toHaveBeenCalledOnce();
+		expect(mockExecute).toHaveBeenCalledTimes(2); // SELECT then INSERT
 	});
 
-	it('passes correct args to db.execute', async () => {
+	it('passes correct args to db.execute for the INSERT', async () => {
 		await GET(makeEvent({ secret: 'secret123', email: 'a@b.com', name: 'Alice' }) as never);
+		// args: [email, name, phone, timestamp] — 'Alice' only appears in the INSERT, not the SELECT
 		expect(mockExecute).toHaveBeenCalledWith(
 			expect.objectContaining({
-				sql: expect.stringContaining('INSERT OR REPLACE'),
 				args: expect.arrayContaining(['a@b.com', 'Alice', null]),
 			}),
 		);
