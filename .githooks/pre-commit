@@ -1,9 +1,11 @@
 #!/bin/sh
-# Reject package-lock.json if it contains Windows CRLF line endings.
+# Reject package-lock.json if it was generated on Windows.
+# Windows npm writes CRLF line endings. git's core.autocrlf strips \r during staging,
+# so we check the working-tree file directly — it still has CRLF at commit time.
 if git diff --cached --name-only | grep -q "^package-lock.json$"; then
-    if git show :package-lock.json | grep -q $'\r'; then
-        echo "Error: package-lock.json contains Windows line endings (CRLF)."
-        echo "Regenerate it with: npm install"
+    if grep -q $'\r' package-lock.json; then
+        echo "Error: package-lock.json was generated on Windows (contains CRLF line endings)."
+        echo "Please regenerate it in WSL: wsl npm install"
         exit 1
     fi
 fi
