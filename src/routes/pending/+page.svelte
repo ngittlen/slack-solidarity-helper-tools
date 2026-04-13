@@ -114,6 +114,9 @@
     }
 
     let copyLabel = $state('Copy uncontacted emails');
+    let hasUncontactedEmails = $derived(
+        data ? data.pending.some((e) => (statusState[e.id] ?? e.status) === 'uncontacted' && e.email) : false
+    );
 
     async function copyUncontactedEmails() {
         if (!data) return;
@@ -221,7 +224,7 @@
                     <span class="stat-label">Total requested</span>
                 </div>
             </div>
-            <button onclick={copyUncontactedEmails}>{copyLabel}</button>
+            <button onclick={copyUncontactedEmails} disabled={!hasUncontactedEmails} title={!hasUncontactedEmails ? 'There are no uncontacted people' : undefined}>{copyLabel}</button>
         </div>
 
         {#if data.pending.length === 0}

@@ -158,6 +158,12 @@ button:hover {
     background: var(--color-action-hover);
 }
 
+button:disabled {
+    background: var(--color-border);
+    color: var(--color-text-faint);
+    cursor: not-allowed;
+}
+
 /* Table */
 .table-wrap {
     background: var(--color-surface);

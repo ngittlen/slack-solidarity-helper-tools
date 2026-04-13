@@ -76,7 +76,7 @@ export const GET: RequestHandler = async ({ url }) => {
 						type: 'section',
 						text: {
 							type: 'mrkdwn',
-							text: `:wave: A volunteer needs help joining Slack: ${details}\n<${APP_URL}/pending|View pending invites>`,
+							text: `:wave: A volunteer needs help joining Slack: ${details}\n<${APP_URL}/pending|View pending requests>`,
 						},
 					},
 				],
