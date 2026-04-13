@@ -1,0 +1,182 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHmac } from 'node:crypto';
+import { POST, verifySlackSignature } from './+server.js';
+
+// vi.mock factories are hoisted — use vi.hoisted() so the fn refs are ready.
+const mockGetUserByEmail = vi.hoisted(() => vi.fn());
+const mockConversationsInvite = vi.hoisted(() => vi.fn());
+const mockConversationsOpen = vi.hoisted(() => vi.fn());
+const mockPostMessage = vi.hoisted(() => vi.fn());
+
+vi.mock('$lib/server/solidarity', () => ({ getUserByEmail: mockGetUserByEmail }));
+vi.mock('$lib/server/slack', () => ({
+	slack: {
+		conversations: {
+			invite: mockConversationsInvite,
+			open: mockConversationsOpen,
+		},
+		chat: { postMessage: mockPostMessage },
+	},
+}));
+vi.mock('$lib/server/env', () => ({
+	SLACK_SIGNING_SECRET: 'test-signing-secret',
+	SOLIDARITY_CHAPTER_CHANNEL_MAP: { '42': 'C_COUNTY' },
+}));
+
+// --- Helpers ---
+
+const SECRET = 'test-signing-secret';
+
+function makeSignedRequest(body: string, opts: { secret?: string; ageSeconds?: number } = {}) {
+	const secret = opts.secret ?? SECRET;
+	const timestamp = Math.floor(Date.now() / 1000 - (opts.ageSeconds ?? 0)).toString();
+	const sig = `v0=${createHmac('sha256', secret).update(`v0:${timestamp}:${body}`).digest('hex')}`;
+	return new Request('http://localhost/api/slack/events', {
+		method: 'POST',
+		body,
+		headers: {
+			'Content-Type': 'application/json',
+			'x-slack-signature': sig,
+			'x-slack-request-timestamp': timestamp,
+		},
+	});
+}
+
+function teamJoinPayload(user: object) {
+	return JSON.stringify({ type: 'event_callback', event: { type: 'team_join', user } });
+}
+
+// --- Tests ---
+
+describe('verifySlackSignature', () => {
+	it('returns true for a valid signature', async () => {
+		const body = '{"type":"url_verification"}';
+		const req = makeSignedRequest(body);
+		expect(await verifySlackSignature(req, body)).toBe(true);
+	});
+
+	it('returns false when signature is missing', async () => {
+		const req = new Request('http://localhost', {
+			method: 'POST',
+			body: '{}',
+			headers: { 'x-slack-request-timestamp': '12345' },
+		});
+		expect(await verifySlackSignature(req, '{}')).toBe(false);
+	});
+
+	it('returns false when timestamp is missing', async () => {
+		const req = new Request('http://localhost', {
+			method: 'POST',
+			body: '{}',
+			headers: { 'x-slack-signature': 'v0=abc' },
+		});
+		expect(await verifySlackSignature(req, '{}')).toBe(false);
+	});
+
+	it('returns false for a replay attack (timestamp > 5 min old)', async () => {
+		const body = '{}';
+		const req = makeSignedRequest(body, { ageSeconds: 301 });
+		expect(await verifySlackSignature(req, body)).toBe(false);
+	});
+
+	it('returns false when secret is wrong', async () => {
+		const body = '{}';
+		const req = makeSignedRequest(body, { secret: 'wrong-secret' });
+		expect(await verifySlackSignature(req, body)).toBe(false);
+	});
+});
+
+describe('POST /api/slack/events', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockConversationsInvite.mockResolvedValue({ ok: true });
+		mockConversationsOpen.mockResolvedValue({ channel: { id: 'DM_CHANNEL' } });
+		mockPostMessage.mockResolvedValue({ ok: true });
+	});
+
+	it('returns 401 for an invalid signature', async () => {
+		const req = makeSignedRequest('{}', { secret: 'wrong' });
+		const res = await POST({ request: req } as never);
+		expect(res.status).toBe(401);
+	});
+
+	it('responds to the url_verification challenge', async () => {
+		const body = JSON.stringify({ type: 'url_verification', challenge: 'abc123' });
+		const res = await POST({ request: makeSignedRequest(body) } as never);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ challenge: 'abc123' });
+	});
+
+	it('returns 200 for unknown event types without calling Slack', async () => {
+		const body = JSON.stringify({ type: 'event_callback', event: { type: 'message' } });
+		const res = await POST({ request: makeSignedRequest(body) } as never);
+		expect(res.status).toBe(200);
+		expect(mockConversationsInvite).not.toHaveBeenCalled();
+	});
+
+	it('invites user to county channel and sends DM on team_join', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
+
+		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'new@example.com' } });
+		const res = await POST({ request: makeSignedRequest(body) } as never);
+		expect(res.status).toBe(200);
+
+		// Wait for the entire async fire-and-forget handler to complete (postMessage is last)
+		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledOnce());
+
+		expect(mockConversationsInvite).toHaveBeenCalledWith({
+			channel: 'C_COUNTY',
+			users: 'U_NEW',
+		});
+		expect(mockConversationsOpen).toHaveBeenCalledWith({ users: 'U_NEW' });
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ channel: 'DM_CHANNEL' }),
+		);
+	});
+
+	it('falls back to chapter_id when chapter_ids is empty', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: 42, chapter_ids: [] });
+
+		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'new@example.com' } });
+		await POST({ request: makeSignedRequest(body) } as never);
+		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledOnce());
+
+		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
+	});
+
+	it('does nothing when the user has no email', async () => {
+		const body = teamJoinPayload({ id: 'U_NEW', profile: {} });
+		await POST({ request: makeSignedRequest(body) } as never);
+		// No async work to wait for — give a tick to confirm nothing fires
+		await new Promise((r) => setTimeout(r, 10));
+		expect(mockGetUserByEmail).not.toHaveBeenCalled();
+	});
+
+	it('does nothing when user is not in solidarity', async () => {
+		mockGetUserByEmail.mockResolvedValue(null);
+		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'ghost@example.com' } });
+		await POST({ request: makeSignedRequest(body) } as never);
+		await new Promise((r) => setTimeout(r, 10));
+		expect(mockConversationsInvite).not.toHaveBeenCalled();
+	});
+
+	it('does nothing when no channel is mapped for the user chapters', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [999] });
+		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'new@example.com' } });
+		await POST({ request: makeSignedRequest(body) } as never);
+		await new Promise((r) => setTimeout(r, 10));
+		expect(mockConversationsInvite).not.toHaveBeenCalled();
+		expect(mockPostMessage).not.toHaveBeenCalled();
+	});
+
+	it('still sends DM when invite partially fails', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
+		mockConversationsInvite.mockRejectedValue(new Error('already_in_channel'));
+
+		const body = teamJoinPayload({ id: 'U_NEW', profile: { email: 'new@example.com' } });
+		await POST({ request: makeSignedRequest(body) } as never);
+		// Invite failed, so DM should be skipped too (no successful channels)
+		await new Promise((r) => setTimeout(r, 10));
+		expect(mockPostMessage).not.toHaveBeenCalled();
+	});
+});

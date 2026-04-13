@@ -9,6 +9,7 @@ const get = (key: string) => (env as Record<string, string | undefined>)[key] ??
 export const SLACK_BOT_TOKEN = get('SLACK_BOT_TOKEN');
 export const SLACK_CLIENT_ID = get('SLACK_CLIENT_ID');
 export const SLACK_CLIENT_SECRET = get('SLACK_CLIENT_SECRET');
+export const SLACK_SIGNING_SECRET = get('SLACK_SIGNING_SECRET');
 export const SLACK_ALLOWED_USER_IDS = new Set(
 	get('SLACK_ALLOWED_USER_IDS').split(',').map((id) => id.trim()).filter(Boolean),
 );
@@ -19,6 +20,19 @@ export const WEBHOOK_SECRET = get('WEBHOOK_SECRET');
 export const APP_URL = get('APP_URL');
 export const PORT = parseInt(get('PORT') || '3000', 10);
 export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
+
+export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
+
+// JSON object mapping solidarity chapter IDs (as strings) to Slack channel IDs.
+// Example: {"123": "C012AB3CD", "456": "C987XY6Z"}
+export const SOLIDARITY_CHAPTER_CHANNEL_MAP: Record<string, string> = (() => {
+	try {
+		return JSON.parse(get('SOLIDARITY_CHAPTER_CHANNEL_MAP') || '{}') as Record<string, string>;
+	} catch {
+		console.error('[env] SOLIDARITY_CHAPTER_CHANNEL_MAP is not valid JSON — defaulting to {}');
+		return {};
+	}
+})();
 
 const REQUIRED_VARS = [
 	'SLACK_BOT_TOKEN',
