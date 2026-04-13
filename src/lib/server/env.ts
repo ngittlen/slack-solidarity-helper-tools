@@ -7,6 +7,7 @@ import { env } from '$env/dynamic/private';
 const get = (key: string) => (env as Record<string, string | undefined>)[key] ?? '';
 
 export const SLACK_BOT_TOKEN = get('SLACK_BOT_TOKEN');
+export const SLACK_USER_TOKEN = get('SLACK_USER_TOKEN');
 export const SLACK_CLIENT_ID = get('SLACK_CLIENT_ID');
 export const SLACK_CLIENT_SECRET = get('SLACK_CLIENT_SECRET');
 export const SLACK_SIGNING_SECRET = get('SLACK_SIGNING_SECRET');
