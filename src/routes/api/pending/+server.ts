@@ -9,8 +9,8 @@ export const GET: RequestHandler = async ({ locals }) => {
 	}
 
 	const result = await db.execute(`
-    SELECT id, email, name, phone, comment, helped, last_edited_by_id, last_edited_by_name
-    FROM requests ORDER BY helped ASC, email ASC
+    SELECT id, email, name, phone, comment, status, last_edited_by_id, last_edited_by_name
+    FROM requests ORDER BY email ASC
   `);
 
 	if (result.rows.length === 0) {
@@ -23,7 +23,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 		name: (r['name'] as string | null) ?? null,
 		phone: (r['phone'] as string | null) ?? null,
 		comment: (r['comment'] as string | null) ?? null,
-		helped: Boolean(r['helped'] as number),
+		status: (r['status'] as string | null) ?? 'uncontacted',
 		lastEditedById: (r['last_edited_by_id'] as string | null) ?? null,
 		lastEditedByName: (r['last_edited_by_name'] as string | null) ?? null,
 	}));
@@ -47,7 +47,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 		in_slack: row.email !== null && slackEmails.has(row.email.toLowerCase()),
 	}));
 
-	const total_pending = pending.filter((r) => !r.helped).length;
+	const total_pending = pending.filter((r) => r.status !== 'verified_in_slack').length;
 
 	return json({ pending, total_requested: rows.length, total_pending });
 }

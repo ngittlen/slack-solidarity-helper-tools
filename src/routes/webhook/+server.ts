@@ -27,8 +27,25 @@ export const GET: RequestHandler = async ({ url }) => {
 		return json({ error: 'Invalid email address' }, { status: 400 });
 	}
 
+	const existing = await db.execute({
+		sql: `SELECT id FROM requests
+		      WHERE (email IS NULL AND ? IS NULL OR email = ?)
+		        AND (phone IS NULL AND ? IS NULL OR phone = ?)
+		      LIMIT 1`,
+		args: [trimmedEmail, trimmedEmail, trimmedPhone, trimmedPhone],
+	});
+
+	if (existing.rows.length > 0) {
+		const id = Number(existing.rows[0]!['id']);
+		await db.execute({
+			sql: 'UPDATE requests SET name = ?, requested_at = ? WHERE id = ?',
+			args: [trimmedName, new Date().toISOString(), id],
+		});
+		return json({ success: true, email: trimmedEmail, phone: trimmedPhone });
+	}
+
 	const result = await db.execute({
-		sql: 'INSERT OR REPLACE INTO requests (email, name, phone, requested_at) VALUES (?, ?, ?, ?)',
+		sql: 'INSERT INTO requests (email, name, phone, requested_at) VALUES (?, ?, ?, ?)',
 		args: [trimmedEmail, trimmedName, trimmedPhone, new Date().toISOString()],
 	});
 

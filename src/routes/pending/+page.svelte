@@ -12,10 +12,18 @@
         phone: string | null;
         comment: string | null;
         in_slack: boolean;
-        helped: boolean;
+        status: string;
         lastEditedById: string | null;
         lastEditedByName: string | null;
     }
+
+    const STATUS_OPTIONS = [
+        { value: 'uncontacted', label: 'Uncontacted' },
+        { value: 'contacted', label: 'Contacted' },
+        { value: 'verified_in_slack', label: 'In Slack' },
+    ] as const;
+
+    const STATUS_ORDER: Record<string, number> = { uncontacted: 0, contacted: 1, verified_in_slack: 2 };
 
     interface ApiResponse {
         pending: Entry[];
@@ -32,21 +40,21 @@
 
     let comments = $state<Record<number, string>>({});
     let saveStatuses = $state<Record<number, SaveStatus>>({});
-    let helpedState = $state<Record<number, boolean>>({});
+    let statusState = $state<Record<number, string>>({});
     let lastEditedByState = $state<Record<number, string | null>>({});
 
     const saveTimers: Record<number, ReturnType<typeof setTimeout>> = {};
 
     let totalPending = $derived(
-        data ? data.pending.filter((e) => !(helpedState[e.id] ?? e.helped)).length : 0
+        data ? data.pending.filter((e) => (statusState[e.id] ?? e.status) !== 'verified_in_slack').length : 0
     );
 
     let sortedEntries = $derived(
         data
             ? [...data.pending].sort((a, b) => {
-                const aHelped = helpedState[a.id] ?? a.helped;
-                const bHelped = helpedState[b.id] ?? b.helped;
-                if (aHelped !== bHelped) return aHelped ? 1 : -1;
+                const aOrder = STATUS_ORDER[statusState[a.id] ?? a.status] ?? 0;
+                const bOrder = STATUS_ORDER[statusState[b.id] ?? b.status] ?? 0;
+                if (aOrder !== bOrder) return aOrder - bOrder;
                 return (a.email ?? '').localeCompare(b.email ?? '');
             })
             : []
@@ -61,7 +69,7 @@
             const json: ApiResponse = await res.json();
             data = json;
             comments = Object.fromEntries(json.pending.map((e) => [e.id, e.comment ?? '']));
-            helpedState = Object.fromEntries(json.pending.map((e) => [e.id, e.helped]));
+            statusState = Object.fromEntries(json.pending.map((e) => [e.id, e.status]));
             lastEditedByState = Object.fromEntries(json.pending.map((e) => [e.id, e.lastEditedByName]));
         } catch (err) {
             errorMessage = err instanceof Error ? err.message : 'Unknown error';
@@ -95,15 +103,27 @@
         saveTimers[id] = setTimeout(() => saveComment(id), 600);
     }
 
-    async function toggleHelped(id: number) {
-        const next = !(helpedState[id] ?? false);
-        helpedState[id] = next;
+    async function setStatus(id: number, status: string) {
+        statusState[id] = status;
         lastEditedByState[id] = pageData.userName ?? null;
         await fetch('/api/helped', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({id, helped: next})
+            body: JSON.stringify({id, status})
         });
+    }
+
+    let copyLabel = $state('Copy uncontacted emails');
+
+    async function copyUncontactedEmails() {
+        if (!data) return;
+        const emails = data.pending
+            .filter((e) => (statusState[e.id] ?? e.status) === 'uncontacted' && e.email)
+            .map((e) => e.email as string)
+            .join(', ');
+        await navigator.clipboard.writeText(emails);
+        copyLabel = 'Copied!';
+        setTimeout(() => { copyLabel = 'Copy uncontacted emails'; }, 2000);
     }
 
     function formatPhone(phone: string): string {
@@ -144,11 +164,11 @@
                         }];
                         data.total_requested += 1;
                         comments[msg.id] = '';
-                        helpedState[msg.id] = false;
+                        statusState[msg.id] = 'uncontacted';
                         lastEditedByState[msg.id] = null;
                     }
-                } else if (msg.type === 'helped') {
-                    helpedState[msg.id] = msg.helped;
+                } else if (msg.type === 'status') {
+                    statusState[msg.id] = msg.status;
                     lastEditedByState[msg.id] = msg.editedBy;
                 } else if (msg.type === 'comment') {
                     // Don't overwrite a textarea the current user is actively editing
@@ -201,6 +221,7 @@
                     <span class="stat-label">Total requested</span>
                 </div>
             </div>
+            <button onclick={copyUncontactedEmails}>{copyLabel}</button>
         </div>
 
         {#if data.pending.length === 0}
@@ -220,15 +241,18 @@
                     </thead>
                     <tbody>
                     {#each sortedEntries as entry (entry.id)}
-                        {@const isHelped = helpedState[entry.id] ?? entry.helped}
-                        <tr class:helped={isHelped}>
+                        {@const currentStatus = statusState[entry.id] ?? entry.status}
+                        <tr class:helped={currentStatus === 'verified_in_slack'} class:contacted={currentStatus === 'contacted'}>
                             <td class="col-helped">
-                                <input
-                                        type="checkbox"
-                                        checked={isHelped}
-                                        onchange={() => toggleHelped(entry.id)}
-                                        aria-label="Mark as helped"
-                                />
+                                <select
+                                        value={currentStatus}
+                                        onchange={(e) => setStatus(entry.id, (e.target as HTMLSelectElement).value)}
+                                        aria-label="Status for {entry.name ?? entry.email ?? entry.phone ?? 'volunteer'}"
+                                >
+                                    {#each STATUS_OPTIONS as opt}
+                                        <option value={opt.value}>{opt.label}</option>
+                                    {/each}
+                                </select>
                             </td>
                             <td class="col-name">
                                 {entry.name ?? '—'}

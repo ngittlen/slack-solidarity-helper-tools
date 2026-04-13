@@ -216,6 +216,14 @@ tr:hover td {
     accent-color: var(--color-blue);
 }
 
+.col-helped select {
+    padding-left: 6px;
+}
+
+tr.contacted td {
+    background-color: #f5f5f5;
+}
+
 tr.helped,
 tr.helped td {
     color: var(--color-text-faint);
@@ -231,7 +239,6 @@ tr.helped .col-phone {
 
 .col-name {
     font-weight: 500;
-    white-space: nowrap;
 }
 
 .col-phone {

@@ -25,8 +25,8 @@ export function notifyNewRequest(entry: {
 	broadcast(JSON.stringify({ type: 'new-request', ...entry }));
 }
 
-export function notifyHelped(id: number, helped: boolean, editedBy: string) {
-	broadcast(JSON.stringify({ type: 'helped', id, helped, editedBy }));
+export function notifyStatus(id: number, status: string, editedBy: string) {
+	broadcast(JSON.stringify({ type: 'status', id, status, editedBy }));
 }
 
 export function notifyComment(id: number, comment: string | null, editedBy: string) {

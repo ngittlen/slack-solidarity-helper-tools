@@ -40,6 +40,7 @@ export async function initDbSchema(): Promise<void> {
 		`ALTER TABLE requests ADD COLUMN helped INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE requests ADD COLUMN last_edited_by_id TEXT`,
 		`ALTER TABLE requests ADD COLUMN last_edited_by_name TEXT`,
+		`ALTER TABLE requests ADD COLUMN status TEXT NOT NULL DEFAULT 'uncontacted'`,
 	];
 	for (const sql of migrations) {
 		try {
@@ -48,6 +49,10 @@ export async function initDbSchema(): Promise<void> {
 			// column already exists
 		}
 	}
+	// Data migration: backfill status for rows that were marked helped before status column existed
+	await client.execute(
+		`UPDATE requests SET status = 'verified_in_slack' WHERE helped = 1 AND status = 'uncontacted'`
+	);
 
 	await client.execute(`
     CREATE TABLE IF NOT EXISTS sessions (
