@@ -3,8 +3,7 @@ import { SLACK_BOT_TOKEN } from './env.js';
 
 let _slack: WebClient | null = null;
 
-export function getSlack(token?: string): WebClient {
-	if (token) return new WebClient(token);
+export function getSlack(): WebClient {
 	if (!_slack) {
 		_slack = new WebClient(SLACK_BOT_TOKEN);
 	}

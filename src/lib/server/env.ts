@@ -7,7 +7,6 @@ import { env } from '$env/dynamic/private';
 const get = (key: string) => (env as Record<string, string | undefined>)[key] ?? '';
 
 export const SLACK_BOT_TOKEN = get('SLACK_BOT_TOKEN');
-export const SLACK_USER_TOKEN = get('SLACK_USER_TOKEN');
 export const SLACK_CLIENT_ID = get('SLACK_CLIENT_ID');
 export const SLACK_CLIENT_SECRET = get('SLACK_CLIENT_SECRET');
 export const SLACK_SIGNING_SECRET = get('SLACK_SIGNING_SECRET');
@@ -23,11 +22,6 @@ export const PORT = parseInt(get('PORT') || '3000', 10);
 export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
 
 export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
-
-// Slack custom profile field IDs for storing City and State from Solidarity.
-// Leave either unset to skip writing that field.
-export const SLACK_CITY_FIELD_ID = get('SLACK_CITY_FIELD_ID');
-export const SLACK_STATE_FIELD_ID = get('SLACK_STATE_FIELD_ID');
 
 // JSON object mapping solidarity chapter IDs (as strings) to Slack channel IDs.
 // Example: {"123": "C012AB3CD", "456": "C987XY6Z"}
