@@ -22,7 +22,7 @@ vi.mock('$lib/server/slack', () => ({
 }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
-	SOLIDARITY_CHAPTER_CHANNEL_MAP: { '42': 'C_COUNTY' },
+	SOLIDARITY_CHAPTER_CHANNEL_MAP: [{ chapterId: 42, channelId: 'C_COUNTY', name: 'Test County' }],
 }));
 
 // --- Helpers ---

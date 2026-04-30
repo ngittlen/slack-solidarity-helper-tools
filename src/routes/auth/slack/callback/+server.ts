@@ -1,6 +1,6 @@
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import crypto from 'crypto';
+import { dev } from '$app/environment';
 import { sessionStore } from '$lib/server/db.js';
 import {
 	SLACK_CLIENT_ID,
@@ -27,7 +27,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	const errorParam = url.searchParams.get('error');
 	if (errorParam) {
 		console.error('[auth] Slack OAuth error:', errorParam);
-		throw error(403, 'Access denied.');
+		error(403, 'Access denied.');
 	}
 
 	const code = url.searchParams.get('code');
@@ -35,7 +35,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	const storedState = cookies.get('oauth_state');
 
 	if (!code || !state || state !== storedState) {
-		throw error(400, 'Invalid OAuth state.');
+		error(400, 'Invalid OAuth state.');
 	}
 
 	cookies.delete('oauth_state', { path: '/' });
@@ -55,7 +55,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	const tokenData = (await tokenRes.json()) as SlackOAuthResponse;
 	if (!tokenData.ok || !tokenData.authed_user?.access_token) {
 		console.error('[auth] token exchange failed:', tokenData.error);
-		throw error(502, 'Authentication failed.');
+		error(502, 'Authentication failed.');
 	}
 
 	// Get user identity
@@ -66,13 +66,13 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	const identity = (await identityRes.json()) as SlackIdentityResponse;
 	if (!identity.ok || !identity.user?.id) {
 		console.error('[auth] identity fetch failed:', identity.error);
-		throw error(502, 'Authentication failed.');
+		error(502, 'Authentication failed.');
 	}
 
 	const userId = identity.user.id;
 	if (!SLACK_ALLOWED_USER_IDS.has(userId)) {
 		console.warn(`[auth] blocked user: ${userId} (${identity.user.name})`);
-		throw error(403, 'You are not authorised to view this page.');
+		error(403, 'You are not authorised to view this page.');
 	}
 
 	// Create session
@@ -82,10 +82,11 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	cookies.set('session', sid, {
 		path: '/',
 		httpOnly: true,
+		secure: !dev,
 		sameSite: 'lax',
 		maxAge: SESSION_MAX_AGE,
 	});
 
 	console.log(`[auth] login: ${identity.user.name} (${userId})`);
-	throw redirect(302, '/pending');
+	redirect(302, '/pending');
 }

@@ -1,5 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { dev } from '$app/environment';
 import { SLACK_CLIENT_ID, REDIRECT_URI } from '$lib/server/env.js';
 import { env } from '$env/dynamic/private';
 
@@ -15,6 +16,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 	cookies.set(OAUTH_STATE_COOKIE, state, {
 		path: '/',
 		httpOnly: true,
+		secure: !dev,
 		sameSite: 'lax',
 		maxAge: 600, // 10 minutes
 	});

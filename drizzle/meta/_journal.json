@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1777508418198,
+      "tag": "0000_robust_nemesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1777508533989,
+      "tag": "0001_sturdy_spirit",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1777514480183,
+      "tag": "0002_sharp_proemial_gods",
+      "breakpoints": true
+    }
+  ]
+}

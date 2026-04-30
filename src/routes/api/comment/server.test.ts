@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
 
-const mockExecute = vi.hoisted(() => vi.fn());
+const mockUpdateWhere = vi.hoisted(() => vi.fn());
+const mockSet = vi.hoisted(() => vi.fn());
+const mockUpdate = vi.hoisted(() => vi.fn());
 const mockNotifyComment = vi.hoisted(() => vi.fn());
 
-vi.mock('$lib/server/db', () => ({ db: { execute: mockExecute } }));
+vi.mock('$lib/server/db', () => ({ db: { update: mockUpdate } }));
 vi.mock('$lib/server/events', () => ({ notifyComment: mockNotifyComment }));
-
-// --- Helpers ---
 
 const authed = {
 	locals: { session: { slackUserId: 'U123', slackUserName: 'Alice' } },
@@ -21,12 +21,12 @@ function makeEvent(session: typeof authed | typeof unauthed, body: unknown) {
 	};
 }
 
-// --- Tests ---
-
 describe('POST /api/comment', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockExecute.mockResolvedValue({});
+		mockUpdate.mockReturnValue({ set: mockSet });
+		mockSet.mockReturnValue({ where: mockUpdateWhere });
+		mockUpdateWhere.mockResolvedValue(undefined);
 	});
 
 	it('redirects to /auth/slack when not authenticated', async () => {
@@ -55,22 +55,22 @@ describe('POST /api/comment', () => {
 		const res = await POST(makeEvent(authed, { id: 5, comment: 'called' }) as never);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ success: true });
-		expect(mockExecute).toHaveBeenCalledWith(
-			expect.objectContaining({ args: expect.arrayContaining(['called', 5]) }),
+		expect(mockSet).toHaveBeenCalledWith(
+			expect.objectContaining({ comment: 'called' }),
 		);
 	});
 
 	it('stores null when comment is blank whitespace', async () => {
 		await POST(makeEvent(authed, { id: 5, comment: '   ' }) as never);
-		expect(mockExecute).toHaveBeenCalledWith(
-			expect.objectContaining({ args: expect.arrayContaining([null, 5]) }),
+		expect(mockSet).toHaveBeenCalledWith(
+			expect.objectContaining({ comment: null }),
 		);
 	});
 
 	it('saves the editor name and id', async () => {
 		await POST(makeEvent(authed, { id: 5, comment: 'called' }) as never);
-		expect(mockExecute).toHaveBeenCalledWith(
-			expect.objectContaining({ args: expect.arrayContaining(['U123', 'Alice']) }),
+		expect(mockSet).toHaveBeenCalledWith(
+			expect.objectContaining({ lastEditedById: 'U123', lastEditedByName: 'Alice' }),
 		);
 	});
 

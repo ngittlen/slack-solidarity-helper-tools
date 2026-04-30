@@ -92,7 +92,8 @@
             setTimeout(() => {
                 saveStatuses[id] = 'idle';
             }, 2000);
-        } catch {
+        } catch (err) {
+            console.error('[saveComment]', err);
             saveStatuses[id] = 'error';
         }
     }
@@ -161,7 +162,7 @@
                             phone: msg.phone,
                             comment: null,
                             in_slack: false,
-                            helped: false,
+                            status: 'uncontacted',
                             lastEditedById: null,
                             lastEditedByName: null,
                         }];
@@ -199,7 +200,7 @@
 		<span>
             Logged in as <span class="user-name">{pageData.userName}</span>
         </span>
-		<button class="logout-btn" onclick={() => window.location.href = '/auth/logout'}>Log out</button>
+		<button class="logout-btn" onclick={async () => { await fetch('/auth/logout', { method: 'POST' }); window.location.href = '/'; }}>Log out</button>
 	</span>
 </header>
 
@@ -252,7 +253,7 @@
                                         onchange={(e) => setStatus(entry.id, (e.target as HTMLSelectElement).value)}
                                         aria-label="Status for {entry.name ?? entry.email ?? entry.phone ?? 'volunteer'}"
                                 >
-                                    {#each STATUS_OPTIONS as opt}
+                                    {#each STATUS_OPTIONS as opt (opt.value)}
                                         <option value={opt.value}>{opt.label}</option>
                                     {/each}
                                 </select>

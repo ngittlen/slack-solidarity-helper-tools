@@ -10,23 +10,32 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint": "eslint .",
     "prepare": "git config core.hooksPath .githooks || true",
-    "backfill": "tsx --env-file=.env.local scripts/backfill-members.ts"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
   },
   "license": "MIT",
   "dependencies": {
     "@libsql/client": "^0.17.2",
     "@slack/web-api": "^7.8.0",
+    "drizzle-orm": "^0.45.2",
     "libphonenumber-js": "^1.12.41"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@sveltejs/adapter-node": "^5.5.4",
     "@sveltejs/kit": "^2.56.1",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@types/node": "^20.0.0",
-    "tsx": "^4.0.0",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^10.2.1",
+    "eslint-plugin-svelte": "^3.17.1",
+    "globals": "^17.5.0",
     "svelte": "^5.55.1",
+    "tsx": "^4.0.0",
     "typescript": "^5.4.0",
+    "typescript-eslint": "^8.59.1",
     "vite": "^8.0.5",
     "vitest": "^4.1.2"
   }

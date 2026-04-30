@@ -4,6 +4,7 @@
 
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { sessionStore } from '$lib/server/db.js';
 
@@ -18,6 +19,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 	cookies.set('session', sid, {
 		path: '/',
 		httpOnly: true,
+		secure: !dev,
 		sameSite: 'lax',
 		maxAge: 8 * 60 * 60,
 	});
