@@ -9,3 +9,6 @@ build/
 *.log
 specs/
 docs/
+tasks/
+scripts/
+*.db

@@ -96,10 +96,10 @@ SLACK_TRACKING_CHANNEL_ID=C012AB3CD
 TURSO_DATABASE_URL=libsql://your-db.turso.io
 TURSO_AUTH_TOKEN=your-auth-token-here
 WEBHOOK_SECRET=your-webhook-secret-here
-SESSION_SECRET=your-session-secret-here
 APP_URL=https://your-app.fly.dev
 SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
-SOLIDARITY_CHAPTER_CHANNEL_MAP={"123":"C012AB3CD","456":"C987XY6Z"}
+SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
+COALITION_CHANNEL_MAP='{"labor":"C0ALZBGF9C2","housing":"C0ALZBGF9C3"}'
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
 
@@ -117,7 +117,13 @@ npm test
 # Production
 npm run build
 npm start
+
+# Database migrations
+npm run db:generate   # generate a new migration after editing src/lib/server/schema.ts
+npm run db:migrate    # apply pending migrations to TURSO_DATABASE_URL
 ```
+
+In production, migrations run via Fly's `release_command` (`node bin/migrate.js`) — see `fly.toml`. Each deploy applies any pending migrations before the new image starts serving traffic.
 
 ## Local development
 
@@ -126,7 +132,6 @@ A minimal `.env.local` for local development — no real Slack credentials neede
 ```
 TURSO_DATABASE_URL=file:local.db
 WEBHOOK_SECRET=any-local-secret
-SESSION_SECRET=any-local-secret
 DEV_SLACK_USER_ID=U012AB3CD
 ```
 
@@ -180,7 +185,7 @@ The underlying JSON is also available at `GET /api/pending`:
       "phone": "555-1234",
       "comment": null,
       "in_slack": false,
-      "helped": false,
+      "status": "uncontacted",
       "lastEditedById": null,
       "lastEditedByName": null
     }
@@ -191,10 +196,10 @@ The underlying JSON is also available at `GET /api/pending`:
 ```
 
 - `in_slack` is `true` when the volunteer's email matches an active member in the Slack workspace.
-- `helped` is `true` when an admin has marked the volunteer as helped. Helped rows are excluded from `total_pending`.
+- `status` is one of `uncontacted`, `contacted`, or `verified_in_slack`. Rows with `verified_in_slack` are excluded from `total_pending`.
 - `lastEditedByName` / `lastEditedById` record which admin last updated the row.
 
-Admins can add a comment or mark a row as helped directly on the page. Changes are saved automatically and pushed live to all connected users via Server-Sent Events (`GET /api/events`).
+Admins can add a comment or change a row's status directly on the page. Changes are saved automatically and pushed live to all connected users via Server-Sent Events (`GET /api/events`).
 
 ### `POST /api/comment`
 
@@ -206,11 +211,23 @@ Saves a comment for a request. Requires an active Slack OAuth session. Passing a
 
 ### `POST /api/helped`
 
-Marks or unmarks a request as helped. Requires an active Slack OAuth session.
+Updates the status of a request. Requires an active Slack OAuth session. `status` must be one of `uncontacted`, `contacted`, or `verified_in_slack`.
 
 ```json
-{ "id": 1, "helped": true }
+{ "id": 1, "status": "verified_in_slack" }
 ```
+
+### `GET /coalition-invite`
+
+Invites an existing Slack user to a coalition channel. Useful for solidarity.tech automations that route members to interest-based channels (labor, housing, etc.) after onboarding.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `secret` | Yes | Must match `WEBHOOK_SECRET` |
+| `email` | Yes | Email of an existing Slack workspace member |
+| `coalition` | Yes | Key in `COALITION_CHANNEL_MAP` (case-insensitive) |
+
+Returns `{ "success": true }` on a successful invite, `{ "success": true, "already_in_channel": true }` if the user was already in the channel, `404` if no Slack user matches the email, `400` for unknown coalitions or invalid input, and `502` if Slack rejects the invite.
 
 ### `GET /api/events`
 
@@ -219,14 +236,14 @@ Server-Sent Events stream. Requires an active Slack OAuth session. Pushes three 
 | `type` | Payload | Meaning |
 |---|---|---|
 | `new-request` | `id, email, name, phone` | A new volunteer record was created |
-| `helped` | `id, helped, editedBy` | A row's helped status changed |
+| `status` | `id, status, editedBy` | A row's status changed |
 | `comment` | `id, comment, editedBy` | A row's comment changed |
 
 ### `GET /auth/slack`
 
 Starts the Slack OAuth login flow. Redirected to automatically when visiting `/pending` without a session.
 
-### `GET /auth/logout`
+### `POST /auth/logout`
 
 Destroys the current session.
 
@@ -249,11 +266,11 @@ fly secrets set \
   TURSO_DATABASE_URL=libsql://your-db.turso.io \
   TURSO_AUTH_TOKEN=... \
   WEBHOOK_SECRET=... \
-  SESSION_SECRET=... \
   APP_URL=https://your-app.fly.dev \
   ORIGIN=https://your-app.fly.dev \
   SOLIDARITY_API_TOKEN=... \
-  'SOLIDARITY_CHAPTER_CHANNEL_MAP={"123":"C012AB3CD"}'
+  'SOLIDARITY_CHAPTER_CHANNEL_MAP=[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]' \
+  'COALITION_CHANNEL_MAP={"labor":"C0ALZBGF9C2","housing":"C0ALZBGF9C3"}'
 
 fly deploy
 ```

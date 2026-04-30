@@ -1,7 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
+import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db.js';
+import { requests } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
 import { WEBHOOK_SECRET, SLACK_TRACKING_CHANNEL_ID, APP_URL } from '$lib/server/env.js';
 import { notifyNewRequest } from '$lib/server/events.js';
@@ -27,30 +29,48 @@ export const GET: RequestHandler = async ({ url }) => {
 		return json({ error: 'Invalid email address' }, { status: 400 });
 	}
 
-	const existing = await db.execute({
-		sql: `SELECT id FROM requests
-		      WHERE (email IS NULL AND ? IS NULL OR email = ?)
-		        AND (phone IS NULL AND ? IS NULL OR phone = ?)
-		      LIMIT 1`,
-		args: [trimmedEmail, trimmedEmail, trimmedPhone, trimmedPhone],
-	});
+	// Dedup strategy: prefer email match, fall back to phone. Email is the
+	// primary identifier (UNIQUE in the schema); phone is a secondary lookup
+	// for callers who only have a phone number. We never merge across the two
+	// — if email matches one row and phone matches a different row, the email
+	// row wins and the phone row is left untouched.
+	let existing: { id: number }[] = [];
+	if (trimmedEmail !== null) {
+		existing = await db
+			.select({ id: requests.id })
+			.from(requests)
+			.where(eq(requests.email, trimmedEmail))
+			.limit(1);
+	}
+	if (existing.length === 0 && trimmedPhone !== null) {
+		existing = await db
+			.select({ id: requests.id })
+			.from(requests)
+			.where(eq(requests.phone, trimmedPhone))
+			.limit(1);
+	}
 
-	if (existing.rows.length > 0) {
-		const id = Number(existing.rows[0]!['id']);
-		await db.execute({
-			sql: 'UPDATE requests SET name = ?, requested_at = ? WHERE id = ?',
-			args: [trimmedName, new Date().toISOString(), id],
-		});
+	if (existing.length > 0) {
+		const id = existing[0]!.id;
+		await db
+			.update(requests)
+			.set({
+				requestedAt: new Date().toISOString(),
+				...(trimmedName !== null && { name: trimmedName }),
+			})
+			.where(eq(requests.id, id));
 		return json({ success: true, email: trimmedEmail, phone: trimmedPhone });
 	}
 
-	const result = await db.execute({
-		sql: 'INSERT INTO requests (email, name, phone, requested_at) VALUES (?, ?, ?, ?)',
-		args: [trimmedEmail, trimmedName, trimmedPhone, new Date().toISOString()],
-	});
+	const result = await db
+		.insert(requests)
+		.values({ email: trimmedEmail, name: trimmedName, phone: trimmedPhone, requestedAt: new Date().toISOString() })
+		.returning({ id: requests.id });
+
+	const newId = result[0]!.id;
 
 	notifyNewRequest({
-		id: Number(result.lastInsertRowid),
+		id: newId,
 		email: trimmedEmail,
 		name: trimmedName,
 		phone: trimmedPhone,

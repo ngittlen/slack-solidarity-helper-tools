@@ -1,11 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GET } from './+server.js';
 
-// vi.mock factories are hoisted — use vi.hoisted() so the fn refs are ready.
-const mockExecute = vi.hoisted(() => vi.fn());
+const mockSelectLimit = vi.hoisted(() => vi.fn());
+const mockSelectWhere = vi.hoisted(() => vi.fn());
+const mockSelectFrom = vi.hoisted(() => vi.fn());
+const mockSelect = vi.hoisted(() => vi.fn());
+
+const mockUpdateWhere = vi.hoisted(() => vi.fn());
+const mockUpdateSet = vi.hoisted(() => vi.fn());
+const mockUpdate = vi.hoisted(() => vi.fn());
+
+const mockInsertReturning = vi.hoisted(() => vi.fn());
+const mockInsertValues = vi.hoisted(() => vi.fn());
+const mockInsert = vi.hoisted(() => vi.fn());
+
 const mockPostMessage = vi.hoisted(() => vi.fn());
 
-vi.mock('$lib/server/db', () => ({ db: { execute: mockExecute } }));
+vi.mock('$lib/server/db', () => ({
+	db: { select: mockSelect, update: mockUpdate, insert: mockInsert },
+}));
 vi.mock('$lib/server/slack', () => ({ slack: { chat: { postMessage: mockPostMessage } } }));
 vi.mock('$lib/server/env', () => ({
 	WEBHOOK_SECRET: 'secret123',
@@ -15,23 +28,29 @@ vi.mock('$lib/server/env', () => ({
 vi.mock('$lib/server/events', () => ({ notifyNewRequest: vi.fn() }));
 vi.mock('$env/dynamic/private', () => ({ env: {} }));
 
-// --- Helpers ---
-
 function makeEvent(params: Record<string, string>) {
 	const url = new URL('http://localhost/webhook');
 	for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 	return { url };
 }
 
-// --- Tests ---
-
 describe('GET /webhook', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		// First call is the SELECT (check for existing), second is the INSERT.
-		mockExecute
-			.mockResolvedValueOnce({ rows: [] })
-			.mockResolvedValue({ lastInsertRowid: 1n });
+
+		mockSelect.mockReturnValue({ from: mockSelectFrom });
+		mockSelectFrom.mockReturnValue({ where: mockSelectWhere });
+		mockSelectWhere.mockReturnValue({ limit: mockSelectLimit });
+		mockSelectLimit.mockResolvedValue([]);
+
+		mockUpdate.mockReturnValue({ set: mockUpdateSet });
+		mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
+		mockUpdateWhere.mockResolvedValue(undefined);
+
+		mockInsert.mockReturnValue({ values: mockInsertValues });
+		mockInsertValues.mockReturnValue({ returning: mockInsertReturning });
+		mockInsertReturning.mockResolvedValue([{ id: 1 }]);
+
 		mockPostMessage.mockResolvedValue({ ok: true });
 	});
 
@@ -39,7 +58,7 @@ describe('GET /webhook', () => {
 		const res = await GET(makeEvent({ secret: 'wrong' }) as never);
 		expect(res.status).toBe(401);
 		expect(await res.json()).toEqual({ error: 'Unauthorized' });
-		expect(mockExecute).not.toHaveBeenCalled();
+		expect(mockSelect).not.toHaveBeenCalled();
 	});
 
 	it('returns 401 when secret is missing', async () => {
@@ -67,11 +86,14 @@ describe('GET /webhook', () => {
 
 	it('persists the record before posting to Slack', async () => {
 		const order: string[] = [];
-		mockExecute.mockReset();
-		mockExecute
-			.mockResolvedValueOnce({ rows: [] }) // SELECT — no existing record
-			.mockImplementation(async () => { order.push('db'); return { lastInsertRowid: 1n }; }); // INSERT
-		mockPostMessage.mockImplementation(async () => { order.push('slack'); return { ok: true }; });
+		mockInsertReturning.mockImplementation(async () => {
+			order.push('db');
+			return [{ id: 1 }];
+		});
+		mockPostMessage.mockImplementation(async () => {
+			order.push('slack');
+			return { ok: true };
+		});
 
 		await GET(makeEvent({ secret: 'secret123', email: 'a@b.com' }) as never);
 		expect(order).toEqual(['db', 'slack']);
@@ -91,16 +113,89 @@ describe('GET /webhook', () => {
 		mockPostMessage.mockRejectedValue(new Error('Slack down'));
 		const res = await GET(makeEvent({ secret: 'secret123', email: 'a@b.com' }) as never);
 		expect(res.status).toBe(502);
-		expect(mockExecute).toHaveBeenCalledTimes(2); // SELECT then INSERT
+		expect(mockSelect).toHaveBeenCalledTimes(1);
+		expect(mockInsert).toHaveBeenCalledTimes(1);
 	});
 
-	it('passes correct args to db.execute for the INSERT', async () => {
+	it('passes correct args to the INSERT', async () => {
 		await GET(makeEvent({ secret: 'secret123', email: 'a@b.com', name: 'Alice' }) as never);
-		// args: [email, name, phone, timestamp] — 'Alice' only appears in the INSERT, not the SELECT
-		expect(mockExecute).toHaveBeenCalledWith(
-			expect.objectContaining({
-				args: expect.arrayContaining(['a@b.com', 'Alice', null]),
-			}),
+		expect(mockInsertValues).toHaveBeenCalledWith(
+			expect.objectContaining({ email: 'a@b.com', name: 'Alice', phone: null }),
 		);
+	});
+
+	it('updates the existing row instead of inserting when a match is found', async () => {
+		mockSelectLimit.mockResolvedValueOnce([{ id: 7 }]);
+		const res = await GET(
+			makeEvent({ secret: 'secret123', email: 'a@b.com', name: 'Alice', phone: '555' }) as never,
+		);
+		expect(res.status).toBe(200);
+		expect(mockInsert).not.toHaveBeenCalled();
+		expect(mockUpdate).toHaveBeenCalledTimes(1);
+		expect(mockUpdateSet).toHaveBeenCalledWith(
+			expect.objectContaining({ name: 'Alice', requestedAt: expect.any(String) }),
+		);
+		// Dedup path skips Slack post — only new requests notify the channel
+		expect(mockPostMessage).not.toHaveBeenCalled();
+	});
+
+	it('preserves the existing name when a duplicate webhook arrives without one', async () => {
+		mockSelectLimit.mockResolvedValueOnce([{ id: 7 }]);
+		await GET(makeEvent({ secret: 'secret123', email: 'a@b.com' }) as never);
+		expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+		const setArg = mockUpdateSet.mock.calls[0]![0];
+		expect(setArg).not.toHaveProperty('name');
+		expect(setArg).toHaveProperty('requestedAt');
+	});
+
+	it('prefers the email match when both email and phone match different rows', async () => {
+		// Email lookup hits row 7 — phone fallback should be skipped entirely.
+		// (We don't queue a phone result; if the code regressed and ran the
+		// phone query, the default [] would make it INSERT, which the
+		// assertions below would catch.)
+		mockSelectLimit.mockResolvedValueOnce([{ id: 7 }]);
+
+		await GET(
+			makeEvent({ secret: 'secret123', email: 'a@b.com', phone: '555' }) as never,
+		);
+
+		expect(mockSelect).toHaveBeenCalledTimes(1);
+		expect(mockUpdate).toHaveBeenCalledTimes(1);
+		expect(mockInsert).not.toHaveBeenCalled();
+	});
+
+	it('falls back to phone match when email does not match an existing row', async () => {
+		mockSelectLimit
+			.mockResolvedValueOnce([])           // email: no match
+			.mockResolvedValueOnce([{ id: 99 }]); // phone: match
+
+		await GET(
+			makeEvent({ secret: 'secret123', email: 'new@b.com', phone: '555' }) as never,
+		);
+
+		expect(mockSelect).toHaveBeenCalledTimes(2);
+		expect(mockUpdate).toHaveBeenCalledTimes(1);
+		expect(mockInsert).not.toHaveBeenCalled();
+	});
+
+	it('inserts when neither email nor phone matches', async () => {
+		mockSelectLimit.mockResolvedValue([]);
+
+		await GET(
+			makeEvent({ secret: 'secret123', email: 'new@b.com', phone: '555' }) as never,
+		);
+
+		expect(mockSelect).toHaveBeenCalledTimes(2);
+		expect(mockInsert).toHaveBeenCalledTimes(1);
+		expect(mockUpdate).not.toHaveBeenCalled();
+	});
+
+	it('skips the email lookup entirely for a phone-only request', async () => {
+		mockSelectLimit.mockResolvedValueOnce([{ id: 99 }]);
+
+		await GET(makeEvent({ secret: 'secret123', phone: '555' }) as never);
+
+		expect(mockSelect).toHaveBeenCalledTimes(1);
+		expect(mockUpdate).toHaveBeenCalledTimes(1);
 	});
 });
