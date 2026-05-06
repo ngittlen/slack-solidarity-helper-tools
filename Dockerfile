@@ -37,8 +37,11 @@ RUN npm prune --omit=dev
 # Final stage for app image
 FROM base
 
-# Copy built application
-COPY --from=build /app /app
+# Copy built application (owned by the unprivileged `node` user that ships with the base image)
+COPY --from=build --chown=node:node /app /app
+
+# Drop privileges
+USER node
 
 # Start the server by default, this can be overwritten at runtime
 EXPOSE 3000

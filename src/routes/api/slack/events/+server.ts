@@ -96,7 +96,7 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 				: [];
 
 	const channelIds = chapterIds
-		.map((id) => SOLIDARITY_CHAPTER_CHANNEL_MAP[String(id)])
+		.map((id) => SOLIDARITY_CHAPTER_CHANNEL_MAP.find((e) => e.chapterId === id)?.channelId)
 		.filter((id): id is string => Boolean(id));
 
 	if (!channelIds.length) {

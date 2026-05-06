@@ -1,11 +1,13 @@
 import { json, redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db.js';
+import { requests } from '$lib/server/schema.js';
 import { notifyComment } from '$lib/server/events.js';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session) {
-		throw redirect(302, '/auth/slack');
+		redirect(302, '/auth/slack');
 	}
 
 	const { id, comment } = (await request.json()) as { id?: unknown; comment?: unknown };
@@ -16,10 +18,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const trimmedComment = comment.trim() || null;
 	const editorName = locals.session.slackUserName ?? locals.session.slackUserId;
 
-	await db.execute({
-		sql: 'UPDATE requests SET comment = ?, last_edited_by_id = ?, last_edited_by_name = ? WHERE id = ?',
-		args: [trimmedComment, locals.session.slackUserId, editorName, id],
-	});
+	await db
+		.update(requests)
+		.set({ comment: trimmedComment, lastEditedById: locals.session.slackUserId, lastEditedByName: editorName })
+		.where(eq(requests.id, id));
 
 	notifyComment(id, trimmedComment, editorName);
 

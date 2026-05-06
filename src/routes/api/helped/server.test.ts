@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
 
-const mockExecute = vi.hoisted(() => vi.fn());
+const mockUpdateWhere = vi.hoisted(() => vi.fn());
+const mockSet = vi.hoisted(() => vi.fn());
+const mockUpdate = vi.hoisted(() => vi.fn());
 const mockNotifyStatus = vi.hoisted(() => vi.fn());
 
-vi.mock('$lib/server/db', () => ({ db: { execute: mockExecute } }));
+vi.mock('$lib/server/db', () => ({ db: { update: mockUpdate } }));
 vi.mock('$lib/server/events', () => ({ notifyStatus: mockNotifyStatus }));
-
-// --- Helpers ---
 
 const authed = {
 	locals: { session: { slackUserId: 'U123', slackUserName: 'Alice' } },
@@ -18,12 +18,12 @@ function makeEvent(session: typeof authed | typeof unauthed, body: unknown) {
 	return { ...session, request: { json: async () => body } as Request };
 }
 
-// --- Tests ---
-
 describe('POST /api/helped', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockExecute.mockResolvedValue({});
+		mockUpdate.mockReturnValue({ set: mockSet });
+		mockSet.mockReturnValue({ where: mockUpdateWhere });
+		mockUpdateWhere.mockResolvedValue(undefined);
 	});
 
 	it('redirects to /auth/slack when not authenticated', async () => {
@@ -54,15 +54,15 @@ describe('POST /api/helped', () => {
 		const res = await POST(makeEvent(authed, { id: 3, status: 'verified_in_slack' }) as never);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ success: true });
-		expect(mockExecute).toHaveBeenCalledWith(
-			expect.objectContaining({ args: expect.arrayContaining(['verified_in_slack', 3]) }),
+		expect(mockSet).toHaveBeenCalledWith(
+			expect.objectContaining({ status: 'verified_in_slack' }),
 		);
 	});
 
 	it('saves the editor name alongside the status', async () => {
 		await POST(makeEvent(authed, { id: 3, status: 'contacted' }) as never);
-		expect(mockExecute).toHaveBeenCalledWith(
-			expect.objectContaining({ args: expect.arrayContaining(['Alice', 'U123']) }),
+		expect(mockSet).toHaveBeenCalledWith(
+			expect.objectContaining({ lastEditedByName: 'Alice', lastEditedById: 'U123' }),
 		);
 	});
 

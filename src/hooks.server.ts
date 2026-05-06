@@ -1,11 +1,10 @@
 import type { Handle } from '@sveltejs/kit';
-import { sessionStore, initDbSchema } from '$lib/server/db.js';
+import { dev } from '$app/environment';
+import { sessionStore } from '$lib/server/db.js';
 import { validateEnv } from '$lib/server/env.js';
 
-// Runs once when the server starts — before handling any requests.
 export async function init() {
 	validateEnv();
-	await initDbSchema();
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -15,10 +14,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 		const sessionData = await sessionStore.get(sid);
 		if (sessionData) {
 			event.locals.session = sessionData;
-			// Refresh cookie expiry on active use
 			event.cookies.set('session', sid, {
 				path: '/',
 				httpOnly: true,
+				secure: !dev,
 				sameSite: 'lax',
 				maxAge: 8 * 60 * 60,
 			});

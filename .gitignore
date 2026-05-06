@@ -11,4 +11,5 @@ build/
 .specify/
 .claude/
 CLAUDE.md
-specs
+specs/
+tasks/
