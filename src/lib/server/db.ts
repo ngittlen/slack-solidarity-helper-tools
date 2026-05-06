@@ -9,9 +9,19 @@ export interface SessionData {
 	slackUserName: string;
 }
 
-const client = createClient({ url: TURSO_DATABASE_URL, authToken: TURSO_AUTH_TOKEN });
+// Lazy-initialized so module import (e.g. SvelteKit's build-time analyse step,
+// which runs without env vars) doesn't trigger createClient with an empty URL.
+let _db: ReturnType<typeof drizzle> | undefined;
+function getDb() {
+	if (!_db) {
+		_db = drizzle(createClient({ url: TURSO_DATABASE_URL, authToken: TURSO_AUTH_TOKEN }));
+	}
+	return _db;
+}
 
-export const db = drizzle(client);
+export const db = new Proxy({} as ReturnType<typeof drizzle>, {
+	get: (_t, prop, recv) => Reflect.get(getDb(), prop, recv),
+});
 
 export class TursoStore {
 	async get(sid: string): Promise<SessionData | null> {
