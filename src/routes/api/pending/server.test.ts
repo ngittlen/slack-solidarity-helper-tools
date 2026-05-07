@@ -9,8 +9,10 @@ const mockUsersList = vi.hoisted(() => vi.fn());
 vi.mock('$lib/server/db', () => ({ db: { select: mockSelect } }));
 vi.mock('$lib/server/slack', () => ({ slack: { users: { list: mockUsersList } } }));
 
-const authed = { locals: { session: { slackUserId: 'U123' } } };
+const authed = { locals: { session: { slackUserId: 'U123', slackUserName: 'Alice', isAdmin: true } } };
 const unauthed = { locals: { session: null } };
+const nonAdmin = { locals: { session: { slackUserId: 'U999', slackUserName: 'Bob', isAdmin: false } } };
+const legacySession = { locals: { session: { slackUserId: 'U999', slackUserName: 'Bob' } } };
 
 function row(overrides: object = {}) {
 	return {
@@ -48,6 +50,20 @@ describe('GET /api/pending', () => {
 			status: 302,
 			location: '/auth/slack',
 		});
+	});
+
+	it('returns 403 with body { error: "unauthorized" } when signed in but not admin', async () => {
+		const res = await GET(nonAdmin as never);
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({ error: 'unauthorized' });
+		expect(mockSelect).not.toHaveBeenCalled();
+	});
+
+	it('returns 403 when session lacks isAdmin field (FR-008 defensive default)', async () => {
+		const res = await GET(legacySession as never);
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({ error: 'unauthorized' });
+		expect(mockSelect).not.toHaveBeenCalled();
 	});
 
 	it('returns empty result when there are no requests', async () => {

@@ -1,10 +1,13 @@
 import type { RequestHandler } from './$types';
-import { redirect } from '@sveltejs/kit';
+import { json, redirect } from '@sveltejs/kit';
 import { subscribe } from '$lib/server/events.js';
 
 export const GET: RequestHandler = ({ locals }) => {
 	if (!locals.session) {
 		redirect(302, '/auth/slack');
+	}
+	if (!locals.session.isAdmin) {
+		return json({ error: 'unauthorized' }, { status: 403 });
 	}
 
 	let unsubscribe: () => void;

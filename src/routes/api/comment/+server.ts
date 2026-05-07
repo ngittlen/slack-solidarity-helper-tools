@@ -9,6 +9,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session) {
 		redirect(302, '/auth/slack');
 	}
+	if (!locals.session.isAdmin) {
+		return json({ error: 'unauthorized' }, { status: 403 });
+	}
 
 	const { id, comment } = (await request.json()) as { id?: unknown; comment?: unknown };
 	if (typeof id !== 'number' || typeof comment !== 'string') {

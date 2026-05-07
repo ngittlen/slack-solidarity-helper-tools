@@ -15,7 +15,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 	}
 
 	const sid = crypto.randomUUID();
-	await sessionStore.set(sid, { slackUserId: devUserId, slackUserName: 'Dev User' }, 8 * 60 * 60);
+	await sessionStore.set(sid, { slackUserId: devUserId, slackUserName: 'Dev User', isAdmin: true }, 8 * 60 * 60);
 	cookies.set('session', sid, {
 		path: '/',
 		httpOnly: true,

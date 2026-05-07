@@ -7,8 +7,10 @@ vi.mock('$lib/server/events', () => ({ subscribe: mockSubscribe }));
 
 // --- Helpers ---
 
-const authed = { locals: { session: { slackUserId: 'U123' } } };
+const authed = { locals: { session: { slackUserId: 'U123', slackUserName: 'Alice', isAdmin: true } } };
 const unauthed = { locals: { session: null } };
+const nonAdmin = { locals: { session: { slackUserId: 'U999', slackUserName: 'Bob', isAdmin: false } } };
+const legacySession = { locals: { session: { slackUserId: 'U999', slackUserName: 'Bob' } } };
 
 // --- Tests ---
 
@@ -22,6 +24,22 @@ describe('GET /api/events', () => {
 	it('redirects to /auth/slack when not authenticated', () => {
 		expect(() => GET(unauthed as never)).toThrow();
 		// SvelteKit redirect() throws — verify subscribe was never called
+		expect(mockSubscribe).not.toHaveBeenCalled();
+	});
+
+	it('returns 403 with body { error: "unauthorized" } and no event-stream when signed in but not admin', async () => {
+		const res = GET(nonAdmin as never) as Response;
+		expect(res.status).toBe(403);
+		expect(res.headers.get('Content-Type')).not.toBe('text/event-stream');
+		expect(await res.json()).toEqual({ error: 'unauthorized' });
+		expect(mockSubscribe).not.toHaveBeenCalled();
+	});
+
+	it('returns 403 when session lacks isAdmin field (FR-008 defensive default)', async () => {
+		const res = GET(legacySession as never) as Response;
+		expect(res.status).toBe(403);
+		expect(res.headers.get('Content-Type')).not.toBe('text/event-stream');
+		expect(await res.json()).toEqual({ error: 'unauthorized' });
 		expect(mockSubscribe).not.toHaveBeenCalled();
 	});
 
@@ -39,7 +57,7 @@ describe('GET /api/events', () => {
 
 	it('forwards broadcast events to the stream', async () => {
 		let capturedSend: (data: string) => void = () => {};
-		mockSubscribe.mockImplementation((send) => {
+		mockSubscribe.mockImplementation((send: (data: string) => void) => {
 			capturedSend = send;
 			return vi.fn();
 		});

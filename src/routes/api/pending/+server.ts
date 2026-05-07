@@ -46,6 +46,9 @@ export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.session) {
 		redirect(302, '/auth/slack');
 	}
+	if (!locals.session.isAdmin) {
+		return json({ error: 'unauthorized' }, { status: 403 });
+	}
 
 	const rows = await db
 		.select({
