@@ -1,4 +1,5 @@
 import type { RequestHandler } from './$types';
+import { redirect } from '@sveltejs/kit';
 import { sessionStore } from '$lib/server/db.js';
 
 export const POST: RequestHandler = async ({ cookies }) => {
@@ -7,5 +8,5 @@ export const POST: RequestHandler = async ({ cookies }) => {
 		await sessionStore.destroy(sid);
 	}
 	cookies.delete('session', { path: '/' });
-	return new Response('Logged out.');
+	redirect(303, '/');
 };

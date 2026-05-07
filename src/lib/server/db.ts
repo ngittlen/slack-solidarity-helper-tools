@@ -7,6 +7,7 @@ import { sessions } from './schema.js';
 export interface SessionData {
 	slackUserId: string;
 	slackUserName: string;
+	isAdmin: boolean;
 }
 
 // Lazy-initialized so module import (e.g. SvelteKit's build-time analyse step,

@@ -70,14 +70,15 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 
 	const userId = identity.user.id;
-	if (!SLACK_ALLOWED_USER_IDS.has(userId)) {
-		console.warn(`[auth] blocked user: ${userId} (${identity.user.name})`);
-		error(403, 'You are not authorised to view this page.');
-	}
+	const isAdmin = SLACK_ALLOWED_USER_IDS.has(userId);
 
 	// Create session
 	const sid = crypto.randomUUID();
-	await sessionStore.set(sid, { slackUserId: userId, slackUserName: identity.user.name }, SESSION_MAX_AGE);
+	await sessionStore.set(
+		sid,
+		{ slackUserId: userId, slackUserName: identity.user.name, isAdmin },
+		SESSION_MAX_AGE,
+	);
 
 	cookies.set('session', sid, {
 		path: '/',
@@ -87,6 +88,6 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		maxAge: SESSION_MAX_AGE,
 	});
 
-	console.log(`[auth] login: ${identity.user.name} (${userId})`);
-	redirect(302, '/pending');
+	console.log(`[auth] login: ${identity.user.name} (${userId}) admin=${isAdmin}`);
+	redirect(302, '/');
 }

@@ -196,12 +196,14 @@
 
 <header>
     <h1>A4M Slack Invite Queue</h1>
-    <span class="user-info">
+    <div class="user-info">
 		<span>
             Logged in as <span class="user-name">{pageData.userName}</span>
         </span>
-		<button class="logout-btn" onclick={async () => { await fetch('/auth/logout', { method: 'POST' }); window.location.href = '/'; }}>Log out</button>
-	</span>
+		<form method="POST" action="/auth/logout">
+			<button type="submit" class="logout-btn">Log out</button>
+		</form>
+	</div>
 </header>
 
 <main>
@@ -249,12 +251,11 @@
                         <tr class:helped={currentStatus === 'verified_in_slack'} class:contacted={currentStatus === 'contacted'}>
                             <td class="col-helped">
                                 <select
-                                        value={currentStatus}
                                         onchange={(e) => setStatus(entry.id, (e.target as HTMLSelectElement).value)}
                                         aria-label="Status for {entry.name ?? entry.email ?? entry.phone ?? 'volunteer'}"
                                 >
                                     {#each STATUS_OPTIONS as opt (opt.value)}
-                                        <option value={opt.value}>{opt.label}</option>
+                                        <option value={opt.value} selected={opt.value === currentStatus}>{opt.label}</option>
                                     {/each}
                                 </select>
                             </td>

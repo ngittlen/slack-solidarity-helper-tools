@@ -10,11 +10,19 @@ vi.mock('$lib/server/db', () => ({ db: { update: mockUpdate } }));
 vi.mock('$lib/server/events', () => ({ notifyComment: mockNotifyComment }));
 
 const authed = {
-	locals: { session: { slackUserId: 'U123', slackUserName: 'Alice' } },
+	locals: { session: { slackUserId: 'U123', slackUserName: 'Alice', isAdmin: true } },
 };
 const unauthed = { locals: { session: null } };
+const nonAdmin = {
+	locals: { session: { slackUserId: 'U999', slackUserName: 'Bob', isAdmin: false } },
+};
+const legacySession = {
+	locals: { session: { slackUserId: 'U999', slackUserName: 'Bob' } },
+};
 
-function makeEvent(session: typeof authed | typeof unauthed, body: unknown) {
+type EventInput = typeof authed | typeof unauthed | typeof nonAdmin | typeof legacySession;
+
+function makeEvent(session: EventInput, body: unknown) {
 	return {
 		...session,
 		request: { json: async () => body } as Request,
@@ -33,6 +41,21 @@ describe('POST /api/comment', () => {
 		await expect(
 			POST(makeEvent(unauthed, { id: 1, comment: 'hi' }) as never),
 		).rejects.toMatchObject({ status: 302, location: '/auth/slack' });
+	});
+
+	it('returns 403 with body { error: "unauthorized" } when signed in but not admin', async () => {
+		const res = await POST(makeEvent(nonAdmin, { id: 1, comment: 'hi' }) as never);
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({ error: 'unauthorized' });
+		expect(mockUpdate).not.toHaveBeenCalled();
+		expect(mockNotifyComment).not.toHaveBeenCalled();
+	});
+
+	it('returns 403 when session lacks isAdmin field (FR-008 defensive default)', async () => {
+		const res = await POST(makeEvent(legacySession, { id: 1, comment: 'hi' }) as never);
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({ error: 'unauthorized' });
+		expect(mockUpdate).not.toHaveBeenCalled();
 	});
 
 	it('returns 400 when id is missing', async () => {

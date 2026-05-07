@@ -5,8 +5,8 @@ export const load: PageServerLoad = ({ locals }) => {
 	if (!locals.session) {
 		redirect(302, '/auth/slack');
 	}
-	if (!locals.session.isAdmin) {
-		redirect(302, '/');
-	}
-	return { userName: locals.session.slackUserName };
-}
+	return {
+		userName: locals.session.slackUserName,
+		isAdmin: locals.session.isAdmin
+	};
+};

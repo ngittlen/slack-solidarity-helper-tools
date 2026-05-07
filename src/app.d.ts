@@ -3,7 +3,7 @@
 declare global {
 	namespace App {
 		interface Locals {
-			session: { slackUserId: string; slackUserName: string } | null;
+			session: { slackUserId: string; slackUserName: string; isAdmin: boolean } | null;
 		}
 	}
 }
