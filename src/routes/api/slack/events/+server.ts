@@ -1,6 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { db } from '$lib/server/db.js';
+import { slackJoins } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
 import { SLACK_SIGNING_SECRET, SOLIDARITY_CHAPTER_CHANNEL_MAP } from '$lib/server/env.js';
@@ -88,12 +90,8 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		return;
 	}
 
-	const chapterIds: number[] =
-		solidarityUser.chapter_ids?.length
-			? solidarityUser.chapter_ids
-			: solidarityUser.chapter_id != null
-				? [solidarityUser.chapter_id]
-				: [];
+	const chapterIds = resolveChapterIds(solidarityUser);
+	await recordSlackJoin(user.id, email, chapterIds);
 
 	const channelIds = chapterIds
 		.map((id) => SOLIDARITY_CHAPTER_CHANNEL_MAP.find((e) => e.chapterId === id)?.channelId)
@@ -106,41 +104,83 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		return;
 	}
 
-	// Invite the user to each county channel, then DM them
-	const inviteResults = await Promise.allSettled(
-		channelIds.map((channelId) =>
-			slack.conversations.invite({ channel: channelId, users: user.id }),
-		),
-	);
-
-	const successfulChannelIds: string[] = [];
-	for (let i = 0; i < channelIds.length; i++) {
-		const result = inviteResults[i]!;
-		if (result.status === 'fulfilled') {
-			successfulChannelIds.push(channelIds[i]!);
-		} else {
-			console.error(
-				`[slack-events] failed to invite ${user.id} to ${channelIds[i]}:`,
-				result.reason instanceof Error ? result.reason.message : result.reason,
-			);
-		}
-	}
-
-	const channelMentions = successfulChannelIds.map((id) => `<#${id}>`).join(', ');
-	if (!channelMentions) {
+	const successfulChannelIds = await inviteToChannels(user.id, channelIds);
+	if (!successfulChannelIds.length) {
 		console.log(`[slack-events] all channel invites failed for ${user.id} (${email}), skipping DM`);
 		return;
 	}
 
-	const dm = await slack.conversations.open({ users: user.id });
+	const sent = await sendWelcomeDm(user.id, successfulChannelIds);
+	if (sent) {
+		const channelMentions = successfulChannelIds.map((id) => `<#${id}>`).join(', ');
+		console.log(`[slack-events] invited ${user.id} (${email}) to ${channelMentions} and sent DM`);
+	}
+}
+
+function resolveChapterIds(
+	solidarityUser: { chapter_id?: number | null; chapter_ids?: number[] },
+): number[] {
+	if (solidarityUser.chapter_ids?.length) return solidarityUser.chapter_ids;
+	if (solidarityUser.chapter_id != null) return [solidarityUser.chapter_id];
+	return [];
+}
+
+async function recordSlackJoin(
+	slackUserId: string,
+	email: string,
+	chapterIds: number[],
+): Promise<void> {
+	try {
+		await db
+			.insert(slackJoins)
+			.values({
+				slackUserId,
+				email,
+				joinedAt: new Date().toISOString(),
+				chapterIds: JSON.stringify(chapterIds),
+			})
+			.onConflictDoNothing({ target: slackJoins.slackUserId });
+	} catch (err) {
+		console.error(
+			`[slack-events] failed to record slack_join for ${slackUserId}:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+}
+
+async function inviteToChannels(slackUserId: string, channelIds: string[]): Promise<string[]> {
+	const results = await Promise.allSettled(
+		channelIds.map((channelId) =>
+			slack.conversations.invite({ channel: channelId, users: slackUserId }),
+		),
+	);
+
+	const successful: string[] = [];
+	for (let i = 0; i < channelIds.length; i++) {
+		const result = results[i]!;
+		if (result.status === 'fulfilled') {
+			successful.push(channelIds[i]!);
+		} else {
+			console.error(
+				`[slack-events] failed to invite ${slackUserId} to ${channelIds[i]}:`,
+				result.reason instanceof Error ? result.reason.message : result.reason,
+			);
+		}
+	}
+	return successful;
+}
+
+async function sendWelcomeDm(slackUserId: string, channelIds: string[]): Promise<boolean> {
+	const dm = await slack.conversations.open({ users: slackUserId });
 	const dmChannelId = (dm as { channel?: { id?: string } }).channel?.id;
 	if (!dmChannelId) {
-		console.error(`[slack-events] failed to open DM channel with ${user.id}`);
-		return;
+		console.error(`[slack-events] failed to open DM channel with ${slackUserId}`);
+		return false;
 	}
 
+	const channelMentions = channelIds.map((id) => `<#${id}>`).join(', ');
 	const channelText =
-		successfulChannelIds.length === 1
+		channelIds.length === 1
 			? `your county chapter channel: ${channelMentions}`
 			: `your county chapter channels: ${channelMentions}`;
 
@@ -157,6 +197,5 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 			},
 		],
 	});
-
-	console.log(`[slack-events] invited ${user.id} (${email}) to ${channelMentions} and sent DM`);
+	return true;
 }
