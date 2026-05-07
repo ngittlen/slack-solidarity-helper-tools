@@ -8,6 +8,11 @@ const mockConversationsInvite = vi.hoisted(() => vi.fn());
 const mockConversationsOpen = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockUsersInfo = vi.hoisted(() => vi.fn());
+const mockOnConflictDoNothing = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockInsertValues = vi.hoisted(() =>
+	vi.fn(() => ({ onConflictDoNothing: mockOnConflictDoNothing })),
+);
+const mockInsert = vi.hoisted(() => vi.fn(() => ({ values: mockInsertValues })));
 
 vi.mock('$lib/server/solidarity', () => ({ getUserByEmail: mockGetUserByEmail }));
 vi.mock('$lib/server/slack', () => ({
@@ -20,6 +25,7 @@ vi.mock('$lib/server/slack', () => ({
 		chat: { postMessage: mockPostMessage },
 	},
 }));
+vi.mock('$lib/server/db', () => ({ db: { insert: mockInsert } }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
 	SOLIDARITY_CHAPTER_CHANNEL_MAP: [{ chapterId: 42, channelId: 'C_COUNTY', name: 'Test County' }],
@@ -163,6 +169,37 @@ describe('POST /api/slack/events', () => {
 		await new Promise((r) => setTimeout(r, 10));
 		expect(mockConversationsInvite).not.toHaveBeenCalled();
 		expect(mockPostMessage).not.toHaveBeenCalled();
+	});
+
+	it('records the slack_join row on a happy-path team_join', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
+
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
+		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledOnce());
+
+		expect(mockInsertValues).toHaveBeenCalledWith({
+			slackUserId: 'U_NEW',
+			email: 'new@example.com',
+			joinedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+			chapterIds: JSON.stringify([42]),
+		});
+		expect(mockOnConflictDoNothing).toHaveBeenCalledOnce();
+	});
+
+	it('still records the slack_join row when no channel is mapped', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [999] });
+
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
+		await vi.waitFor(() => expect(mockInsertValues).toHaveBeenCalledOnce());
+
+		expect(mockInsertValues).toHaveBeenCalledWith(
+			expect.objectContaining({
+				slackUserId: 'U_NEW',
+				email: 'new@example.com',
+				chapterIds: JSON.stringify([999]),
+			}),
+		);
+		expect(mockConversationsInvite).not.toHaveBeenCalled();
 	});
 
 	it('skips DM when all channel invites fail', async () => {
