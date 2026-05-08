@@ -24,7 +24,7 @@ export const slackJoins = sqliteTable(
 		id: integer('id').primaryKey({ autoIncrement: true }),
 		slackUserId: text('slack_user_id').notNull(),
 		email: text('email'),
-		joinedAt: text('joined_at').notNull(),
+		joinedAt: text('joined_at'),
 		chapterIds: text('chapter_ids').notNull().default('[]'),
 	},
 	(table) => [uniqueIndex('slack_joins_slack_user_id_unique').on(table.slackUserId)],
