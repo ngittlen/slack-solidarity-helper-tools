@@ -7,6 +7,7 @@ import {
 	INTERNAL_CRON_SECRET,
 	SLACK_GROWTH_REPORT_CHANNEL_ID,
 	SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS,
+	SLACK_GROWTH_REPORT_RANKING_ALPHA,
 	SOLIDARITY_CHAPTER_CHANNEL_MAP,
 } from '$lib/server/env.js';
 
@@ -35,6 +36,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			dryRun,
 			excludedChapterIds: SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS,
 			chapterChannelIds,
+			rankingAlpha: SLACK_GROWTH_REPORT_RANKING_ALPHA,
 		});
 		console.log(
 			`[growth] ${result.windowStart} → ${result.windowEnd}: ${result.chaptersWithGrowth} chapters, ${result.totalNewJoins} new joins, posted=${result.posted}`,

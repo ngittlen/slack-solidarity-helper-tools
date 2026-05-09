@@ -23,6 +23,23 @@ export const SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS = new Set(
 		.map((s) => parseInt(s.trim(), 10))
 		.filter((n) => Number.isFinite(n)),
 );
+// Power-law exponent for the weekly growth ranking score:
+//   score = newJoins / (existing + 1) ^ alpha
+// Smaller value favors larger chapters; larger value (toward 1) is closer to
+// pure rate. See weekly-growth-report.ts for the full rationale. Returns
+// undefined if unset/unparseable so the function falls back to its default.
+export const SLACK_GROWTH_REPORT_RANKING_ALPHA: number | undefined = (() => {
+	const raw = get('SLACK_GROWTH_REPORT_RANKING_ALPHA');
+	if (!raw) return undefined;
+	const parsed = parseFloat(raw);
+	if (!Number.isFinite(parsed)) {
+		console.warn(
+			`[env] SLACK_GROWTH_REPORT_RANKING_ALPHA is not a valid number: "${raw}" — using default`,
+		);
+		return undefined;
+	}
+	return parsed;
+})();
 export const TURSO_DATABASE_URL = get('TURSO_DATABASE_URL');
 export const TURSO_AUTH_TOKEN = get('TURSO_AUTH_TOKEN');
 export const WEBHOOK_SECRET = get('WEBHOOK_SECRET');

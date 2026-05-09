@@ -19,7 +19,8 @@ const WINDOW_DAYS = 7;
 //   α = 0.5 → square-root denominator, large chapters favored
 //   α = 0   → pure absolute count
 // The +1 in the denominator avoids dividing by zero for brand-new chapters.
-const RANKING_ALPHA = 0.7;
+// The endpoint can override this via the SLACK_GROWTH_REPORT_RANKING_ALPHA env var.
+const DEFAULT_RANKING_ALPHA = 0.7;
 
 export interface ChapterGrowth {
 	chapterId: number;
@@ -30,7 +31,7 @@ export interface ChapterGrowth {
 	newJoins: number;
 	existing: number;
 	/** Raw growth percentage shown in the post: newJoins / existing * 100.
-	 * Ranking uses a separate power-law score (see RANKING_ALPHA) — sort order
+	 * Ranking uses a separate power-law score (see rankingAlpha) — sort order
 	 * does not match pct order. 0 when existing is 0 (chapter is brand new). */
 	pct: number;
 }
@@ -129,10 +130,14 @@ export async function runWeeklyGrowthReport(
 		 * is used as ground truth for chapter size; otherwise we fall back to
 		 * the slack_joins-derived count. */
 		chapterChannelIds?: ReadonlyMap<number, string>;
+		/** Power-law exponent for the ranking score. Defaults to
+		 * DEFAULT_RANKING_ALPHA. */
+		rankingAlpha?: number;
 	} = {},
 ): Promise<WeeklyGrowthResult> {
 	const excluded = options.excludedChapterIds ?? new Set<number>();
 	const chapterChannelIds = options.chapterChannelIds ?? new Map<number, string>();
+	const rankingAlpha = options.rankingAlpha ?? DEFAULT_RANKING_ALPHA;
 	const now = options.now ?? new Date();
 	const { start: windowStart, end: windowEnd } = computeWindow(now);
 	const windowStartIso = windowStart.toISOString();
@@ -230,7 +235,7 @@ export async function runWeeklyGrowthReport(
 		};
 	});
 	const rankingScore = (c: ChapterGrowth) =>
-		c.newJoins / Math.pow(c.existing + 1, RANKING_ALPHA);
+		c.newJoins / Math.pow(c.existing + 1, rankingAlpha);
 	leaderboard.sort((a, b) => {
 		const sa = rankingScore(a);
 		const sb = rankingScore(b);
