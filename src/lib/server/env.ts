@@ -23,6 +23,10 @@ export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
 
 export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
 
+// Shared secret for internal cron-triggered endpoints (e.g. nightly snapshot).
+// Callers pass it as ?key=<value>.
+export const INTERNAL_CRON_SECRET = get('INTERNAL_CRON_SECRET');
+
 // JSON object mapping coalition group names to Slack channel IDs.
 // Example: {"labor": "C0ALZBGF9C2", "housing": "C0ALZBGF9C3"}
 export const COALITION_CHANNEL_MAP: Record<string, string> = (() => {
