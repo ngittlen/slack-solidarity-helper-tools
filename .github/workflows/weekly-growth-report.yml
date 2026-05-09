@@ -1,0 +1,23 @@
+name: Weekly chapter growth report
+
+# Monday 14:00 UTC = 10:00 EDT (Mar–Nov) / 09:00 EST (Nov–Mar). The window
+# itself is pinned to UTC midnight inside the endpoint, so GitHub's cron drift
+# (often several minutes, occasionally longer) never shifts the reported range.
+on:
+  schedule:
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+jobs:
+  growth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call growth-report endpoint
+        env:
+          APP_URL: https://slack-solidarity-helper-tools.fly.dev
+          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            --max-time 300 \
+            --retry 3 --retry-delay 30 --retry-connrefused \
+            "${APP_URL}/api/internal/weekly-growth-report?key=${INTERNAL_CRON_SECRET}"
