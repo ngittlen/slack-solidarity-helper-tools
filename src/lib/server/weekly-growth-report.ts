@@ -174,7 +174,10 @@ export async function runWeeklyGrowthReport(
 				return { ...c, existing: c.sqlExisting };
 			}
 			try {
-				const info = await slack.conversations.info({ channel: slackChannelId });
+				const info = await slack.conversations.info({
+					channel: slackChannelId,
+					include_num_members: true,
+				});
 				const num = info.channel?.num_members;
 				if (typeof num === 'number') {
 					return { ...c, existing: Math.max(0, num - c.newJoins) };
