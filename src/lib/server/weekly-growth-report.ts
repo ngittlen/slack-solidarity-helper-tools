@@ -102,8 +102,9 @@ export async function runWeeklyGrowthReport(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	slack: WebClient,
 	channelId: string,
-	options: { now?: Date; dryRun?: boolean } = {},
+	options: { now?: Date; dryRun?: boolean; excludedChapterIds?: ReadonlySet<number> } = {},
 ): Promise<WeeklyGrowthResult> {
+	const excluded = options.excludedChapterIds ?? new Set<number>();
 	const now = options.now ?? new Date();
 	const { start: windowStart, end: windowEnd } = computeWindow(now);
 	const windowStartIso = windowStart.toISOString();
@@ -143,6 +144,7 @@ export async function runWeeklyGrowthReport(
 		const existing = Number(row.existing);
 		if (newJoins === 0) continue;
 		const chapterId = Number(row.chapter_id);
+		if (excluded.has(chapterId)) continue;
 		const chapterName = names.get(chapterId) ?? `Chapter #${chapterId}`;
 		const pct = existing > 0 ? (newJoins / existing) * 100 : Number.POSITIVE_INFINITY;
 		leaderboard.push({ chapterId, chapterName, newJoins, existing, pct });

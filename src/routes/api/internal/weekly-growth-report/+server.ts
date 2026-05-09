@@ -3,7 +3,11 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { runWeeklyGrowthReport } from '$lib/server/weekly-growth-report.js';
-import { INTERNAL_CRON_SECRET, SLACK_GROWTH_REPORT_CHANNEL_ID } from '$lib/server/env.js';
+import {
+	INTERNAL_CRON_SECRET,
+	SLACK_GROWTH_REPORT_CHANNEL_ID,
+	SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS,
+} from '$lib/server/env.js';
 
 // Internal endpoint called by a scheduler (GitHub Actions) to compute and post
 // the weekly per-chapter Slack-growth leaderboard. Auth via ?key=<INTERNAL_CRON_SECRET>.
@@ -23,7 +27,10 @@ export const POST: RequestHandler = async ({ url }) => {
 	const dryRun = url.searchParams.get('dry_run') === '1';
 
 	try {
-		const result = await runWeeklyGrowthReport(db, slack, SLACK_GROWTH_REPORT_CHANNEL_ID, { dryRun });
+		const result = await runWeeklyGrowthReport(db, slack, SLACK_GROWTH_REPORT_CHANNEL_ID, {
+			dryRun,
+			excludedChapterIds: SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS,
+		});
 		console.log(
 			`[growth] ${result.windowStart} → ${result.windowEnd}: ${result.chaptersWithGrowth} chapters, ${result.totalNewJoins} new joins, posted=${result.posted}`,
 		);
