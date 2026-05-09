@@ -14,6 +14,7 @@ export const SLACK_ALLOWED_USER_IDS = new Set(
 	get('SLACK_ALLOWED_USER_IDS').split(',').map((id) => id.trim()).filter(Boolean),
 );
 export const SLACK_TRACKING_CHANNEL_ID = get('SLACK_TRACKING_CHANNEL_ID');
+export const SLACK_GROWTH_REPORT_CHANNEL_ID = get('SLACK_GROWTH_REPORT_CHANNEL_ID');
 export const TURSO_DATABASE_URL = get('TURSO_DATABASE_URL');
 export const TURSO_AUTH_TOKEN = get('TURSO_AUTH_TOKEN');
 export const WEBHOOK_SECRET = get('WEBHOOK_SECRET');
