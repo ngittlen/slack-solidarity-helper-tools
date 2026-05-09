@@ -13,12 +13,13 @@ import { solidarityDailySnapshots } from './schema.js';
 
 const TOP_N = 5;
 const WINDOW_DAYS = 7;
-// Phantom-member smoothing for the growth-rate denominator. Stops tiny chapters
-// from running away with the leaderboard purely on small-sample math:
-//   pct = newJoins / (existing + SMOOTHING_K) * 100
-// Higher value = larger chapters become more competitive. See the conversation
-// where this was tuned for the rationale and example rankings.
-const SMOOTHING_K = 0;
+// Power-law exponent for the ranking score: score = newJoins / (existing + 1)^α
+//   α = 1   → pure relative growth (small chapters dominate)
+//   α = 0.7 → small chapters still tend to win, large ones become competitive
+//   α = 0.5 → square-root denominator, large chapters favored
+//   α = 0   → pure absolute count
+// The +1 in the denominator avoids dividing by zero for brand-new chapters.
+const RANKING_ALPHA = 0.7;
 
 export interface ChapterGrowth {
 	chapterId: number;
@@ -28,7 +29,9 @@ export interface ChapterGrowth {
 	slackChannelId: string | null;
 	newJoins: number;
 	existing: number;
-	/** Smoothed growth percent: newJoins / (existing + SMOOTHING_K) * 100. */
+	/** Raw growth percentage shown in the post: newJoins / existing * 100.
+	 * Ranking uses a separate power-law score (see RANKING_ALPHA) — sort order
+	 * does not match pct order. 0 when existing is 0 (chapter is brand new). */
 	pct: number;
 }
 
@@ -216,7 +219,7 @@ export async function runWeeklyGrowthReport(
 		const chapterName = c.slackChannelName
 			? `#${c.slackChannelName}`
 			: names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
-		const pct = (c.newJoins / (c.existing + SMOOTHING_K)) * 100;
+		const pct = c.existing > 0 ? (c.newJoins / c.existing) * 100 : 0;
 		return {
 			chapterId: c.chapterId,
 			chapterName,
@@ -226,8 +229,12 @@ export async function runWeeklyGrowthReport(
 			pct,
 		};
 	});
+	const rankingScore = (c: ChapterGrowth) =>
+		c.newJoins / Math.pow(c.existing + 1, RANKING_ALPHA);
 	leaderboard.sort((a, b) => {
-		if (b.pct !== a.pct) return b.pct - a.pct;
+		const sa = rankingScore(a);
+		const sb = rankingScore(b);
+		if (sb !== sa) return sb - sa;
 		return b.newJoins - a.newJoins;
 	});
 
