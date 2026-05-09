@@ -18,11 +18,14 @@ const WINDOW_DAYS = 7;
 //   pct = newJoins / (existing + SMOOTHING_K) * 100
 // Higher value = larger chapters become more competitive. See the conversation
 // where this was tuned for the rationale and example rankings.
-const SMOOTHING_K = 10;
+const SMOOTHING_K = 0;
 
 export interface ChapterGrowth {
 	chapterId: number;
 	chapterName: string;
+	/** Slack channel ID for this chapter, when SOLIDARITY_CHAPTER_CHANNEL_MAP has
+	 * an entry — used to render a clickable channel mention in the Slack post. */
+	slackChannelId: string | null;
 	newJoins: number;
 	existing: number;
 	/** Smoothed growth percent: newJoins / (existing + SMOOTHING_K) * 100. */
@@ -58,6 +61,13 @@ function fmtDate(d: Date): string {
 	return d.toISOString().slice(0, 10);
 }
 
+// Render a chapter as a clickable Slack channel mention when we have its
+// channel ID; otherwise bold the chapter name as plain text. `<#C…>` is auto-
+// rendered by Slack with the current channel name and stays correct on rename.
+function chapterMention(c: ChapterGrowth): string {
+	return c.slackChannelId ? `<#${c.slackChannelId}>` : `*${c.chapterName}*`;
+}
+
 function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): KnownBlock[] {
 	const winner = top[0]!;
 	const winnerSummary = winner.existing > 0
@@ -81,7 +91,7 @@ function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): 
 			type: 'section',
 			text: {
 				type: 'mrkdwn',
-				text: `:tada: :sparkles: :tada:\n\n*${winner.chapterName}*\n\n${winnerSummary}\n\nA huge shoutout to the *${winner.chapterName}* organisers — keep up the incredible momentum! :raised_hands: :rocket:`,
+				text: `:tada: :sparkles: :tada:\n\n${chapterMention(winner)}\n\n${winnerSummary}\n\nA huge shoutout to the ${chapterMention(winner)} organisers — keep up the incredible momentum! :raised_hands: :rocket:`,
 			},
 		},
 	];
@@ -92,7 +102,7 @@ function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): 
 			const detail = r.existing > 0
 				? `+${r.newJoins} (${roundPct(r.pct)}% growth)`
 				: `+${r.newJoins} (brand new on Slack)`;
-			return `*${place}.* *${r.chapterName}* — ${detail}`;
+			return `*${place}.* ${chapterMention(r)} — ${detail}`;
 		});
 		blocks.push({ type: 'divider' });
 		blocks.push({
@@ -166,12 +176,12 @@ export async function runWeeklyGrowthReport(
 
 	const enriched = await Promise.all(
 		candidates.map(async (c) => {
-			const slackChannelId = chapterChannelIds.get(c.chapterId);
+			const slackChannelId = chapterChannelIds.get(c.chapterId) ?? null;
 			if (!slackChannelId) {
 				console.warn(
 					`[growth] no channel mapping for chapter ${c.chapterId} — using slack_joins count (${c.sqlExisting})`,
 				);
-				return { ...c, existing: c.sqlExisting };
+				return { ...c, existing: c.sqlExisting, slackChannelId, slackChannelName: null as string | null };
 			}
 			try {
 				const info = await slack.conversations.info({
@@ -179,27 +189,42 @@ export async function runWeeklyGrowthReport(
 					include_num_members: true,
 				});
 				const num = info.channel?.num_members;
+				const slackChannelName = info.channel?.name ?? null;
 				if (typeof num === 'number') {
-					return { ...c, existing: Math.max(0, num - c.newJoins) };
+					return {
+						...c,
+						existing: Math.max(0, num - c.newJoins),
+						slackChannelId,
+						slackChannelName,
+					};
 				}
 				console.warn(
 					`[growth] conversations.info returned no num_members for chapter ${c.chapterId} (channel ${slackChannelId})`,
 				);
-				return { ...c, existing: c.sqlExisting };
+				return { ...c, existing: c.sqlExisting, slackChannelId, slackChannelName };
 			} catch (err) {
 				console.warn(
 					`[growth] conversations.info failed for chapter ${c.chapterId} (channel ${slackChannelId}):`,
 					err instanceof Error ? err.message : err,
 				);
-				return { ...c, existing: c.sqlExisting };
+				return { ...c, existing: c.sqlExisting, slackChannelId, slackChannelName: null as string | null };
 			}
 		}),
 	);
 
 	const leaderboard: ChapterGrowth[] = enriched.map((c) => {
-		const chapterName = names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
+		const chapterName = c.slackChannelName
+			? `#${c.slackChannelName}`
+			: names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
 		const pct = (c.newJoins / (c.existing + SMOOTHING_K)) * 100;
-		return { chapterId: c.chapterId, chapterName, newJoins: c.newJoins, existing: c.existing, pct };
+		return {
+			chapterId: c.chapterId,
+			chapterName,
+			slackChannelId: c.slackChannelId,
+			newJoins: c.newJoins,
+			existing: c.existing,
+			pct,
+		};
 	});
 	leaderboard.sort((a, b) => {
 		if (b.pct !== a.pct) return b.pct - a.pct;
