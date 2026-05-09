@@ -13,13 +13,19 @@ import { solidarityDailySnapshots } from './schema.js';
 
 const TOP_N = 5;
 const WINDOW_DAYS = 7;
+// Phantom-member smoothing for the growth-rate denominator. Stops tiny chapters
+// from running away with the leaderboard purely on small-sample math:
+//   pct = newJoins / (existing + SMOOTHING_K) * 100
+// Higher value = larger chapters become more competitive. See the conversation
+// where this was tuned for the rationale and example rankings.
+const SMOOTHING_K = 10;
 
 export interface ChapterGrowth {
 	chapterId: number;
 	chapterName: string;
 	newJoins: number;
 	existing: number;
-	/** Percent growth. Infinity for chapters with existing == 0. */
+	/** Smoothed growth percent: newJoins / (existing + SMOOTHING_K) * 100. */
 	pct: number;
 }
 
@@ -54,7 +60,7 @@ function fmtDate(d: Date): string {
 
 function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): KnownBlock[] {
 	const winner = top[0]!;
-	const winnerSummary = Number.isFinite(winner.pct)
+	const winnerSummary = winner.existing > 0
 		? `Grew their Slack chapter by *${roundPct(winner.pct)}%* with *${winner.newJoins} new* member${winner.newJoins === 1 ? '' : 's'} this week.`
 		: `Welcomed *${winner.newJoins}* new Slack member${winner.newJoins === 1 ? '' : 's'} — and they're brand new on Slack!`;
 
@@ -83,7 +89,7 @@ function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): 
 	if (top.length > 1) {
 		const lines = top.slice(1).map((r, i) => {
 			const place = i + 2;
-			const detail = Number.isFinite(r.pct)
+			const detail = r.existing > 0
 				? `+${r.newJoins} (${roundPct(r.pct)}% growth)`
 				: `+${r.newJoins} (brand new on Slack)`;
 			return `*${place}.* *${r.chapterName}* — ${detail}`;
@@ -145,7 +151,7 @@ export async function runWeeklyGrowthReport(
 		const chapterId = Number(row.chapter_id);
 		if (excluded.has(chapterId)) continue;
 		const chapterName = names.get(chapterId) ?? `Chapter #${chapterId}`;
-		const pct = existing > 0 ? (newJoins / existing) * 100 : Number.POSITIVE_INFINITY;
+		const pct = (newJoins / (existing + SMOOTHING_K)) * 100;
 		leaderboard.push({ chapterId, chapterName, newJoins, existing, pct });
 	}
 	leaderboard.sort((a, b) => {
