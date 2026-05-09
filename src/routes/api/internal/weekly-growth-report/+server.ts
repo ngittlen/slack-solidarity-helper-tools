@@ -7,6 +7,7 @@ import {
 	INTERNAL_CRON_SECRET,
 	SLACK_GROWTH_REPORT_CHANNEL_ID,
 	SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS,
+	SOLIDARITY_CHAPTER_CHANNEL_MAP,
 } from '$lib/server/env.js';
 
 // Internal endpoint called by a scheduler (GitHub Actions) to compute and post
@@ -27,9 +28,13 @@ export const POST: RequestHandler = async ({ url }) => {
 	const dryRun = url.searchParams.get('dry_run') === '1';
 
 	try {
+		const chapterChannelIds = new Map<number, string>(
+			SOLIDARITY_CHAPTER_CHANNEL_MAP.map((c) => [c.chapterId, c.channelId]),
+		);
 		const result = await runWeeklyGrowthReport(db, slack, SLACK_GROWTH_REPORT_CHANNEL_ID, {
 			dryRun,
 			excludedChapterIds: SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS,
+			chapterChannelIds,
 		});
 		console.log(
 			`[growth] ${result.windowStart} → ${result.windowEnd}: ${result.chaptersWithGrowth} chapters, ${result.totalNewJoins} new joins, posted=${result.posted}`,

@@ -108,9 +108,18 @@ export async function runWeeklyGrowthReport(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	slack: WebClient,
 	channelId: string,
-	options: { now?: Date; dryRun?: boolean; excludedChapterIds?: ReadonlySet<number> } = {},
+	options: {
+		now?: Date;
+		dryRun?: boolean;
+		excludedChapterIds?: ReadonlySet<number>;
+		/** chapterId → Slack channel ID. When mapped, that channel's num_members
+		 * is used as ground truth for chapter size; otherwise we fall back to
+		 * the slack_joins-derived count. */
+		chapterChannelIds?: ReadonlyMap<number, string>;
+	} = {},
 ): Promise<WeeklyGrowthResult> {
 	const excluded = options.excludedChapterIds ?? new Set<number>();
+	const chapterChannelIds = options.chapterChannelIds ?? new Map<number, string>();
 	const now = options.now ?? new Date();
 	const { start: windowStart, end: windowEnd } = computeWindow(now);
 	const windowStartIso = windowStart.toISOString();
@@ -143,17 +152,52 @@ export async function runWeeklyGrowthReport(
 		if (r.chapterName && !names.has(r.chapterId)) names.set(r.chapterId, r.chapterName);
 	}
 
-	const leaderboard: ChapterGrowth[] = [];
-	for (const row of aggRows) {
-		const newJoins = Number(row.new_joins);
-		const existing = Number(row.existing);
-		if (newJoins === 0) continue;
-		const chapterId = Number(row.chapter_id);
-		if (excluded.has(chapterId)) continue;
-		const chapterName = names.get(chapterId) ?? `Chapter #${chapterId}`;
-		const pct = (newJoins / (existing + SMOOTHING_K)) * 100;
-		leaderboard.push({ chapterId, chapterName, newJoins, existing, pct });
-	}
+	// Build candidate list, then fetch ground-truth chapter size from Slack
+	// (channel num_members) where a channel mapping is configured. Slack reports
+	// the *current* channel size, which already includes this week's new joins,
+	// so subtract newJoins to recover the start-of-window size.
+	const candidates = aggRows
+		.map((row) => ({
+			chapterId: Number(row.chapter_id),
+			newJoins: Number(row.new_joins),
+			sqlExisting: Number(row.existing),
+		}))
+		.filter((c) => c.newJoins > 0 && !excluded.has(c.chapterId));
+
+	const enriched = await Promise.all(
+		candidates.map(async (c) => {
+			const slackChannelId = chapterChannelIds.get(c.chapterId);
+			if (!slackChannelId) {
+				console.warn(
+					`[growth] no channel mapping for chapter ${c.chapterId} — using slack_joins count (${c.sqlExisting})`,
+				);
+				return { ...c, existing: c.sqlExisting };
+			}
+			try {
+				const info = await slack.conversations.info({ channel: slackChannelId });
+				const num = info.channel?.num_members;
+				if (typeof num === 'number') {
+					return { ...c, existing: Math.max(0, num - c.newJoins) };
+				}
+				console.warn(
+					`[growth] conversations.info returned no num_members for chapter ${c.chapterId} (channel ${slackChannelId})`,
+				);
+				return { ...c, existing: c.sqlExisting };
+			} catch (err) {
+				console.warn(
+					`[growth] conversations.info failed for chapter ${c.chapterId} (channel ${slackChannelId}):`,
+					err instanceof Error ? err.message : err,
+				);
+				return { ...c, existing: c.sqlExisting };
+			}
+		}),
+	);
+
+	const leaderboard: ChapterGrowth[] = enriched.map((c) => {
+		const chapterName = names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
+		const pct = (c.newJoins / (c.existing + SMOOTHING_K)) * 100;
+		return { chapterId: c.chapterId, chapterName, newJoins: c.newJoins, existing: c.existing, pct };
+	});
 	leaderboard.sort((a, b) => {
 		if (b.pct !== a.pct) return b.pct - a.pct;
 		return b.newJoins - a.newJoins;
