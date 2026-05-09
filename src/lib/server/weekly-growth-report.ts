@@ -112,16 +112,15 @@ export async function runWeeklyGrowthReport(
 
 	// Aggregate per-chapter counts in SQL via json_each so we never round-trip
 	// every slack_joins row across the wire. Rows with chapter_ids = '[]' produce
-	// no json_each rows and are naturally excluded. Rows whose joined_at falls
-	// after windowEnd shouldn't exist (the window ends at run-date midnight) but
-	// would be ignored here either way.
+	// no json_each rows and are naturally excluded. NULL joined_at counts as
+	// "existing" — those are backfilled rows from before the live join handler
+	// existed, where Slack's API doesn't expose the original join date.
 	const aggRows = (await db.all(sql`
 		SELECT
 			CAST(je.value AS INTEGER) AS chapter_id,
 			SUM(CASE WHEN joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso} THEN 1 ELSE 0 END) AS new_joins,
-			SUM(CASE WHEN joined_at <  ${windowStartIso}                                  THEN 1 ELSE 0 END) AS existing
+			SUM(CASE WHEN joined_at IS NULL OR joined_at < ${windowStartIso}              THEN 1 ELSE 0 END) AS existing
 		FROM slack_joins, json_each(slack_joins.chapter_ids) je
-		WHERE joined_at IS NOT NULL
 		GROUP BY chapter_id
 	`)) as Array<{ chapter_id: number; new_joins: number; existing: number }>;
 
