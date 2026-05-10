@@ -244,7 +244,10 @@ export async function runWeeklyGrowthReport(
 	});
 
 	const topChapters = leaderboard.slice(0, TOP_N);
-	const totalNewJoins = leaderboard.reduce((sum, c) => sum + c.newJoins, 0);
+	// Total across all chapters with new joins this window, INCLUDING excluded
+	// ones (e.g. chapter 1008). The leaderboard hides excluded chapters but the
+	// total is meant to answer "how many joined this week?" overall.
+	const totalNewJoins = aggRows.reduce((sum, r) => sum + Number(r.new_joins), 0);
 
 	let posted = false;
 	if (topChapters.length > 0 && !options.dryRun) {
