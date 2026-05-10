@@ -244,10 +244,15 @@ export async function runWeeklyGrowthReport(
 	});
 
 	const topChapters = leaderboard.slice(0, TOP_N);
-	// Total across all chapters with new joins this window, INCLUDING excluded
-	// ones (e.g. chapter 1008). The leaderboard hides excluded chapters but the
-	// total is meant to answer "how many joined this week?" overall.
-	const totalNewJoins = aggRows.reduce((sum, r) => sum + Number(r.new_joins), 0);
+	// Distinct count of users who joined the workspace this window. Counted
+	// against the slack_joins rows directly (each row is one user) so multi-
+	// chapter users don't get double-counted, and excluded chapters don't drop
+	// anyone — this answers "how many joined Slack this week?" overall.
+	const totalNewJoinsRow = (await db.all(sql`
+		SELECT COUNT(*) AS cnt FROM slack_joins
+		WHERE joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso}
+	`)) as Array<{ cnt: number }>;
+	const totalNewJoins = Number(totalNewJoinsRow[0]?.cnt ?? 0);
 
 	let posted = false;
 	if (topChapters.length > 0 && !options.dryRun) {
