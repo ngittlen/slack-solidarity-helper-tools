@@ -5,6 +5,7 @@ import {
 	loadSlackSignups,
 } from './dashboard-signups.js';
 import { db } from './db.js';
+import { REPORT_EXCLUDED_CHAPTER_IDS } from './env.js';
 
 export type SourceResult =
 	| { ok: true; days: DaySignups[] }
@@ -45,8 +46,8 @@ export async function loadDashboardPageData(
 	const days = parseDaysParam(event.url.searchParams);
 
 	const [solidaritySettled, slackSettled] = await Promise.allSettled([
-		loadSolidaritySignups(db, { days }),
-		loadSlackSignups(db, { days }),
+		loadSolidaritySignups(db, { days, excludedChapterIds: REPORT_EXCLUDED_CHAPTER_IDS }),
+		loadSlackSignups(db, { days, excludedChapterIds: REPORT_EXCLUDED_CHAPTER_IDS }),
 	]);
 
 	return {

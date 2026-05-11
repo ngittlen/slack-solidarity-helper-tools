@@ -5,8 +5,8 @@ import { slack } from '$lib/server/slack.js';
 import { runWeeklyGrowthReport } from '$lib/server/weekly-growth-report.js';
 import {
 	INTERNAL_CRON_SECRET,
+	REPORT_EXCLUDED_CHAPTER_IDS,
 	SLACK_GROWTH_REPORT_CHANNEL_ID,
-	SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS,
 	SLACK_GROWTH_REPORT_RANKING_ALPHA,
 	SOLIDARITY_CHAPTER_CHANNEL_MAP,
 } from '$lib/server/env.js';
@@ -34,7 +34,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		);
 		const result = await runWeeklyGrowthReport(db, slack, SLACK_GROWTH_REPORT_CHANNEL_ID, {
 			dryRun,
-			excludedChapterIds: SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS,
+			excludedChapterIds: REPORT_EXCLUDED_CHAPTER_IDS,
 			chapterChannelIds,
 			rankingAlpha: SLACK_GROWTH_REPORT_RANKING_ALPHA,
 		});

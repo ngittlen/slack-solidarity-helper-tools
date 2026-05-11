@@ -7,7 +7,7 @@
 // and standalone scripts.
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { asc, gte, sql } from 'drizzle-orm';
+import { and, asc, gte, notInArray, sql, type SQL } from 'drizzle-orm';
 import { solidarityDailySnapshots } from './schema.js';
 import { loadChapterNames } from './chapter-names.js';
 
@@ -33,6 +33,11 @@ export interface DashboardSignups {
 export interface GetDashboardSignupsOptions {
 	days: number;
 	now?: Date;
+	/** Chapter IDs to omit from the result (e.g. test / internal-only chapters).
+	 *  Solidarity: drops rows entirely. Slack: drops per-chapter rows and also
+	 *  drops users whose chapter_ids contain ONLY excluded chapters (so totals
+	 *  stay consistent with the visible bands). */
+	excludedChapterIds?: ReadonlySet<number>;
 }
 
 // Window covers the last `days` calendar dates (UTC), inclusive of today.
@@ -54,20 +59,33 @@ export async function loadSolidaritySignups(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	options: GetDashboardSignupsOptions,
 ): Promise<DaySignups[]> {
-	return loadSolidarity(db, windowStartDate(options.days, options.now ?? new Date()));
+	return loadSolidarity(
+		db,
+		windowStartDate(options.days, options.now ?? new Date()),
+		options.excludedChapterIds ?? new Set(),
+	);
 }
 
 export async function loadSlackSignups(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	options: GetDashboardSignupsOptions,
 ): Promise<DaySignups[]> {
-	return loadSlack(db, windowStartDate(options.days, options.now ?? new Date()));
+	return loadSlack(
+		db,
+		windowStartDate(options.days, options.now ?? new Date()),
+		options.excludedChapterIds ?? new Set(),
+	);
 }
 
 async function loadSolidarity(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	startDate: string,
+	excluded: ReadonlySet<number>,
 ): Promise<DaySignups[]> {
+	const conditions: SQL[] = [gte(solidarityDailySnapshots.date, startDate)];
+	if (excluded.size > 0) {
+		conditions.push(notInArray(solidarityDailySnapshots.chapterId, [...excluded]));
+	}
 	const rows = await db
 		.select({
 			date: solidarityDailySnapshots.date,
@@ -76,7 +94,7 @@ async function loadSolidarity(
 			count: solidarityDailySnapshots.count,
 		})
 		.from(solidarityDailySnapshots)
-		.where(gte(solidarityDailySnapshots.date, startDate))
+		.where(and(...conditions))
 		.orderBy(asc(solidarityDailySnapshots.date), asc(solidarityDailySnapshots.chapterId));
 
 	const byDate = new Map<string, DaySignups>();
@@ -103,7 +121,26 @@ async function loadSolidarity(
 async function loadSlack(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	startDate: string,
+	excluded: ReadonlySet<number>,
 ): Promise<DaySignups[]> {
+	// Excluded chapter IDs come from a trusted env var, so inlining as a comma
+	// list is safe (drizzle's `sql.raw` skips bind parameters). When empty, the
+	// fragments below collapse to `sql``.
+	const excludedList =
+		excluded.size > 0 ? sql.raw([...excluded].join(',')) : null;
+	const chapterExclusion = excludedList
+		? sql`AND CAST(je.value AS INTEGER) NOT IN (${excludedList})`
+		: sql``;
+	const totalExclusion = excludedList
+		? sql`AND (
+			chapter_ids = '[]'
+			OR EXISTS (
+				SELECT 1 FROM json_each(slack_joins.chapter_ids) je2
+				WHERE CAST(je2.value AS INTEGER) NOT IN (${excludedList})
+			)
+		)`
+		: sql``;
+
 	// Per-chapter buckets via json_each. Rows with chapter_ids = '[]' produce
 	// no json_each rows and are picked up separately below.
 	const chapterRows = (await db.all(sql`
@@ -112,10 +149,12 @@ async function loadSlack(
 		       COUNT(*) AS count
 		FROM slack_joins, json_each(slack_joins.chapter_ids) je
 		WHERE joined_at IS NOT NULL AND DATE(joined_at) >= ${startDate}
+		${chapterExclusion}
 		GROUP BY date, chapter_id
 	`)) as Array<{ date: string; chapter_id: number; count: number }>;
 
-	// No-chapter bucket — rows with chapter_ids = '[]'.
+	// No-chapter bucket — rows with chapter_ids = '[]'. Exclusion doesn't apply
+	// here since these rows have no chapter IDs to match against.
 	const nullChapterRows = (await db.all(sql`
 		SELECT DATE(joined_at) AS date, COUNT(*) AS count
 		FROM slack_joins
@@ -126,12 +165,13 @@ async function loadSlack(
 	`)) as Array<{ date: string; count: number }>;
 
 	// Distinct daily totals — each slack_joins row is one user, so multi-chapter
-	// users aren't double-counted. (See weekly-growth-report.ts for the same
-	// reasoning around totalNewJoins.)
+	// users aren't double-counted. Users whose chapter_ids contain ONLY excluded
+	// chapters drop out so the total stays consistent with the visible bands.
 	const totalRows = (await db.all(sql`
 		SELECT DATE(joined_at) AS date, COUNT(*) AS total
 		FROM slack_joins
 		WHERE joined_at IS NOT NULL AND DATE(joined_at) >= ${startDate}
+		${totalExclusion}
 		GROUP BY date
 	`)) as Array<{ date: string; total: number }>;
 
@@ -175,9 +215,10 @@ export async function getDashboardSignups(
 	options: GetDashboardSignupsOptions,
 ): Promise<DashboardSignups> {
 	const startDate = windowStartDate(options.days, options.now ?? new Date());
+	const excluded = options.excludedChapterIds ?? new Set<number>();
 	const [solidarity, slack] = await Promise.all([
-		loadSolidarity(db, startDate),
-		loadSlack(db, startDate),
+		loadSolidarity(db, startDate, excluded),
+		loadSlack(db, startDate, excluded),
 	]);
 	return { solidarity, slack };
 }

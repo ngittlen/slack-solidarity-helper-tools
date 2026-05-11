@@ -15,10 +15,11 @@ export const SLACK_ALLOWED_USER_IDS = new Set(
 );
 export const SLACK_TRACKING_CHANNEL_ID = get('SLACK_TRACKING_CHANNEL_ID');
 export const SLACK_GROWTH_REPORT_CHANNEL_ID = get('SLACK_GROWTH_REPORT_CHANNEL_ID');
-// Comma-separated list of Solidarity chapter IDs to omit from the weekly growth
-// leaderboard (e.g. test chapters, internal-only chapters).
-export const SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS = new Set(
-	get('SLACK_GROWTH_REPORT_EXCLUDED_CHAPTER_IDS')
+// Comma-separated list of Solidarity chapter IDs to omit from reports — both
+// the weekly growth leaderboard and the dashboard charts (e.g. test chapters,
+// internal-only chapters).
+export const REPORT_EXCLUDED_CHAPTER_IDS = new Set(
+	get('REPORT_EXCLUDED_CHAPTER_IDS')
 		.split(',')
 		.map((s) => parseInt(s.trim(), 10))
 		.filter((n) => Number.isFinite(n)),
