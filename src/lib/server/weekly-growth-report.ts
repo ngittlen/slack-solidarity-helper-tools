@@ -8,8 +8,9 @@
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import type { KnownBlock, WebClient } from '@slack/web-api';
-import { sql } from 'drizzle-orm';
+import { sql, eq, desc } from 'drizzle-orm';
 import { loadChapterNames } from './chapter-names.js';
+import { weeklyGrowthWindows, weeklyChapterGrowth } from './schema.js';
 
 const TOP_N = 5;
 const WINDOW_DAYS = 7;
@@ -45,13 +46,20 @@ export interface WeeklyGrowthResult {
 	posted: boolean;
 }
 
-// Pin the window to UTC midnight boundaries so the report covers the same range
-// regardless of when GitHub Actions actually fires the cron (it can be delayed
-// by minutes-to-hours under load). End = UTC midnight at the start of the run
-// date; start = end - 7 days. Running Monday morning means reporting on the
-// 7-day block ending at the previous midnight.
-function computeWindow(now: Date): { start: Date; end: Date } {
-	const endMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+// Pin the window to UTC midnight at the start of the most recent Monday. This
+// keeps the dashboard leaderboard stable Mon-to-Mon (matching what the cron
+// posts) instead of sliding by a day every UTC midnight. The cron itself fires
+// Monday 14:00 UTC, where "most recent Monday" is just-past midnight — so the
+// cron's reported window is unchanged.
+export function computeWindow(now: Date): { start: Date; end: Date } {
+	const day = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+	const daysBackToMonday = day === 0 ? 6 : day - 1;
+	const todayMidnightMs = Date.UTC(
+		now.getUTCFullYear(),
+		now.getUTCMonth(),
+		now.getUTCDate()
+	);
+	const endMs = todayMidnightMs - daysBackToMonday * 24 * 60 * 60 * 1000;
 	const end = new Date(endMs);
 	const start = new Date(endMs - WINDOW_DAYS * 24 * 60 * 60 * 1000);
 	return { start, end };
@@ -95,7 +103,7 @@ function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): 
 			type: 'section',
 			text: {
 				type: 'mrkdwn',
-				text: `:tada: :sparkles: :tada:\n\n${chapterMention(winner)}\n\n${winnerSummary}\n\nA huge shoutout to the ${chapterMention(winner)} organisers — keep up the incredible momentum! :raised_hands: :rocket:`,
+				text: `${chapterMention(winner)}\n\n${winnerSummary}\n\nA huge shoutout to the ${chapterMention(winner)} organisers — keep up the incredible momentum! :raised_hands: :rocket:`,
 			},
 		},
 	];
@@ -108,7 +116,6 @@ function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): 
 				: `+${r.newJoins} (brand new on Slack)`;
 			return `*${place}.* ${chapterMention(r)} — ${detail}`;
 		});
-		blocks.push({ type: 'divider' });
 		blocks.push({
 			type: 'section',
 			text: { type: 'mrkdwn', text: `*Runners up*\n${lines.join('\n')}` },
@@ -130,57 +137,65 @@ export interface WeeklyLeaderboard {
 }
 
 /**
- * Pure SQL aggregation + ranking — no Slack API calls. Safe to call from a
- * page load (used by the Slack dashboard side panel). `existing` is derived
- * from slack_joins row counts; the weekly-report endpoint overrides it with
- * `conversations.info` num_members for chapters that have a channel mapping.
+ * Reads the most recent snapshot written by the Monday cron and reconstructs
+ * the leaderboard from it. Returns an empty leaderboard if no snapshot exists
+ * yet (e.g., cron has never run). Deliberately does NOT recompute from live
+ * data: the whole point of the snapshot is to preserve the chapter-size
+ * (`existing`) figures captured at window-end, so the dashboard doesn't drift
+ * as live num_members grows.
  *
- * If `chapterChannelIds` is provided, `slackChannelId` on each entry is
- * populated from it (no Slack API call required — just a map lookup) so
- * consumers can render deep links to the chapter's Slack channel.
+ * `rankingAlpha` and `chapterChannelIds` are accepted so the caller can re-sort
+ * with a different α than the cron used, and refresh the channel mention map
+ * if SOLIDARITY_CHAPTER_CHANNEL_MAP changed since the snapshot was written.
  */
 export async function computeWeeklyLeaderboard(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	options: {
-		now?: Date;
 		excludedChapterIds?: ReadonlySet<number>;
 		chapterChannelIds?: ReadonlyMap<number, string>;
 		rankingAlpha?: number;
 	} = {},
 ): Promise<WeeklyLeaderboard> {
 	const excluded = options.excludedChapterIds ?? new Set<number>();
-	const chapterChannelIds = options.chapterChannelIds ?? new Map<number, string>();
+	const chapterChannelIds = options.chapterChannelIds;
 	const rankingAlpha = options.rankingAlpha ?? DEFAULT_RANKING_ALPHA;
-	const now = options.now ?? new Date();
-	const { start: windowStart, end: windowEnd } = computeWindow(now);
-	const windowStartIso = windowStart.toISOString();
-	const windowEndIso = windowEnd.toISOString();
 
-	const aggRows = (await db.all(sql`
-		SELECT
-			CAST(je.value AS INTEGER) AS chapter_id,
-			SUM(CASE WHEN joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso} THEN 1 ELSE 0 END) AS new_joins,
-			SUM(CASE WHEN joined_at IS NULL OR joined_at < ${windowStartIso}              THEN 1 ELSE 0 END) AS existing
-		FROM slack_joins, json_each(slack_joins.chapter_ids) je
-		GROUP BY chapter_id
-	`)) as Array<{ chapter_id: number; new_joins: number; existing: number }>;
+	const latestWindow = await db
+		.select()
+		.from(weeklyGrowthWindows)
+		.orderBy(desc(weeklyGrowthWindows.windowEnd))
+		.limit(1);
 
-	const names = await loadChapterNames(db);
+	if (latestWindow.length === 0) {
+		const now = new Date();
+		const { start, end } = computeWindow(now);
+		return {
+			windowStart: start.toISOString(),
+			windowEnd: end.toISOString(),
+			chaptersWithGrowth: 0,
+			totalNewJoins: 0,
+			topChapters: [],
+		};
+	}
 
-	const leaderboard: ChapterGrowth[] = aggRows
-		.map((row) => ({
-			chapterId: Number(row.chapter_id),
-			newJoins: Number(row.new_joins),
-			existing: Number(row.existing),
-		}))
-		.filter((c) => c.newJoins > 0 && !excluded.has(c.chapterId))
-		.map((c) => ({
-			chapterId: c.chapterId,
-			chapterName: names.get(c.chapterId) ?? `Chapter #${c.chapterId}`,
-			slackChannelId: chapterChannelIds.get(c.chapterId) ?? null,
-			newJoins: c.newJoins,
-			existing: c.existing,
-			pct: c.existing > 0 ? (c.newJoins / c.existing) * 100 : 0,
+	const win = latestWindow[0]!;
+	const rows = await db
+		.select()
+		.from(weeklyChapterGrowth)
+		.where(eq(weeklyChapterGrowth.windowEnd, win.windowEnd));
+
+	const leaderboard: ChapterGrowth[] = rows
+		.filter((r) => !excluded.has(r.chapterId))
+		.map((r) => ({
+			chapterId: r.chapterId,
+			chapterName: r.chapterName,
+			// Prefer the live channel map if provided (handles renames / new
+			// mappings since the snapshot was written), otherwise fall back to
+			// the channel id captured at compute time.
+			slackChannelId: chapterChannelIds?.get(r.chapterId) ?? r.slackChannelId,
+			newJoins: r.newJoins,
+			existing: r.existing,
+			pct: r.existing > 0 ? (r.newJoins / r.existing) * 100 : 0,
 		}));
 
 	const rankingScore = (c: ChapterGrowth) =>
@@ -192,19 +207,57 @@ export async function computeWeeklyLeaderboard(
 		return b.newJoins - a.newJoins;
 	});
 
-	const totalNewJoinsRow = (await db.all(sql`
-		SELECT COUNT(*) AS cnt FROM slack_joins
-		WHERE joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso}
-	`)) as Array<{ cnt: number }>;
-	const totalNewJoins = Number(totalNewJoinsRow[0]?.cnt ?? 0);
-
 	return {
-		windowStart: windowStartIso,
-		windowEnd: windowEndIso,
+		windowStart: win.windowStart,
+		windowEnd: win.windowEnd,
 		chaptersWithGrowth: leaderboard.length,
-		totalNewJoins,
+		totalNewJoins: win.totalNewJoins,
 		topChapters: leaderboard.slice(0, TOP_N),
 	};
+}
+
+/**
+ * Write the per-chapter leaderboard to the snapshot tables. Idempotent: a
+ * re-run for the same window (manual cron retry, dry-run flip) replaces the
+ * previous rows.
+ */
+async function persistSnapshot(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	windowStartIso: string,
+	windowEndIso: string,
+	totalNewJoins: number,
+	rows: Array<ChapterGrowth & { numMembers: number | null }>,
+): Promise<void> {
+	const computedAt = new Date().toISOString();
+
+	await db
+		.insert(weeklyGrowthWindows)
+		.values({
+			windowEnd: windowEndIso,
+			windowStart: windowStartIso,
+			totalNewJoins,
+			computedAt,
+		})
+		.onConflictDoUpdate({
+			target: weeklyGrowthWindows.windowEnd,
+			set: { windowStart: windowStartIso, totalNewJoins, computedAt },
+		});
+
+	// Wipe any prior rows for this window before re-inserting — keeps the table
+	// clean if a chapter dropped out of the leaderboard on a re-run.
+	await db.delete(weeklyChapterGrowth).where(eq(weeklyChapterGrowth.windowEnd, windowEndIso));
+
+	for (const row of rows) {
+		await db.insert(weeklyChapterGrowth).values({
+			windowEnd: windowEndIso,
+			chapterId: row.chapterId,
+			chapterName: row.chapterName,
+			slackChannelId: row.slackChannelId,
+			newJoins: row.newJoins,
+			existing: row.existing,
+			numMembers: row.numMembers,
+		});
+	}
 }
 
 export async function runWeeklyGrowthReport(
@@ -267,7 +320,13 @@ export async function runWeeklyGrowthReport(
 				console.warn(
 					`[growth] no channel mapping for chapter ${c.chapterId} — using slack_joins count (${c.sqlExisting})`,
 				);
-				return { ...c, existing: c.sqlExisting, slackChannelId, slackChannelName: null as string | null };
+				return {
+					...c,
+					existing: c.sqlExisting,
+					numMembers: null as number | null,
+					slackChannelId,
+					slackChannelName: null as string | null,
+				};
 			}
 			try {
 				const info = await slack.conversations.info({
@@ -280,6 +339,7 @@ export async function runWeeklyGrowthReport(
 					return {
 						...c,
 						existing: Math.max(0, num - c.newJoins),
+						numMembers: num,
 						slackChannelId,
 						slackChannelName,
 					};
@@ -287,18 +347,30 @@ export async function runWeeklyGrowthReport(
 				console.warn(
 					`[growth] conversations.info returned no num_members for chapter ${c.chapterId} (channel ${slackChannelId})`,
 				);
-				return { ...c, existing: c.sqlExisting, slackChannelId, slackChannelName };
+				return {
+					...c,
+					existing: c.sqlExisting,
+					numMembers: null as number | null,
+					slackChannelId,
+					slackChannelName,
+				};
 			} catch (err) {
 				console.warn(
 					`[growth] conversations.info failed for chapter ${c.chapterId} (channel ${slackChannelId}):`,
 					err instanceof Error ? err.message : err,
 				);
-				return { ...c, existing: c.sqlExisting, slackChannelId, slackChannelName: null as string | null };
+				return {
+					...c,
+					existing: c.sqlExisting,
+					numMembers: null as number | null,
+					slackChannelId,
+					slackChannelName: null as string | null,
+				};
 			}
 		}),
 	);
 
-	const leaderboard: ChapterGrowth[] = enriched.map((c) => {
+	const leaderboard: Array<ChapterGrowth & { numMembers: number | null }> = enriched.map((c) => {
 		const chapterName = c.slackChannelName
 			? `#${c.slackChannelName}`
 			: names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
@@ -309,6 +381,7 @@ export async function runWeeklyGrowthReport(
 			slackChannelId: c.slackChannelId,
 			newJoins: c.newJoins,
 			existing: c.existing,
+			numMembers: c.numMembers,
 			pct,
 		};
 	});
@@ -331,6 +404,10 @@ export async function runWeeklyGrowthReport(
 		WHERE joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso}
 	`)) as Array<{ cnt: number }>;
 	const totalNewJoins = Number(totalNewJoinsRow[0]?.cnt ?? 0);
+
+	if (!options.dryRun) {
+		await persistSnapshot(db, windowStartIso, windowEndIso, totalNewJoins, leaderboard);
+	}
 
 	let posted = false;
 	if (topChapters.length > 0 && !options.dryRun) {

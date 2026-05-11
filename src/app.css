@@ -48,12 +48,19 @@
     --radius-lg: 8px;
 }
 
-*,
-*::before,
-*::after {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
+/* Layer order: reset is below `component`, which layerchart uses for its
+   default tooltip / chart styling. Without this, the universal reset wins
+   over layerchart's `:where(...)` rules and strips tooltip padding/margins. */
+@layer reset, component;
+
+@layer reset {
+    *,
+    *::before,
+    *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+    }
 }
 
 body {
