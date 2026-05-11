@@ -20,6 +20,7 @@
     "@libsql/client": "^0.17.2",
     "@slack/web-api": "^7.8.0",
     "drizzle-orm": "^0.45.2",
+    "layerchart": "^2.0.0-next.63",
     "libphonenumber-js": "^1.12.41"
   },
   "devDependencies": {
