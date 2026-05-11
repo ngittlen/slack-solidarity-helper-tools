@@ -33,10 +33,9 @@
 </svelte:head>
 
 <main>
-	<header class="detail-header">
-		<h1>Slack signups by chapter</h1>
+	<div class="detail-header">
 		<RangePresetPicker current={data.days} />
-	</header>
+	</div>
 
 	<div class="slack-detail-layout">
 		<div class="slack-detail-main">
@@ -108,23 +107,16 @@
 
 <style>
 	main {
-		font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+		font-family: var(--font-family);
 		max-width: 1280px;
 		margin: 0 auto;
 		padding: 2rem 1.5rem;
+		color: var(--color-text);
 	}
 	.detail-header {
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		flex-wrap: wrap;
-		gap: 1rem;
+		justify-content: flex-end;
 		margin-bottom: 1.5rem;
-	}
-	.detail-header h1 {
-		margin: 0;
-		font-size: 1.5rem;
-		color: #111827;
 	}
 	.slack-detail-layout {
 		display: grid;
@@ -136,46 +128,46 @@
 		min-width: 0;
 	}
 	.legend-note {
-		color: #6b7280;
-		font-size: 0.9rem;
+		color: var(--color-text-muted);
+		font-size: var(--font-size-md);
 		margin: -0.5rem 0 0;
 	}
 	.leaderboard {
-		background: white;
-		border: 1px solid #e5e7eb;
-		border-radius: 12px;
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
 		padding: 1.25rem 1.5rem;
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+		box-shadow: 0 1px 2px rgba(18, 28, 80, 0.06);
 		margin-top: 1rem;
 	}
 	.leaderboard__title {
 		margin: 0 0 0.25rem;
 		font-size: 1rem;
-		color: #111827;
+		color: var(--color-text);
 	}
 	.leaderboard__window {
 		margin: 0 0 0.75rem;
-		font-size: 0.8rem;
-		color: #6b7280;
+		font-size: var(--font-size-sm);
+		color: var(--color-text-muted);
 	}
 	.leaderboard__total {
 		margin: 0 0 1rem;
 		padding-bottom: 0.75rem;
-		border-bottom: 1px solid #e5e7eb;
-		font-size: 0.9rem;
-		color: #374151;
+		border-bottom: 1px solid var(--color-border-subtle);
+		font-size: var(--font-size-md);
+		color: var(--color-text-muted);
 	}
 	.leaderboard__total strong {
-		color: #111827;
+		color: var(--color-text);
 	}
 	.leaderboard__empty,
 	.leaderboard__error {
-		color: #6b7280;
-		font-size: 0.9rem;
+		color: var(--color-text-muted);
+		font-size: var(--font-size-md);
 		margin: 0;
 	}
 	.leaderboard__error {
-		color: #b91c1c;
+		color: var(--color-error);
 	}
 	.leaderboard__list {
 		list-style: none;
@@ -192,14 +184,14 @@
 	}
 	.leaderboard__row.winner .leaderboard__chapter {
 		font-weight: 600;
-		color: #111827;
+		color: var(--color-text);
 	}
 	.leaderboard__rank {
 		flex-shrink: 0;
 		width: 1.75rem;
 		font-weight: 600;
-		font-size: 0.85rem;
-		color: #6b7280;
+		font-size: var(--font-size-base);
+		color: var(--color-text-muted);
 		padding-top: 1px;
 	}
 	.leaderboard__row.winner .leaderboard__rank {
@@ -211,23 +203,23 @@
 		min-width: 0;
 	}
 	.leaderboard__chapter {
-		font-size: 0.95rem;
-		color: #111827;
+		font-size: var(--font-size-lg);
+		color: var(--color-text);
 		overflow-wrap: anywhere;
 	}
 	.leaderboard__metrics {
-		font-size: 0.8rem;
-		color: #6b7280;
+		font-size: var(--font-size-sm);
+		color: var(--color-text-muted);
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.35rem;
 		align-items: baseline;
 	}
 	.leaderboard__metric strong {
-		color: #111827;
+		color: var(--color-text);
 	}
 	.leaderboard__sep {
-		color: #d1d5db;
+		color: var(--color-text-faint);
 	}
 	.leaderboard__brand-new {
 		font-style: italic;
@@ -236,7 +228,7 @@
 		margin-top: 1.5rem;
 	}
 	.back-link a {
-		color: #2563eb;
+		color: var(--color-action);
 		text-decoration: none;
 	}
 	.back-link a:hover,

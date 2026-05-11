@@ -38,5 +38,5 @@ export const load: PageServerLoad = async (event) => {
 		leaderboard = { ok: false, error: 'Failed to load leaderboard. Please try again.' };
 	}
 
-	return { ...base, leaderboard };
+	return { ...base, leaderboard, pageTitle: 'Slack signups by chapter' };
 };

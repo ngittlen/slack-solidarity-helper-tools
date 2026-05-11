@@ -5,5 +5,8 @@ export const load: LayoutServerLoad = ({ locals }) => {
 	if (!locals.session) {
 		redirect(302, '/auth/slack');
 	}
-	return {};
+	return {
+		userName: locals.session.slackUserName,
+		isAdmin: locals.session.isAdmin
+	};
 };

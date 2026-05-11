@@ -194,18 +194,6 @@
     <title>A4M Slack Invite Queue</title>
 </svelte:head>
 
-<header>
-    <h1>A4M Slack Invite Queue</h1>
-    <div class="user-info">
-		<span>
-            Logged in as <span class="user-name">{pageData.userName}</span>
-        </span>
-		<form method="POST" action="/auth/logout">
-			<button type="submit" class="logout-btn">Log out</button>
-		</form>
-	</div>
-</header>
-
 <main>
     {#if loading}
         <p class="status">Loading...</p>

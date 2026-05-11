@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { BarChart, Bars } from 'layerchart';
+	import { CHART_BAND_COLORS } from '$lib/styles/chart-colors';
 	import type { ChartFrame } from './chart-data.js';
 
 	type Props = {
@@ -24,27 +25,12 @@
 		});
 	});
 
-	const BAND_COLORS = [
-		'#2563eb',
-		'#dc2626',
-		'#16a34a',
-		'#f59e0b',
-		'#9333ea',
-		'#0891b2',
-		'#db2777',
-		'#65a30d',
-		'#7c3aed',
-		'#ea580c',
-		'#94a3b8',
-		'#475569'
-	];
-
 	const series = $derived(
 		frame.bands.map((band, i) => ({
 			key: band.key,
 			label: band.label,
 			value: (d: Row) => (d[band.key] as number | undefined) ?? 0,
-			color: BAND_COLORS[i % BAND_COLORS.length]
+			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length]
 		}))
 	);
 </script>
@@ -84,7 +70,7 @@
 								x2={x1 + bw}
 								y1={y}
 								y2={y}
-								stroke="#111827"
+								class="signup-chart__total-marker"
 								stroke-width="2"
 							/>
 						{/each}
@@ -124,9 +110,12 @@
 		height: 320px;
 	}
 	.signup-chart__empty {
-		color: #6b7280;
+		color: var(--color-text-muted);
 		text-align: center;
 		padding: 4rem 0;
+	}
+	.signup-chart__total-marker {
+		stroke: var(--color-text);
 	}
 	/* Custom legend rendered below the chart so it never overlaps the bars or
 	   x-axis labels (LayerChart's built-in legend is positioned inside the
@@ -138,8 +127,8 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.4rem 1rem;
-		font-size: 0.8rem;
-		color: #374151;
+		font-size: var(--font-size-sm);
+		color: var(--color-text);
 	}
 	.signup-chart__legend-item {
 		display: inline-flex;

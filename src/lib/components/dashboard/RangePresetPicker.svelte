@@ -30,10 +30,10 @@
 <style>
 	.range-preset-picker {
 		display: inline-flex;
-		border: 1px solid #d0d5dd;
-		border-radius: 8px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
 		overflow: hidden;
-		background: white;
+		background: var(--color-surface);
 	}
 	.preset {
 		appearance: none;
@@ -41,19 +41,22 @@
 		border: 0;
 		padding: 0.5rem 1rem;
 		font: inherit;
-		color: #1f2937;
+		color: var(--color-text);
 		cursor: pointer;
-		border-right: 1px solid #d0d5dd;
+		border-right: 1px solid var(--color-border);
 	}
 	.preset:last-child {
 		border-right: 0;
 	}
+	.preset:hover:not(.active) {
+		background: var(--color-border-subtle);
+	}
 	.preset.active {
-		background: #1f2937;
-		color: white;
+		background: var(--color-action);
+		color: var(--color-action-text);
 	}
 	.preset:focus-visible {
-		outline: 2px solid #2563eb;
+		outline: 2px solid var(--color-blue);
 		outline-offset: 2px;
 		position: relative;
 		z-index: 1;

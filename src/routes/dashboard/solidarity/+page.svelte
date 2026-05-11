@@ -25,10 +25,9 @@
 </svelte:head>
 
 <main>
-	<header class="detail-header">
-		<h1>Solidarity signups by chapter</h1>
+	<div class="detail-header">
 		<RangePresetPicker current={data.days} />
-	</header>
+	</div>
 
 	<ChartCard title="Solidarity signups" cardState={cardState} />
 
@@ -46,31 +45,24 @@
 
 <style>
 	main {
-		font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+		font-family: var(--font-family);
 		max-width: 1100px;
 		margin: 0 auto;
 		padding: 2rem 1.5rem;
+		color: var(--color-text);
 	}
 	.detail-header {
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		flex-wrap: wrap;
-		gap: 1rem;
+		justify-content: flex-end;
 		margin-bottom: 1.5rem;
 	}
-	.detail-header h1 {
-		margin: 0;
-		font-size: 1.5rem;
-		color: #111827;
-	}
 	.legend-note {
-		color: #6b7280;
-		font-size: 0.9rem;
+		color: var(--color-text-muted);
+		font-size: var(--font-size-md);
 		margin: -0.5rem 0 1rem;
 	}
 	.back-link a {
-		color: #2563eb;
+		color: var(--color-action);
 		text-decoration: none;
 	}
 	.back-link a:hover,

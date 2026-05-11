@@ -92,17 +92,17 @@
 
 <style>
 	.chart-card {
-		background: white;
-		border: 1px solid #e5e7eb;
-		border-radius: 12px;
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
 		padding: 1.25rem 1.5rem;
 		margin: 1rem 0;
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+		box-shadow: 0 1px 2px rgba(18, 28, 80, 0.06);
 	}
 	.chart-card__title {
 		margin: 0 0 0.75rem;
 		font-size: 1.125rem;
-		color: #111827;
+		color: var(--color-text);
 	}
 	.chart-card__body {
 		position: relative;
@@ -118,7 +118,7 @@
 		display: block;
 		width: 60%;
 		height: 3px;
-		background: linear-gradient(90deg, transparent, #2563eb, transparent);
+		background: linear-gradient(90deg, transparent, var(--color-blue), transparent);
 		background-size: 200% 100%;
 		animation: chart-card-shimmer 1.4s linear infinite;
 	}
@@ -132,34 +132,37 @@
 	}
 	.chart-card__empty,
 	.chart-card__error {
-		color: #6b7280;
+		color: var(--color-text-muted);
 		padding: 3rem 0;
 		text-align: center;
 		margin: 0;
 	}
 	.chart-card__error {
-		color: #b91c1c;
+		color: var(--color-error);
 	}
 	.chart-card__retry {
 		display: block;
 		margin: 0 auto;
 		appearance: none;
-		background: #1f2937;
-		color: white;
+		background: var(--color-action);
+		color: var(--color-action-text);
 		border: 0;
 		padding: 0.5rem 1.25rem;
-		border-radius: 8px;
+		border-radius: var(--radius-lg);
 		cursor: pointer;
 		font: inherit;
 	}
+	.chart-card__retry:hover {
+		background: var(--color-action-hover);
+	}
 	.chart-card__retry:focus-visible {
-		outline: 2px solid #2563eb;
+		outline: 2px solid var(--color-blue);
 		outline-offset: 2px;
 	}
 	.chart-card__detail {
 		display: inline-block;
 		margin-top: 0.75rem;
-		color: #2563eb;
+		color: var(--color-action);
 		text-decoration: none;
 		font-weight: 500;
 	}
