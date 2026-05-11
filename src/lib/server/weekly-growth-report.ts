@@ -9,7 +9,7 @@
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import type { KnownBlock, WebClient } from '@slack/web-api';
 import { sql } from 'drizzle-orm';
-import { solidarityDailySnapshots } from './schema.js';
+import { loadChapterNames } from './chapter-names.js';
 
 const TOP_N = 5;
 const WINDOW_DAYS = 7;
@@ -157,18 +157,7 @@ export async function runWeeklyGrowthReport(
 		GROUP BY chapter_id
 	`)) as Array<{ chapter_id: number; new_joins: number; existing: number }>;
 
-	// Borrow chapter names from the denormalised snapshot table (written nightly
-	// by the Solidarity snapshot job). Anything missing falls back to "Chapter #N".
-	const nameRows = await db
-		.select({
-			chapterId: solidarityDailySnapshots.chapterId,
-			chapterName: solidarityDailySnapshots.chapterName,
-		})
-		.from(solidarityDailySnapshots);
-	const names = new Map<number, string>();
-	for (const r of nameRows) {
-		if (r.chapterName && !names.has(r.chapterId)) names.set(r.chapterId, r.chapterName);
-	}
+	const names = await loadChapterNames(db);
 
 	// Build candidate list, then fetch ground-truth chapter size from Slack
 	// (channel num_members) where a channel mapping is configured. Slack reports

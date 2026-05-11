@@ -1,0 +1,169 @@
+// Read-side aggregation for the dashboard's signups-per-day chart.
+// Returns Solidarity (from solidarity_daily_snapshots) and Slack (from
+// slack_joins) counts bucketed by date, each with a per-chapter breakdown.
+//
+// Same import discipline as solidarity-snapshot.ts and weekly-growth-report.ts:
+// no $env/$lib imports so this module stays trivially importable from tests
+// and standalone scripts.
+
+import type { LibSQLDatabase } from 'drizzle-orm/libsql';
+import { asc, gte, sql } from 'drizzle-orm';
+import { solidarityDailySnapshots } from './schema.js';
+import { loadChapterNames } from './chapter-names.js';
+
+const NULL_CHAPTER_SENTINEL = -1;
+
+export interface ChapterCount {
+	chapterId: number | null;
+	chapterName: string | null;
+	count: number;
+}
+
+export interface DaySignups {
+	date: string;
+	total: number;
+	byChapter: ChapterCount[];
+}
+
+export interface DashboardSignups {
+	solidarity: DaySignups[];
+	slack: DaySignups[];
+}
+
+export interface GetDashboardSignupsOptions {
+	days: number;
+	now?: Date;
+}
+
+// Window covers the last `days` calendar dates (UTC), inclusive of today.
+// e.g. days=1 → just today; days=90 → today and the 89 prior days.
+function windowStartDate(days: number, now: Date): string {
+	const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+	const start = new Date(todayUtc - (days - 1) * 24 * 60 * 60 * 1000);
+	return start.toISOString().slice(0, 10);
+}
+
+// Sort byChapter ascending by chapterId, with the null bucket last.
+function sortByChapter(a: ChapterCount, b: ChapterCount): number {
+	if (a.chapterId === null) return 1;
+	if (b.chapterId === null) return -1;
+	return a.chapterId - b.chapterId;
+}
+
+async function loadSolidarity(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	startDate: string,
+): Promise<DaySignups[]> {
+	const rows = await db
+		.select({
+			date: solidarityDailySnapshots.date,
+			chapterId: solidarityDailySnapshots.chapterId,
+			chapterName: solidarityDailySnapshots.chapterName,
+			count: solidarityDailySnapshots.count,
+		})
+		.from(solidarityDailySnapshots)
+		.where(gte(solidarityDailySnapshots.date, startDate))
+		.orderBy(asc(solidarityDailySnapshots.date), asc(solidarityDailySnapshots.chapterId));
+
+	const byDate = new Map<string, DaySignups>();
+	for (const row of rows) {
+		let day = byDate.get(row.date);
+		if (!day) {
+			day = { date: row.date, total: 0, byChapter: [] };
+			byDate.set(row.date, day);
+		}
+		const isNull = row.chapterId === NULL_CHAPTER_SENTINEL;
+		day.byChapter.push({
+			chapterId: isNull ? null : row.chapterId,
+			chapterName: isNull ? null : row.chapterName,
+			count: row.count,
+		});
+		day.total += row.count;
+	}
+	const days = [...byDate.values()];
+	for (const d of days) d.byChapter.sort(sortByChapter);
+	days.sort((a, b) => a.date.localeCompare(b.date));
+	return days;
+}
+
+async function loadSlack(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	startDate: string,
+): Promise<DaySignups[]> {
+	// Per-chapter buckets via json_each. Rows with chapter_ids = '[]' produce
+	// no json_each rows and are picked up separately below.
+	const chapterRows = (await db.all(sql`
+		SELECT DATE(joined_at) AS date,
+		       CAST(je.value AS INTEGER) AS chapter_id,
+		       COUNT(*) AS count
+		FROM slack_joins, json_each(slack_joins.chapter_ids) je
+		WHERE joined_at IS NOT NULL AND DATE(joined_at) >= ${startDate}
+		GROUP BY date, chapter_id
+	`)) as Array<{ date: string; chapter_id: number; count: number }>;
+
+	// No-chapter bucket — rows with chapter_ids = '[]'.
+	const nullChapterRows = (await db.all(sql`
+		SELECT DATE(joined_at) AS date, COUNT(*) AS count
+		FROM slack_joins
+		WHERE joined_at IS NOT NULL
+		  AND chapter_ids = '[]'
+		  AND DATE(joined_at) >= ${startDate}
+		GROUP BY date
+	`)) as Array<{ date: string; count: number }>;
+
+	// Distinct daily totals — each slack_joins row is one user, so multi-chapter
+	// users aren't double-counted. (See weekly-growth-report.ts for the same
+	// reasoning around totalNewJoins.)
+	const totalRows = (await db.all(sql`
+		SELECT DATE(joined_at) AS date, COUNT(*) AS total
+		FROM slack_joins
+		WHERE joined_at IS NOT NULL AND DATE(joined_at) >= ${startDate}
+		GROUP BY date
+	`)) as Array<{ date: string; total: number }>;
+
+	const names = await loadChapterNames(db);
+	const byDate = new Map<string, DaySignups>();
+	const day = (date: string) => {
+		let d = byDate.get(date);
+		if (!d) {
+			d = { date, total: 0, byChapter: [] };
+			byDate.set(date, d);
+		}
+		return d;
+	};
+
+	for (const r of chapterRows) {
+		day(r.date).byChapter.push({
+			chapterId: Number(r.chapter_id),
+			chapterName: names.get(Number(r.chapter_id)) ?? `Chapter #${r.chapter_id}`,
+			count: Number(r.count),
+		});
+	}
+	for (const r of nullChapterRows) {
+		day(r.date).byChapter.push({
+			chapterId: null,
+			chapterName: null,
+			count: Number(r.count),
+		});
+	}
+	for (const r of totalRows) {
+		day(r.date).total = Number(r.total);
+	}
+
+	const days = [...byDate.values()];
+	for (const d of days) d.byChapter.sort(sortByChapter);
+	days.sort((a, b) => a.date.localeCompare(b.date));
+	return days;
+}
+
+export async function getDashboardSignups(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	options: GetDashboardSignupsOptions,
+): Promise<DashboardSignups> {
+	const startDate = windowStartDate(options.days, options.now ?? new Date());
+	const [solidarity, slack] = await Promise.all([
+		loadSolidarity(db, startDate),
+		loadSlack(db, startDate),
+	]);
+	return { solidarity, slack };
+}
