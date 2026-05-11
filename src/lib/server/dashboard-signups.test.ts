@@ -245,6 +245,91 @@ describe('getDashboardSignups', () => {
 		expect(result.slack.map((d) => d.date)).toEqual(['2026-05-08', '2026-05-09', '2026-05-10']);
 	});
 
+	describe('distinct-total sentinel', () => {
+		it('uses the -2 sentinel row as the daily total instead of summing chapter buckets', async () => {
+			const db = makeDb();
+			// Two users, both in chapters 100 and 200. Sum-of-buckets = 4; distinct = 2.
+			db._pushSelect([
+				{ date: '2026-05-10', chapterId: -2, chapterName: null, count: 2 },
+				{ date: '2026-05-10', chapterId: 100, chapterName: 'Alpha', count: 2 },
+				{ date: '2026-05-10', chapterId: 200, chapterName: 'Beta', count: 2 },
+			]);
+			db._pushSelect([]);
+			db._pushAll([]);
+			db._pushAll([]);
+			db._pushAll([]);
+
+			const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+
+			expect(result.solidarity).toEqual([
+				{
+					date: '2026-05-10',
+					total: 2,
+					byChapter: [
+						{ chapterId: 100, chapterName: 'Alpha', count: 2 },
+						{ chapterId: 200, chapterName: 'Beta', count: 2 },
+					],
+				},
+			]);
+		});
+
+		it('falls back to sum-of-bands when no sentinel row exists (legacy data)', async () => {
+			const db = makeDb();
+			db._pushSelect([
+				{ date: '2026-05-10', chapterId: 100, chapterName: 'Alpha', count: 3 },
+				{ date: '2026-05-10', chapterId: 200, chapterName: 'Beta', count: 4 },
+			]);
+			db._pushSelect([]);
+			db._pushAll([]);
+			db._pushAll([]);
+			db._pushAll([]);
+
+			const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+			expect(result.solidarity[0]!.total).toBe(7);
+		});
+
+		it('ignores the sentinel and uses sum-of-(non-excluded)-bands when exclusion is active', async () => {
+			const db = makeDb();
+			// 3 distinct users; chapter 100 has 3, chapter 200 has 1.
+			// With chapter 100 excluded, sum-of-non-excluded-bands = 1.
+			// The sentinel (3) would include the excluded users, so we must skip it.
+			db._pushSelect([
+				{ date: '2026-05-10', chapterId: -2, chapterName: null, count: 3 },
+				{ date: '2026-05-10', chapterId: 200, chapterName: 'Beta', count: 1 },
+			]);
+			db._pushSelect([]);
+			db._pushAll([]);
+			db._pushAll([]);
+			db._pushAll([]);
+
+			const result = await getDashboardSignups(db as never, {
+				days: 90,
+				now: NOW,
+				excludedChapterIds: new Set([100]),
+			});
+			expect(result.solidarity[0]!.total).toBe(1);
+		});
+
+		it('never surfaces the -2 sentinel as a byChapter entry', async () => {
+			const db = makeDb();
+			db._pushSelect([
+				{ date: '2026-05-10', chapterId: -2, chapterName: null, count: 1 },
+				{ date: '2026-05-10', chapterId: 100, chapterName: 'Alpha', count: 1 },
+			]);
+			db._pushSelect([]);
+			db._pushAll([]);
+			db._pushAll([]);
+			db._pushAll([]);
+
+			const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+			for (const day of result.solidarity) {
+				for (const c of day.byChapter) {
+					expect(c.chapterId).not.toBe(-2);
+				}
+			}
+		});
+	});
+
 	describe('excludedChapterIds', () => {
 		it('omits a NOT IN clause from every query when the set is empty', async () => {
 			const db = makeDb();

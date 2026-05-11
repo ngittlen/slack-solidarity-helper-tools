@@ -14,7 +14,7 @@
 		if (!data.slack.ok) {
 			return { kind: 'error', message: data.slack.error };
 		}
-		const frame = buildDetailFrame(data.slack.days, 'slack');
+		const frame = buildDetailFrame(data.slack.days);
 		if (frame.dates.length === 0) return { kind: 'empty' };
 		return { kind: 'ready', frame, showTotalOverlay: true };
 	});

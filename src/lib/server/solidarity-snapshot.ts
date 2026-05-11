@@ -36,6 +36,11 @@ export interface SnapshotResult {
 }
 
 const NULL_CHAPTER_SENTINEL = -1;
+// Sentinel chapter_id for the per-day distinct-user count row. Stored alongside
+// the per-chapter buckets so the dashboard can show the true daily total
+// without double-counting users who belong to multiple chapters. Readers
+// MUST filter this out before treating rows as real chapters.
+export const DISTINCT_TOTAL_SENTINEL = -2;
 const PAGE_LIMIT = 100;
 const MAX_PAGES = 500; // generous safety cap; we early-terminate via created_at sort
 
@@ -149,7 +154,7 @@ function bucketByChapter(
 			}
 		}
 	}
-	return [...counts.entries()]
+	const rows: SnapshotRow[] = [...counts.entries()]
 		.sort(([a], [b]) => a - b)
 		.map(([chapterId, count]) => ({
 			date: dateStr,
@@ -157,6 +162,18 @@ function bucketByChapter(
 			chapterName: chapterId === NULL_CHAPTER_SENTINEL ? null : chapterNames.get(chapterId) ?? null,
 			count,
 		}));
+	// Distinct-user count for the day — emitted only when at least one user
+	// landed in range so we don't gratuitously create zero rows on empty days.
+	// Sorts first because -2 < -1 < any real chapter id.
+	if (users.length > 0) {
+		rows.unshift({
+			date: dateStr,
+			chapterId: DISTINCT_TOTAL_SENTINEL,
+			chapterName: null,
+			count: users.length,
+		});
+	}
+	return rows;
 }
 
 // ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ describe('buildOverviewFrame', () => {
 
 describe('buildDetailFrame', () => {
 	it('returns empty bands for empty input', () => {
-		const frame = buildDetailFrame([], 'solidarity');
+		const frame = buildDetailFrame([]);
 		expect(frame.bands).toEqual([]);
 		expect(frame.dailyTotals).toBeUndefined();
 	});
@@ -54,11 +54,28 @@ describe('buildDetailFrame', () => {
 				{ chapterId: 2, chapterName: 'B', count: 2 },
 			]),
 		];
-		const frame = buildDetailFrame(days, 'solidarity');
+		const frame = buildDetailFrame(days);
 		for (let i = 0; i < frame.dates.length; i++) {
 			const sum = frame.bands.reduce((acc, b) => acc + b.values[i]!, 0);
 			expect(sum).toBe(days[i]!.total);
 		}
+		expect(frame.dailyTotals).toEqual([6, 5]);
+	});
+
+	it('Solidarity: dailyTotals reflects the distinct user count even when sum-of-bands exceeds it', () => {
+		// Mirrors the snapshot's distinct-total sentinel: server `total` is 3
+		// distinct users, but the same user can be counted in multiple chapter
+		// buckets so sum-of-bands = 5.
+		const days: DaySignups[] = [
+			day('2026-05-01', 3, [
+				{ chapterId: 1, chapterName: 'A', count: 3 },
+				{ chapterId: 2, chapterName: 'B', count: 2 },
+			]),
+		];
+		const frame = buildDetailFrame(days);
+		const sum = frame.bands.reduce((acc, b) => acc + b.values[0]!, 0);
+		expect(sum).toBe(5);
+		expect(frame.dailyTotals).toEqual([3]);
 	});
 
 	it('Slack: sum of bands per day ≥ server total per day', () => {
@@ -69,7 +86,7 @@ describe('buildDetailFrame', () => {
 				{ chapterId: 2, chapterName: 'B', count: 1 },
 			]),
 		];
-		const frame = buildDetailFrame(days, 'slack');
+		const frame = buildDetailFrame(days);
 		const sum = frame.bands.reduce((acc, b) => acc + b.values[0]!, 0);
 		expect(sum).toBeGreaterThanOrEqual(days[0]!.total);
 		expect(sum).toBe(2);
@@ -89,7 +106,7 @@ describe('buildDetailFrame', () => {
 				})),
 			),
 		];
-		const frameWithin = buildDetailFrame(within, 'solidarity');
+		const frameWithin = buildDetailFrame(within);
 		expect(frameWithin.bands.find((b) => b.key === 'other')).toBeUndefined();
 
 		const over: DaySignups[] = [
@@ -103,7 +120,7 @@ describe('buildDetailFrame', () => {
 				})),
 			),
 		];
-		const frameOver = buildDetailFrame(over, 'solidarity');
+		const frameOver = buildDetailFrame(over);
 		const other = frameOver.bands.find((b) => b.key === 'other');
 		expect(other).toBeDefined();
 		expect(other!.label).toBe(OTHER_BAND_LABEL);
@@ -116,7 +133,7 @@ describe('buildDetailFrame', () => {
 			day('2026-05-01', 2, [{ chapterId: 1, chapterName: 'A', count: 2 }]),
 			day('2026-05-03', 1, [{ chapterId: 1, chapterName: 'A', count: 1 }]),
 		];
-		const frame = buildDetailFrame(days, 'solidarity');
+		const frame = buildDetailFrame(days);
 		expect(frame.dates).toEqual(['2026-05-01', '2026-05-02', '2026-05-03']);
 		const a = frame.bands.find((b) => b.label === 'A');
 		expect(a!.values).toEqual([2, 0, 1]);
@@ -129,7 +146,7 @@ describe('buildDetailFrame', () => {
 				{ chapterId: null, chapterName: null, count: 1 },
 			]),
 		];
-		const frame = buildDetailFrame(days, 'solidarity');
+		const frame = buildDetailFrame(days);
 		const noChapter = frame.bands.find((b) => b.key === 'no-chapter');
 		expect(noChapter).toBeDefined();
 		expect(noChapter!.label).toBe(NO_CHAPTER_BAND_LABEL);
@@ -145,7 +162,7 @@ describe('buildDetailFrame', () => {
 			count: i < DASHBOARD_TOP_N ? 100 + i : (i === DASHBOARD_TOP_N ? 3 : (i === DASHBOARD_TOP_N + 1 ? 7 : 1)),
 		}));
 		const days: DaySignups[] = [day('2026-05-01', 0, chapters)];
-		const frame = buildDetailFrame(days, 'solidarity');
+		const frame = buildDetailFrame(days);
 		const other = frame.bands.find((b) => b.key === 'other')!;
 		const totals = other.mergedChapters!.map((c) => c.totalInWindow);
 		expect(totals).toEqual([...totals].sort((a, b) => b - a));

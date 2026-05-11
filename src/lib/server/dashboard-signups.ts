@@ -10,6 +10,7 @@ import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { and, asc, gte, notInArray, sql, type SQL } from 'drizzle-orm';
 import { solidarityDailySnapshots } from './schema.js';
 import { loadChapterNames } from './chapter-names.js';
+import { DISTINCT_TOTAL_SENTINEL } from './solidarity-snapshot.js';
 
 const NULL_CHAPTER_SENTINEL = -1;
 
@@ -82,6 +83,9 @@ async function loadSolidarity(
 	startDate: string,
 	excluded: ReadonlySet<number>,
 ): Promise<DaySignups[]> {
+	// User-supplied excluded IDs only contain real chapter IDs, so the SQL
+	// filter naturally leaves the DISTINCT_TOTAL_SENTINEL row through. We
+	// separate it from real-chapter rows in JS below.
 	const conditions: SQL[] = [gte(solidarityDailySnapshots.date, startDate)];
 	if (excluded.size > 0) {
 		conditions.push(notInArray(solidarityDailySnapshots.chapterId, [...excluded]));
@@ -98,7 +102,12 @@ async function loadSolidarity(
 		.orderBy(asc(solidarityDailySnapshots.date), asc(solidarityDailySnapshots.chapterId));
 
 	const byDate = new Map<string, DaySignups>();
+	const distinctTotalByDate = new Map<string, number>();
 	for (const row of rows) {
+		if (row.chapterId === DISTINCT_TOTAL_SENTINEL) {
+			distinctTotalByDate.set(row.date, row.count);
+			continue;
+		}
 		let day = byDate.get(row.date);
 		if (!day) {
 			day = { date: row.date, total: 0, byChapter: [] };
@@ -110,7 +119,21 @@ async function loadSolidarity(
 			chapterName: isNull ? null : row.chapterName,
 			count: row.count,
 		});
+		// Running sum-of-bands; overridden below with the distinct count when
+		// available and no chapter-level exclusion is in effect.
 		day.total += row.count;
+	}
+	// Prefer the snapshot's distinct-user count over sum-of-bands so multi-
+	// chapter members aren't double-counted. With chapter exclusion active we
+	// keep sum-of-bands because the sentinel still counts users in excluded
+	// chapters — sum-of-(non-excluded)-bands is the right total for that case.
+	// Legacy days written before the sentinel existed have no entry here and
+	// keep the sum-of-bands fallback.
+	if (excluded.size === 0) {
+		for (const [date, distinctTotal] of distinctTotalByDate) {
+			const day = byDate.get(date);
+			if (day) day.total = distinctTotal;
+		}
 	}
 	const days = [...byDate.values()];
 	for (const d of days) d.byChapter.sort(sortByChapter);

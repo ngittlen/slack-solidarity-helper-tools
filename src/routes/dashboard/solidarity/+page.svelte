@@ -9,14 +9,14 @@
 	const cardState = $derived.by<
 		| { kind: 'empty' }
 		| { kind: 'error'; message: string }
-		| { kind: 'ready'; frame: ReturnType<typeof buildDetailFrame> }
+		| { kind: 'ready'; frame: ReturnType<typeof buildDetailFrame>; showTotalOverlay: boolean }
 	>(() => {
 		if (!data.solidarity.ok) {
 			return { kind: 'error', message: data.solidarity.error };
 		}
-		const frame = buildDetailFrame(data.solidarity.days, 'solidarity');
+		const frame = buildDetailFrame(data.solidarity.days);
 		if (frame.dates.length === 0) return { kind: 'empty' };
-		return { kind: 'ready', frame };
+		return { kind: 'ready', frame, showTotalOverlay: true };
 	});
 </script>
 
@@ -31,6 +31,11 @@
 	</header>
 
 	<ChartCard title="Solidarity signups" cardState={cardState} />
+
+	<p class="legend-note">
+		Members in multiple chapters are counted in each band but only once in the daily total
+		(shown as the dark marker on each bar).
+	</p>
 
 	<p class="back-link">
 		<!-- Same-host, known route + query string. -->
@@ -58,6 +63,11 @@
 		margin: 0;
 		font-size: 1.5rem;
 		color: #111827;
+	}
+	.legend-note {
+		color: #6b7280;
+		font-size: 0.9rem;
+		margin: -0.5rem 0 1rem;
 	}
 	.back-link a {
 		color: #2563eb;

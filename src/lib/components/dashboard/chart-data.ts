@@ -61,10 +61,7 @@ export function buildOverviewFrame(days: DaySignups[], sourceLabel: string): Cha
 	};
 }
 
-export function buildDetailFrame(
-	days: DaySignups[],
-	variant: 'solidarity' | 'slack',
-): ChartFrame {
+export function buildDetailFrame(days: DaySignups[]): ChartFrame {
 	if (days.length === 0) {
 		return { dates: [], bands: [] };
 	}
@@ -150,13 +147,14 @@ export function buildDetailFrame(
 		});
 	}
 
-	const frame: ChartFrame = { dates, bands };
+	// Always populate dailyTotals — for both Slack and Solidarity the per-band
+	// sum can exceed the distinct daily total when a user belongs to multiple
+	// chapters (Slack via slack_joins.chapter_ids; Solidarity via the snapshot's
+	// distinct-total sentinel row). The overlay marker lets viewers see the
+	// real total at a glance.
+	const totalsByDate = new Map<string, number>();
+	for (const d of days) totalsByDate.set(d.date, d.total);
+	const dailyTotals = dates.map((d) => totalsByDate.get(d) ?? 0);
 
-	if (variant === 'slack') {
-		const totalsByDate = new Map<string, number>();
-		for (const d of days) totalsByDate.set(d.date, d.total);
-		frame.dailyTotals = dates.map((d) => totalsByDate.get(d) ?? 0);
-	}
-
-	return frame;
+	return { dates, bands, dailyTotals };
 }

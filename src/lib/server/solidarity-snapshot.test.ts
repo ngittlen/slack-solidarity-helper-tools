@@ -87,12 +87,17 @@ describe('runSolidaritySnapshot', () => {
 		expect(result.date).toBe(target);
 		expect(result.usersScanned).toBe(5);
 		expect(result.usersInRange).toBe(3);
+		// The -2 sentinel carries the distinct-user count (3). Sum of the
+		// per-chapter buckets is 4 because the multi-chapter user is counted
+		// in both Alpha and Beta — exactly the double-count the sentinel exists
+		// to correct.
 		expect(result.rows).toEqual([
+			{ date: target, chapterId: -2, chapterName: null, count: 3 },
 			{ date: target, chapterId: -1, chapterName: null, count: 1 },
 			{ date: target, chapterId: 100, chapterName: 'Alpha', count: 2 },
 			{ date: target, chapterId: 200, chapterName: 'Beta', count: 1 },
 		]);
-		expect(values).toHaveBeenCalledTimes(3);
+		expect(values).toHaveBeenCalledTimes(4);
 	});
 
 	it('paginates until a short page is returned', async () => {
@@ -112,7 +117,12 @@ describe('runSolidaritySnapshot', () => {
 		// 1 chapters call + 2 users calls
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(result.usersScanned).toBe(110);
-		expect(result.rows[0]?.count).toBe(110);
+		// First row is the distinct-total sentinel (-2), value = distinct user
+		// count. All 110 users are in chapter 100 only, so chapter 100's count
+		// matches.
+		expect(result.rows[0]).toEqual({ date: '2026-04-15', chapterId: -2, chapterName: null, count: 110 });
+		expect(result.rows[1]?.chapterId).toBe(100);
+		expect(result.rows[1]?.count).toBe(110);
 	});
 
 	it('does not write when dryRun is true', async () => {
@@ -127,7 +137,9 @@ describe('runSolidaritySnapshot', () => {
 			dryRun: true,
 		});
 		expect(insert).not.toHaveBeenCalled();
-		expect(result.rows).toHaveLength(1);
+		// 1 sentinel row + 1 chapter row
+		expect(result.rows).toHaveLength(2);
+		expect(result.rows[0]?.chapterId).toBe(-2);
 	});
 
 	it('throws when /v1/chapters fails', async () => {
@@ -163,7 +175,44 @@ describe('runSolidaritySnapshot', () => {
 		const { db } = makeDb();
 		const result = await runSolidaritySnapshot(db, 'token', { date: '2026-04-15' });
 		expect(result.rows).toEqual([
+			{ date: '2026-04-15', chapterId: -2, chapterName: null, count: 1 },
 			{ date: '2026-04-15', chapterId: 999, chapterName: null, count: 1 },
 		]);
+	});
+
+	it('omits the distinct-total sentinel when no users land in range', async () => {
+		fetchMock
+			.mockResolvedValueOnce(chaptersResponse)
+			.mockResolvedValueOnce(
+				pageResponse([
+					// Updated_at puts these into the result, but created_at is outside
+					// the target date so they get filtered out below.
+					{ chapter_id: 100, chapter_ids: [], created_at: '2026-04-10T00:00:00Z' },
+				]),
+			);
+		const { db } = makeDb();
+		const result = await runSolidaritySnapshot(db, 'token', { date: '2026-04-15' });
+		expect(result.usersInRange).toBe(0);
+		expect(result.rows).toEqual([]);
+	});
+
+	it('sentinel count is the distinct user total even when users span multiple chapters', async () => {
+		fetchMock
+			.mockResolvedValueOnce(chaptersResponse)
+			.mockResolvedValueOnce(
+				pageResponse([
+					// Two users, both in two chapters. Distinct = 2; sum-of-buckets = 4.
+					{ chapter_id: null, chapter_ids: [100, 200], created_at: '2026-04-15T01:00:00Z' },
+					{ chapter_id: null, chapter_ids: [100, 200], created_at: '2026-04-15T02:00:00Z' },
+				]),
+			);
+		const { db } = makeDb();
+		const result = await runSolidaritySnapshot(db, 'token', { date: '2026-04-15' });
+		const sentinel = result.rows.find((r) => r.chapterId === -2);
+		expect(sentinel?.count).toBe(2);
+		const sumOfChapters = result.rows
+			.filter((r) => r.chapterId !== -2)
+			.reduce((a, r) => a + r.count, 0);
+		expect(sumOfChapters).toBe(4);
 	});
 });
