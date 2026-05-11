@@ -106,4 +106,15 @@
 		text-align: center;
 		padding: 4rem 0;
 	}
+	/* LayerChart's swatch group is `display: flex` with no wrap, so on detail
+	   pages with many chapters the legend overflows the card. Constrain it to
+	   the chart width and let it wrap onto multiple rows. */
+	.signup-chart :global(.lc-legend-container) {
+		display: block;
+		max-width: 100%;
+	}
+	.signup-chart :global(.lc-legend-swatch-group) {
+		flex-wrap: wrap;
+		row-gap: 0.35rem;
+	}
 </style>

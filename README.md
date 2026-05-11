@@ -1,9 +1,11 @@
 # slack-solidarity-helper-tools
 
-A Slack bot and webhook server for solidarity.tech organisations. It does two things:
+A Slack bot and webhook server for solidarity.tech organisations. It does four things:
 
 - **Welcome new members** — when someone joins the Slack workspace, the bot looks up their solidarity.tech account, automatically adds them to their county chapter channel(s), and sends them a DM with a link to those channels.
 - **Help volunteers join Slack** — when a volunteer has trouble joining, solidarity.tech calls the webhook, their details are queued in a database, and admins work through the queue at `/pending` with live updates via Server-Sent Events.
+- **Show signup trends** — every workspace member can sign in at `/` to see Solidarity vs. Slack signup charts over the last 7/30/90 days, with per-chapter drill-down at `/dashboard/solidarity` and `/dashboard/slack`.
+- **Post a weekly growth report** — a scheduled internal endpoint computes per-chapter Slack-signup growth for the previous week and posts a Slack message highlighting the top performers.
 
 ## How it works
 
@@ -22,6 +24,21 @@ A Slack bot and webhook server for solidarity.tech organisations. It does two th
 3. The server stores the volunteer's details in a Turso database and posts a message to a Slack channel
 4. Authorised admins visit `/pending`, sign in with Slack, and see the queue update in real time
 5. Admins mark volunteers as helped and add comments; changes are reflected live for all connected users
+
+### Dashboard
+
+1. Any workspace member signs in with Slack to land on `/`
+2. The page renders two LayerChart bar charts — total Solidarity signups per day and total Slack signups per day — over a 7/30/90-day window (default 90, persisted via `?days=`)
+3. A "View by chapter →" link on each card goes to `/dashboard/solidarity` or `/dashboard/slack`, which stacks bars per chapter with a top-10 + "Other" rollup
+4. Chapters listed in `REPORT_EXCLUDED_CHAPTER_IDS` are omitted from both charts and from the weekly growth report
+5. Data comes from local tables — `solidarity_daily_snapshots` (written nightly by `/api/internal/solidarity-snapshot`) and `slack_joins` (written in real time by the `team_join` handler)
+
+### Weekly growth report
+
+1. A scheduler (e.g. GitHub Actions) posts to `/api/internal/weekly-growth-report?key=<INTERNAL_CRON_SECRET>` once a week
+2. The endpoint compares `slack_joins` rows from the last 7 days against the existing channel size (fetched via `conversations.info` for chapters with a `SOLIDARITY_CHAPTER_CHANNEL_MAP` entry, or the cumulative `slack_joins` count otherwise)
+3. Chapters are ranked by a power-law score `newJoins / (existing + 1)^α` (configurable via `SLACK_GROWTH_REPORT_RANKING_ALPHA`, default `0.7`) and the top 5 are posted to `SLACK_GROWTH_REPORT_CHANNEL_ID`
+4. Pass `?dry_run=1` to compute the result without posting
 
 ## Setup
 
@@ -93,15 +110,25 @@ SLACK_CLIENT_SECRET=your-client-secret
 SLACK_SIGNING_SECRET=your-signing-secret-here
 SLACK_ALLOWED_USER_IDS=U012AB3CD,U012AB3CE
 SLACK_TRACKING_CHANNEL_ID=C012AB3CD
+SLACK_GROWTH_REPORT_CHANNEL_ID=C012AB3CD          # where the weekly growth report posts
+SLACK_GROWTH_REPORT_RANKING_ALPHA=0.7             # optional; power-law exponent for ranking
+REPORT_EXCLUDED_CHAPTER_IDS=123,456               # optional; chapters to omit from charts + report
 TURSO_DATABASE_URL=libsql://your-db.turso.io
 TURSO_AUTH_TOKEN=your-auth-token-here
 WEBHOOK_SECRET=your-webhook-secret-here
+INTERNAL_CRON_SECRET=long-random-string           # required for /api/internal/* endpoints
 APP_URL=https://your-app.fly.dev
 SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
 SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
 COALITION_CHANNEL_MAP='{"labor":"C0ALZBGF9C2","housing":"C0ALZBGF9C3"}'
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
+
+`SLACK_GROWTH_REPORT_RANKING_ALPHA` tunes the ranking formula `newJoins / (existing + 1)^α`. `α = 1` is pure relative growth (small chapters dominate); `α = 0` is pure absolute count; `0.7` is a middle ground where small chapters still tend to win but large ones can compete.
+
+`REPORT_EXCLUDED_CHAPTER_IDS` is a comma-separated list of solidarity.tech chapter IDs to omit from the dashboard charts AND the weekly growth report — useful for test chapters or internal-only ones. Leave empty (or unset) to include everything.
+
+`INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 
 ### 6. Run the server
 
@@ -217,6 +244,65 @@ Updates the status of a request. Requires an active Slack OAuth session. `status
 { "id": 1, "status": "verified_in_slack" }
 ```
 
+### `GET /`, `GET /dashboard/solidarity`, `GET /dashboard/slack`
+
+Signup-trend dashboard. The whole site (and any future route) is gated by a root layout guard that redirects unauthenticated visitors to `/auth/slack`; any workspace member who completes OAuth can view the dashboard (no admin gate). `/pending` keeps its own `SLACK_ALLOWED_USER_IDS` admin check.
+
+- `/` renders two non-interactive overview cards (Solidarity, Slack) showing daily totals.
+- `/dashboard/solidarity` and `/dashboard/slack` render stacked-by-chapter bars with the top 10 chapters named and the rest rolled into an "Other" band. The Slack page also overlays a per-day distinct-user total marker (a member who joined multiple chapters in one day is counted in each band but only once in the daily total).
+- Range preset (7/30/90 days) lives in `?days=` so reloads and shared links preserve the selection. Invalid or out-of-range values snap to the nearest preset.
+- Each card has a visually-hidden `<table>` with the same data so screen readers can read out per-day values.
+
+### `GET /api/dashboard/signups`
+
+The same data the dashboard pages render, as JSON. Requires an active session (no admin gate).
+
+| Parameter | Required | Description |
+|---|---|---|
+| `days` | No | Window size in days. Defaults to 90; clamped to 1..365. |
+
+```jsonc
+{
+  "solidarity": [
+    {
+      "date": "2026-05-09",
+      "total": 14,                    // sum of byChapter
+      "byChapter": [
+        { "chapterId": 123, "chapterName": "Washtenaw County", "count": 9 },
+        { "chapterId": null, "chapterName": null, "count": 5 }
+      ]
+    }
+  ],
+  "slack": [
+    {
+      "date": "2026-05-09",
+      "total": 11,                    // distinct users that day (not sum of byChapter)
+      "byChapter": [
+        { "chapterId": 123, "chapterName": "Washtenaw County", "count": 7 },
+        { "chapterId": 456, "chapterName": "Wayne County",     "count": 4 }
+      ]
+    }
+  ]
+}
+```
+
+`chapterId: null` represents the "No chapter" bucket. The Slack `total` is the distinct user count for the day, so it can be less than the sum of `byChapter[*].count` when a member joined more than one chapter.
+
+### `POST /api/internal/weekly-growth-report`
+
+Scheduler-only. Computes the per-chapter growth leaderboard for the previous 7 days and posts the top 5 to `SLACK_GROWTH_REPORT_CHANNEL_ID`. Auth via `?key=<INTERNAL_CRON_SECRET>`.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `key` | Yes | Must match `INTERNAL_CRON_SECRET` |
+| `dry_run` | No | When `1`, returns the result without posting to Slack |
+
+Returns the full leaderboard (window, totals, top chapters, whether the message was posted). The ranking score is `newJoins / (existing + 1) ^ SLACK_GROWTH_REPORT_RANKING_ALPHA`. Chapters listed in `REPORT_EXCLUDED_CHAPTER_IDS` are skipped.
+
+### `POST /api/internal/solidarity-snapshot`
+
+Scheduler-only. Writes today's per-chapter Solidarity signup counts into `solidarity_daily_snapshots`. The dashboard's Solidarity chart reads from this table, so this should run once per day (e.g. via GitHub Actions). Auth via `?key=<INTERNAL_CRON_SECRET>`.
+
 ### `GET /coalition-invite`
 
 Invites an existing Slack user to a coalition channel. Useful for solidarity.tech automations that route members to interest-based channels (labor, housing, etc.) after onboarding.
@@ -263,9 +349,12 @@ fly secrets set \
   SLACK_SIGNING_SECRET=... \
   SLACK_ALLOWED_USER_IDS=U012AB3CD \
   SLACK_TRACKING_CHANNEL_ID=C012AB3CD \
+  SLACK_GROWTH_REPORT_CHANNEL_ID=C012AB3CD \
+  REPORT_EXCLUDED_CHAPTER_IDS=1008 \
   TURSO_DATABASE_URL=libsql://your-db.turso.io \
   TURSO_AUTH_TOKEN=... \
   WEBHOOK_SECRET=... \
+  INTERNAL_CRON_SECRET=$(openssl rand -hex 32) \
   APP_URL=https://your-app.fly.dev \
   ORIGIN=https://your-app.fly.dev \
   SOLIDARITY_API_TOKEN=... \
@@ -274,6 +363,10 @@ fly secrets set \
 
 fly deploy
 ```
+
+Then point a scheduler at:
+- `POST https://your-app.fly.dev/api/internal/solidarity-snapshot?key=$INTERNAL_CRON_SECRET` — daily
+- `POST https://your-app.fly.dev/api/internal/weekly-growth-report?key=$INTERNAL_CRON_SECRET` — weekly
 
 `ORIGIN` is required by SvelteKit's adapter-node for CSRF protection — it must match the public URL of your app. Set it to the same value as `APP_URL`.
 

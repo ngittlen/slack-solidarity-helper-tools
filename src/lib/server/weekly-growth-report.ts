@@ -118,6 +118,95 @@ function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): 
 	return blocks;
 }
 
+export interface WeeklyLeaderboard {
+	windowStart: string;
+	windowEnd: string;
+	/** All chapters with newJoins > 0 in the window (post-exclusion), pre-slice. */
+	chaptersWithGrowth: number;
+	/** Distinct users who joined Slack in the window (excluded chapters still count). */
+	totalNewJoins: number;
+	/** Top TOP_N entries by ranking score, descending. */
+	topChapters: ChapterGrowth[];
+}
+
+/**
+ * Pure SQL aggregation + ranking — no Slack API calls. Safe to call from a
+ * page load (used by the Slack dashboard side panel). `existing` is derived
+ * from slack_joins row counts; the weekly-report endpoint overrides it with
+ * `conversations.info` num_members for chapters that have a channel mapping.
+ *
+ * If `chapterChannelIds` is provided, `slackChannelId` on each entry is
+ * populated from it (no Slack API call required — just a map lookup) so
+ * consumers can render deep links to the chapter's Slack channel.
+ */
+export async function computeWeeklyLeaderboard(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	options: {
+		now?: Date;
+		excludedChapterIds?: ReadonlySet<number>;
+		chapterChannelIds?: ReadonlyMap<number, string>;
+		rankingAlpha?: number;
+	} = {},
+): Promise<WeeklyLeaderboard> {
+	const excluded = options.excludedChapterIds ?? new Set<number>();
+	const chapterChannelIds = options.chapterChannelIds ?? new Map<number, string>();
+	const rankingAlpha = options.rankingAlpha ?? DEFAULT_RANKING_ALPHA;
+	const now = options.now ?? new Date();
+	const { start: windowStart, end: windowEnd } = computeWindow(now);
+	const windowStartIso = windowStart.toISOString();
+	const windowEndIso = windowEnd.toISOString();
+
+	const aggRows = (await db.all(sql`
+		SELECT
+			CAST(je.value AS INTEGER) AS chapter_id,
+			SUM(CASE WHEN joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso} THEN 1 ELSE 0 END) AS new_joins,
+			SUM(CASE WHEN joined_at IS NULL OR joined_at < ${windowStartIso}              THEN 1 ELSE 0 END) AS existing
+		FROM slack_joins, json_each(slack_joins.chapter_ids) je
+		GROUP BY chapter_id
+	`)) as Array<{ chapter_id: number; new_joins: number; existing: number }>;
+
+	const names = await loadChapterNames(db);
+
+	const leaderboard: ChapterGrowth[] = aggRows
+		.map((row) => ({
+			chapterId: Number(row.chapter_id),
+			newJoins: Number(row.new_joins),
+			existing: Number(row.existing),
+		}))
+		.filter((c) => c.newJoins > 0 && !excluded.has(c.chapterId))
+		.map((c) => ({
+			chapterId: c.chapterId,
+			chapterName: names.get(c.chapterId) ?? `Chapter #${c.chapterId}`,
+			slackChannelId: chapterChannelIds.get(c.chapterId) ?? null,
+			newJoins: c.newJoins,
+			existing: c.existing,
+			pct: c.existing > 0 ? (c.newJoins / c.existing) * 100 : 0,
+		}));
+
+	const rankingScore = (c: ChapterGrowth) =>
+		c.newJoins / Math.pow(c.existing + 1, rankingAlpha);
+	leaderboard.sort((a, b) => {
+		const sa = rankingScore(a);
+		const sb = rankingScore(b);
+		if (sb !== sa) return sb - sa;
+		return b.newJoins - a.newJoins;
+	});
+
+	const totalNewJoinsRow = (await db.all(sql`
+		SELECT COUNT(*) AS cnt FROM slack_joins
+		WHERE joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso}
+	`)) as Array<{ cnt: number }>;
+	const totalNewJoins = Number(totalNewJoinsRow[0]?.cnt ?? 0);
+
+	return {
+		windowStart: windowStartIso,
+		windowEnd: windowEndIso,
+		chaptersWithGrowth: leaderboard.length,
+		totalNewJoins,
+		topChapters: leaderboard.slice(0, TOP_N),
+	};
+}
+
 export async function runWeeklyGrowthReport(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	slack: WebClient,
