@@ -50,6 +50,20 @@ function sortByChapter(a: ChapterCount, b: ChapterCount): number {
 	return a.chapterId - b.chapterId;
 }
 
+export async function loadSolidaritySignups(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	options: GetDashboardSignupsOptions,
+): Promise<DaySignups[]> {
+	return loadSolidarity(db, windowStartDate(options.days, options.now ?? new Date()));
+}
+
+export async function loadSlackSignups(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	options: GetDashboardSignupsOptions,
+): Promise<DaySignups[]> {
+	return loadSlack(db, windowStartDate(options.days, options.now ?? new Date()));
+}
+
 async function loadSolidarity(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	startDate: string,

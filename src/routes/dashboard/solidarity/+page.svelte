@@ -1,0 +1,75 @@
+<script lang="ts">
+	import RangePresetPicker from '$lib/components/dashboard/RangePresetPicker.svelte';
+	import ChartCard from '$lib/components/dashboard/ChartCard.svelte';
+	import { buildDetailFrame } from '$lib/components/dashboard/chart-data.js';
+	import type { PageData } from './$types';
+
+	let { data }: { data: PageData } = $props();
+
+	const cardState = $derived.by<
+		| { kind: 'empty' }
+		| { kind: 'error'; message: string }
+		| { kind: 'ready'; frame: ReturnType<typeof buildDetailFrame> }
+	>(() => {
+		if (!data.solidarity.ok) {
+			return { kind: 'error', message: data.solidarity.error };
+		}
+		const frame = buildDetailFrame(data.solidarity.days, 'solidarity');
+		if (frame.dates.length === 0) return { kind: 'empty' };
+		return { kind: 'ready', frame };
+	});
+</script>
+
+<svelte:head>
+	<title>Solidarity signups by chapter</title>
+</svelte:head>
+
+<main>
+	<header class="detail-header">
+		<h1>Solidarity signups by chapter</h1>
+		<RangePresetPicker current={data.days} />
+	</header>
+
+	<ChartCard title="Solidarity signups" cardState={cardState} />
+
+	<p class="back-link">
+		<!-- Same-host, known route + query string. -->
+		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
+		<a href={`/?days=${data.days}`}>← Back</a>
+	</p>
+</main>
+
+<style>
+	main {
+		font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+		max-width: 1100px;
+		margin: 0 auto;
+		padding: 2rem 1.5rem;
+	}
+	.detail-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: 1rem;
+		margin-bottom: 1.5rem;
+	}
+	.detail-header h1 {
+		margin: 0;
+		font-size: 1.5rem;
+		color: #111827;
+	}
+	.back-link a {
+		color: #2563eb;
+		text-decoration: none;
+	}
+	.back-link a:hover,
+	.back-link a:focus-visible {
+		text-decoration: underline;
+	}
+	@media (max-width: 640px) {
+		main {
+			padding: 1rem;
+		}
+	}
+</style>
