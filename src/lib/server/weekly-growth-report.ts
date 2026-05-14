@@ -236,18 +236,67 @@ export async function computeWeeklyLeaderboard(
 	};
 }
 
+// In-memory cache of Slack channel member counts, shared across dashboard
+// loads in the (single) adapter-node process. The live leaderboard is read
+// far more often than channel sizes meaningfully change, so a short TTL keeps
+// the dashboard from fanning out a `conversations.info` call per chapter on
+// every page load. Only successful lookups are cached — failures fall through
+// so the next load retries. The cron deliberately does NOT use this; it wants
+// fresh ground truth.
+const CHANNEL_COUNT_TTL_MS = 5 * 60 * 1000;
+const channelCountCache = new Map<string, { numMembers: number; fetchedAt: number }>();
+
+/** Clears the channel-count cache. Exported for tests only. */
+export function clearChannelCountCache(): void {
+	channelCountCache.clear();
+}
+
+/**
+ * Current Slack `num_members` for a channel, memoised for CHANNEL_COUNT_TTL_MS.
+ * Returns null when the channel reports no `num_members` or the lookup fails
+ * (the caller then falls back to the snapshot / slack_joins counts).
+ */
+async function getChannelMemberCount(
+	slack: WebClient,
+	channelId: string,
+): Promise<number | null> {
+	const now = Date.now();
+	const cached = channelCountCache.get(channelId);
+	if (cached && now - cached.fetchedAt < CHANNEL_COUNT_TTL_MS) {
+		return cached.numMembers;
+	}
+	try {
+		const info = await slack.conversations.info({
+			channel: channelId,
+			include_num_members: true,
+		});
+		const num = info.channel?.num_members;
+		if (typeof num === 'number') {
+			channelCountCache.set(channelId, { numMembers: num, fetchedAt: now });
+			return num;
+		}
+		return null;
+	} catch (err) {
+		console.warn(
+			`[leaderboard] conversations.info failed for channel ${channelId}:`,
+			err instanceof Error ? err.message : err,
+		);
+		return null;
+	}
+}
+
 /**
  * Live leaderboard for the in-progress week — the data the next cron run
  * will eventually snapshot. The window runs from the latest snapshot's
  * `windowEnd` (or, if no snapshot exists yet, the most recent UTC Monday
  * midnight via `computeWindow`) up to `now`.
  *
- * Computes per-chapter counts directly from `slack_joins` (no Slack API
- * calls) so this stays fast on dashboard loads. When a snapshot exists,
- * the `existing` baseline reuses each chapter's `numMembers` from the
- * snapshot row (Slack's ground-truth count captured at `windowEnd`);
- * otherwise it falls back to a `slack_joins`-derived count of members who
- * joined before the window started.
+ * `newJoins` come from `slack_joins`. For the `existing` baseline, when a
+ * `slack` client is supplied the chapter's *current* Slack channel size is
+ * fetched (`conversations.info`) and this window's new joins subtracted —
+ * matching how the cron computes it. Each fetch is best-effort: on a missing
+ * channel mapping or API error it falls back to the snapshot's captured
+ * `numMembers`, then to a `slack_joins`-derived pre-window count.
  */
 export async function computeLiveLeaderboardSinceSnapshot(
 	db: LibSQLDatabase<Record<string, unknown>>,
@@ -256,12 +305,16 @@ export async function computeLiveLeaderboardSinceSnapshot(
 		excludedChapterIds?: ReadonlySet<number>;
 		chapterChannelIds?: ReadonlyMap<number, string>;
 		rankingAlpha?: number;
+		/** When provided, the live leaderboard fetches each chapter's current
+		 * Slack channel `num_members` instead of relying on the snapshot. */
+		slack?: WebClient;
 	} = {},
 ): Promise<WeeklyLeaderboard> {
 	const excluded = options.excludedChapterIds ?? new Set<number>();
 	const chapterChannelIds = options.chapterChannelIds;
 	const rankingAlpha = options.rankingAlpha ?? DEFAULT_RANKING_ALPHA;
 	const now = options.now ?? new Date();
+	const slack = options.slack;
 
 	const latestWindow = await db
 		.select()
@@ -312,18 +365,34 @@ export async function computeLiveLeaderboardSinceSnapshot(
 
 	const names = await loadChapterNames(db);
 
-	const leaderboard: ChapterGrowth[] = aggRows
+	const candidates = aggRows
 		.map((row) => ({
 			chapterId: Number(row.chapter_id),
 			newJoins: Number(row.new_joins),
 			sqlExisting: Number(row.existing),
 		}))
-		.filter((c) => c.newJoins > 0 && !excluded.has(c.chapterId))
-		.map((c) => {
+		.filter((c) => c.newJoins > 0 && !excluded.has(c.chapterId));
+
+	const leaderboard: ChapterGrowth[] = await Promise.all(
+		candidates.map(async (c) => {
 			const snap = snapshotByChapter.get(c.chapterId);
-			const existing = snap?.numMembers ?? c.sqlExisting;
-			const chapterName = snap?.chapterName ?? names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
+			const chapterName =
+				snap?.chapterName ?? names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
 			const slackChannelId = chapterChannelIds?.get(c.chapterId) ?? snap?.slackChannelId ?? null;
+
+			// Baseline chapter size. Prefer the *current* Slack channel count
+			// (minus this window's new joins, since num_members already includes
+			// them); fall back to the snapshot's captured count, then the
+			// slack_joins-derived pre-window count. The lookup is cached and
+			// best-effort, so one bad channel can't break the dashboard.
+			let existing = snap?.numMembers ?? c.sqlExisting;
+			if (slack && slackChannelId) {
+				const num = await getChannelMemberCount(slack, slackChannelId);
+				if (num !== null) {
+					existing = Math.max(0, num - c.newJoins);
+				}
+			}
+
 			const pct = existing > 0 ? (c.newJoins / existing) * 100 : 0;
 			return {
 				chapterId: c.chapterId,
@@ -333,7 +402,8 @@ export async function computeLiveLeaderboardSinceSnapshot(
 				existing,
 				pct,
 			};
-		});
+		}),
+	);
 
 	sortByRanking(leaderboard, rankingAlpha);
 

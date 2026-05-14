@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { WebClient } from '@slack/web-api';
 import {
 	computeWindow,
 	computeWeeklyLeaderboard,
 	computeLiveLeaderboardSinceSnapshot,
+	clearChannelCountCache,
 } from './weekly-growth-report.js';
 
 describe('computeWindow', () => {
@@ -183,6 +185,25 @@ describe('computeLiveLeaderboardSinceSnapshot', () => {
 		};
 	}
 
+	// Minimal WebClient stand-in: only conversations.info is exercised.
+	function makeSlack(opts: {
+		numMembers?: Record<string, number>;
+		throwFor?: ReadonlySet<string>;
+	}): { slack: WebClient; infoMock: ReturnType<typeof vi.fn> } {
+		const infoMock = vi.fn(async ({ channel }: { channel: string }) => {
+			if (opts.throwFor?.has(channel)) throw new Error('slack unavailable');
+			return { channel: { num_members: opts.numMembers?.[channel] } };
+		});
+		return {
+			slack: { conversations: { info: infoMock } } as unknown as WebClient,
+			infoMock,
+		};
+	}
+
+	// The channel-count cache is module-level; reset it so tests don't leak
+	// cached counts into one another.
+	beforeEach(clearChannelCountCache);
+
 	it('falls back to Monday-to-now when no snapshot exists', async () => {
 		// 2026-05-13 is a Wednesday → most recent UTC Monday midnight is 2026-05-11.
 		const now = new Date('2026-05-13T10:00:00Z');
@@ -285,5 +306,108 @@ describe('computeLiveLeaderboardSinceSnapshot', () => {
 		expect(result.topChapters.map((c) => c.chapterId)).toEqual([1]);
 		// totalNewJoins is the workspace-wide count; excluded chapters still count.
 		expect(result.totalNewJoins).toBe(7);
+	});
+
+	it('uses the current Slack channel count for the existing baseline', async () => {
+		const { db } = makeDb({
+			windows: [
+				{
+					windowEnd: '2026-05-11T00:00:00.000Z',
+					windowStart: '2026-05-04T00:00:00.000Z',
+					totalNewJoins: 12,
+				},
+			],
+			snapshotRows: [
+				{
+					chapterId: 1,
+					chapterName: '#sf',
+					slackChannelId: 'C1',
+					newJoins: 5,
+					existing: 50,
+					numMembers: 55,
+				},
+			],
+			aggRows: [{ chapter_id: 1, new_joins: 3, existing: 99 }],
+			totalNewJoins: 3,
+		});
+		const { slack } = makeSlack({ numMembers: { C1: 60 } });
+		const result = await computeLiveLeaderboardSinceSnapshot(db, {
+			now: new Date('2026-05-13T10:00:00Z'),
+			chapterChannelIds: new Map([[1, 'C1']]),
+			slack,
+		});
+		// Current channel size (60) minus this window's new joins (3) → 57.
+		// Beats the snapshot's numMembers (55) and the slack_joins count (99).
+		expect(result.topChapters[0]?.existing).toBe(57);
+		expect(result.topChapters[0]?.pct).toBeCloseTo((3 / 57) * 100, 5);
+	});
+
+	it('falls back to the snapshot count when the Slack lookup fails', async () => {
+		const { db } = makeDb({
+			windows: [
+				{
+					windowEnd: '2026-05-11T00:00:00.000Z',
+					windowStart: '2026-05-04T00:00:00.000Z',
+					totalNewJoins: 12,
+				},
+			],
+			snapshotRows: [
+				{
+					chapterId: 1,
+					chapterName: '#sf',
+					slackChannelId: 'C1',
+					newJoins: 5,
+					existing: 50,
+					numMembers: 55,
+				},
+			],
+			aggRows: [{ chapter_id: 1, new_joins: 3, existing: 99 }],
+			totalNewJoins: 3,
+		});
+		const { slack } = makeSlack({ throwFor: new Set(['C1']) });
+		const result = await computeLiveLeaderboardSinceSnapshot(db, {
+			now: new Date('2026-05-13T10:00:00Z'),
+			chapterChannelIds: new Map([[1, 'C1']]),
+			slack,
+		});
+		// Slack lookup threw → fall back to the snapshot's captured numMembers (55).
+		expect(result.topChapters[0]?.existing).toBe(55);
+	});
+
+	it('caches channel counts across loads within the TTL', async () => {
+		const snapshotRows = [
+			{
+				chapterId: 1,
+				chapterName: '#sf',
+				slackChannelId: 'C1',
+				newJoins: 5,
+				existing: 50,
+				numMembers: 55,
+			},
+		];
+		const windows = [
+			{
+				windowEnd: '2026-05-11T00:00:00.000Z',
+				windowStart: '2026-05-04T00:00:00.000Z',
+				totalNewJoins: 12,
+			},
+		];
+		const aggRows = [{ chapter_id: 1, new_joins: 3, existing: 99 }];
+		// A fresh db mock per call — its queues are consumed once each.
+		const dbFor = () => makeDb({ windows, snapshotRows, aggRows, totalNewJoins: 3 }).db;
+		const { slack, infoMock } = makeSlack({ numMembers: { C1: 60 } });
+		const opts = {
+			now: new Date('2026-05-13T10:00:00Z'),
+			chapterChannelIds: new Map([[1, 'C1']]),
+			slack,
+		};
+
+		const first = await computeLiveLeaderboardSinceSnapshot(dbFor(), opts);
+		const second = await computeLiveLeaderboardSinceSnapshot(dbFor(), opts);
+
+		expect(first.topChapters[0]?.existing).toBe(57);
+		expect(second.topChapters[0]?.existing).toBe(57);
+		// Second load was served from cache — Slack was hit only once.
+		expect(infoMock).toHaveBeenCalledTimes(1);
 	});
 });

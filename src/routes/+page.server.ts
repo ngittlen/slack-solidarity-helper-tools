@@ -1,6 +1,7 @@
 import type { PageServerLoad } from './$types';
 import { loadDashboardPageData } from '$lib/server/dashboard-page-load.js';
 import { db } from '$lib/server/db.js';
+import { slack } from '$lib/server/slack.js';
 import {
 	computeWeeklyLeaderboard,
 	computeLiveLeaderboardSinceSnapshot,
@@ -43,8 +44,10 @@ export const load: PageServerLoad = async (event) => {
 	};
 
 	const [saved, live] = await Promise.all([
+		// Saved tab stays the frozen snapshot; only the live tab fetches the
+		// current Slack channel sizes.
 		safeLoad('saved', () => computeWeeklyLeaderboard(db, opts)),
-		safeLoad('live', () => computeLiveLeaderboardSinceSnapshot(db, opts)),
+		safeLoad('live', () => computeLiveLeaderboardSinceSnapshot(db, { ...opts, slack })),
 	]);
 
 	const leaderboard: LeaderboardPair = { saved, live };
