@@ -68,3 +68,13 @@ body {
     background: var(--color-bg);
     color: var(--color-text);
 }
+
+/* Solid (non-translucent) background on chart tooltips so values stay
+   legible when the tooltip overlaps colored bars. Overrides layerchart's
+   default translucent `color-mix(..., transparent)` fill. */
+.lc-tooltip-container[data-variant='default'] {
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    backdrop-filter: none;
+    border: 1px solid var(--color-border);
+}

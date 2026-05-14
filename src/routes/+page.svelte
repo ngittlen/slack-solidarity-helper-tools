@@ -1,36 +1,53 @@
 <script lang="ts">
 	import RangePresetPicker from '$lib/components/dashboard/RangePresetPicker.svelte';
 	import ChartCard from '$lib/components/dashboard/ChartCard.svelte';
-	import { buildOverviewFrame } from '$lib/components/dashboard/chart-data.js';
+	import SlackLeaderboard from '$lib/components/dashboard/SlackLeaderboard.svelte';
+	import {
+		buildOverviewFrame,
+		buildDetailFrame,
+		type ChartBand,
+		type ChartFrame,
+	} from '$lib/components/dashboard/chart-data.js';
+	import type { DaySignups } from '$lib/server/dashboard-signups.js';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	const solidarityState = $derived.by<
+	type ChartMode = 'overview' | 'detail';
+	type CardState =
 		| { kind: 'empty' }
 		| { kind: 'error'; message: string }
-		| { kind: 'ready'; frame: ReturnType<typeof buildOverviewFrame> }
-	>(() => {
-		if (!data.solidarity.ok) {
-			return { kind: 'error', message: data.solidarity.error };
-		}
-		const frame = buildOverviewFrame(data.solidarity.days, 'Solidarity');
-		if (frame.dates.length === 0) return { kind: 'empty' };
-		return { kind: 'ready', frame };
-	});
+		| {
+				kind: 'ready';
+				frame: ChartFrame;
+				showTotalOverlay: boolean;
+				legendBands: ChartBand[];
+		  };
 
-	const slackState = $derived.by<
-		| { kind: 'empty' }
-		| { kind: 'error'; message: string }
-		| { kind: 'ready'; frame: ReturnType<typeof buildOverviewFrame> }
-	>(() => {
-		if (!data.slack.ok) {
-			return { kind: 'error', message: data.slack.error };
-		}
-		const frame = buildOverviewFrame(data.slack.days, 'Slack');
+	let solidarityMode = $state<ChartMode>('overview');
+	let slackMode = $state<ChartMode>('overview');
+
+	function buildState(
+		source: { ok: true; days: DaySignups[] } | { ok: false; error: string },
+		mode: ChartMode,
+		label: string,
+	): CardState {
+		if (!source.ok) return { kind: 'error', message: source.error };
+		// Always build the detail frame: even in overview mode its band list
+		// feeds the reserved-but-hidden legend, so toggling never resizes the card.
+		const detailFrame = buildDetailFrame(source.days);
+		const frame = mode === 'detail' ? detailFrame : buildOverviewFrame(source.days, label);
 		if (frame.dates.length === 0) return { kind: 'empty' };
-		return { kind: 'ready', frame };
-	});
+		return {
+			kind: 'ready',
+			frame,
+			showTotalOverlay: mode === 'detail',
+			legendBands: detailFrame.bands,
+		};
+	}
+
+	const solidarityState = $derived(buildState(data.solidarity, solidarityMode, 'Solidarity'));
+	const slackState = $derived(buildState(data.slack, slackMode, 'Slack'));
 </script>
 
 <svelte:head>
@@ -42,23 +59,18 @@
 		<RangePresetPicker current={data.days} />
 	</div>
 
-	<ChartCard
-		title="Solidarity signups"
-		detailHref={`/dashboard/solidarity?days=${data.days}`}
-		cardState={solidarityState}
-	/>
+	<ChartCard title="Solidarity signups" cardState={solidarityState} bind:mode={solidarityMode} />
 
-	<ChartCard
-		title="Slack signups"
-		detailHref={`/dashboard/slack?days=${data.days}`}
-		cardState={slackState}
-	/>
+	<div class="slack-row">
+		<ChartCard title="Slack signups" cardState={slackState} bind:mode={slackMode} />
+		<SlackLeaderboard leaderboard={data.leaderboard} />
+	</div>
 </main>
 
 <style>
 	main {
 		font-family: var(--font-family);
-		max-width: 960px;
+		max-width: 1280px;
 		margin: 0 auto;
 		padding: 2rem 1.5rem;
 		color: var(--color-text);
@@ -67,6 +79,17 @@
 		display: flex;
 		justify-content: flex-end;
 		margin-bottom: 1.5rem;
+	}
+	.slack-row {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 320px;
+		gap: 1.5rem;
+		align-items: start;
+	}
+	@media (max-width: 960px) {
+		.slack-row {
+			grid-template-columns: 1fr;
+		}
 	}
 	@media (max-width: 640px) {
 		main {

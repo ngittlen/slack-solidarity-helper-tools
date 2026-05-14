@@ -1,16 +1,19 @@
 <script lang="ts">
 	import { BarChart, Bars } from 'layerchart';
 	import { CHART_BAND_COLORS } from '$lib/styles/chart-colors';
-	import type { ChartFrame } from './chart-data.js';
+	import type { ChartBand, ChartFrame } from './chart-data.js';
 
 	type Props = {
 		variant: 'overview' | 'detail';
 		frame: ChartFrame;
+		/** Per-chapter bands for the legend. Always rendered so its footprint is
+		 * reserved in both variants; visually hidden in overview mode. */
+		legendBands: ChartBand[];
 		accessibleName: string;
 		showTotalOverlay?: boolean;
 	};
 
-	let { variant, frame, accessibleName, showTotalOverlay = false }: Props = $props();
+	let { variant, frame, legendBands, accessibleName, showTotalOverlay = false }: Props = $props();
 
 	type Row = Record<string, string | number>;
 
@@ -33,12 +36,21 @@
 			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length]
 		}))
 	);
+
+	// Built from legendBands (always the per-chapter bands) rather than `series`
+	// so the legend's contents — and therefore its height — are identical in both
+	// variants. Only visibility changes when toggling.
+	const legendItems = $derived(
+		legendBands.map((band, i) => ({
+			key: band.key,
+			label: band.label,
+			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length]
+		}))
+	);
 </script>
 
 <div
 	class="signup-chart"
-	class:overview={variant === 'overview'}
-	class:detail={variant === 'detail'}
 	role="img"
 	aria-label={accessibleName}
 >
@@ -78,20 +90,25 @@
 				{/snippet}
 			</BarChart>
 		</div>
-		{#if variant === 'detail'}
-			<ul class="signup-chart__legend" aria-label="Chapter legend">
-				{#each series as s (s.key)}
-					<li class="signup-chart__legend-item">
-						<span
-							class="signup-chart__swatch"
-							style:background-color={s.color}
-							aria-hidden="true"
-						></span>
-						<span class="signup-chart__legend-label">{s.label}</span>
-					</li>
-				{/each}
-			</ul>
-		{/if}
+		<!-- Always rendered so the legend's footprint is reserved in both
+		     variants; only made visible in detail mode. -->
+		<ul
+			class="signup-chart__legend"
+			class:signup-chart__legend--hidden={variant === 'overview'}
+			aria-label="Chapter legend"
+			aria-hidden={variant === 'overview'}
+		>
+			{#each legendItems as s (s.key)}
+				<li class="signup-chart__legend-item">
+					<span
+						class="signup-chart__swatch"
+						style:background-color={s.color}
+						aria-hidden="true"
+					></span>
+					<span class="signup-chart__legend-label">{s.label}</span>
+				</li>
+			{/each}
+		</ul>
 	{/if}
 </div>
 
@@ -104,10 +121,9 @@
 	}
 	.signup-chart__plot {
 		width: 100%;
-		height: 280px;
-	}
-	.signup-chart.detail .signup-chart__plot {
 		height: 320px;
+		min-height: 0;
+		overflow: hidden;
 	}
 	.signup-chart__empty {
 		color: var(--color-text-muted);
@@ -129,6 +145,10 @@
 		gap: 0.4rem 1rem;
 		font-size: var(--font-size-sm);
 		color: var(--color-text);
+	}
+	/* Keeps the legend's reserved space while hiding it in overview mode. */
+	.signup-chart__legend--hidden {
+		visibility: hidden;
 	}
 	.signup-chart__legend-item {
 		display: inline-flex;

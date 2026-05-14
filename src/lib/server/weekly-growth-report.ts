@@ -21,7 +21,7 @@ const WINDOW_DAYS = 7;
 //   α = 0   → pure absolute count
 // The +1 in the denominator avoids dividing by zero for brand-new chapters.
 // The endpoint can override this via the SLACK_GROWTH_REPORT_RANKING_ALPHA env var.
-const DEFAULT_RANKING_ALPHA = 0.7;
+const DEFAULT_RANKING_ALPHA = 0.5;
 
 export interface ChapterGrowth {
 	chapterId: number;
@@ -67,6 +67,21 @@ export function computeWindow(now: Date): { start: Date; end: Date } {
 
 function roundPct(p: number): number {
 	return Math.round(p * 10) / 10;
+}
+
+// Power-law ranking score shared between the cron's compute path and the
+// dashboard's saved/live leaderboard reads, so all three sort orders agree.
+function rankingScore(c: ChapterGrowth, alpha: number): number {
+	return c.newJoins / Math.pow(c.existing + 1, alpha);
+}
+
+function sortByRanking(rows: ChapterGrowth[], alpha: number): void {
+	rows.sort((a, b) => {
+		const sa = rankingScore(a, alpha);
+		const sb = rankingScore(b, alpha);
+		if (sb !== sa) return sb - sa;
+		return b.newJoins - a.newJoins;
+	});
 }
 
 function fmtDate(d: Date): string {
@@ -136,6 +151,18 @@ export interface WeeklyLeaderboard {
 	topChapters: ChapterGrowth[];
 }
 
+/** A leaderboard load that either succeeded or failed with a user-facing message. */
+export type LeaderboardResult =
+	| { ok: true; leaderboard: WeeklyLeaderboard }
+	| { ok: false; error: string };
+
+/** The two leaderboard views the dashboard renders behind a tab toggle:
+ * `saved` is the last cron snapshot, `live` is the in-progress week. */
+export interface LeaderboardPair {
+	saved: LeaderboardResult;
+	live: LeaderboardResult;
+}
+
 /**
  * Reads the most recent snapshot written by the Monday cron and reconstructs
  * the leaderboard from it. Returns an empty leaderboard if no snapshot exists
@@ -198,20 +225,129 @@ export async function computeWeeklyLeaderboard(
 			pct: r.existing > 0 ? (r.newJoins / r.existing) * 100 : 0,
 		}));
 
-	const rankingScore = (c: ChapterGrowth) =>
-		c.newJoins / Math.pow(c.existing + 1, rankingAlpha);
-	leaderboard.sort((a, b) => {
-		const sa = rankingScore(a);
-		const sb = rankingScore(b);
-		if (sb !== sa) return sb - sa;
-		return b.newJoins - a.newJoins;
-	});
+	sortByRanking(leaderboard, rankingAlpha);
 
 	return {
 		windowStart: win.windowStart,
 		windowEnd: win.windowEnd,
 		chaptersWithGrowth: leaderboard.length,
 		totalNewJoins: win.totalNewJoins,
+		topChapters: leaderboard.slice(0, TOP_N),
+	};
+}
+
+/**
+ * Live leaderboard for the in-progress week — the data the next cron run
+ * will eventually snapshot. The window runs from the latest snapshot's
+ * `windowEnd` (or, if no snapshot exists yet, the most recent UTC Monday
+ * midnight via `computeWindow`) up to `now`.
+ *
+ * Computes per-chapter counts directly from `slack_joins` (no Slack API
+ * calls) so this stays fast on dashboard loads. When a snapshot exists,
+ * the `existing` baseline reuses each chapter's `numMembers` from the
+ * snapshot row (Slack's ground-truth count captured at `windowEnd`);
+ * otherwise it falls back to a `slack_joins`-derived count of members who
+ * joined before the window started.
+ */
+export async function computeLiveLeaderboardSinceSnapshot(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	options: {
+		now?: Date;
+		excludedChapterIds?: ReadonlySet<number>;
+		chapterChannelIds?: ReadonlyMap<number, string>;
+		rankingAlpha?: number;
+	} = {},
+): Promise<WeeklyLeaderboard> {
+	const excluded = options.excludedChapterIds ?? new Set<number>();
+	const chapterChannelIds = options.chapterChannelIds;
+	const rankingAlpha = options.rankingAlpha ?? DEFAULT_RANKING_ALPHA;
+	const now = options.now ?? new Date();
+
+	const latestWindow = await db
+		.select()
+		.from(weeklyGrowthWindows)
+		.orderBy(desc(weeklyGrowthWindows.windowEnd))
+		.limit(1);
+
+	// Anchor the window at the most recent snapshot's `windowEnd` when one
+	// exists, otherwise fall back to the most recent UTC Monday midnight so
+	// the live tab still shows something useful (and meaningfully distinct
+	// from the saved tab's empty-state Mon-to-Mon range) before the first
+	// cron has run.
+	const win = latestWindow[0];
+	const windowStartIso = win ? win.windowEnd : computeWindow(now).end.toISOString();
+	const windowEndIso = now.toISOString();
+
+	const snapshotRows = win
+		? await db
+				.select()
+				.from(weeklyChapterGrowth)
+				.where(eq(weeklyChapterGrowth.windowEnd, win.windowEnd))
+		: [];
+
+	const snapshotByChapter = new Map<
+		number,
+		{ chapterName: string; slackChannelId: string | null; numMembers: number | null }
+	>();
+	for (const r of snapshotRows) {
+		snapshotByChapter.set(r.chapterId, {
+			chapterName: r.chapterName,
+			slackChannelId: r.slackChannelId,
+			numMembers: r.numMembers,
+		});
+	}
+
+	// Same json_each aggregation the cron uses (runWeeklyGrowthReport), but
+	// for the new [snapshotEnd, now) window. `existing` here is the slack_joins-
+	// derived count of pre-window members and is used as a fallback when the
+	// snapshot didn't capture a numMembers for this chapter.
+	const aggRows = (await db.all(sql`
+		SELECT
+			CAST(je.value AS INTEGER) AS chapter_id,
+			SUM(CASE WHEN joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso} THEN 1 ELSE 0 END) AS new_joins,
+			SUM(CASE WHEN joined_at IS NULL OR joined_at < ${windowStartIso}              THEN 1 ELSE 0 END) AS existing
+		FROM slack_joins, json_each(slack_joins.chapter_ids) je
+		GROUP BY chapter_id
+	`)) as Array<{ chapter_id: number; new_joins: number; existing: number }>;
+
+	const names = await loadChapterNames(db);
+
+	const leaderboard: ChapterGrowth[] = aggRows
+		.map((row) => ({
+			chapterId: Number(row.chapter_id),
+			newJoins: Number(row.new_joins),
+			sqlExisting: Number(row.existing),
+		}))
+		.filter((c) => c.newJoins > 0 && !excluded.has(c.chapterId))
+		.map((c) => {
+			const snap = snapshotByChapter.get(c.chapterId);
+			const existing = snap?.numMembers ?? c.sqlExisting;
+			const chapterName = snap?.chapterName ?? names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
+			const slackChannelId = chapterChannelIds?.get(c.chapterId) ?? snap?.slackChannelId ?? null;
+			const pct = existing > 0 ? (c.newJoins / existing) * 100 : 0;
+			return {
+				chapterId: c.chapterId,
+				chapterName,
+				slackChannelId,
+				newJoins: c.newJoins,
+				existing,
+				pct,
+			};
+		});
+
+	sortByRanking(leaderboard, rankingAlpha);
+
+	const totalNewJoinsRow = (await db.all(sql`
+		SELECT COUNT(*) AS cnt FROM slack_joins
+		WHERE joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso}
+	`)) as Array<{ cnt: number }>;
+	const totalNewJoins = Number(totalNewJoinsRow[0]?.cnt ?? 0);
+
+	return {
+		windowStart: windowStartIso,
+		windowEnd: windowEndIso,
+		chaptersWithGrowth: leaderboard.length,
+		totalNewJoins,
 		topChapters: leaderboard.slice(0, TOP_N),
 	};
 }
@@ -385,14 +521,7 @@ export async function runWeeklyGrowthReport(
 			pct,
 		};
 	});
-	const rankingScore = (c: ChapterGrowth) =>
-		c.newJoins / Math.pow(c.existing + 1, rankingAlpha);
-	leaderboard.sort((a, b) => {
-		const sa = rankingScore(a);
-		const sb = rankingScore(b);
-		if (sb !== sa) return sb - sa;
-		return b.newJoins - a.newJoins;
-	});
+	sortByRanking(leaderboard, rankingAlpha);
 
 	const topChapters = leaderboard.slice(0, TOP_N);
 	// Distinct count of users who joined the workspace this window. Counted

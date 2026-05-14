@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { computeWindow, computeWeeklyLeaderboard } from './weekly-growth-report.js';
+import {
+	computeWindow,
+	computeWeeklyLeaderboard,
+	computeLiveLeaderboardSinceSnapshot,
+} from './weekly-growth-report.js';
 
 describe('computeWindow', () => {
 	function expectWindow(input: string, expectedEnd: string, expectedStart: string) {
@@ -125,5 +129,161 @@ describe('computeWeeklyLeaderboard', () => {
 		expect(result.chaptersWithGrowth).toBe(0);
 		expect(result.totalNewJoins).toBe(0);
 		expect(result.topChapters).toEqual([]);
+	});
+});
+
+describe('computeLiveLeaderboardSinceSnapshot', () => {
+	type WindowRow = { windowEnd: string; windowStart: string; totalNewJoins: number };
+	type SnapshotRow = {
+		chapterId: number;
+		chapterName: string;
+		slackChannelId: string | null;
+		newJoins: number;
+		existing: number;
+		numMembers: number | null;
+	};
+	type NameRow = { chapterId: number; chapterName: string };
+	type AggRow = { chapter_id: number; new_joins: number; existing: number };
+	type CountRow = { cnt: number };
+
+	function makeDb(opts: {
+		windows?: WindowRow[];
+		snapshotRows?: SnapshotRow[];
+		nameRows?: NameRow[];
+		aggRows?: AggRow[];
+		totalNewJoins?: number;
+	}) {
+		// `select()` is issued in this order: windows → snapshot rows (only
+		// when a window row exists) → chapter names (via loadChapterNames).
+		// Skip the snapshot-rows entry when there's no window so the queue
+		// stays aligned with the actual call sequence.
+		const selectQueue: unknown[][] = (opts.windows?.length ?? 0) > 0
+			? [opts.windows ?? [], opts.snapshotRows ?? [], opts.nameRows ?? []]
+			: [opts.windows ?? [], opts.nameRows ?? []];
+		// `db.all()` results: aggRows → totalNewJoinsRow.
+		const allQueue: unknown[][] = [
+			opts.aggRows ?? [],
+			[{ cnt: opts.totalNewJoins ?? 0 }] satisfies CountRow[],
+		];
+		const select = vi.fn(() => {
+			const result = selectQueue.shift() ?? [];
+			const terminal = {
+				then: (r: (v: unknown) => unknown) => Promise.resolve(result).then(r),
+			};
+			const limit = vi.fn(() => terminal);
+			const orderBy = vi.fn(() => ({ limit, ...terminal }));
+			const where = vi.fn(() => terminal);
+			const from = vi.fn(() => ({ orderBy, where, limit, ...terminal }));
+			return { from };
+		});
+		const all = vi.fn(() => Promise.resolve(allQueue.shift() ?? []));
+		return {
+			db: { select, all } as unknown as Parameters<typeof computeLiveLeaderboardSinceSnapshot>[0],
+			allMock: all,
+		};
+	}
+
+	it('falls back to Monday-to-now when no snapshot exists', async () => {
+		// 2026-05-13 is a Wednesday → most recent UTC Monday midnight is 2026-05-11.
+		const now = new Date('2026-05-13T10:00:00Z');
+		const { db } = makeDb({
+			windows: [],
+			nameRows: [{ chapterId: 4, chapterName: 'austin' }],
+			aggRows: [{ chapter_id: 4, new_joins: 2, existing: 10 }],
+			totalNewJoins: 2,
+		});
+		const result = await computeLiveLeaderboardSinceSnapshot(db, { now });
+		// Window must differ from the saved tab's empty fallback (which is
+		// Mon→Mon) — start at this Monday, end now.
+		expect(result.windowStart).toBe('2026-05-11T00:00:00.000Z');
+		expect(result.windowEnd).toBe(now.toISOString());
+		expect(result.chaptersWithGrowth).toBe(1);
+		expect(result.totalNewJoins).toBe(2);
+		expect(result.topChapters[0]?.chapterId).toBe(4);
+		// No snapshot → existing is derived from slack_joins, not numMembers.
+		expect(result.topChapters[0]?.existing).toBe(10);
+	});
+
+	it('uses the snapshot windowEnd as start and now as end', async () => {
+		const { db } = makeDb({
+			windows: [
+				{
+					windowEnd: '2026-05-11T00:00:00.000Z',
+					windowStart: '2026-05-04T00:00:00.000Z',
+					totalNewJoins: 12,
+				},
+			],
+			snapshotRows: [
+				{
+					chapterId: 1,
+					chapterName: '#sf',
+					slackChannelId: 'C1',
+					newJoins: 5,
+					existing: 50,
+					numMembers: 55,
+				},
+			],
+			aggRows: [{ chapter_id: 1, new_joins: 3, existing: 99 }],
+			totalNewJoins: 3,
+		});
+		const now = new Date('2026-05-13T10:00:00Z');
+		const result = await computeLiveLeaderboardSinceSnapshot(db, { now });
+		expect(result.windowStart).toBe('2026-05-11T00:00:00.000Z');
+		expect(result.windowEnd).toBe(now.toISOString());
+		expect(result.totalNewJoins).toBe(3);
+		expect(result.chaptersWithGrowth).toBe(1);
+		// numMembers (55) wins over the slack_joins-derived existing (99).
+		expect(result.topChapters[0]?.existing).toBe(55);
+		expect(result.topChapters[0]?.newJoins).toBe(3);
+		expect(result.topChapters[0]?.pct).toBeCloseTo((3 / 55) * 100, 5);
+	});
+
+	it('falls back to slack_joins-derived existing for chapters absent from the snapshot', async () => {
+		const { db } = makeDb({
+			windows: [
+				{
+					windowEnd: '2026-05-11T00:00:00.000Z',
+					windowStart: '2026-05-04T00:00:00.000Z',
+					totalNewJoins: 0,
+				},
+			],
+			snapshotRows: [], // no per-chapter snapshot rows
+			nameRows: [{ chapterId: 7, chapterName: 'phoenix' }],
+			aggRows: [{ chapter_id: 7, new_joins: 4, existing: 20 }],
+			totalNewJoins: 4,
+		});
+		const result = await computeLiveLeaderboardSinceSnapshot(db, {
+			now: new Date('2026-05-13T10:00:00Z'),
+		});
+		expect(result.chaptersWithGrowth).toBe(1);
+		expect(result.topChapters[0]?.chapterId).toBe(7);
+		expect(result.topChapters[0]?.chapterName).toBe('phoenix');
+		expect(result.topChapters[0]?.existing).toBe(20);
+		expect(result.topChapters[0]?.slackChannelId).toBeNull();
+	});
+
+	it('excludes chapters in the excludedChapterIds set', async () => {
+		const { db } = makeDb({
+			windows: [
+				{
+					windowEnd: '2026-05-11T00:00:00.000Z',
+					windowStart: '2026-05-04T00:00:00.000Z',
+					totalNewJoins: 0,
+				},
+			],
+			aggRows: [
+				{ chapter_id: 1, new_joins: 5, existing: 50 },
+				{ chapter_id: 99, new_joins: 2, existing: 10 },
+			],
+			totalNewJoins: 7,
+		});
+		const result = await computeLiveLeaderboardSinceSnapshot(db, {
+			now: new Date('2026-05-13T10:00:00Z'),
+			excludedChapterIds: new Set([99]),
+		});
+		expect(result.chaptersWithGrowth).toBe(1);
+		expect(result.topChapters.map((c) => c.chapterId)).toEqual([1]);
+		// totalNewJoins is the workspace-wide count; excluded chapters still count.
+		expect(result.totalNewJoins).toBe(7);
 	});
 });

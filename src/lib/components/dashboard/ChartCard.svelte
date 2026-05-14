@@ -1,21 +1,30 @@
 <script lang="ts">
 	import { invalidate } from '$app/navigation';
-	import type { ChartFrame } from './chart-data.js';
+	import type { ChartBand, ChartFrame } from './chart-data.js';
 	import SignupChart from './SignupChart.svelte';
 
 	type CardState =
 		| { kind: 'loading' }
 		| { kind: 'empty' }
 		| { kind: 'error'; message: string }
-		| { kind: 'ready'; frame: ChartFrame; showTotalOverlay?: boolean };
+		| {
+				kind: 'ready';
+				frame: ChartFrame;
+				showTotalOverlay?: boolean;
+				/** Per-chapter bands for the legend, reserved in both modes. */
+				legendBands: ChartBand[];
+		  };
+
+	type ChartMode = 'overview' | 'detail';
 
 	type Props = {
 		title: string;
-		detailHref?: string;
 		cardState: CardState;
+		/** Bound by the parent so it can rebuild `cardState` for the chosen view. */
+		mode?: ChartMode;
 	};
 
-	let { title, detailHref, cardState }: Props = $props();
+	let { title, cardState, mode = $bindable('overview') }: Props = $props();
 
 	let isRetrying = $state(false);
 
@@ -36,7 +45,29 @@
 </script>
 
 <section class="chart-card" aria-labelledby={headingId}>
-	<h2 class="chart-card__title" id={headingId}>{title}</h2>
+	<header class="chart-card__header">
+		<h2 class="chart-card__title" id={headingId}>{title}</h2>
+		<div class="chart-card__toggle" role="group" aria-label="{title} breakdown">
+			<button
+				type="button"
+				class="chart-card__toggle-btn"
+				class:active={mode === 'overview'}
+				aria-pressed={mode === 'overview'}
+				onclick={() => (mode = 'overview')}
+			>
+				Overall
+			</button>
+			<button
+				type="button"
+				class="chart-card__toggle-btn"
+				class:active={mode === 'detail'}
+				aria-pressed={mode === 'detail'}
+				onclick={() => (mode = 'detail')}
+			>
+				By chapter
+			</button>
+		</div>
+	</header>
 	<div class="chart-card__body">
 		{#if displayState.kind === 'loading'}
 			<div class="chart-card__loading" role="status" aria-label="Loading">
@@ -49,8 +80,9 @@
 			<button type="button" class="chart-card__retry" onclick={handleRetry}>Retry</button>
 		{:else}
 			<SignupChart
-				variant={detailHref ? 'overview' : 'detail'}
+				variant={mode}
 				frame={displayState.frame}
+				legendBands={displayState.legendBands}
 				accessibleName={title}
 				showTotalOverlay={displayState.showTotalOverlay ?? false}
 			/>
@@ -83,10 +115,17 @@
 			</table>
 		{/if}
 	</div>
-	{#if detailHref && displayState.kind === 'ready'}
-		<!-- detailHref is constructed by the parent page from a known route + query string. -->
-		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
-		<a class="chart-card__detail" href={detailHref}>View by chapter →</a>
+	{#if displayState.kind === 'ready'}
+		<!-- Always rendered so toggling overview/detail doesn't shift the page;
+		     only visible in detail mode. -->
+		<p
+			class="chart-card__legend-note"
+			class:chart-card__legend-note--hidden={mode === 'overview'}
+			aria-hidden={mode === 'overview'}
+		>
+			Members in multiple chapters are counted in each band but only once in the daily total
+			(shown as the dark marker on each bar).
+		</p>
 	{/if}
 </section>
 
@@ -99,10 +138,52 @@
 		margin: 1rem 0;
 		box-shadow: 0 1px 2px rgba(18, 28, 80, 0.06);
 	}
+	.chart-card__header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		flex-wrap: wrap;
+		margin-bottom: 0.75rem;
+	}
 	.chart-card__title {
-		margin: 0 0 0.75rem;
+		margin: 0;
 		font-size: 1.125rem;
 		color: var(--color-text);
+	}
+	.chart-card__toggle {
+		display: inline-flex;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
+		overflow: hidden;
+		background: var(--color-surface);
+	}
+	.chart-card__toggle-btn {
+		appearance: none;
+		background: transparent;
+		border: 0;
+		padding: 0.35rem 0.75rem;
+		font: inherit;
+		font-size: var(--font-size-sm);
+		color: var(--color-text);
+		cursor: pointer;
+		border-right: 1px solid var(--color-border);
+	}
+	.chart-card__toggle-btn:last-child {
+		border-right: 0;
+	}
+	.chart-card__toggle-btn:hover:not(.active) {
+		background: var(--color-border-subtle);
+	}
+	.chart-card__toggle-btn.active {
+		background: var(--color-action);
+		color: var(--color-action-text);
+	}
+	.chart-card__toggle-btn:focus-visible {
+		outline: 2px solid var(--color-blue);
+		outline-offset: 2px;
+		position: relative;
+		z-index: 1;
 	}
 	.chart-card__body {
 		position: relative;
@@ -159,17 +240,14 @@
 		outline: 2px solid var(--color-blue);
 		outline-offset: 2px;
 	}
-	.chart-card__detail {
-		display: inline-block;
-		margin-top: 0.75rem;
-		color: var(--color-action);
-		text-decoration: none;
-		font-weight: 500;
+	.chart-card__legend-note {
+		color: var(--color-text-muted);
+		font-size: var(--font-size-md);
+		margin: 0.75rem 0 0;
 	}
-	.chart-card__detail:hover,
-	.chart-card__detail:focus-visible {
-		text-decoration: underline;
-		outline: none;
+	/* Keeps the note's reserved space while hiding it in overview mode. */
+	.chart-card__legend-note--hidden {
+		visibility: hidden;
 	}
 	.chart-card__sr-table {
 		position: absolute;
