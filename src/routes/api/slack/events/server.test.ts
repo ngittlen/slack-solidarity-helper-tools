@@ -54,6 +54,16 @@ function teamJoinPayload(userId = 'U_NEW') {
 	return JSON.stringify({ type: 'event_callback', event: { type: 'team_join', user: { id: userId } } });
 }
 
+// The DM is the last Slack call the handler makes — waiting on it confirms the
+// fire-and-forget handler has fully completed.
+function waitForDm() {
+	return vi.waitFor(() =>
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ channel: 'DM_CHANNEL' }),
+		),
+	);
+}
+
 // --- Tests ---
 
 describe('verifySlackSignature', () => {
@@ -129,8 +139,8 @@ describe('POST /api/slack/events', () => {
 		const res = await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
 		expect(res.status).toBe(200);
 
-		// Wait for the entire async fire-and-forget handler to complete (postMessage is last)
-		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledOnce());
+		// Wait for the entire async fire-and-forget handler to complete (the DM is last)
+		await waitForDm();
 
 		expect(mockUsersInfo).toHaveBeenCalledWith({ user: 'U_NEW' });
 		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
@@ -140,11 +150,22 @@ describe('POST /api/slack/events', () => {
 		);
 	});
 
+	it('posts a creative welcome mentioning the user in the chapter channel', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
+
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
+		await waitForDm();
+
+		const channelCall = mockPostMessage.mock.calls.find((c) => c[0]?.channel === 'C_COUNTY');
+		expect(channelCall).toBeDefined();
+		expect(channelCall![0].text).toContain('<@U_NEW>');
+	});
+
 	it('falls back to chapter_id when chapter_ids is empty', async () => {
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: 42, chapter_ids: [] });
 
 		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
-		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledOnce());
+		await waitForDm();
 
 		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
 	});
@@ -175,7 +196,7 @@ describe('POST /api/slack/events', () => {
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
 
 		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
-		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledOnce());
+		await waitForDm();
 
 		expect(mockInsertValues).toHaveBeenCalledWith({
 			slackUserId: 'U_NEW',

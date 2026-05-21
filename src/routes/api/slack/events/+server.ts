@@ -110,6 +110,8 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		return;
 	}
 
+	await announceInChannels(user.id, successfulChannelIds);
+
 	const sent = await sendWelcomeDm(user.id, successfulChannelIds);
 	if (sent) {
 		const channelMentions = successfulChannelIds.map((id) => `<#${id}>`).join(', ');
@@ -168,6 +170,53 @@ async function inviteToChannels(slackUserId: string, channelIds: string[]): Prom
 		}
 	}
 	return successful;
+}
+
+// A rotating set of channel welcome messages so new joiners don't all get the
+// same line. `%s` is replaced with the new member's <@mention>.
+const CHANNEL_WELCOME_MESSAGES = [
+	':tada: Everybody welcome %s to the channel!',
+	":wave: Look who just walked in — %s is here. Don't be shy, say hi!",
+	':sparkles: %s just joined us! The chapter grew a little stronger today.',
+	':rocket: %s has landed in the channel. So glad you made it!',
+	':seedling: A warm welcome to %s, our newest member — introduce yourself!',
+	':raised_hands: Make some noise for %s, who just joined the channel!',
+	':handshake: %s is in the room! Drop a wave and a hello.',
+	":fist: %s — welcome aboard. We're glad you're here.",
+	':star2: A new face! Everybody say hi to %s.',
+	':balloon: %s just joined the channel — welcome to the crew!',
+	':sun_with_face: Good to have you here, %s. Welcome!',
+	':people_holding_hands: %s just joined us — the more the merrier!',
+	':boom: %s has entered the channel. Welcome aboard!',
+	':sparkler: Big welcome to %s, our latest addition!',
+	':mega: Everybody give a warm welcome to %s!',
+	":heart: %s just joined — so happy you're here!",
+	':deciduous_tree: Welcome %s! Make yourself at home and say hi.',
+	':100: %s is here! Welcome to the chapter!',
+];
+
+function pickChannelWelcome(userMention: string): string {
+	const template =
+		CHANNEL_WELCOME_MESSAGES[Math.floor(Math.random() * CHANNEL_WELCOME_MESSAGES.length)]!;
+	return template.replace('%s', userMention);
+}
+
+async function announceInChannels(slackUserId: string, channelIds: string[]): Promise<void> {
+	const userMention = `<@${slackUserId}>`;
+	const results = await Promise.allSettled(
+		channelIds.map((channel) =>
+			slack.chat.postMessage({ channel, text: pickChannelWelcome(userMention) }),
+		),
+	);
+	for (let i = 0; i < channelIds.length; i++) {
+		const result = results[i]!;
+		if (result.status === 'rejected') {
+			console.error(
+				`[slack-events] failed to post welcome to ${channelIds[i]}:`,
+				result.reason instanceof Error ? result.reason.message : result.reason,
+			);
+		}
+	}
 }
 
 async function sendWelcomeDm(slackUserId: string, channelIds: string[]): Promise<boolean> {
