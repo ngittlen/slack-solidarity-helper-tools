@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, uniqueIndex, primaryKey } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, uniqueIndex, primaryKey, check } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 export const requests = sqliteTable('requests', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
@@ -68,6 +69,58 @@ export const weeklyChapterGrowth = sqliteTable(
 	(table) => [primaryKey({ columns: [table.windowEnd, table.chapterId] })],
 );
 
+// Settings tables (NAV-1). Each table carries audit columns enforced .notNull()
+// so writes can never lose attribution. The `app_config` singleton is enforced
+// via the natural PK collision plus a redundant CHECK (id = 1) for defense in
+// depth and to document intent in the generated migration SQL.
+
+export const chapterChannelMap = sqliteTable('chapter_channel_map', {
+	chapterId: integer('chapter_id').primaryKey(),
+	channelId: text('channel_id').notNull(),
+	name: text('name').notNull(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
+export const coalitionChannelMap = sqliteTable('coalition_channel_map', {
+	groupName: text('group_name').primaryKey(),
+	channelId: text('channel_id').notNull(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
+export const allowedSlackUsers = sqliteTable('allowed_slack_users', {
+	slackUserId: text('slack_user_id').primaryKey(),
+	displayName: text('display_name').notNull(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
+export const reportExcludedChapters = sqliteTable('report_excluded_chapters', {
+	chapterId: integer('chapter_id').primaryKey(),
+	reason: text('reason'),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
+export const appConfig = sqliteTable(
+	'app_config',
+	{
+		id: integer('id').primaryKey(),
+		slackTrackingChannelId: text('slack_tracking_channel_id'),
+		slackGrowthReportChannelId: text('slack_growth_report_channel_id'),
+		slackGrowthReportRankingAlpha: real('slack_growth_report_ranking_alpha'),
+		lastEditedBy: text('last_edited_by').notNull(),
+		lastEditedByName: text('last_edited_by_name').notNull(),
+		lastEditedAt: text('last_edited_at').notNull(),
+	},
+	(table) => [check('app_config_singleton', sql`${table.id} = 1`)],
+);
+
 export type Request = typeof requests.$inferSelect;
 export type NewRequest = typeof requests.$inferInsert;
 
@@ -85,3 +138,18 @@ export type NewWeeklyGrowthWindow = typeof weeklyGrowthWindows.$inferInsert;
 
 export type WeeklyChapterGrowthRow = typeof weeklyChapterGrowth.$inferSelect;
 export type NewWeeklyChapterGrowthRow = typeof weeklyChapterGrowth.$inferInsert;
+
+export type ChapterChannelRow = typeof chapterChannelMap.$inferSelect;
+export type NewChapterChannelRow = typeof chapterChannelMap.$inferInsert;
+
+export type CoalitionChannelRow = typeof coalitionChannelMap.$inferSelect;
+export type NewCoalitionChannelRow = typeof coalitionChannelMap.$inferInsert;
+
+export type AllowedSlackUserRow = typeof allowedSlackUsers.$inferSelect;
+export type NewAllowedSlackUserRow = typeof allowedSlackUsers.$inferInsert;
+
+export type ExcludedChapterRow = typeof reportExcludedChapters.$inferSelect;
+export type NewExcludedChapterRow = typeof reportExcludedChapters.$inferInsert;
+
+export type AppConfigRow = typeof appConfig.$inferSelect;
+export type NewAppConfigRow = typeof appConfig.$inferInsert;
