@@ -175,24 +175,24 @@ async function inviteToChannels(slackUserId: string, channelIds: string[]): Prom
 // A rotating set of channel welcome messages so new joiners don't all get the
 // same line. `%s` is replaced with the new member's <@mention>.
 const CHANNEL_WELCOME_MESSAGES = [
-	':tada: Everybody welcome %s to the channel!',
+	':tada: Everybody welcome %s to the channel — drop a hello!',
 	":wave: Look who just walked in — %s is here. Don't be shy, say hi!",
-	':sparkles: %s just joined us! The chapter grew a little stronger today.',
-	':rocket: %s has landed in the channel. So glad you made it!',
+	':sparkles: %s just joined us! Say hi and tell us a bit about yourself.',
+	':rocket: %s has landed in the channel. Everybody say hi!',
 	':seedling: A warm welcome to %s, our newest member — introduce yourself!',
-	':raised_hands: Make some noise for %s, who just joined the channel!',
+	':raised_hands: Make some noise for %s, who just joined the channel! Say hi, folks!',
 	':handshake: %s is in the room! Drop a wave and a hello.',
-	":fist: %s — welcome aboard. We're glad you're here.",
+	":fist: %s — welcome aboard. Introduce yourself when you're ready!",
 	':star2: A new face! Everybody say hi to %s.',
-	':balloon: %s just joined the channel — welcome to the crew!',
-	':sun_with_face: Good to have you here, %s. Welcome!',
-	':people_holding_hands: %s just joined us — the more the merrier!',
-	':boom: %s has entered the channel. Welcome aboard!',
-	':sparkler: Big welcome to %s, our latest addition!',
-	':mega: Everybody give a warm welcome to %s!',
-	":heart: %s just joined — so happy you're here!",
+	':balloon: %s just joined the channel — welcome to the crew, say hi!',
+	':sun_with_face: Good to have you here, %s. Introduce yourself!',
+	':people_holding_hands: %s just joined us — everybody say hi!',
+	':boom: %s has entered the channel. Welcome aboard — drop a hello!',
+	':sparkler: Big welcome to %s, our latest addition — say hi, everyone!',
+	':mega: Everybody give a warm welcome to %s — say hi!',
+	":heart: %s just joined — so happy you're here! Introduce yourself when you can.",
 	':deciduous_tree: Welcome %s! Make yourself at home and say hi.',
-	':100: %s is here! Welcome to the chapter!',
+	':100: %s is here! Welcome to the chapter — everybody say hi!',
 ];
 
 function pickChannelWelcome(userMention: string): string {
