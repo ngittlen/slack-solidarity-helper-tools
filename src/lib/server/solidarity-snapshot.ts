@@ -7,6 +7,7 @@
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { solidarityDailySnapshots } from './schema.js';
+import { fetchPaginated } from './solidarity-paginate.js';
 
 interface SolidarityUserPage {
 	chapter_id: number | null;
@@ -41,8 +42,6 @@ const NULL_CHAPTER_SENTINEL = -1;
 // without double-counting users who belong to multiple chapters. Readers
 // MUST filter this out before treating rows as real chapters.
 export const DISTINCT_TOTAL_SENTINEL = -2;
-const PAGE_LIMIT = 100;
-const MAX_PAGES = 500; // generous safety cap; we early-terminate via created_at sort
 
 // ---------------------------------------------------------------------------
 // Date helpers
@@ -78,37 +77,6 @@ export function dateRangeUtc(date?: string): {
 // Solidarity fetch
 // ---------------------------------------------------------------------------
 
-async function fetchPaginated<T>(
-	apiToken: string,
-	path: string,
-	resourceLabel: string,
-	extraQuery = '',
-): Promise<T[]> {
-	const all: T[] = [];
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const offset = page * PAGE_LIMIT;
-		const url = `https://api.solidarity.tech${path}?_limit=${PAGE_LIMIT}&_offset=${offset}${extraQuery}`;
-		const res = await fetch(url, {
-			headers: { Authorization: `Bearer ${apiToken}` },
-		});
-		if (res.status === 429) {
-			const retryAfter = parseInt(res.headers.get('Retry-After') ?? '30', 10);
-			console.warn(`[snapshot] solidarity rate limited — waiting ${retryAfter}s`);
-			await new Promise((r) => setTimeout(r, retryAfter * 1000));
-			page--; // retry this page
-			continue;
-		}
-		if (!res.ok) {
-			throw new Error(`Solidarity ${resourceLabel} returned ${res.status}: ${await res.text()}`);
-		}
-		const body = (await res.json()) as { data?: T[] };
-		const items = body.data ?? [];
-		all.push(...items);
-		if (items.length < PAGE_LIMIT) break;
-	}
-	return all;
-}
-
 // Solidarity's /v1/users supports _since (updated_at filter, Unix seconds),
 // _limit, and _offset — but no _sort and no created_at filter. We use _since
 // as a superset filter (every user created in our window also has
@@ -120,11 +88,18 @@ function fetchUsersUpdatedSince(apiToken: string, startUnix: number) {
 		'/v1/users',
 		'/v1/users',
 		`&_since=${startUnix}`,
+		'snapshot',
 	);
 }
 
 async function fetchAllChapters(apiToken: string): Promise<Map<number, string>> {
-	const chapters = await fetchPaginated<SolidarityChapter>(apiToken, '/v1/chapters', '/v1/chapters');
+	const chapters = await fetchPaginated<SolidarityChapter>(
+		apiToken,
+		'/v1/chapters',
+		'/v1/chapters',
+		'',
+		'snapshot',
+	);
 	return new Map(chapters.map((c) => [c.id, c.name]));
 }
 
