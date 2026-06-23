@@ -64,17 +64,19 @@ let unloadHandlerRegistered = false;
 function ensureUnloadHandler(): void {
 	if (unloadHandlerRegistered) return;
 	if (typeof window === 'undefined') return;
-	window.addEventListener('beforeunload', () => {
-		for (const inst of liveInstances) {
-			try {
-				inst.flush();
-			} catch {
-				// Unload-time errors are deliberately swallowed — the page is going
-				// away and there's no UI surface left to render an error in.
-			}
-		}
-	});
+	window.addEventListener('beforeunload', flushAllLive);
 	unloadHandlerRegistered = true;
+}
+
+function flushAllLive(): void {
+	for (const inst of liveInstances) {
+		try {
+			inst.flush();
+		} catch {
+			// Unload-time errors are deliberately swallowed — the page is going
+			// away and there's no UI surface left to render an error in.
+		}
+	}
 }
 
 // --------------------------------------------------------------------------
