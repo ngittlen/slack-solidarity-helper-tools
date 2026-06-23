@@ -1,0 +1,162 @@
+<script lang="ts">
+	import { AlertDialog } from 'bits-ui';
+
+	interface Props {
+		label: string;
+		description: string;
+		onConfirm: () => Promise<void> | void;
+		disabled?: boolean;
+	}
+
+	let { label, description, onConfirm, disabled = false }: Props = $props();
+
+	let open = $state(false);
+	let error: string | null = $state(null);
+	let pending = $state(false);
+
+	async function handleConfirm() {
+		pending = true;
+		error = null;
+		try {
+			await onConfirm();
+			open = false;
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed';
+			open = false;
+		} finally {
+			pending = false;
+		}
+	}
+</script>
+
+<div class="delete-confirm">
+	<AlertDialog.Root bind:open>
+		<AlertDialog.Trigger
+			class="delete-confirm-trigger"
+			disabled={disabled}
+			onclick={() => {
+				error = null;
+			}}
+		>
+			{label}
+		</AlertDialog.Trigger>
+		<AlertDialog.Portal>
+			<AlertDialog.Overlay class="delete-confirm-overlay" />
+			<AlertDialog.Content class="delete-confirm-content">
+				<AlertDialog.Title class="delete-confirm-title">Confirm</AlertDialog.Title>
+				<AlertDialog.Description class="delete-confirm-description">
+					{description}
+				</AlertDialog.Description>
+				<div class="delete-confirm-actions">
+					<AlertDialog.Cancel class="delete-confirm-cancel">Cancel</AlertDialog.Cancel>
+					<AlertDialog.Action
+						class="delete-confirm-action"
+						onclick={handleConfirm}
+						disabled={pending}
+					>
+						{pending ? 'Working…' : label}
+					</AlertDialog.Action>
+				</div>
+			</AlertDialog.Content>
+		</AlertDialog.Portal>
+	</AlertDialog.Root>
+	{#if error}
+		<span class="delete-confirm-error" role="alert">{error}</span>
+	{/if}
+</div>
+
+<style>
+	.delete-confirm {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	:global(.delete-confirm-trigger) {
+		background: transparent;
+		color: var(--color-error, #c62828);
+		border: 1px solid currentColor;
+		border-radius: var(--radius-sm, 4px);
+		padding: 4px 10px;
+		font: inherit;
+		font-size: 0.9em;
+		cursor: pointer;
+	}
+
+	:global(.delete-confirm-trigger:hover:not(:disabled)) {
+		background: rgba(198, 40, 40, 0.08);
+	}
+
+	:global(.delete-confirm-trigger:disabled) {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	:global(.delete-confirm-overlay) {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.4);
+		z-index: 100;
+	}
+
+	:global(.delete-confirm-content) {
+		position: fixed;
+		left: 50%;
+		top: 50%;
+		transform: translate(-50%, -50%);
+		background: var(--color-bg-surface, #fff);
+		border-radius: var(--radius-md, 6px);
+		padding: 20px 24px;
+		min-width: 320px;
+		max-width: 90vw;
+		box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+		z-index: 101;
+	}
+
+	:global(.delete-confirm-title) {
+		margin: 0 0 8px;
+		font-size: 1.05em;
+		font-weight: 600;
+	}
+
+	:global(.delete-confirm-description) {
+		margin: 0 0 16px;
+		color: var(--color-text, inherit);
+	}
+
+	.delete-confirm-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+
+	:global(.delete-confirm-cancel) {
+		background: transparent;
+		color: var(--color-text, inherit);
+		border: 1px solid var(--color-border, #ccc);
+		border-radius: var(--radius-sm, 4px);
+		padding: 4px 12px;
+		font: inherit;
+		cursor: pointer;
+	}
+
+	:global(.delete-confirm-action) {
+		background: var(--color-error, #c62828);
+		color: white;
+		border: 1px solid var(--color-error, #c62828);
+		border-radius: var(--radius-sm, 4px);
+		padding: 4px 12px;
+		font: inherit;
+		cursor: pointer;
+	}
+
+	:global(.delete-confirm-action:disabled) {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.delete-confirm-error {
+		font-size: 0.85em;
+		color: var(--color-error, #c62828);
+	}
+</style>

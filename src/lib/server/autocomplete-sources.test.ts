@@ -279,11 +279,13 @@ describe('US2: cache + force + de-dup', () => {
 		conversationsList.mockResolvedValueOnce({ channels: [] });
 
 		const first = await getSlackChannels(slack);
-		expect(first).toEqual({ items: [], stale: false });
+		expect(first.items).toEqual([]);
+		expect(first.stale).toBe(false);
 		expect(conversationsList).toHaveBeenCalledTimes(1);
 
 		const second = await getSlackChannels(slack);
-		expect(second).toEqual({ items: [], stale: false });
+		expect(second.items).toEqual([]);
+		expect(second.stale).toBe(false);
 		expect(conversationsList).toHaveBeenCalledTimes(1);
 	});
 
@@ -331,7 +333,7 @@ describe('US4: failure handling and stale-serve', () => {
 		const stale = await getSlackChannels(slack);
 		expect(stale.stale).toBe(true);
 		expect(stale.items[0]?.id).toBe('C1');
-		expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/^\[autocomplete\] channels refetch failed/));
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/^\[autocomplete] channels refetch failed/));
 
 		// The entry was NOT updated, so the next call retries the upstream and
 		// — when it succeeds — replaces the cache (FR-010a final clause).
@@ -348,7 +350,7 @@ describe('US4: failure handling and stale-serve', () => {
 
 		await expect(getSlackChannels(slack)).rejects.toThrow(/slack unreachable/);
 		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringMatching(/^\[autocomplete\] channels fetch failed \(no cached data\)/),
+			expect.stringMatching(/^\[autocomplete] channels fetch failed \(no cached data\)/),
 		);
 	});
 
@@ -375,7 +377,70 @@ describe('US4: failure handling and stale-serve', () => {
 
 		await expect(getSolidarityChapters('token')).rejects.toThrow(/retry budget exhausted/);
 		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringMatching(/^\[autocomplete\] chapters fetch failed/),
+			expect.stringMatching(/^\[autocomplete] chapters fetch failed/),
 		);
+	});
+});
+
+// ===========================================================================
+// NAV-3 (007-settings-shell-primitives) — fetchedAt surfaces the cache age
+// for the settings page's "Last refreshed Nm ago" indicator.
+// ===========================================================================
+
+describe('NAV-3: AutocompleteResult.fetchedAt', () => {
+	it('cold successful fetch sets fetchedAt to roughly Date.now()', async () => {
+		vi.useFakeTimers();
+		const now = new Date('2026-05-26T08:00:00Z').getTime();
+		vi.setSystemTime(now);
+		const { slack, conversationsList } = makeSlack();
+		conversationsList.mockResolvedValueOnce({
+			channels: [{ id: 'C1', name: 'a', is_private: false }],
+		});
+
+		const result = await getSlackChannels(slack);
+
+		expect(result.fetchedAt).toBe(now);
+	});
+
+	it('warm (within-TTL) call returns the same fetchedAt as the original fetch', async () => {
+		vi.useFakeTimers();
+		const t0 = new Date('2026-05-26T08:00:00Z').getTime();
+		vi.setSystemTime(t0);
+		const { slack, conversationsList } = makeSlack();
+		conversationsList.mockResolvedValue({
+			channels: [{ id: 'C1', name: 'a', is_private: false }],
+		});
+
+		const first = await getSlackChannels(slack);
+		expect(first.fetchedAt).toBe(t0);
+
+		// Advance 4 minutes — still inside the 5-minute TTL.
+		vi.advanceTimersByTime(4 * 60 * 1000);
+		const warm = await getSlackChannels(slack);
+
+		expect(conversationsList).toHaveBeenCalledTimes(1);
+		expect(warm.fetchedAt).toBe(t0); // unchanged from the original successful fetch
+	});
+
+	it('stale-serve after a refetch failure carries the ORIGINAL successful fetchedAt, not the failed-refetch time', async () => {
+		vi.useFakeTimers();
+		const t0 = new Date('2026-05-26T08:00:00Z').getTime();
+		vi.setSystemTime(t0);
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { slack, conversationsList } = makeSlack();
+		conversationsList
+			.mockResolvedValueOnce({ channels: [{ id: 'C1', name: 'a', is_private: false }] })
+			.mockRejectedValueOnce(new Error('slack 503'));
+
+		const fresh = await getSlackChannels(slack);
+		expect(fresh.fetchedAt).toBe(t0);
+
+		// Push past the TTL so the next call attempts a refetch (which is mocked to reject).
+		vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+
+		const stale = await getSlackChannels(slack);
+		expect(stale.stale).toBe(true);
+		// fetchedAt MUST reflect the original t0, not Date.now() (which is now t0 + 5m + 1ms).
+		expect(stale.fetchedAt).toBe(t0);
 	});
 });

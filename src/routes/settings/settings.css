@@ -1,0 +1,11 @@
+/* /settings page-scoped styles (NAV-3).
+ * Mirrors the conventions in src/routes/pending/pending.css — see that file for
+ * the canonical `main` container width/spacing pattern. Sections and the
+ * Refresh-lists header row are added by US1/US2/US3 tasks as they land.
+ */
+
+main {
+    max-width: 1200px;
+    margin: 32px auto;
+    padding: 0 24px;
+}
