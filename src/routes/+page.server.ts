@@ -52,5 +52,5 @@ export const load: PageServerLoad = async (event) => {
 
 	const leaderboard: LeaderboardPair = { saved, live };
 
-	return { ...base, leaderboard, pageTitle: `Hi, ${base.userName}` };
+	return { ...base, leaderboard, pageTitle: 'Dashboard' };
 };
