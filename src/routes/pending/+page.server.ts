@@ -5,5 +5,5 @@ export const load: PageServerLoad = ({ locals }) => {
 	if (!locals.session!.isAdmin) {
 		redirect(302, '/');
 	}
-	return { userName: locals.session!.slackUserName, pageTitle: 'A4M Slack Invite Queue' };
+	return { userName: locals.session!.slackUserName, pageTitle: 'Pending Applicants' };
 };

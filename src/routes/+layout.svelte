@@ -1,22 +1,28 @@
 <script lang="ts">
 	import '../app.css';
-	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { CHART_BAND_STYLE } from '$lib/styles/chart-colors';
+	import UserMenu, { type MenuItem } from '$lib/components/nav/UserMenu.svelte';
 
 	let { data, children } = $props();
 
 	const pageTitle = $derived<string>(page.data.pageTitle ?? 'A4M Helper Tools');
-	const onPending = $derived(page.url.pathname.startsWith('/pending'));
+
+	const menuItems = $derived<MenuItem[]>(
+		data.isAdmin
+			? [
+					{ href: '/pending', label: 'Pending applicants' },
+					{ href: '/settings', label: 'Settings' },
+				]
+			: [],
+	);
 </script>
 
 <div class="theme-vars" style={CHART_BAND_STYLE}>
 	<header class="app-header">
 		<h1>{pageTitle}</h1>
 		<div class="user-info">
-			{#if data.isAdmin && !onPending}
-				<a class="nav-link" href={resolve('/pending')}>Pending applicants</a>
-			{/if}
+			<UserMenu items={menuItems} />
 			<span class="user-greeting">
 				Logged in as <span class="user-name">{data.userName}</span>
 			</span>
@@ -63,15 +69,6 @@
 	.user-name {
 		color: var(--color-gold);
 		font-weight: 600;
-	}
-	.nav-link {
-		color: var(--color-header-text);
-		text-decoration: none;
-		border-bottom: 1px dashed rgba(251, 240, 228, 0.4);
-		padding-bottom: 1px;
-	}
-	.nav-link:hover {
-		border-bottom-color: rgba(251, 240, 228, 0.9);
 	}
 	.logout-btn {
 		background: transparent;
