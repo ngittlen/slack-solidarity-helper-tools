@@ -47,6 +47,7 @@ describe('US3: validateSlackChannel', () => {
 				{ id: 'C002', name: 'random', isPrivate: false },
 			],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSlackChannel(slack, 'C001');
@@ -57,6 +58,7 @@ describe('US3: validateSlackChannel', () => {
 		getChannels.mockResolvedValueOnce({
 			items: [{ id: 'C001', name: 'announcements', isPrivate: false }],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSlackChannel(slack, 'C_GHOST');
@@ -75,6 +77,7 @@ describe('US3: validateSlackChannel', () => {
 		getChannels.mockResolvedValueOnce({
 			items: [{ id: 'C_LIVE', name: 'general', isPrivate: false }],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSlackChannel(slack, 'C_ARCHIVED');
@@ -86,6 +89,7 @@ describe('US3: validateSlackChannel', () => {
 		getChannels.mockResolvedValueOnce({
 			items: [{ id: 'C001', name: 'announcements', isPrivate: false }],
 			stale: true,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSlackChannel(slack, 'C001');
@@ -96,6 +100,7 @@ describe('US3: validateSlackChannel', () => {
 		getChannels.mockResolvedValueOnce({
 			items: [{ id: 'C001', name: 'announcements', isPrivate: false }],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSlackChannel(slack, 'U001');
@@ -109,6 +114,7 @@ describe('US3: validateSlackUser', () => {
 		getUsers.mockResolvedValueOnce({
 			items: [{ id: 'U001', name: 'alice', realName: 'Alice Example' }],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSlackUser(slack, 'U001');
@@ -122,6 +128,7 @@ describe('US3: validateSlackUser', () => {
 		getUsers.mockResolvedValueOnce({
 			items: [{ id: 'U_REAL', name: 'real human', realName: 'Real Human' }],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSlackUser(slack, 'U_BOT');
@@ -138,6 +145,7 @@ describe('US3: validateSolidarityChapter', () => {
 				{ id: 7, name: 'Bay Area' },
 			],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSolidarityChapter('token', 42);
@@ -148,6 +156,7 @@ describe('US3: validateSolidarityChapter', () => {
 		getChapters.mockResolvedValueOnce({
 			items: [{ id: 42, name: 'Brooklyn' }],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		const result = await validateSolidarityChapter('token', 999);
@@ -207,6 +216,7 @@ describe('US4: validators fail closed when the autocomplete source is unavailabl
 		getChannels.mockResolvedValueOnce({
 			items: [{ id: 'C001', name: 'a', isPrivate: false }],
 			stale: false,
+			fetchedAt: 1700000000000,
 		});
 
 		await validateSlackChannel(slack, 'C_GHOST');

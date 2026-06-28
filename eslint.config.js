@@ -19,6 +19,16 @@ export default ts.config(
 		},
 	},
 	{
+		// `.svelte.ts` modules are plain TypeScript that happens to use Svelte 5
+		// runes (`$state`, `$derived`). typescript-eslint matches only `*.ts`
+		// by default; this entry ensures `.svelte.ts` files are parsed as TS too
+		// (the runes themselves are valid TS — they desugar at compile time).
+		files: ['**/*.svelte.ts', '**/*.svelte.js'],
+		languageOptions: {
+			parser: ts.parser,
+		},
+	},
+	{
 		ignores: [
 			'build/',
 			'.svelte-kit/',

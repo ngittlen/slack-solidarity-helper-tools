@@ -1,0 +1,143 @@
+<script lang="ts">
+	import { Tooltip } from 'bits-ui';
+	import { resolve } from '$app/paths';
+	import { replaceState } from '$app/navigation';
+	import { page } from '$app/state';
+	import './settings.css';
+	import { formatRelative } from '$lib/components/settings/format-relative.js';
+
+	const { data } = $props();
+
+	// "Last refreshed Nm ago" — derived from the oldest successful fetchedAt
+	// across the three live-list sources. Em-dash when every list rejected,
+	// because there's nothing to be old.
+	const lastRefreshedLabel = $derived(
+		data.oldestFetchedAt === null ? '—' : formatRelative(Date.now() - data.oldestFetchedAt),
+	);
+
+	// Strip ?refresh=lists after the server has honored it, so the back button
+	// doesn't re-fire a forced refresh. Reads the reactive `page.url` (not
+	// window.location) so it re-runs on every navigation — "Refresh lists" is a
+	// repeated-use link and the router reuses this component across clicks, so a
+	// one-shot mount effect would only clean up the first refresh. `refresh` is
+	// the only query param /settings reads, so dropping back to the bare resolved
+	// route fully strips it. Uses SvelteKit's replaceState to keep router state
+	// in sync; $effect is client-only so no SSR guard is needed.
+	$effect(() => {
+		if (page.url.searchParams.get('refresh') === 'lists') {
+			replaceState(resolve('/settings'), {});
+		}
+	});
+</script>
+
+<main>
+	<div class="settings-header">
+		<Tooltip.Provider>
+			<Tooltip.Root>
+				<Tooltip.Trigger class="refresh-link-trigger">
+					<a class="refresh-link" href="{resolve('/settings')}?refresh=lists">Refresh lists</a>
+				</Tooltip.Trigger>
+				<Tooltip.Portal>
+					<Tooltip.Content class="refresh-tooltip" sideOffset={4}>
+						Lists are cached for 5 minutes. Click to force a refresh.
+					</Tooltip.Content>
+				</Tooltip.Portal>
+			</Tooltip.Root>
+		</Tooltip.Provider>
+		<span class="last-refreshed">Last refreshed {lastRefreshedLabel}</span>
+	</div>
+
+	<section>
+		<h2>Chapter ↔ Slack channel</h2>
+		{#if data.errors.slackChannels}
+			<p class="error">Slack channels: {data.errors.slackChannels}</p>
+		{/if}
+		{#if data.errors.solidarityChapters}
+			<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
+		{/if}
+	</section>
+
+	<section>
+		<h2>Coalition ↔ Slack channel</h2>
+		{#if data.errors.slackChannels}
+			<p class="error">Slack channels: {data.errors.slackChannels}</p>
+		{/if}
+	</section>
+
+	<section>
+		<h2>App config</h2>
+		{#if data.errors.slackChannels}
+			<p class="error">Slack channels: {data.errors.slackChannels}</p>
+		{/if}
+	</section>
+
+	<section>
+		<h2>Allowed Slack users</h2>
+		{#if data.errors.slackUsers}
+			<p class="error">Slack users: {data.errors.slackUsers}</p>
+		{/if}
+	</section>
+
+	<section>
+		<h2>Excluded chapters</h2>
+		{#if data.errors.solidarityChapters}
+			<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
+		{/if}
+	</section>
+</main>
+
+<style>
+	.settings-header {
+		display: flex;
+		align-items: center;
+		gap: 16px;
+		margin-bottom: 24px;
+		padding: 12px 0;
+		border-bottom: 1px solid var(--color-border, #ddd);
+	}
+
+	:global(.refresh-link-trigger) {
+		background: transparent;
+		border: none;
+		padding: 0;
+		font: inherit;
+		cursor: pointer;
+	}
+
+	.refresh-link {
+		color: var(--color-gold, #b8860b);
+		text-decoration: none;
+		border-bottom: 1px dashed currentColor;
+	}
+
+	.refresh-link:hover,
+	.refresh-link:focus-visible {
+		border-bottom-style: solid;
+	}
+
+	.last-refreshed {
+		font-size: 0.9em;
+		color: var(--color-text-muted, #888);
+	}
+
+	.error {
+		margin: 8px 0 0;
+		padding: 6px 10px;
+		background: rgba(198, 40, 40, 0.08);
+		border-left: 3px solid var(--color-error, #c62828);
+		color: var(--color-error, #c62828);
+		font-size: 0.9em;
+		border-radius: var(--radius-sm, 4px);
+	}
+
+	:global(.refresh-tooltip) {
+		background: var(--color-bg-surface, #fff);
+		color: var(--color-text, inherit);
+		border: 1px solid var(--color-border, #ccc);
+		border-radius: var(--radius-sm, 4px);
+		padding: 6px 10px;
+		font-size: 0.85em;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+		z-index: 50;
+	}
+</style>

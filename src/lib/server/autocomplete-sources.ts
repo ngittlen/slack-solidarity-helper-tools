@@ -39,6 +39,14 @@ export interface AutocompleteResult<T> {
 	items: T[];
 	/** `true` when the items came from a retained cache after a refetch failed. */
 	stale: boolean;
+	/**
+	 * Unix ms when the items in this result were originally fetched successfully.
+	 * On a stale-serve (`stale: true`), this reflects the original successful
+	 * fetch's timestamp, NOT the failed refetch attempt — so the NAV-3 settings
+	 * page's "Last refreshed Nm ago" indicator reports how old the data the
+	 * admin is picking against actually is.
+	 */
+	fetchedAt: number;
 }
 
 export interface AutocompleteOptions {
@@ -103,12 +111,14 @@ async function runFetch<T, C>(
 		entry.data = result;
 		entry.fetchedAt = Date.now();
 		entry.credential = credential;
-		return { items: result, stale: false };
+		return { items: result, stale: false, fetchedAt: entry.fetchedAt };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		if (entry.data !== null && entry.credential === credential) {
 			console.warn(`[autocomplete] ${listName} refetch failed; serving stale: ${msg}`);
-			return { items: entry.data, stale: true };
+			// `fetchedAt` deliberately reflects the original successful fetch,
+			// not the failed refetch attempt (NAV-3 R2).
+			return { items: entry.data, stale: true, fetchedAt: entry.fetchedAt };
 		}
 		console.error(`[autocomplete] ${listName} fetch failed (no cached data): ${msg}`);
 		throw err;
@@ -133,7 +143,7 @@ async function getCached<T, C>(
 
 	if (!opts.force && fresh) {
 		// Non-null assertion safe — `fresh` implies `entry.data !== null`.
-		return { items: entry.data as T[], stale: false };
+		return { items: entry.data as T[], stale: false, fetchedAt: entry.fetchedAt };
 	}
 
 	// Forced refresh never piggy-backs on an in-flight non-forced fetch — the
