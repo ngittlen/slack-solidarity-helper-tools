@@ -21,7 +21,7 @@
     "@slack/web-api": "^7.8.0",
     "bits-ui": "^2.18.1",
     "drizzle-orm": "^0.45.2",
-    "layerchart": "^2.0.0-next.63",
+    "layerchart": "^2.0.0",
     "libphonenumber-js": "^1.12.41"
   },
   "devDependencies": {

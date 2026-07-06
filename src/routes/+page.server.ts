@@ -5,15 +5,12 @@ import { slack } from '$lib/server/slack.js';
 import {
 	computeWeeklyLeaderboard,
 	computeLiveLeaderboardSinceSnapshot,
+	firstChannelByChapter,
 	type WeeklyLeaderboard,
 	type LeaderboardResult,
 	type LeaderboardPair,
 } from '$lib/server/weekly-growth-report.js';
-import {
-	REPORT_EXCLUDED_CHAPTER_IDS,
-	SLACK_GROWTH_REPORT_RANKING_ALPHA,
-	SOLIDARITY_CHAPTER_CHANNEL_MAP,
-} from '$lib/server/env.js';
+import { loadSettings } from '$lib/server/settings.js';
 
 async function safeLoad(
 	label: string,
@@ -33,14 +30,15 @@ async function safeLoad(
 export const load: PageServerLoad = async (event) => {
 	const base = await loadDashboardPageData(event);
 
-	const chapterChannelIds = new Map<number, string>(
-		SOLIDARITY_CHAPTER_CHANNEL_MAP.map((c) => [c.chapterId, c.channelId]),
-	);
+	// Same admin-editable settings the team_join invites use — the leaderboard's
+	// channel links and exclusions must agree with what /settings shows.
+	const settings = await loadSettings(db);
+	const chapterChannelIds = firstChannelByChapter(settings.chapterChannelMap);
 
 	const opts = {
-		excludedChapterIds: REPORT_EXCLUDED_CHAPTER_IDS,
+		excludedChapterIds: settings.reportExcludedChapterIds,
 		chapterChannelIds,
-		rankingAlpha: SLACK_GROWTH_REPORT_RANKING_ALPHA,
+		rankingAlpha: settings.slackGrowthReportRankingAlpha,
 	};
 
 	const [saved, live] = await Promise.all([

@@ -8,22 +8,30 @@ vi.mock('./autocomplete-sources.js', () => ({
 	getSlackChannels: vi.fn(),
 	getSlackUsers: vi.fn(),
 	getSolidarityChapters: vi.fn(),
+	getSolidarityCustomProperties: vi.fn(),
+	getSolidarityUserLists: vi.fn(),
 }));
 
 import {
 	validateSlackChannel,
 	validateSlackUser,
 	validateSolidarityChapter,
+	validateSolidarityCustomProperty,
+	validateSolidarityUserList,
 } from './settings-validation.js';
 import {
 	getSlackChannels,
 	getSlackUsers,
 	getSolidarityChapters,
+	getSolidarityCustomProperties,
+	getSolidarityUserLists,
 } from './autocomplete-sources.js';
 
 const getChannels = vi.mocked(getSlackChannels);
 const getUsers = vi.mocked(getSlackUsers);
 const getChapters = vi.mocked(getSolidarityChapters);
+const getProperties = vi.mocked(getSolidarityCustomProperties);
+const getUserLists = vi.mocked(getSolidarityUserLists);
 
 const slack = {} as unknown as WebClient;
 
@@ -112,7 +120,7 @@ describe('US3: validateSlackChannel', () => {
 describe('US3: validateSlackUser', () => {
 	it('Scenario 5 — present user id resolves { ok: true, displayName } (FR-014)', async () => {
 		getUsers.mockResolvedValueOnce({
-			items: [{ id: 'U001', name: 'alice', realName: 'Alice Example' }],
+			items: [{ id: 'U001', name: 'alice', realName: 'Alice Example', email: 'alice@x.com' }],
 			stale: false,
 			fetchedAt: 1700000000000,
 		});
@@ -126,7 +134,7 @@ describe('US3: validateSlackUser', () => {
 		// id simply is not in `items`. Same path as "absent" — named here so
 		// the test name maps to the spec acceptance scenario verbatim.
 		getUsers.mockResolvedValueOnce({
-			items: [{ id: 'U_REAL', name: 'real human', realName: 'Real Human' }],
+			items: [{ id: 'U_REAL', name: 'real human', realName: 'Real Human', email: 'real@x.com' }],
 			stale: false,
 			fetchedAt: 1700000000000,
 		});
@@ -223,5 +231,67 @@ describe('US4: validators fail closed when the autocomplete source is unavailabl
 
 		expect(errorSpy).not.toHaveBeenCalled();
 		expect(warnSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe('validateSolidarityCustomProperty', () => {
+	const items = [
+		{ internalName: 'labor', name: 'Labor Unions' },
+		{ internalName: 'clergy', name: 'Clergy' },
+	];
+
+	it('present internal_name resolves { ok: true, name }', async () => {
+		getProperties.mockResolvedValueOnce({ items, stale: false, fetchedAt: 1700000000000 });
+		await expect(validateSolidarityCustomProperty('token', 'labor')).resolves.toEqual({
+			ok: true,
+			name: 'Labor Unions',
+		});
+	});
+
+	it('unknown internal_name resolves { ok: false, transient: false }', async () => {
+		getProperties.mockResolvedValueOnce({ items, stale: false, fetchedAt: 1700000000000 });
+		await expect(validateSolidarityCustomProperty('token', 'ghosts')).resolves.toMatchObject({
+			ok: false,
+			transient: false,
+		});
+	});
+
+	it('source rejection resolves { ok: false, transient: true } and never throws', async () => {
+		getProperties.mockRejectedValueOnce(new Error('cold cache'));
+		await expect(validateSolidarityCustomProperty('token', 'labor')).resolves.toMatchObject({
+			ok: false,
+			transient: true,
+		});
+	});
+});
+
+describe('validateSolidarityUserList', () => {
+	const items = [
+		{ id: 42, name: 'Labor coalition' },
+		{ id: 43, name: 'Clergy coalition' },
+	];
+
+	it('present list id resolves { ok: true, name }', async () => {
+		getUserLists.mockResolvedValueOnce({ items, stale: false, fetchedAt: 1700000000000 });
+		await expect(validateSolidarityUserList('token', 42)).resolves.toEqual({
+			ok: true,
+			name: 'Labor coalition',
+		});
+	});
+
+	it('unknown list id resolves { ok: false, transient: false }', async () => {
+		getUserLists.mockResolvedValueOnce({ items, stale: false, fetchedAt: 1700000000000 });
+		await expect(validateSolidarityUserList('token', 999)).resolves.toMatchObject({
+			ok: false,
+			transient: false,
+		});
+	});
+
+	it('source rejection resolves { ok: false, transient: true } and never throws', async () => {
+		getUserLists.mockRejectedValueOnce(new Error('cold cache'));
+		await expect(validateSolidarityUserList('token', 42)).resolves.toMatchObject({
+			ok: false,
+			transient: true,
+		});
 	});
 });

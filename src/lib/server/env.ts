@@ -13,6 +13,11 @@ export const SLACK_SIGNING_SECRET = get('SLACK_SIGNING_SECRET');
 export const SLACK_ALLOWED_USER_IDS = new Set(
 	get('SLACK_ALLOWED_USER_IDS').split(',').map((id) => id.trim()).filter(Boolean),
 );
+// Slack user id that is ALWAYS granted admin, regardless of the DB-backed
+// allowed_slack_users list (or its SLACK_ALLOWED_USER_IDS fallback) — even
+// when that list is empty or unreadable. Escape hatch so a mis-edited allowed
+// list can never lock every admin out of /pending and /settings.
+export const SLACK_SUPERUSER_ID = get('SLACK_SUPERUSER_ID');
 export const SLACK_TRACKING_CHANNEL_ID = get('SLACK_TRACKING_CHANNEL_ID');
 export const SLACK_GROWTH_REPORT_CHANNEL_ID = get('SLACK_GROWTH_REPORT_CHANNEL_ID');
 // Comma-separated list of Solidarity chapter IDs to omit from reports — both
@@ -54,17 +59,6 @@ export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
 // Callers pass it as ?key=<value>.
 export const INTERNAL_CRON_SECRET = get('INTERNAL_CRON_SECRET');
 
-// JSON object mapping coalition group names to Slack channel IDs.
-// Example: {"labor": "C0ALZBGF9C2", "housing": "C0ALZBGF9C3"}
-export const COALITION_CHANNEL_MAP: Record<string, string> = (() => {
-	try {
-		return JSON.parse(get('COALITION_CHANNEL_MAP') || '{}') as Record<string, string>;
-	} catch {
-		console.error('[env] COALITION_CHANNEL_MAP is not valid JSON — defaulting to {}');
-		return {};
-	}
-})();
-
 export interface ChapterEntry {
 	chapterId: number;
 	channelId: string;
@@ -72,6 +66,9 @@ export interface ChapterEntry {
 }
 
 // JSON array mapping solidarity chapter IDs to Slack channel IDs and display names.
+// Fallback for the /settings chapter↔channel editor: used while the
+// chapter_channel_map table is empty, and copied into it before its first
+// interactive edit.
 // Example: [{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]
 export const SOLIDARITY_CHAPTER_CHANNEL_MAP: ChapterEntry[] = (() => {
 	try {

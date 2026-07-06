@@ -8,7 +8,6 @@ vi.mock('./env.js', () => ({
 	SOLIDARITY_CHAPTER_CHANNEL_MAP: [
 		{ chapterId: 1, channelId: 'C_ENV_CHAP', name: 'Env Chapter' },
 	],
-	COALITION_CHANNEL_MAP: { labor: 'C_ENV_LABOR' },
 	SLACK_ALLOWED_USER_IDS: new Set(['U_ENV_ALICE']),
 	REPORT_EXCLUDED_CHAPTER_IDS: new Set([99]),
 	SLACK_TRACKING_CHANNEL_ID: 'C_ENV_TRACK',
@@ -18,8 +17,12 @@ vi.mock('./env.js', () => ({
 
 import {
 	loadSettings,
-	saveChapterChannelEntry,
-	deleteChapterChannelEntry,
+	saveChapterChannelEntries,
+	deleteChapterChannelEntries,
+	ensureChapterChannelMapSeeded,
+	ensureAllowedUsersSeeded,
+	ensureExcludedChaptersSeeded,
+	SYSTEM_EDITOR,
 	saveCoalitionEntry,
 	deleteCoalitionEntry,
 	saveAllowedUser,
@@ -74,6 +77,10 @@ function makeDb(): MockDb {
 			onConflictDoUpdate: async (onConflict: unknown) => {
 				inserts.push({ table, values, onConflict });
 			},
+			// Race-tolerant seed insert — used by ensureChapterChannelMapSeeded.
+			onConflictDoNothing: async () => {
+				inserts.push({ table, values, onConflict: 'do-nothing' });
+			},
 		}),
 	}));
 
@@ -100,7 +107,7 @@ function pushAllEmpty(db: MockDb) {
 }
 
 describe('loadSettings — Story 1 (env fallback when tables are empty)', () => {
-	it('returns env values for every field when all five tables are empty', async () => {
+	it('returns env values for env-backed fields and an empty coalition map when all five tables are empty', async () => {
 		const db = makeDb();
 		pushAllEmpty(db);
 
@@ -109,7 +116,9 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 		expect(result.chapterChannelMap).toEqual([
 			{ chapterId: 1, channelId: 'C_ENV_CHAP', name: 'Env Chapter' },
 		]);
-		expect(result.coalitionChannelMap).toEqual({ labor: 'C_ENV_LABOR' });
+		// The coalition map is DB-only — no env fallback, so an empty table
+		// means "nothing mapped" (a delete must stay deleted).
+		expect(result.coalitionChannelMap).toEqual([]);
 		expect(result.allowedSlackUserIds).toEqual(new Set(['U_ENV_ALICE']));
 		expect(result.reportExcludedChapterIds).toEqual(new Set([99]));
 		expect(result.slackTrackingChannelId).toBe('C_ENV_TRACK');
@@ -121,7 +130,6 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 		// Re-mock env.js with the empty-state shapes for just this test.
 		vi.doMock('./env.js', () => ({
 			SOLIDARITY_CHAPTER_CHANNEL_MAP: [],
-			COALITION_CHANNEL_MAP: {},
 			SLACK_ALLOWED_USER_IDS: new Set<string>(),
 			REPORT_EXCLUDED_CHAPTER_IDS: new Set<number>(),
 			SLACK_TRACKING_CHANNEL_ID: '',
@@ -138,7 +146,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 
 		expect(result).toEqual({
 			chapterChannelMap: [],
-			coalitionChannelMap: {},
+			coalitionChannelMap: [],
 			allowedSlackUserIds: new Set(),
 			reportExcludedChapterIds: new Set(),
 			slackTrackingChannelId: '',
@@ -154,9 +162,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 	it('does not re-parse env on each call — imports the already-parsed constants', async () => {
 		// The env module exposes constants, not functions. Calling loadSettings
 		// twice must not produce two different env-parse passes; both calls see the
-		// same imported reference. We assert this by checking that the array
-		// reference returned for chapterChannelMap (env-fallback path) is the same
-		// across two calls.
+		// same imported reference for the env-fallback fields.
 		const db1 = makeDb();
 		pushAllEmpty(db1);
 		const result1 = await loadSettings(db1 as never);
@@ -166,7 +172,6 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 		const result2 = await loadSettings(db2 as never);
 
 		expect(result1.chapterChannelMap).toBe(result2.chapterChannelMap);
-		expect(result1.coalitionChannelMap).toBe(result2.coalitionChannelMap);
 		expect(result1.allowedSlackUserIds).toBe(result2.allowedSlackUserIds);
 		expect(result1.reportExcludedChapterIds).toBe(result2.reportExcludedChapterIds);
 	});
@@ -195,17 +200,19 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		expect(result.chapterChannelMap).toEqual([
 			{ chapterId: 7, channelId: 'C_DB_CHAP', name: 'DB Chapter' },
 		]);
-		// Other multi-row fields fall back to env, confirming table-level shadow is scoped.
-		expect(result.coalitionChannelMap).toEqual({ labor: 'C_ENV_LABOR' });
+		// The coalition map is independent — its empty table stays empty.
+		expect(result.coalitionChannelMap).toEqual([]);
 	});
 
-	it('DB rows override env for coalitionChannelMap', async () => {
+	it('DB rows populate coalitionChannelMap', async () => {
 		const db = makeDb();
 		db._pushSelect([]);
 		db._pushSelect([
 			{
 				groupName: 'housing',
 				channelId: 'C_DB_HOUS',
+				name: 'Housing Justice',
+				userListId: 88,
 				lastEditedBy: 'U_X',
 				lastEditedByName: 'X',
 				lastEditedAt: '2026-05-17T00:00:00.000Z',
@@ -216,7 +223,9 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		db._pushSelect([]);
 
 		const result = await loadSettings(db as never);
-		expect(result.coalitionChannelMap).toEqual({ housing: 'C_DB_HOUS' });
+		expect(result.coalitionChannelMap).toEqual([
+			{ group: 'housing', channelId: 'C_DB_HOUS', name: 'Housing Justice', userListId: 88 },
+		]);
 	});
 
 	it('DB rows override env for allowedSlackUserIds', async () => {
@@ -351,19 +360,27 @@ describe('settings setters — Story 3', () => {
 		vi.restoreAllMocks();
 	});
 
-	it('saveChapterChannelEntry writes payload + audit columns and emits [settings] log', async () => {
+	it('saveChapterChannelEntries writes one multi-row upsert + audit columns and emits [settings] log', async () => {
 		const db = makeDb();
 		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-		await saveChapterChannelEntry(
+		await saveChapterChannelEntries(
 			db as never,
-			{ chapterId: 7, channelId: 'C_X', name: 'Seven' },
+			[
+				{ chapterId: 7, name: 'Seven' },
+				{ chapterId: 8, name: 'Eight' },
+			],
+			'C_X',
 			editor,
 		);
 
-		const [captured] = db._capturedInserts();
-		expect(captured!.table).toBe(chapterChannelMap);
-		expect(captured!.values).toMatchObject({
+		// One statement for the whole batch — never one round-trip per chapter.
+		const captured = db._capturedInserts();
+		expect(captured).toHaveLength(1);
+		expect(captured[0]!.table).toBe(chapterChannelMap);
+		const rows = captured[0]!.values as Record<string, unknown>[];
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toMatchObject({
 			chapterId: 7,
 			channelId: 'C_X',
 			name: 'Seven',
@@ -371,11 +388,16 @@ describe('settings setters — Story 3', () => {
 			lastEditedByName: 'Alice',
 			lastEditedAt: FROZEN.toISOString(),
 		});
-		const onConflict = captured!.onConflict as { target: unknown; set: Record<string, unknown> };
-		expect(onConflict.target).toBe(chapterChannelMap.chapterId);
+		expect(rows[1]).toMatchObject({ chapterId: 8, channelId: 'C_X', name: 'Eight' });
+		const onConflict = captured[0]!.onConflict as { target: unknown; set: Record<string, unknown> };
+		// Composite conflict target — a chapter can map to many channels, so the
+		// upsert key is the (chapterId, channelId) pair and channelId is never in
+		// the set clause. `name` is per-row via excluded.name, so it's SQL, not a
+		// literal.
+		expect(onConflict.target).toEqual([chapterChannelMap.chapterId, chapterChannelMap.channelId]);
+		expect(onConflict.set).not.toHaveProperty('channelId');
+		expect(onConflict.set.name).toBeDefined();
 		expect(onConflict.set).toMatchObject({
-			channelId: 'C_X',
-			name: 'Seven',
 			lastEditedBy: 'U_ALICE',
 			lastEditedByName: 'Alice',
 			lastEditedAt: FROZEN.toISOString(),
@@ -385,23 +407,36 @@ describe('settings setters — Story 3', () => {
 		);
 	});
 
+	it('saveChapterChannelEntries is a no-op for an empty batch', async () => {
+		const db = makeDb();
+		await saveChapterChannelEntries(db as never, [], 'C_X', editor);
+		expect(db._capturedInserts()).toHaveLength(0);
+	});
+
 	it('saveCoalitionEntry writes payload + audit columns', async () => {
 		const db = makeDb();
 		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-		await saveCoalitionEntry(db as never, { group: 'labor', channelId: 'C_L' }, editor);
+		await saveCoalitionEntry(
+			db as never,
+			{ group: 'labor', channelId: 'C_L', name: 'Labor Unions', userListId: 42 },
+			editor,
+		);
 
 		const [captured] = db._capturedInserts();
 		expect(captured!.table).toBe(coalitionChannelMap);
 		expect(captured!.values).toMatchObject({
 			groupName: 'labor',
 			channelId: 'C_L',
+			name: 'Labor Unions',
+			userListId: 42,
 			lastEditedBy: 'U_ALICE',
 			lastEditedByName: 'Alice',
 			lastEditedAt: FROZEN.toISOString(),
 		});
 		const onConflict = captured!.onConflict as { target: unknown; set: Record<string, unknown> };
 		expect(onConflict.target).toBe(coalitionChannelMap.groupName);
+		expect(onConflict.set).toMatchObject({ name: 'Labor Unions', userListId: 42 });
 		expect(log).toHaveBeenCalledWith(
 			expect.stringMatching(/^\[settings\] saved coalition_channel_map .*U_ALICE/),
 		);
@@ -467,7 +502,7 @@ describe('settings setters — Story 3', () => {
 		const db = makeDb();
 		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-		await deleteChapterChannelEntry(db as never, 7, editor);
+		await deleteChapterChannelEntries(db as never, [7], 'C_X', editor);
 		await deleteCoalitionEntry(db as never, 'labor', editor);
 		await deleteAllowedUser(db as never, 'U_BOB', editor);
 		await deleteExcludedChapter(db as never, 99, editor);
@@ -494,6 +529,8 @@ describe('settings setters — Story 3', () => {
 		}
 		expect(safeStringify(captured[0]!.where)).toContain('chapter_id');
 		expect(safeStringify(captured[0]!.where)).toContain('7');
+		expect(safeStringify(captured[0]!.where)).toContain('channel_id');
+		expect(safeStringify(captured[0]!.where)).toContain('C_X');
 		expect(safeStringify(captured[1]!.where)).toContain('group_name');
 		expect(safeStringify(captured[1]!.where)).toContain('labor');
 
@@ -583,11 +620,7 @@ describe('settings setters — Story 3', () => {
 		const db = makeDb();
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 
-		await saveChapterChannelEntry(
-			db as never,
-			{ chapterId: 11, channelId: 'C_NEW', name: 'New' },
-			editor,
-		);
+		await saveChapterChannelEntries(db as never, [{ chapterId: 11, name: 'New' }], 'C_NEW', editor);
 
 		// Pre-queue the rows the next loadSettings will read — chapter row reflects
 		// the save, the other four tables are empty.
@@ -610,6 +643,114 @@ describe('settings setters — Story 3', () => {
 		expect(result.chapterChannelMap).toEqual([
 			{ chapterId: 11, channelId: 'C_NEW', name: 'New' },
 		]);
+	});
+});
+
+describe('ensureChapterChannelMapSeeded', () => {
+	it('copies every env entry into the table when it is empty, attributed to SYSTEM_EDITOR, race-tolerantly', async () => {
+		const db = makeDb();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		db._pushSelect([]);
+
+		await ensureChapterChannelMapSeeded(db as never);
+
+		const [captured] = db._capturedInserts();
+		expect(captured!.table).toBe(chapterChannelMap);
+		// onConflictDoNothing, not a bare insert — a concurrent first edit may
+		// seed between our emptiness check and this insert.
+		expect(captured!.onConflict).toBe('do-nothing');
+		const rows = captured!.values as Record<string, unknown>[];
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			chapterId: 1,
+			channelId: 'C_ENV_CHAP',
+			name: 'Env Chapter',
+			lastEditedBy: SYSTEM_EDITOR.id,
+			lastEditedByName: SYSTEM_EDITOR.name,
+		});
+	});
+
+	it('is a no-op when the table already has rows', async () => {
+		const db = makeDb();
+		db._pushSelect([{ chapterId: 7 }]);
+
+		await ensureChapterChannelMapSeeded(db as never);
+
+		expect(db._capturedInserts()).toHaveLength(0);
+	});
+});
+
+describe('ensureAllowedUsersSeeded', () => {
+	it('copies every env id into the table when it is empty, resolving display names from the provided map', async () => {
+		const db = makeDb();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		db._pushSelect([]);
+
+		await ensureAllowedUsersSeeded(db as never, new Map([['U_ENV_ALICE', 'Alice']]));
+
+		const [captured] = db._capturedInserts();
+		expect(captured!.table).toBe(allowedSlackUsers);
+		expect(captured!.onConflict).toBe('do-nothing');
+		const rows = captured!.values as Record<string, unknown>[];
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			slackUserId: 'U_ENV_ALICE',
+			displayName: 'Alice',
+			lastEditedBy: SYSTEM_EDITOR.id,
+			lastEditedByName: SYSTEM_EDITOR.name,
+		});
+	});
+
+	it('falls back to the raw id as displayName when no name is known', async () => {
+		const db = makeDb();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		db._pushSelect([]);
+
+		await ensureAllowedUsersSeeded(db as never);
+
+		const [captured] = db._capturedInserts();
+		const rows = captured!.values as Record<string, unknown>[];
+		expect(rows[0]).toMatchObject({ slackUserId: 'U_ENV_ALICE', displayName: 'U_ENV_ALICE' });
+	});
+
+	it('is a no-op when the table already has rows', async () => {
+		const db = makeDb();
+		db._pushSelect([{ slackUserId: 'U_DB' }]);
+
+		await ensureAllowedUsersSeeded(db as never);
+
+		expect(db._capturedInserts()).toHaveLength(0);
+	});
+});
+
+describe('ensureExcludedChaptersSeeded', () => {
+	it('copies every env id into the table when it is empty, with a NULL reason', async () => {
+		const db = makeDb();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		db._pushSelect([]);
+
+		await ensureExcludedChaptersSeeded(db as never);
+
+		const [captured] = db._capturedInserts();
+		expect(captured!.table).toBe(reportExcludedChapters);
+		expect(captured!.onConflict).toBe('do-nothing');
+		const rows = captured!.values as Record<string, unknown>[];
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			chapterId: 99,
+			reason: null,
+			lastEditedBy: SYSTEM_EDITOR.id,
+			lastEditedByName: SYSTEM_EDITOR.name,
+		});
+	});
+
+	it('is a no-op when the table already has rows', async () => {
+		const db = makeDb();
+		db._pushSelect([{ chapterId: 42 }]);
+
+		await ensureExcludedChaptersSeeded(db as never);
+
+		expect(db._capturedInserts()).toHaveLength(0);
 	});
 });
 

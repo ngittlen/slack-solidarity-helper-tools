@@ -27,9 +27,23 @@ export interface UserEntry {
 	name: string;
 	/** profile.real_name; may be empty. */
 	realName: string;
+	/** profile.email; may be empty (bot-less humans without the email scope visible). */
+	email: string;
 }
 
 export interface SolidarityChapterEntry {
+	id: number;
+	name: string;
+}
+
+export interface CustomPropertyEntry {
+	/** The API key used in custom_user_properties payloads. */
+	internalName: string;
+	/** Display label; falls back to internalName when the API omits one. */
+	name: string;
+}
+
+export interface UserListEntry {
 	id: number;
 	name: string;
 }
@@ -82,6 +96,8 @@ function makeEntry<T, C>(): CacheEntry<T, C> {
 const channelsEntry: CacheEntry<ChannelEntry, WebClient> = makeEntry();
 const usersEntry: CacheEntry<UserEntry, WebClient> = makeEntry();
 const chaptersEntry: CacheEntry<SolidarityChapterEntry, string> = makeEntry();
+const customPropertiesEntry: CacheEntry<CustomPropertyEntry, string> = makeEntry();
+const userListsEntry: CacheEntry<UserListEntry, string> = makeEntry();
 
 /**
  * Test-only: drop all cached lists and in-flight state so each test starts
@@ -92,6 +108,8 @@ export function _resetAutocompleteCachesForTests(): void {
 	Object.assign(channelsEntry, makeEntry<ChannelEntry, WebClient>());
 	Object.assign(usersEntry, makeEntry<UserEntry, WebClient>());
 	Object.assign(chaptersEntry, makeEntry<SolidarityChapterEntry, string>());
+	Object.assign(customPropertiesEntry, makeEntry<CustomPropertyEntry, string>());
+	Object.assign(userListsEntry, makeEntry<UserListEntry, string>());
 }
 
 /**
@@ -225,6 +243,7 @@ export function getSlackUsers(
 					id: m.id,
 					name: display,
 					realName: profile?.real_name ?? '',
+					email: profile?.email ?? '',
 				});
 			}
 			cursor = page.response_metadata?.next_cursor || undefined;
@@ -247,6 +266,64 @@ export function getSolidarityChapters(
 			'autocomplete',
 		);
 		const items: SolidarityChapterEntry[] = raw.map((c) => ({ id: c.id, name: c.name }));
+		items.sort(byName);
+		return items;
+	}, opts);
+}
+
+// Real response shape (verified against the live API 2026-07-05): the
+// machine key lives in `key` (e.g. "petitioner-experience"); `internal_name`
+// is accepted as a fallback since the write docs use that term. Entries
+// without a usable key are dropped.
+interface RawCustomProperty {
+	id?: number | string;
+	key?: string;
+	internal_name?: string;
+	name?: string;
+	label?: string;
+}
+
+export function getSolidarityCustomProperties(
+	token: string,
+	opts: AutocompleteOptions = {},
+): Promise<AutocompleteResult<CustomPropertyEntry>> {
+	return getCached(customPropertiesEntry, 'custom-properties', token, async () => {
+		const raw = await fetchPaginated<RawCustomProperty>(
+			token,
+			'/v1/custom_user_properties',
+			'/v1/custom_user_properties',
+			'',
+			'autocomplete',
+		);
+		const items: CustomPropertyEntry[] = raw
+			.map((p) => ({ ...p, resolvedKey: p.key ?? p.internal_name }))
+			.filter((p): p is RawCustomProperty & { resolvedKey: string } =>
+				typeof p.resolvedKey === 'string' && p.resolvedKey !== '',
+			)
+			.map((p) => ({
+				internalName: p.resolvedKey,
+				name: p.label ?? p.name ?? p.resolvedKey,
+			}));
+		items.sort(byName);
+		return items;
+	}, opts);
+}
+
+export function getSolidarityUserLists(
+	token: string,
+	opts: AutocompleteOptions = {},
+): Promise<AutocompleteResult<UserListEntry>> {
+	return getCached(userListsEntry, 'user-lists', token, async () => {
+		const raw = await fetchPaginated<{ id: number; name?: string }>(
+			token,
+			'/v1/user_lists',
+			'/v1/user_lists',
+			'',
+			'autocomplete',
+		);
+		const items: UserListEntry[] = raw
+			.filter((l) => typeof l.id === 'number')
+			.map((l) => ({ id: l.id, name: l.name ?? `List ${l.id}` }));
 		items.sort(byName);
 		return items;
 	}, opts);

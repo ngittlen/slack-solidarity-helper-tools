@@ -48,10 +48,15 @@
     --radius-lg: 8px;
 }
 
-/* Layer order: reset is below `component`, which layerchart uses for its
-   default tooltip / chart styling. Without this, the universal reset wins
-   over layerchart's `:where(...)` rules and strips tooltip padding/margins. */
-@layer reset, component;
+/* Cascade layer order. We only import individual layerchart components, not its
+   global `styles/core.css`, so the layer-order declaration it ships never reaches
+   our bundle — leaving layerchart's `base` vs `components` order up to bundling
+   order (which flips between toolchains and made hover highlights render opaque).
+   Declaring layerchart's real layers here (theme < base < components < utilities)
+   pins it: `.lc-highlight-area` (components) beats `.lc-rect`'s opaque default
+   (base), restoring the translucent highlight. `reset` stays lowest so our
+   universal reset never strips layerchart's tooltip padding/margins. */
+@layer reset, theme, base, components, utilities;
 
 @layer reset {
     *,

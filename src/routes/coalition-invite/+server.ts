@@ -1,7 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { errMessage } from '$lib/err-message.js';
+import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
-import { WEBHOOK_SECRET, COALITION_CHANNEL_MAP } from '$lib/server/env.js';
+import { loadSettings } from '$lib/server/settings.js';
+import { WEBHOOK_SECRET } from '$lib/server/env.js';
 
 export const GET: RequestHandler = async ({ url }) => {
 	if (url.searchParams.get('secret') !== WEBHOOK_SECRET) {
@@ -15,7 +18,23 @@ export const GET: RequestHandler = async ({ url }) => {
 	if (!coalition) return json({ error: 'coalition is required' }, { status: 400 });
 	if (!email.includes('@')) return json({ error: 'Invalid email address' }, { status: 400 });
 
-	const channelId = COALITION_CHANNEL_MAP[coalition];
+	// Admin-editable on /settings (DB-backed). `group` is the coalition's
+	// Solidarity custom-property internal_name — the same key Solidarity
+	// automations pass as ?coalition=. Matched case-insensitively (the incoming
+	// param is already lowercased above) so a property key with uppercase
+	// characters still resolves.
+	let coalitionChannelMap;
+	try {
+		({ coalitionChannelMap } = await loadSettings(db));
+	} catch (err) {
+		// Keep the JSON contract on a transient DB failure — a 503 tells the
+		// Solidarity automation to retry rather than handing it an HTML 500.
+		console.error('[coalition-invite] settings load failed:', errMessage(err));
+		return json({ error: 'Settings are temporarily unavailable. Retry shortly.' }, { status: 503 });
+	}
+	const channelId = coalitionChannelMap.find(
+		(e) => e.group.toLowerCase() === coalition,
+	)?.channelId;
 	if (!channelId) {
 		return json({ error: `Unknown coalition: ${coalition}` }, { status: 400 });
 	}
@@ -30,7 +49,7 @@ export const GET: RequestHandler = async ({ url }) => {
 		}
 		slackUserId = userId;
 	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
+		const msg = errMessage(err);
 		if (msg.includes('users_not_found')) {
 			return json({ error: `No Slack user found for ${email}` }, { status: 404 });
 		}
@@ -43,7 +62,7 @@ export const GET: RequestHandler = async ({ url }) => {
 		await slack.conversations.invite({ channel: channelId, users: slackUserId });
 		console.log(`[coalition-invite] invited ${email} (${slackUserId}) to ${coalition} (${channelId})`);
 	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
+		const msg = errMessage(err);
 		if (msg.includes('already_in_channel')) {
 			console.log(`[coalition-invite] ${email} already in ${coalition} (${channelId})`);
 			return json({ success: true, already_in_channel: true });

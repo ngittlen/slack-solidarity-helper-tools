@@ -14,6 +14,8 @@ import {
 	getSlackChannels,
 	getSlackUsers,
 	getSolidarityChapters,
+	getSolidarityCustomProperties,
+	getSolidarityUserLists,
 } from './autocomplete-sources.js';
 
 export interface ValidationFailure {
@@ -34,6 +36,14 @@ export type ChapterValidationResult =
 	| { ok: true; name: string }
 	| ValidationFailure;
 
+export type CustomPropertyValidationResult =
+	| { ok: true; name: string }
+	| ValidationFailure;
+
+export type UserListValidationResult =
+	| { ok: true; name: string }
+	| ValidationFailure;
+
 const TRANSIENT_CHANNEL =
 	'Slack channel list is temporarily unavailable. Try again in a moment.';
 const TRANSIENT_USER =
@@ -41,9 +51,16 @@ const TRANSIENT_USER =
 const TRANSIENT_CHAPTER =
 	'Solidarity chapter list is temporarily unavailable. Try again in a moment.';
 
+const TRANSIENT_PROPERTY =
+	'Solidarity custom property list is temporarily unavailable. Try again in a moment.';
+const TRANSIENT_USER_LIST =
+	'Solidarity user list catalog is temporarily unavailable. Try again in a moment.';
+
 const INVALID_CHANNEL = 'Not a valid Slack channel choice.';
 const INVALID_USER = 'Not a valid Slack user choice.';
 const INVALID_CHAPTER = 'Not a valid Solidarity chapter choice.';
+const INVALID_PROPERTY = 'Not a valid Solidarity custom property choice.';
+const INVALID_USER_LIST = 'Not a valid Solidarity user list choice.';
 
 export async function validateSlackChannel(
 	slack: WebClient,
@@ -87,5 +104,33 @@ export async function validateSolidarityChapter(
 		return { ok: false, error: INVALID_CHAPTER, transient: false };
 	} catch {
 		return { ok: false, error: TRANSIENT_CHAPTER, transient: true };
+	}
+}
+
+export async function validateSolidarityCustomProperty(
+	token: string,
+	internalName: string,
+): Promise<CustomPropertyValidationResult> {
+	try {
+		const { items } = await getSolidarityCustomProperties(token);
+		const hit = items.find((p) => p.internalName === internalName);
+		if (hit) return { ok: true, name: hit.name };
+		return { ok: false, error: INVALID_PROPERTY, transient: false };
+	} catch {
+		return { ok: false, error: TRANSIENT_PROPERTY, transient: true };
+	}
+}
+
+export async function validateSolidarityUserList(
+	token: string,
+	listId: number,
+): Promise<UserListValidationResult> {
+	try {
+		const { items } = await getSolidarityUserLists(token);
+		const hit = items.find((l) => l.id === listId);
+		if (hit) return { ok: true, name: hit.name };
+		return { ok: false, error: INVALID_USER_LIST, transient: false };
+	} catch {
+		return { ok: false, error: TRANSIENT_USER_LIST, transient: true };
 	}
 }

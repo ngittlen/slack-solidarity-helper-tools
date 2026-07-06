@@ -5,6 +5,11 @@
 	import { page } from '$app/state';
 	import './settings.css';
 	import { formatRelative } from '$lib/components/settings/format-relative.js';
+	import ChapterChannelEditor from '$lib/components/settings/ChapterChannelEditor.svelte';
+	import CoalitionChannelEditor from '$lib/components/settings/CoalitionChannelEditor.svelte';
+	import AllowedUsersEditor from '$lib/components/settings/AllowedUsersEditor.svelte';
+	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
+	import AppConfigEditor from '$lib/components/settings/AppConfigEditor.svelte';
 
 	const { data } = $props();
 
@@ -55,12 +60,33 @@
 		{#if data.errors.solidarityChapters}
 			<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
 		{/if}
+		{#if data.slackChannels && data.solidarityChapters}
+			<ChapterChannelEditor
+				chapters={data.solidarityChapters.items}
+				channels={data.slackChannels.items}
+				entries={data.settings.chapterChannelMap}
+			/>
+		{/if}
 	</section>
 
 	<section>
 		<h2>Coalition ↔ Slack channel</h2>
 		{#if data.errors.slackChannels}
 			<p class="error">Slack channels: {data.errors.slackChannels}</p>
+		{/if}
+		{#if data.errors.customProperties}
+			<p class="error">Solidarity custom properties: {data.errors.customProperties}</p>
+		{/if}
+		{#if data.errors.userLists}
+			<p class="error">Solidarity user lists: {data.errors.userLists}</p>
+		{/if}
+		{#if data.slackChannels && data.customProperties && data.userLists}
+			<CoalitionChannelEditor
+				channels={data.slackChannels.items}
+				customProperties={data.customProperties.items}
+				userLists={data.userLists.items}
+				entries={data.settings.coalitionChannelMap}
+			/>
 		{/if}
 	</section>
 
@@ -69,6 +95,15 @@
 		{#if data.errors.slackChannels}
 			<p class="error">Slack channels: {data.errors.slackChannels}</p>
 		{/if}
+		{#if data.slackChannels}
+			<AppConfigEditor
+				channels={data.slackChannels.items}
+				trackingChannelId={data.settings.slackTrackingChannelId}
+				growthReportChannelId={data.settings.slackGrowthReportChannelId}
+				rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
+				leaderboard={data.leaderboard}
+			/>
+		{/if}
 	</section>
 
 	<section>
@@ -76,12 +111,25 @@
 		{#if data.errors.slackUsers}
 			<p class="error">Slack users: {data.errors.slackUsers}</p>
 		{/if}
+		{#if data.slackUsers}
+			<AllowedUsersEditor
+				users={data.slackUsers.items}
+				allowedIds={[...data.settings.allowedSlackUserIds]}
+				selfId={data.selfSlackUserId}
+			/>
+		{/if}
 	</section>
 
 	<section>
 		<h2>Excluded chapters</h2>
 		{#if data.errors.solidarityChapters}
 			<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
+		{/if}
+		{#if data.solidarityChapters}
+			<ExcludedChaptersEditor
+				chapters={data.solidarityChapters.items}
+				excludedIds={[...data.settings.reportExcludedChapterIds]}
+			/>
 		{/if}
 	</section>
 </main>

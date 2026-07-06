@@ -5,7 +5,8 @@ import { db } from '$lib/server/db.js';
 import { slackJoins } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
-import { SLACK_SIGNING_SECRET, SOLIDARITY_CHAPTER_CHANNEL_MAP } from '$lib/server/env.js';
+import { loadSettings } from '$lib/server/settings.js';
+import { SLACK_SIGNING_SECRET } from '$lib/server/env.js';
 
 // ---------------------------------------------------------------------------
 // Slack signature verification
@@ -75,6 +76,28 @@ interface SlackEventPayload {
 	event?: { type: string; user: SlackUser };
 }
 
+// Slack only delivers team_join once (we ack with a 200 before this handler
+// runs), so a transient DB blip must not permanently cost a joiner their
+// channel invites. Retry with increasing waits before giving up; the handler
+// runs detached from the HTTP response, so waiting here blocks nothing.
+const LOAD_SETTINGS_RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000];
+
+async function loadSettingsWithRetry(): Promise<Awaited<ReturnType<typeof loadSettings>>> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await loadSettings(db);
+		} catch (err) {
+			if (attempt >= LOAD_SETTINGS_RETRY_DELAYS_MS.length) throw err;
+			const delayMs = LOAD_SETTINGS_RETRY_DELAYS_MS[attempt]!;
+			console.warn(
+				`[slack-events] loadSettings failed (attempt ${attempt + 1}), retrying in ${delayMs}ms:`,
+				err instanceof Error ? err.message : err,
+			);
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+}
+
 async function handleTeamJoin(user: SlackUser): Promise<void> {
 	// The team_join event payload does not include profile.email — fetch it via the API.
 	const info = await slack.users.info({ user: user.id });
@@ -93,9 +116,17 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 	const chapterIds = resolveChapterIds(solidarityUser);
 	await recordSlackJoin(user.id, email, chapterIds);
 
-	const channelIds = chapterIds
-		.map((id) => SOLIDARITY_CHAPTER_CHANNEL_MAP.find((e) => e.chapterId === id)?.channelId)
-		.filter((id): id is string => Boolean(id));
+	// The mapping is admin-editable on /settings (DB-backed) and many-to-many:
+	// every channel mapped to any of the joiner's chapters, deduped since
+	// sibling chapters often share a channel.
+	const { chapterChannelMap } = await loadSettingsWithRetry();
+	const channelIds = [
+		...new Set(
+			chapterChannelMap
+				.filter((e) => chapterIds.includes(e.chapterId))
+				.map((e) => e.channelId),
+		),
+	];
 
 	if (!channelIds.length) {
 		console.log(

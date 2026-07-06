@@ -1,13 +1,13 @@
-// Settings storage seam for the upcoming admin settings page (NAV-3 through
-// NAV-9). One typed `loadSettings(db)` that reads the five settings tables and
-// falls back to env for any field whose row(s) are absent, plus per-table
-// setters that stamp the audit columns and log the action. No HTTP surface in
-// this slice — consumers are migrated per-route in NAV-5 through NAV-9.
+// Settings storage seam for the admin settings page (NAV-3 through NAV-9).
+// One typed `loadSettings(db)` that reads the five settings tables, plus
+// per-table setters that stamp the audit columns and log the action. The
+// coalition channel map lives only in the DB (edited on /settings); the
+// remaining fields fall back to env when their row(s) are absent.
 //
 // See specs/005-settings-storage-loader/contracts/settings-module.md for the
 // full contract.
 
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 
 import {
@@ -19,7 +19,6 @@ import {
 } from './schema.js';
 import {
 	SOLIDARITY_CHAPTER_CHANNEL_MAP,
-	COALITION_CHANNEL_MAP,
 	SLACK_ALLOWED_USER_IDS,
 	REPORT_EXCLUDED_CHAPTER_IDS,
 	SLACK_TRACKING_CHANNEL_ID,
@@ -56,9 +55,19 @@ export interface ChapterEntry {
 	name: string;
 }
 
+export interface CoalitionEntry {
+	/** Solidarity custom-property internal_name; also the /coalition-invite webhook key. */
+	group: string;
+	channelId: string;
+	/** Custom property display label ('' when unknown). */
+	name: string;
+	/** Solidarity user list mirroring the property; null when not configured. */
+	userListId: number | null;
+}
+
 export interface Settings {
 	chapterChannelMap: ChapterEntry[];
-	coalitionChannelMap: Record<string, string>;
+	coalitionChannelMap: CoalitionEntry[];
 	allowedSlackUserIds: Set<string>;
 	reportExcludedChapterIds: Set<number>;
 	slackTrackingChannelId: string;
@@ -85,9 +94,11 @@ export type AppConfigPatch = Partial<{
 export const SYSTEM_EDITOR: Editor = { id: 'U0000000000', name: 'System' } as const;
 
 export async function loadSettings(db: Database): Promise<Settings> {
-	// Five parallel reads. Each multi-row table either shadows the env list entirely
-	// (FR-012) or falls back to env when empty. The app_config singleton row falls
-	// back per-field (FR-013): a NULL column means "use env for that field", while
+	// Five parallel reads. The coalition map is DB-only — an empty table simply
+	// means "nothing mapped" (a delete must stay deleted). The chapter map,
+	// allowed-users, and excluded-chapters lists shadow the env list entirely
+	// when non-empty (FR-012). The app_config singleton row falls back
+	// per-field (FR-013): a NULL column means "use env for that field", while
 	// a missing row means "use env for all three".
 	const [chapterRows, coalitionRows, allowedRows, excludedRows, appConfigRows] = await Promise.all([
 		db.select().from(chapterChannelMap),
@@ -102,10 +113,12 @@ export async function loadSettings(db: Database): Promise<Settings> {
 			? chapterRows.map((r) => ({ chapterId: r.chapterId, channelId: r.channelId, name: r.name }))
 			: SOLIDARITY_CHAPTER_CHANNEL_MAP;
 
-	const coalitionChannelMapField: Record<string, string> =
-		coalitionRows.length > 0
-			? Object.fromEntries(coalitionRows.map((r) => [r.groupName, r.channelId]))
-			: COALITION_CHANNEL_MAP;
+	const coalitionChannelMapField: CoalitionEntry[] = coalitionRows.map((r) => ({
+		group: r.groupName,
+		channelId: r.channelId,
+		name: r.name,
+		userListId: r.userListId,
+	}));
 
 	const allowedSlackUserIds: Set<string> =
 		allowedRows.length > 0
@@ -141,58 +154,111 @@ export async function loadSettings(db: Database): Promise<Settings> {
 // log line (Constitution Principle V). Errors bubble — the calling HTTP endpoint
 // (NAV-5+) owns failure logging because it has the request context.
 
-export async function saveChapterChannelEntry(
+/** Upsert one channel across many chapters in a single statement — the
+ *  /settings multi-editor's "add a chip while N chapters are selected". */
+export async function saveChapterChannelEntries(
 	db: Database,
-	entry: { chapterId: number; channelId: string; name: string },
+	chapters: { chapterId: number; name: string }[],
+	channelId: string,
 	editor: Editor,
 ): Promise<void> {
+	if (chapters.length === 0) return;
 	const lastEditedAt = new Date().toISOString();
-	const row = {
-		chapterId: entry.chapterId,
-		channelId: entry.channelId,
-		name: entry.name,
+	const rows = chapters.map((chapter) => ({
+		chapterId: chapter.chapterId,
+		channelId,
+		name: chapter.name,
 		lastEditedBy: editor.id,
 		lastEditedByName: editor.name,
 		lastEditedAt,
-	};
+	}));
 	await db
 		.insert(chapterChannelMap)
-		.values(row)
+		.values(rows)
 		.onConflictDoUpdate({
-			target: chapterChannelMap.chapterId,
+			target: [chapterChannelMap.chapterId, chapterChannelMap.channelId],
 			set: {
-				channelId: row.channelId,
-				name: row.name,
-				lastEditedBy: row.lastEditedBy,
-				lastEditedByName: row.lastEditedByName,
-				lastEditedAt: row.lastEditedAt,
+				// `excluded.*` so each conflicting row keeps its own name; the
+				// audit columns are identical across the batch.
+				name: sql`excluded.name`,
+				lastEditedBy: editor.id,
+				lastEditedByName: editor.name,
+				lastEditedAt,
 			},
 		});
 	console.log(
-		`[settings] saved chapter_channel_map chapter_id=${entry.chapterId} by ${editor.id} (${editor.name})`,
+		`[settings] saved chapter_channel_map chapter_ids=[${chapters.map((c) => c.chapterId).join(', ')}] channel_id=${channelId} by ${editor.id} (${editor.name})`,
 	);
 }
 
-export async function deleteChapterChannelEntry(
+export async function deleteChapterChannelEntries(
 	db: Database,
-	chapterId: number,
+	chapterIds: number[],
+	channelId: string,
 	editor: Editor,
 ): Promise<void> {
-	await db.delete(chapterChannelMap).where(eq(chapterChannelMap.chapterId, chapterId));
+	if (chapterIds.length === 0) return;
+	await db
+		.delete(chapterChannelMap)
+		.where(
+			and(
+				inArray(chapterChannelMap.chapterId, chapterIds),
+				eq(chapterChannelMap.channelId, channelId),
+			),
+		);
 	console.log(
-		`[settings] deleted chapter_channel_map chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+		`[settings] deleted chapter_channel_map chapter_ids=[${chapterIds.join(', ')}] channel_id=${channelId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+/**
+ * One-time copy of the env fallback into chapter_channel_map. The table
+ * shadows SOLIDARITY_CHAPTER_CHANNEL_MAP *entirely* once it has any row
+ * (FR-012), so the first interactive edit must not start from an empty table —
+ * that would silently drop every env mapping except the one being edited.
+ * Callers invoke this before the first write; no-op when the table already has
+ * rows or the env map is empty. Seed rows are attributed to SYSTEM_EDITOR.
+ * The check-then-insert is not atomic, so the insert uses onConflictDoNothing:
+ * two concurrent first edits may both pass the emptiness check, but the loser
+ * then no-ops per row instead of tripping the composite PK.
+ */
+export async function ensureChapterChannelMapSeeded(db: Database): Promise<void> {
+	const existing = await db
+		.select({ chapterId: chapterChannelMap.chapterId })
+		.from(chapterChannelMap)
+		.limit(1);
+	if (existing.length > 0 || SOLIDARITY_CHAPTER_CHANNEL_MAP.length === 0) return;
+
+	const lastEditedAt = new Date().toISOString();
+	await db
+		.insert(chapterChannelMap)
+		.values(
+			SOLIDARITY_CHAPTER_CHANNEL_MAP.map((e) => ({
+				chapterId: e.chapterId,
+				channelId: e.channelId,
+				name: e.name,
+				lastEditedBy: SYSTEM_EDITOR.id,
+				lastEditedByName: SYSTEM_EDITOR.name,
+				lastEditedAt,
+			})),
+		)
+		.onConflictDoNothing();
+	console.log(
+		`[settings] seeded chapter_channel_map with ${SOLIDARITY_CHAPTER_CHANNEL_MAP.length} env entries by ${SYSTEM_EDITOR.id} (${SYSTEM_EDITOR.name})`,
 	);
 }
 
 export async function saveCoalitionEntry(
 	db: Database,
-	entry: { group: string; channelId: string },
+	entry: { group: string; channelId: string; name: string; userListId: number | null },
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
 	const row = {
 		groupName: entry.group,
 		channelId: entry.channelId,
+		name: entry.name,
+		userListId: entry.userListId,
 		lastEditedBy: editor.id,
 		lastEditedByName: editor.name,
 		lastEditedAt,
@@ -204,6 +270,8 @@ export async function saveCoalitionEntry(
 			target: coalitionChannelMap.groupName,
 			set: {
 				channelId: row.channelId,
+				name: row.name,
+				userListId: row.userListId,
 				lastEditedBy: row.lastEditedBy,
 				lastEditedByName: row.lastEditedByName,
 				lastEditedAt: row.lastEditedAt,
@@ -222,6 +290,43 @@ export async function deleteCoalitionEntry(
 	await db.delete(coalitionChannelMap).where(eq(coalitionChannelMap.groupName, group));
 	console.log(
 		`[settings] deleted coalition_channel_map group_name=${group} by ${editor.id} (${editor.name})`,
+	);
+}
+
+/**
+ * One-time copy of the env fallback into allowed_slack_users — same rationale
+ * and concurrency posture as ensureChapterChannelMapSeeded above: the table
+ * shadows SLACK_ALLOWED_USER_IDS entirely once it has any row, so the first
+ * interactive edit must inherit the env list instead of silently dropping
+ * every admin except the one being edited. `displayNames` (from the cached
+ * Slack user list, when available) makes seed rows human-readable; ids without
+ * a known name fall back to the raw id.
+ */
+export async function ensureAllowedUsersSeeded(
+	db: Database,
+	displayNames?: ReadonlyMap<string, string>,
+): Promise<void> {
+	const existing = await db
+		.select({ slackUserId: allowedSlackUsers.slackUserId })
+		.from(allowedSlackUsers)
+		.limit(1);
+	if (existing.length > 0 || SLACK_ALLOWED_USER_IDS.size === 0) return;
+
+	const lastEditedAt = new Date().toISOString();
+	await db
+		.insert(allowedSlackUsers)
+		.values(
+			[...SLACK_ALLOWED_USER_IDS].map((id) => ({
+				slackUserId: id,
+				displayName: displayNames?.get(id) ?? id,
+				lastEditedBy: SYSTEM_EDITOR.id,
+				lastEditedByName: SYSTEM_EDITOR.name,
+				lastEditedAt,
+			})),
+		)
+		.onConflictDoNothing();
+	console.log(
+		`[settings] seeded allowed_slack_users with ${SLACK_ALLOWED_USER_IDS.size} env entries by ${SYSTEM_EDITOR.id} (${SYSTEM_EDITOR.name})`,
 	);
 }
 
@@ -263,6 +368,38 @@ export async function deleteAllowedUser(
 	await db.delete(allowedSlackUsers).where(eq(allowedSlackUsers.slackUserId, slackUserId));
 	console.log(
 		`[settings] deleted allowed_slack_users slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+/**
+ * One-time copy of the env fallback into report_excluded_chapters — same
+ * rationale and concurrency posture as the other ensure*Seeded helpers: the
+ * table shadows REPORT_EXCLUDED_CHAPTER_IDS entirely once it has any row, so
+ * the first interactive edit must inherit the env list. Env entries carry no
+ * reason, so seed rows get reason NULL.
+ */
+export async function ensureExcludedChaptersSeeded(db: Database): Promise<void> {
+	const existing = await db
+		.select({ chapterId: reportExcludedChapters.chapterId })
+		.from(reportExcludedChapters)
+		.limit(1);
+	if (existing.length > 0 || REPORT_EXCLUDED_CHAPTER_IDS.size === 0) return;
+
+	const lastEditedAt = new Date().toISOString();
+	await db
+		.insert(reportExcludedChapters)
+		.values(
+			[...REPORT_EXCLUDED_CHAPTER_IDS].map((chapterId) => ({
+				chapterId,
+				reason: null,
+				lastEditedBy: SYSTEM_EDITOR.id,
+				lastEditedByName: SYSTEM_EDITOR.name,
+				lastEditedAt,
+			})),
+		)
+		.onConflictDoNothing();
+	console.log(
+		`[settings] seeded report_excluded_chapters with ${REPORT_EXCLUDED_CHAPTER_IDS.size} env entries by ${SYSTEM_EDITOR.id} (${SYSTEM_EDITOR.name})`,
 	);
 }
 

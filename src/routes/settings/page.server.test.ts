@@ -11,6 +11,8 @@ vi.mock('$lib/server/autocomplete-sources.js', () => ({
 	getSlackChannels: vi.fn(),
 	getSlackUsers: vi.fn(),
 	getSolidarityChapters: vi.fn(),
+	getSolidarityCustomProperties: vi.fn(),
+	getSolidarityUserLists: vi.fn(),
 }));
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
@@ -23,6 +25,8 @@ import {
 	getSlackChannels,
 	getSlackUsers,
 	getSolidarityChapters,
+	getSolidarityCustomProperties,
+	getSolidarityUserLists,
 } from '$lib/server/autocomplete-sources.js';
 
 type LoadEvent = Parameters<typeof load>[0];
@@ -36,7 +40,7 @@ async function loadData(event: LoadEvent): Promise<SettingsPageData> {
 
 const settingsFixture = {
 	chapterChannelMap: [],
-	coalitionChannelMap: {},
+	coalitionChannelMap: [],
 	allowedSlackUserIds: new Set<string>(),
 	reportExcludedChapterIds: new Set<number>(),
 	slackTrackingChannelId: 'C_TRACK',
@@ -71,7 +75,7 @@ beforeEach(() => {
 		fetchedAt: 1_700_000_000_000,
 	});
 	vi.mocked(getSlackUsers).mockResolvedValue({
-		items: [{ id: 'U1', name: 'alice', realName: 'Alice' }],
+		items: [{ id: 'U1', name: 'alice', realName: 'Alice', email: 'alice@example.com' }],
 		stale: false,
 		fetchedAt: 1_700_000_000_500,
 	});
@@ -79,6 +83,16 @@ beforeEach(() => {
 		items: [{ id: 1, name: 'NYC' }],
 		stale: false,
 		fetchedAt: 1_700_000_001_000,
+	});
+	vi.mocked(getSolidarityCustomProperties).mockResolvedValue({
+		items: [{ internalName: 'labor', name: 'Labor Unions' }],
+		stale: false,
+		fetchedAt: 1_700_000_001_500,
+	});
+	vi.mocked(getSolidarityUserLists).mockResolvedValue({
+		items: [{ id: 42, name: 'Labor coalition' }],
+		stale: false,
+		fetchedAt: 1_700_000_002_000,
 	});
 });
 
@@ -110,7 +124,7 @@ describe('US1: admin gate', () => {
 // ---------------------------------------------------------------------------
 
 describe('US1: happy path', () => {
-	it('returns SettingsPageData with no errors and a numeric oldestFetchedAt when all four sources resolve', async () => {
+	it('returns SettingsPageData with no errors and a numeric oldestFetchedAt when all sources resolve', async () => {
 		const data = await loadData(makeEvent({ isAdmin: true }));
 
 		expect(data.pageTitle).toBe('Settings');
@@ -119,7 +133,9 @@ describe('US1: happy path', () => {
 		expect(data.slackChannels).toMatchObject({ stale: false, fetchedAt: 1_700_000_000_000 });
 		expect(data.slackUsers).toMatchObject({ stale: false, fetchedAt: 1_700_000_000_500 });
 		expect(data.solidarityChapters).toMatchObject({ stale: false, fetchedAt: 1_700_000_001_000 });
-		// oldest of the three successful fetches.
+		expect(data.customProperties).toMatchObject({ stale: false, fetchedAt: 1_700_000_001_500 });
+		expect(data.userLists).toMatchObject({ stale: false, fetchedAt: 1_700_000_002_000 });
+		// oldest of the successful fetches.
 		expect(data.oldestFetchedAt).toBe(1_700_000_000_000);
 	});
 });
@@ -161,19 +177,25 @@ describe('US3: per-source degradation', () => {
 		expect(data.oldestFetchedAt).toBe(1_700_000_000_000);
 	});
 
-	it('all three list fetchers reject → all three slots null, errors has three keys, oldestFetchedAt is null', async () => {
+	it('all list fetchers reject → all slots null, errors has all keys, oldestFetchedAt is null', async () => {
 		vi.mocked(getSlackChannels).mockRejectedValueOnce(new Error('channels down'));
 		vi.mocked(getSlackUsers).mockRejectedValueOnce(new Error('users down'));
 		vi.mocked(getSolidarityChapters).mockRejectedValueOnce(new Error('chapters down'));
+		vi.mocked(getSolidarityCustomProperties).mockRejectedValueOnce(new Error('properties down'));
+		vi.mocked(getSolidarityUserLists).mockRejectedValueOnce(new Error('lists down'));
 
 		const data = await loadData(makeEvent({ isAdmin: true }));
 
 		expect(data.slackChannels).toBeNull();
 		expect(data.slackUsers).toBeNull();
 		expect(data.solidarityChapters).toBeNull();
+		expect(data.customProperties).toBeNull();
+		expect(data.userLists).toBeNull();
 		expect(data.errors.slackChannels).toMatch(/channels down/);
 		expect(data.errors.slackUsers).toMatch(/users down/);
 		expect(data.errors.solidarityChapters).toMatch(/chapters down/);
+		expect(data.errors.customProperties).toMatch(/properties down/);
+		expect(data.errors.userLists).toMatch(/lists down/);
 		expect(data.oldestFetchedAt).toBeNull();
 	});
 });
@@ -183,19 +205,23 @@ describe('US3: per-source degradation', () => {
 // ---------------------------------------------------------------------------
 
 describe('US2: ?refresh=lists honoring', () => {
-	it('invokes all three fetchers with { force: true } when refresh=lists is present', async () => {
+	it('invokes all fetchers with { force: true } when refresh=lists is present', async () => {
 		await load(makeEvent({ isAdmin: true, refresh: 'lists' }));
 
 		expect(getSlackChannels).toHaveBeenCalledWith(expect.anything(), { force: true });
 		expect(getSlackUsers).toHaveBeenCalledWith(expect.anything(), { force: true });
 		expect(getSolidarityChapters).toHaveBeenCalledWith(expect.anything(), { force: true });
+		expect(getSolidarityCustomProperties).toHaveBeenCalledWith(expect.anything(), { force: true });
+		expect(getSolidarityUserLists).toHaveBeenCalledWith(expect.anything(), { force: true });
 	});
 
-	it('invokes all three fetchers WITHOUT force when refresh is any other value', async () => {
+	it('invokes all fetchers WITHOUT force when refresh is any other value', async () => {
 		await load(makeEvent({ isAdmin: true, refresh: 'something-else' }));
 
 		expect(getSlackChannels).toHaveBeenCalledWith(expect.anything(), { force: false });
 		expect(getSlackUsers).toHaveBeenCalledWith(expect.anything(), { force: false });
 		expect(getSolidarityChapters).toHaveBeenCalledWith(expect.anything(), { force: false });
+		expect(getSolidarityCustomProperties).toHaveBeenCalledWith(expect.anything(), { force: false });
+		expect(getSolidarityUserLists).toHaveBeenCalledWith(expect.anything(), { force: false });
 	});
 });

@@ -1,18 +1,31 @@
 import { redirect, error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 
+import { errMessage } from '$lib/err-message.js';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import { loadSettings, type Settings } from '$lib/server/settings.js';
 import {
+	computeWeeklyLeaderboard,
+	computeLiveLeaderboardSinceSnapshot,
+	firstChannelByChapter,
+	type WeeklyLeaderboard,
+	type LeaderboardResult,
+	type LeaderboardPair,
+} from '$lib/server/weekly-growth-report.js';
+import {
 	getSlackChannels,
 	getSlackUsers,
 	getSolidarityChapters,
+	getSolidarityCustomProperties,
+	getSolidarityUserLists,
 	type AutocompleteResult,
 	type ChannelEntry,
 	type UserEntry,
 	type SolidarityChapterEntry,
+	type CustomPropertyEntry,
+	type UserListEntry,
 } from '$lib/server/autocomplete-sources.js';
 
 // The page shell renders five empty <section>s; per-source error markers feed
@@ -20,20 +33,39 @@ import {
 // oldestFetchedAt drives the "Last refreshed Nm ago" indicator.
 export interface SettingsPageData {
 	pageTitle: 'Settings';
+	/** The signed-in admin's own Slack id — the allowed-users editor locks
+	 *  their chip so they can't attempt to remove themselves. */
+	selfSlackUserId: string;
 	settings: Settings;
 	slackChannels: AutocompleteResult<ChannelEntry> | null;
 	slackUsers: AutocompleteResult<UserEntry> | null;
 	solidarityChapters: AutocompleteResult<SolidarityChapterEntry> | null;
+	customProperties: AutocompleteResult<CustomPropertyEntry> | null;
+	userLists: AutocompleteResult<UserListEntry> | null;
 	errors: {
 		slackChannels?: string;
 		slackUsers?: string;
 		solidarityChapters?: string;
+		customProperties?: string;
+		userLists?: string;
 	};
 	oldestFetchedAt: number | null;
+	/** Same saved/live pair the dashboard renders, but with UNTRIMMED
+	 *  topChapters so the App-config alpha slider can re-rank the full list
+	 *  client-side and show how the top 5 would change. */
+	leaderboard: LeaderboardPair;
 }
 
-function errMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
+async function safeLeaderboard(
+	label: string,
+	compute: () => Promise<WeeklyLeaderboard>,
+): Promise<LeaderboardResult> {
+	try {
+		return { ok: true, leaderboard: await compute() };
+	} catch (err) {
+		console.error(`[settings] ${label} leaderboard load failed:`, errMessage(err));
+		return { ok: false, error: 'Failed to load leaderboard preview. Please try again.' };
+	}
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -49,15 +81,17 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// ignored — defensive against bookmarks / link previews.
 	const force = url.searchParams.get('refresh') === 'lists';
 
-	// All four sources run in parallel via Promise.allSettled so any one
+	// All six sources run in parallel via Promise.allSettled so any one
 	// rejection degrades just its source rather than blowing up the page —
 	// except loadSettings, which is page-fatal (see below).
-	const [settingsResult, channelsResult, usersResult, chaptersResult] =
+	const [settingsResult, channelsResult, usersResult, chaptersResult, propertiesResult, listsResult] =
 		await Promise.allSettled([
 			loadSettings(db),
 			getSlackChannels(slack, { force }),
 			getSlackUsers(slack, { force }),
 			getSolidarityChapters(SOLIDARITY_API_TOKEN, { force }),
+			getSolidarityCustomProperties(SOLIDARITY_API_TOKEN, { force }),
+			getSolidarityUserLists(SOLIDARITY_API_TOKEN, { force }),
 		]);
 
 	if (settingsResult.status === 'rejected') {
@@ -81,20 +115,51 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	if (chaptersResult.status === 'rejected') {
 		errors.solidarityChapters = errMessage(chaptersResult.reason);
 	}
+	const customProperties =
+		propertiesResult.status === 'fulfilled' ? propertiesResult.value : null;
+	if (propertiesResult.status === 'rejected') {
+		errors.customProperties = errMessage(propertiesResult.reason);
+	}
+	const userLists = listsResult.status === 'fulfilled' ? listsResult.value : null;
+	if (listsResult.status === 'rejected') {
+		errors.userLists = errMessage(listsResult.reason);
+	}
 
-	// "Oldest of three" reduction for the "Last refreshed Nm ago" indicator.
-	// Null when every list rejected — the indicator renders an em-dash.
-	const fetchedAts = [slackChannels, slackUsers, solidarityChapters]
+	// Leaderboard data for the alpha-slider preview — the dashboard's exact
+	// saved/live computation, minus the top-5 trim. Runs after loadSettings
+	// resolves because it needs the effective exclusions and channel map.
+	const settings = settingsResult.value;
+	const leaderboardOpts = {
+		excludedChapterIds: settings.reportExcludedChapterIds,
+		chapterChannelIds: firstChannelByChapter(settings.chapterChannelMap),
+		rankingAlpha: settings.slackGrowthReportRankingAlpha,
+		topN: Number.POSITIVE_INFINITY,
+	};
+	const [saved, live] = await Promise.all([
+		safeLeaderboard('saved', () => computeWeeklyLeaderboard(db, leaderboardOpts)),
+		safeLeaderboard('live', () =>
+			computeLiveLeaderboardSinceSnapshot(db, { ...leaderboardOpts, slack }),
+		),
+	]);
+	const leaderboard: LeaderboardPair = { saved, live };
+
+	// "Oldest of the live lists" reduction for the "Last refreshed Nm ago"
+	// indicator. Null when every list rejected — the indicator renders an em-dash.
+	const fetchedAts = [slackChannels, slackUsers, solidarityChapters, customProperties, userLists]
 		.filter((r): r is NonNullable<typeof r> => r !== null)
 		.map((r) => r.fetchedAt);
 	const oldestFetchedAt = fetchedAts.length === 0 ? null : Math.min(...fetchedAts);
 
 	return {
 		pageTitle: 'Settings' as const,
-		settings: settingsResult.value,
+		selfSlackUserId: locals.session.slackUserId,
+		settings,
+		leaderboard,
 		slackChannels,
 		slackUsers,
 		solidarityChapters,
+		customProperties,
+		userLists,
 		errors,
 		oldestFetchedAt,
 	} satisfies SettingsPageData;

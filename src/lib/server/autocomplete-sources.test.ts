@@ -4,6 +4,8 @@ import {
 	getSlackChannels,
 	getSlackUsers,
 	getSolidarityChapters,
+	getSolidarityCustomProperties,
+	getSolidarityUserLists,
 	_resetAutocompleteCachesForTests,
 } from './autocomplete-sources.js';
 
@@ -31,7 +33,7 @@ function makeSlack(): {
 	return { slack, conversationsList, usersList };
 }
 
-function chaptersPage(items: { id: number; name: string }[]) {
+function chaptersPage(items: unknown[]) {
 	return {
 		ok: true,
 		status: 200,
@@ -150,9 +152,9 @@ describe('US1: getSlackUsers', () => {
 		// gamma_handle → from name fallback (display & real both empty). Bots and
 		// deleted users are dropped entirely. Sort is by resolved display name.
 		expect(result.items).toEqual([
-			{ id: 'U_ALPHA', name: 'alpha display', realName: 'Alpha Real' },
-			{ id: 'U_GAMMA', name: 'gamma_handle', realName: '' },
-			{ id: 'U_BETA', name: 'Zeta Real', realName: 'Zeta Real' },
+			{ id: 'U_ALPHA', name: 'alpha display', realName: 'Alpha Real', email: '' },
+			{ id: 'U_GAMMA', name: 'gamma_handle', realName: '', email: '' },
+			{ id: 'U_BETA', name: 'Zeta Real', realName: 'Zeta Real', email: '' },
 		]);
 	});
 
@@ -211,6 +213,54 @@ describe('US1: getSolidarityChapters', () => {
 
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 		expect(result.items).toHaveLength(101);
+	});
+});
+
+describe('getSolidarityCustomProperties', () => {
+	it('maps key/label (real API shape), accepts internal_name fallback, drops keyless, sorts', async () => {
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			chaptersPage([
+				// Real shape: key + label + name.
+				{ id: 3, key: 'labor-union', name: 'Labor Union', label: 'Labor Union' },
+				// Docs-termed fallback shape.
+				{ id: 4, internal_name: 'clergy' },
+				// No usable key → dropped.
+				{ id: 5, name: 'Orphan Property' },
+			]),
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const result = await getSolidarityCustomProperties('token');
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(String(fetchMock.mock.calls[0]![0])).toContain('/v1/custom_user_properties');
+		expect(result.items).toEqual([
+			{ internalName: 'clergy', name: 'clergy' },
+			{ internalName: 'labor-union', name: 'Labor Union' },
+		]);
+	});
+});
+
+describe('getSolidarityUserLists', () => {
+	it('maps id/name, tolerates missing names, sorts by name', async () => {
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			chaptersPage([
+				{ id: 9, name: 'Zeta list' },
+				{ id: 7, name: 'Alpha list' },
+				{ id: 8 }, // unnamed → synthesized label
+				{ name: 'No id' }, // no numeric id → dropped
+			]),
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const result = await getSolidarityUserLists('token');
+
+		expect(String(fetchMock.mock.calls[0]![0])).toContain('/v1/user_lists');
+		expect(result.items).toEqual([
+			{ id: 7, name: 'Alpha list' },
+			{ id: 8, name: 'List 8' },
+			{ id: 9, name: 'Zeta list' },
+		]);
 	});
 });
 

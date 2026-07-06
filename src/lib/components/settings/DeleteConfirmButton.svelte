@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { AlertDialog } from 'bits-ui';
+	import { errMessage } from '$lib/err-message.js';
 
 	interface Props {
 		label: string;
@@ -21,7 +22,7 @@
 			await onConfirm();
 			open = false;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed';
+			error = errMessage(e);
 			open = false;
 		} finally {
 			pending = false;

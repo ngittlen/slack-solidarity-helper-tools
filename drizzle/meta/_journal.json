@@ -43,6 +43,20 @@
       "when": 1779072106121,
       "tag": "0005_tricky_captain_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1783224400962,
+      "tag": "0006_dapper_stellaris",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1783301448149,
+      "tag": "0007_cynical_starjammers",
+      "breakpoints": true
     }
   ]
 }

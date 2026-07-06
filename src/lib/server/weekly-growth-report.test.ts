@@ -5,7 +5,21 @@ import {
 	computeWeeklyLeaderboard,
 	computeLiveLeaderboardSinceSnapshot,
 	clearChannelCountCache,
+	firstChannelByChapter,
 } from './weekly-growth-report.js';
+
+describe('firstChannelByChapter', () => {
+	it('keeps the first channel when a chapter maps to several', () => {
+		const map = firstChannelByChapter([
+			{ chapterId: 1, channelId: 'C_A' },
+			{ chapterId: 1, channelId: 'C_B' },
+			{ chapterId: 2, channelId: 'C_C' },
+		]);
+		expect(map.get(1)).toBe('C_A');
+		expect(map.get(2)).toBe('C_C');
+		expect(map.size).toBe(2);
+	});
+});
 
 describe('computeWindow', () => {
 	function expectWindow(input: string, expectedEnd: string, expectedStart: string) {

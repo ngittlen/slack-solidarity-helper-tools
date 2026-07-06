@@ -36,7 +36,7 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
 ### Weekly growth report
 
 1. A scheduler (e.g. GitHub Actions) posts to `/api/internal/weekly-growth-report?key=<INTERNAL_CRON_SECRET>` once a week
-2. The endpoint compares `slack_joins` rows from the last 7 days against the existing channel size (fetched via `conversations.info` for chapters with a `SOLIDARITY_CHAPTER_CHANNEL_MAP` entry, or the cumulative `slack_joins` count otherwise)
+2. The endpoint compares `slack_joins` rows from the last 7 days against the existing channel size (fetched via `conversations.info` for chapters with a chapter↔channel mapping — configured on `/settings`, falling back to `SOLIDARITY_CHAPTER_CHANNEL_MAP` — or the cumulative `slack_joins` count otherwise)
 3. Chapters are ranked by a power-law score `newJoins / (existing + 1)^α` (configurable via `SLACK_GROWTH_REPORT_RANKING_ALPHA`, default `0.7`) and the top 5 are posted to `SLACK_GROWTH_REPORT_CHANNEL_ID`
 4. Pass `?dry_run=1` to compute the result without posting
 
@@ -108,7 +108,8 @@ SLACK_BOT_TOKEN=xoxb-your-token-here
 SLACK_CLIENT_ID=your-client-id
 SLACK_CLIENT_SECRET=your-client-secret
 SLACK_SIGNING_SECRET=your-signing-secret-here
-SLACK_ALLOWED_USER_IDS=U012AB3CD,U012AB3CE
+SLACK_ALLOWED_USER_IDS=U012AB3CD,U012AB3CE        # admin allowlist (fallback/seed for the DB-backed list)
+SLACK_SUPERUSER_ID=U012AB3CD                      # optional; always-admin escape hatch
 SLACK_TRACKING_CHANNEL_ID=C012AB3CD
 SLACK_GROWTH_REPORT_CHANNEL_ID=C012AB3CD          # where the weekly growth report posts
 SLACK_GROWTH_REPORT_RANKING_ALPHA=0.7             # optional; power-law exponent for ranking
@@ -120,7 +121,6 @@ INTERNAL_CRON_SECRET=long-random-string           # required for /api/internal/*
 APP_URL=https://your-app.fly.dev
 SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
 SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
-COALITION_CHANNEL_MAP='{"labor":"C0ALZBGF9C2","housing":"C0ALZBGF9C3"}'
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
 
@@ -179,7 +179,7 @@ Handles two event types:
 | `url_verification` | Returns the Slack challenge token (required when first configuring the URL) |
 | `team_join` | Looks up the new member in solidarity.tech, invites them to their county channel(s), and sends a welcome DM |
 
-The `team_join` handler does nothing if the member's email is not found in solidarity.tech, or if their chapter has no entry in `SOLIDARITY_CHAPTER_CHANNEL_MAP`.
+The `team_join` handler does nothing if the member's email is not found in solidarity.tech, or if their chapter has no chapter↔channel mapping (configured on `/settings`, falling back to `SOLIDARITY_CHAPTER_CHANNEL_MAP`).
 
 ### `GET /webhook`
 
@@ -198,7 +198,7 @@ If the same email is submitted again, the existing record is updated with the ne
 
 ### `GET /pending`
 
-Protected by Slack OAuth. Redirects unauthenticated users to Sign in with Slack. Only users listed in `SLACK_ALLOWED_USER_IDS` are granted access. Displays a web page listing volunteers who have requested help but still haven't joined the workspace.
+Protected by Slack OAuth. Redirects unauthenticated users to Sign in with Slack. Only users in the admin allowlist (the DB-backed `allowed_slack_users` table, falling back to `SLACK_ALLOWED_USER_IDS` while that table is empty) are granted access; the `SLACK_SUPERUSER_ID` user is always granted access regardless of the list. Displays a web page listing volunteers who have requested help but still haven't joined the workspace.
 
 The underlying JSON is also available at `GET /api/pending`:
 
@@ -246,7 +246,7 @@ Updates the status of a request. Requires an active Slack OAuth session. `status
 
 ### `GET /`, `GET /dashboard/solidarity`, `GET /dashboard/slack`
 
-Signup-trend dashboard. The whole site (and any future route) is gated by a root layout guard that redirects unauthenticated visitors to `/auth/slack`; any workspace member who completes OAuth can view the dashboard (no admin gate). `/pending` keeps its own `SLACK_ALLOWED_USER_IDS` admin check.
+Signup-trend dashboard. The whole site (and any future route) is gated by a root layout guard that redirects unauthenticated visitors to `/auth/slack`; any workspace member who completes OAuth can view the dashboard (no admin gate). `/pending` keeps its own admin allowlist check (DB-backed with `SLACK_ALLOWED_USER_IDS` fallback, plus the `SLACK_SUPERUSER_ID` escape hatch).
 
 - `/` renders two non-interactive overview cards (Solidarity, Slack) showing daily totals.
 - `/dashboard/solidarity` and `/dashboard/slack` render stacked-by-chapter bars with the top 10 chapters named and the rest rolled into an "Other" band. The Slack page also overlays a per-day distinct-user total marker (a member who joined multiple chapters in one day is counted in each band but only once in the daily total).
@@ -311,7 +311,7 @@ Invites an existing Slack user to a coalition channel. Useful for solidarity.tec
 |---|---|---|
 | `secret` | Yes | Must match `WEBHOOK_SECRET` |
 | `email` | Yes | Email of an existing Slack workspace member |
-| `coalition` | Yes | Key in `COALITION_CHANNEL_MAP` (case-insensitive) |
+| `coalition` | Yes | A coalition group name mapped on `/settings` (case-insensitive) |
 
 Returns `{ "success": true }` on a successful invite, `{ "success": true, "already_in_channel": true }` if the user was already in the channel, `404` if no Slack user matches the email, `400` for unknown coalitions or invalid input, and `502` if Slack rejects the invite.
 
@@ -358,8 +358,7 @@ fly secrets set \
   APP_URL=https://your-app.fly.dev \
   ORIGIN=https://your-app.fly.dev \
   SOLIDARITY_API_TOKEN=... \
-  'SOLIDARITY_CHAPTER_CHANNEL_MAP=[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]' \
-  'COALITION_CHANNEL_MAP={"labor":"C0ALZBGF9C2","housing":"C0ALZBGF9C3"}'
+  'SOLIDARITY_CHAPTER_CHANNEL_MAP=[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
 
 fly deploy
 ```

@@ -15,6 +15,7 @@ const mockInsertValues = vi.hoisted(() => vi.fn());
 const mockInsert = vi.hoisted(() => vi.fn());
 
 const mockPostMessage = vi.hoisted(() => vi.fn());
+const mockLoadSettings = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({
 	db: { select: mockSelect, update: mockUpdate, insert: mockInsert },
@@ -22,9 +23,9 @@ vi.mock('$lib/server/db', () => ({
 vi.mock('$lib/server/slack', () => ({ slack: { chat: { postMessage: mockPostMessage } } }));
 vi.mock('$lib/server/env', () => ({
 	WEBHOOK_SECRET: 'secret123',
-	SLACK_TRACKING_CHANNEL_ID: 'C_TEST',
 	APP_URL: 'http://localhost',
 }));
+vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
 vi.mock('$lib/server/events', () => ({ notifyNewRequest: vi.fn() }));
 vi.mock('$env/dynamic/private', () => ({ env: {} }));
 
@@ -52,6 +53,7 @@ describe('GET /webhook', () => {
 		mockInsertReturning.mockResolvedValue([{ id: 1 }]);
 
 		mockPostMessage.mockResolvedValue({ ok: true });
+		mockLoadSettings.mockResolvedValue({ slackTrackingChannelId: 'C_TEST' });
 	});
 
 	it('returns 401 when secret is wrong', async () => {

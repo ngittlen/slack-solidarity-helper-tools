@@ -13,8 +13,10 @@ const mockInsertValues = vi.hoisted(() =>
 	vi.fn(() => ({ onConflictDoNothing: mockOnConflictDoNothing })),
 );
 const mockInsert = vi.hoisted(() => vi.fn(() => ({ values: mockInsertValues })));
+const mockLoadSettings = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/solidarity', () => ({ getUserByEmail: mockGetUserByEmail }));
+vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
 vi.mock('$lib/server/slack', () => ({
 	slack: {
 		users: { info: mockUsersInfo },
@@ -28,7 +30,6 @@ vi.mock('$lib/server/slack', () => ({
 vi.mock('$lib/server/db', () => ({ db: { insert: mockInsert } }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
-	SOLIDARITY_CHAPTER_CHANNEL_MAP: [{ chapterId: 42, channelId: 'C_COUNTY', name: 'Test County' }],
 }));
 
 // --- Helpers ---
@@ -111,6 +112,9 @@ describe('POST /api/slack/events', () => {
 		mockConversationsInvite.mockResolvedValue({ ok: true });
 		mockConversationsOpen.mockResolvedValue({ channel: { id: 'DM_CHANNEL' } });
 		mockPostMessage.mockResolvedValue({ ok: true });
+		mockLoadSettings.mockResolvedValue({
+			chapterChannelMap: [{ chapterId: 42, channelId: 'C_COUNTY', name: 'Test County' }],
+		});
 	});
 
 	it('returns 401 for an invalid signature', async () => {
@@ -159,6 +163,26 @@ describe('POST /api/slack/events', () => {
 		const channelCall = mockPostMessage.mock.calls.find((c) => c[0]?.channel === 'C_COUNTY');
 		expect(channelCall).toBeDefined();
 		expect(channelCall![0].text).toContain('<@U_NEW>');
+	});
+
+	it('invites to every channel mapped to the chapter, deduped across chapters', async () => {
+		// Chapter 42 maps to two channels; chapters 42 and 43 share C_SHARED,
+		// which must be invited only once.
+		mockLoadSettings.mockResolvedValue({
+			chapterChannelMap: [
+				{ chapterId: 42, channelId: 'C_COUNTY', name: 'Test County' },
+				{ chapterId: 42, channelId: 'C_SHARED', name: 'Test County' },
+				{ chapterId: 43, channelId: 'C_SHARED', name: 'Other County' },
+			],
+		});
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42, 43] });
+
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
+		await waitForDm();
+
+		expect(mockConversationsInvite).toHaveBeenCalledTimes(2);
+		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
+		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_SHARED', users: 'U_NEW' });
 	});
 
 	it('falls back to chapter_id when chapter_ids is empty', async () => {

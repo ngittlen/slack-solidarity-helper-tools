@@ -5,7 +5,8 @@ import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db.js';
 import { requests } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
-import { WEBHOOK_SECRET, SLACK_TRACKING_CHANNEL_ID, APP_URL } from '$lib/server/env.js';
+import { WEBHOOK_SECRET, APP_URL } from '$lib/server/env.js';
+import { loadSettings } from '$lib/server/settings.js';
 import { notifyNewRequest } from '$lib/server/events.js';
 
 export const GET: RequestHandler = async ({ url }) => {
@@ -88,8 +89,11 @@ export const GET: RequestHandler = async ({ url }) => {
 		console.log(`[webhook] dev mode — would post to Slack: ${details}`);
 	} else {
 		try {
+			// DB-backed tracking channel (env fallback while unset) so edits on
+			// /settings apply without a redeploy.
+			const { slackTrackingChannelId } = await loadSettings(db);
 			await slack.chat.postMessage({
-				channel: SLACK_TRACKING_CHANNEL_ID,
+				channel: slackTrackingChannelId,
 				text: `Volunteer needs help joining Slack: ${trimmedEmail ?? trimmedPhone}`,
 				blocks: [
 					{

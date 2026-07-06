@@ -2,14 +2,9 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
-import { runWeeklyGrowthReport } from '$lib/server/weekly-growth-report.js';
-import {
-	INTERNAL_CRON_SECRET,
-	REPORT_EXCLUDED_CHAPTER_IDS,
-	SLACK_GROWTH_REPORT_CHANNEL_ID,
-	SLACK_GROWTH_REPORT_RANKING_ALPHA,
-	SOLIDARITY_CHAPTER_CHANNEL_MAP,
-} from '$lib/server/env.js';
+import { runWeeklyGrowthReport, firstChannelByChapter } from '$lib/server/weekly-growth-report.js';
+import { loadSettings } from '$lib/server/settings.js';
+import { INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 
 // Internal endpoint called by a scheduler (GitHub Actions) to compute and post
 // the weekly per-chapter Slack-growth leaderboard. Auth via ?key=<INTERNAL_CRON_SECRET>.
@@ -22,21 +17,22 @@ export const POST: RequestHandler = async ({ url }) => {
 	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
-	if (!SLACK_GROWTH_REPORT_CHANNEL_ID) {
-		return json({ error: 'SLACK_GROWTH_REPORT_CHANNEL_ID is not set' }, { status: 500 });
-	}
 
 	const dryRun = url.searchParams.get('dry_run') === '1';
 
 	try {
-		const chapterChannelIds = new Map<number, string>(
-			SOLIDARITY_CHAPTER_CHANNEL_MAP.map((c) => [c.chapterId, c.channelId]),
-		);
-		const result = await runWeeklyGrowthReport(db, slack, SLACK_GROWTH_REPORT_CHANNEL_ID, {
+		// Admin-editable settings (DB-backed, env fallback for the app_config
+		// fields) — must agree with the dashboard and team_join invites.
+		const settings = await loadSettings(db);
+		if (!settings.slackGrowthReportChannelId) {
+			return json({ error: 'Growth report channel is not configured' }, { status: 500 });
+		}
+		const chapterChannelIds = firstChannelByChapter(settings.chapterChannelMap);
+		const result = await runWeeklyGrowthReport(db, slack, settings.slackGrowthReportChannelId, {
 			dryRun,
-			excludedChapterIds: REPORT_EXCLUDED_CHAPTER_IDS,
+			excludedChapterIds: settings.reportExcludedChapterIds,
 			chapterChannelIds,
-			rankingAlpha: SLACK_GROWTH_REPORT_RANKING_ALPHA,
+			rankingAlpha: settings.slackGrowthReportRankingAlpha,
 		});
 		console.log(
 			`[growth] ${result.windowStart} → ${result.windowEnd}: ${result.chaptersWithGrowth} chapters, ${result.totalNewJoins} new joins, posted=${result.posted}`,

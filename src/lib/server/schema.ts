@@ -74,18 +74,32 @@ export const weeklyChapterGrowth = sqliteTable(
 // via the natural PK collision plus a redundant CHECK (id = 1) for defense in
 // depth and to document intent in the generated migration SQL.
 
-export const chapterChannelMap = sqliteTable('chapter_channel_map', {
-	chapterId: integer('chapter_id').primaryKey(),
-	channelId: text('channel_id').notNull(),
-	name: text('name').notNull(),
-	lastEditedBy: text('last_edited_by').notNull(),
-	lastEditedByName: text('last_edited_by_name').notNull(),
-	lastEditedAt: text('last_edited_at').notNull(),
-});
+// Composite (chapter_id, channel_id) key: a chapter may map to any number of
+// Slack channels, and new joiners are invited to every mapped channel.
+export const chapterChannelMap = sqliteTable(
+	'chapter_channel_map',
+	{
+		chapterId: integer('chapter_id').notNull(),
+		channelId: text('channel_id').notNull(),
+		name: text('name').notNull(),
+		lastEditedBy: text('last_edited_by').notNull(),
+		lastEditedByName: text('last_edited_by_name').notNull(),
+		lastEditedAt: text('last_edited_at').notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.chapterId, table.channelId] })],
+);
 
+// A coalition row ties together the three identities one coalition has:
+// `group_name` is the Solidarity custom-property internal_name (also the key
+// the /coalition-invite webhook receives), `name` is the property's display
+// label, `user_list_id` is the Solidarity user list that mirrors the property
+// (the fast membership read path for reconciliation; nullable because
+// pre-existing rows don't have one).
 export const coalitionChannelMap = sqliteTable('coalition_channel_map', {
 	groupName: text('group_name').primaryKey(),
 	channelId: text('channel_id').notNull(),
+	name: text('name').notNull().default(''),
+	userListId: integer('user_list_id'),
 	lastEditedBy: text('last_edited_by').notNull(),
 	lastEditedByName: text('last_edited_by_name').notNull(),
 	lastEditedAt: text('last_edited_at').notNull(),

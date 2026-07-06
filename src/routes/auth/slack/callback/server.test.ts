@@ -1,16 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockSessionSet = vi.hoisted(() => vi.fn());
+const mockLoadSettings = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({
 	sessionStore: { set: mockSessionSet },
 	db: {}
 }));
 
+vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
+
 vi.mock('$lib/server/env', () => ({
 	SLACK_CLIENT_ID: 'client-id',
 	SLACK_CLIENT_SECRET: 'client-secret',
-	SLACK_ALLOWED_USER_IDS: new Set(['UADMIN']),
+	SLACK_SUPERUSER_ID: 'USUPER',
 	REDIRECT_URI: 'http://localhost/auth/slack/callback',
 }));
 
@@ -52,6 +55,7 @@ describe('GET /auth/slack/callback', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UADMIN']) });
 		logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 	});
@@ -92,6 +96,60 @@ describe('GET /auth/slack/callback', () => {
 			slackUserName: 'Bob',
 			isAdmin: false,
 		});
+	});
+
+	it('superuser is admin even when absent from the allowed list', async () => {
+		mockSuccessfulOAuth('USUPER', 'Root');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/',
+		});
+
+		expect(mockSessionSet.mock.calls[0]?.[1]).toEqual({
+			slackUserId: 'USUPER',
+			slackUserName: 'Root',
+			isAdmin: true,
+		});
+	});
+
+	it('superuser is admin even when loadSettings rejects (lockout escape hatch)', async () => {
+		mockLoadSettings.mockRejectedValue(new Error('db down'));
+		mockSuccessfulOAuth('USUPER', 'Root');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/',
+		});
+
+		expect(mockSessionSet.mock.calls[0]?.[1]).toMatchObject({ isAdmin: true });
+	});
+
+	it('non-superuser is denied admin (not 500) when loadSettings rejects', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockLoadSettings.mockRejectedValue(new Error('db down'));
+		mockSuccessfulOAuth('UADMIN', 'Admin User');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/',
+		});
+
+		expect(mockSessionSet.mock.calls[0]?.[1]).toMatchObject({ isAdmin: false });
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining('[auth] loadSettings failed'),
+			expect.anything(),
+		);
+		errorSpy.mockRestore();
+	});
+
+	it('admin gate reads the settings allowed list (DB-backed with env fallback)', async () => {
+		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UFROMDB']) });
+		mockSuccessfulOAuth('UFROMDB', 'Dana');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
+
+		expect(mockSessionSet.mock.calls[0]?.[1]).toMatchObject({ isAdmin: true });
 	});
 
 	it('does not log [auth] blocked user warning for legitimate non-admin sign-in', async () => {

@@ -11,23 +11,18 @@ import type { KnownBlock, WebClient } from '@slack/web-api';
 import { sql, eq, desc } from 'drizzle-orm';
 import { loadChapterNames } from './chapter-names.js';
 import { weeklyGrowthWindows, weeklyChapterGrowth } from './schema.js';
+// Ranking math lives in a client-safe module so the /settings alpha-slider
+// preview can re-rank the same data in the browser. The app_config setting
+// (env fallback SLACK_GROWTH_REPORT_RANKING_ALPHA) overrides the default.
+import { TOP_N, DEFAULT_RANKING_ALPHA, sortByRanking } from '../growth-ranking.js';
 
-const TOP_N = 5;
 const WINDOW_DAYS = 7;
-// Power-law exponent for the ranking score: score = newJoins / (existing + 1)^α
-//   α = 1   → pure relative growth (small chapters dominate)
-//   α = 0.7 → small chapters still tend to win, large ones become competitive
-//   α = 0.5 → square-root denominator, large chapters favored
-//   α = 0   → pure absolute count
-// The +1 in the denominator avoids dividing by zero for brand-new chapters.
-// The endpoint can override this via the SLACK_GROWTH_REPORT_RANKING_ALPHA env var.
-const DEFAULT_RANKING_ALPHA = 0.5;
 
 export interface ChapterGrowth {
 	chapterId: number;
 	chapterName: string;
-	/** Slack channel ID for this chapter, when SOLIDARITY_CHAPTER_CHANNEL_MAP has
-	 * an entry — used to render a clickable channel mention in the Slack post. */
+	/** Slack channel ID for this chapter, when the chapter↔channel settings map
+	 * has an entry — used to render a clickable channel mention in the Slack post. */
 	slackChannelId: string | null;
 	newJoins: number;
 	existing: number;
@@ -44,6 +39,21 @@ export interface WeeklyGrowthResult {
 	totalNewJoins: number;
 	topChapters: ChapterGrowth[];
 	posted: boolean;
+}
+
+/**
+ * Collapse the many-to-many chapter↔channel entry list to one channel per
+ * chapter for the report's clickable channel mention. First entry wins so the
+ * linked channel is stable regardless of how many channels a chapter maps to.
+ */
+export function firstChannelByChapter(
+	entries: ReadonlyArray<{ chapterId: number; channelId: string }>,
+): Map<number, string> {
+	const map = new Map<number, string>();
+	for (const e of entries) {
+		if (!map.has(e.chapterId)) map.set(e.chapterId, e.channelId);
+	}
+	return map;
 }
 
 // Pin the window to UTC midnight at the start of the most recent Monday. This
@@ -67,21 +77,6 @@ export function computeWindow(now: Date): { start: Date; end: Date } {
 
 function roundPct(p: number): number {
 	return Math.round(p * 10) / 10;
-}
-
-// Power-law ranking score shared between the cron's compute path and the
-// dashboard's saved/live leaderboard reads, so all three sort orders agree.
-function rankingScore(c: ChapterGrowth, alpha: number): number {
-	return c.newJoins / Math.pow(c.existing + 1, alpha);
-}
-
-function sortByRanking(rows: ChapterGrowth[], alpha: number): void {
-	rows.sort((a, b) => {
-		const sa = rankingScore(a, alpha);
-		const sb = rankingScore(b, alpha);
-		if (sb !== sa) return sb - sa;
-		return b.newJoins - a.newJoins;
-	});
 }
 
 function fmtDate(d: Date): string {
@@ -173,7 +168,7 @@ export interface LeaderboardPair {
  *
  * `rankingAlpha` and `chapterChannelIds` are accepted so the caller can re-sort
  * with a different α than the cron used, and refresh the channel mention map
- * if SOLIDARITY_CHAPTER_CHANNEL_MAP changed since the snapshot was written.
+ * if the chapter↔channel settings map changed since the snapshot was written.
  */
 export async function computeWeeklyLeaderboard(
 	db: LibSQLDatabase<Record<string, unknown>>,
@@ -181,6 +176,10 @@ export async function computeWeeklyLeaderboard(
 		excludedChapterIds?: ReadonlySet<number>;
 		chapterChannelIds?: ReadonlyMap<number, string>;
 		rankingAlpha?: number;
+		/** How many chapters to return in topChapters. Defaults to TOP_N; the
+		 * /settings alpha-slider preview passes Infinity so it can re-rank the
+		 * full list client-side. */
+		topN?: number;
 	} = {},
 ): Promise<WeeklyLeaderboard> {
 	const excluded = options.excludedChapterIds ?? new Set<number>();
@@ -232,7 +231,7 @@ export async function computeWeeklyLeaderboard(
 		windowEnd: win.windowEnd,
 		chaptersWithGrowth: leaderboard.length,
 		totalNewJoins: win.totalNewJoins,
-		topChapters: leaderboard.slice(0, TOP_N),
+		topChapters: leaderboard.slice(0, options.topN ?? TOP_N),
 	};
 }
 
@@ -308,6 +307,10 @@ export async function computeLiveLeaderboardSinceSnapshot(
 		/** When provided, the live leaderboard fetches each chapter's current
 		 * Slack channel `num_members` instead of relying on the snapshot. */
 		slack?: WebClient;
+		/** How many chapters to return in topChapters. Defaults to TOP_N; the
+		 * /settings alpha-slider preview passes Infinity so it can re-rank the
+		 * full list client-side. */
+		topN?: number;
 	} = {},
 ): Promise<WeeklyLeaderboard> {
 	const excluded = options.excludedChapterIds ?? new Set<number>();
@@ -418,7 +421,7 @@ export async function computeLiveLeaderboardSinceSnapshot(
 		windowEnd: windowEndIso,
 		chaptersWithGrowth: leaderboard.length,
 		totalNewJoins,
-		topChapters: leaderboard.slice(0, TOP_N),
+		topChapters: leaderboard.slice(0, options.topN ?? TOP_N),
 	};
 }
 

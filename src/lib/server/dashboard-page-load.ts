@@ -5,7 +5,7 @@ import {
 	loadSlackSignups,
 } from './dashboard-signups.js';
 import { db } from './db.js';
-import { REPORT_EXCLUDED_CHAPTER_IDS } from './env.js';
+import { loadSettings } from './settings.js';
 
 export type SourceResult =
 	| { ok: true; days: DaySignups[] }
@@ -45,9 +45,13 @@ export async function loadDashboardPageData(
 
 	const days = parseDaysParam(event.url.searchParams);
 
+	// DB-backed exclusions (env fallback while the table is empty) so edits on
+	// /settings apply to the charts the same as to the weekly growth report.
+	const { reportExcludedChapterIds } = await loadSettings(db);
+
 	const [solidaritySettled, slackSettled] = await Promise.allSettled([
-		loadSolidaritySignups(db, { days, excludedChapterIds: REPORT_EXCLUDED_CHAPTER_IDS }),
-		loadSlackSignups(db, { days, excludedChapterIds: REPORT_EXCLUDED_CHAPTER_IDS }),
+		loadSolidaritySignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
+		loadSlackSignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
 	]);
 
 	return {

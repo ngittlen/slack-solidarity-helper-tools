@@ -1,11 +1,12 @@
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { dev } from '$app/environment';
-import { sessionStore } from '$lib/server/db.js';
+import { db, sessionStore } from '$lib/server/db.js';
+import { loadSettings } from '$lib/server/settings.js';
 import {
 	SLACK_CLIENT_ID,
 	SLACK_CLIENT_SECRET,
-	SLACK_ALLOWED_USER_IDS,
+	SLACK_SUPERUSER_ID,
 	REDIRECT_URI,
 } from '$lib/server/env.js';
 
@@ -70,7 +71,23 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 
 	const userId = identity.user.id;
-	const isAdmin = SLACK_ALLOWED_USER_IDS.has(userId);
+	// Admin gate reads the DB-backed allowed list via loadSettings (which falls
+	// back to env SLACK_ALLOWED_USER_IDS while the table is empty). The
+	// superuser is admitted without consulting the list — even when reading it
+	// fails — so a mis-edited or emptied allowed_slack_users table can never
+	// lock every admin out of /pending and /settings.
+	const isSuperuser = SLACK_SUPERUSER_ID !== '' && userId === SLACK_SUPERUSER_ID;
+	let isAdmin = isSuperuser;
+	if (!isAdmin) {
+		try {
+			isAdmin = (await loadSettings(db)).allowedSlackUserIds.has(userId);
+		} catch (err) {
+			console.error(
+				'[auth] loadSettings failed — denying admin to non-superuser:',
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
 
 	// Create session
 	const sid = crypto.randomUUID();
@@ -88,6 +105,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		maxAge: SESSION_MAX_AGE,
 	});
 
-	console.log(`[auth] login: ${identity.user.name} (${userId}) admin=${isAdmin}`);
+	console.log(
+		`[auth] login: ${identity.user.name} (${userId}) admin=${isAdmin}${isSuperuser ? ' (superuser)' : ''}`,
+	);
 	redirect(302, '/');
 }
