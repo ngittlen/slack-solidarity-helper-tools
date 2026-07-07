@@ -121,6 +121,18 @@ export const reportExcludedChapters = sqliteTable('report_excluded_chapters', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
+// Per-channel team_join behavior: whether the bot posts its "everybody
+// welcome @X" message in the channel after inviting a new member. Row absent
+// means the default (show the welcome message), so only channels an admin has
+// toggled carry a row. Toggled from the chapter ↔ channel chips on /settings.
+export const channelWelcomeFlags = sqliteTable('channel_welcome_flags', {
+	channelId: text('channel_id').primaryKey(),
+	showWelcomeMessage: integer('show_welcome_message', { mode: 'boolean' }).notNull(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
 export const appConfig = sqliteTable(
 	'app_config',
 	{
@@ -164,6 +176,9 @@ export type NewAllowedSlackUserRow = typeof allowedSlackUsers.$inferInsert;
 
 export type ExcludedChapterRow = typeof reportExcludedChapters.$inferSelect;
 export type NewExcludedChapterRow = typeof reportExcludedChapters.$inferInsert;
+
+export type ChannelWelcomeFlagRow = typeof channelWelcomeFlags.$inferSelect;
+export type NewChannelWelcomeFlagRow = typeof channelWelcomeFlags.$inferInsert;
 
 export type AppConfigRow = typeof appConfig.$inferSelect;
 export type NewAppConfigRow = typeof appConfig.$inferInsert;

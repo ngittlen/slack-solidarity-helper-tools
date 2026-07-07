@@ -119,7 +119,7 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 	// The mapping is admin-editable on /settings (DB-backed) and many-to-many:
 	// every channel mapped to any of the joiner's chapters, deduped since
 	// sibling chapters often share a channel.
-	const { chapterChannelMap } = await loadSettingsWithRetry();
+	const { chapterChannelMap, welcomeDisabledChannelIds } = await loadSettingsWithRetry();
 	const channelIds = [
 		...new Set(
 			chapterChannelMap
@@ -141,7 +141,15 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		return;
 	}
 
-	await announceInChannels(user.id, successfulChannelIds);
+	// Per-channel opt-out (the chip checkbox on /settings): invited either way,
+	// but flagged channels get no "everybody welcome" post. The DM below still
+	// mentions every channel they were invited to.
+	const announceChannelIds = successfulChannelIds.filter(
+		(id) => !welcomeDisabledChannelIds.has(id),
+	);
+	if (announceChannelIds.length > 0) {
+		await announceInChannels(user.id, announceChannelIds);
+	}
 
 	const sent = await sendWelcomeDm(user.id, successfulChannelIds);
 	if (sent) {
@@ -223,7 +231,7 @@ const CHANNEL_WELCOME_MESSAGES = [
 	':mega: Everybody give a warm welcome to %s — say hi!',
 	":heart: %s just joined — so happy you're here! Introduce yourself when you can.",
 	':deciduous_tree: Welcome %s! Make yourself at home and say hi.',
-	':100: %s is here! Welcome to the chapter — everybody say hi!',
+	':100: %s is here! Welcome to the channel — everybody say hi!',
 ];
 
 function pickChannelWelcome(userMention: string): string {

@@ -27,6 +27,17 @@
 		lockedValues?: TId[];
 		/** Tooltip shown on a locked chip's disabled × button. */
 		lockedReason?: string;
+		/**
+		 * When set, each chip renders a checkbox for a per-value flag (e.g.
+		 * "post the welcome message in this channel"). Purely presentational
+		 * here — the parent owns the flag state and persistence.
+		 */
+		chipCheckbox?: {
+			isChecked: (id: TId) => boolean;
+			onToggle: (id: TId, checked: boolean) => void;
+			/** Tooltip + accessible label, given the chip's display label. */
+			label: (chipLabel: string) => string;
+		};
 	}
 
 	let {
@@ -40,6 +51,7 @@
 		minChars = 0,
 		lockedValues = [],
 		lockedReason = 'This entry can’t be removed',
+		chipCheckbox = undefined,
 	}: Props = $props();
 
 	let inputEl: HTMLInputElement | null = $state(null);
@@ -98,6 +110,17 @@
 	<div class="mpicker-row" class:mpicker-disabled={disabled}>
 		{#each selectedChips as chip (chip.id)}
 			<span class="mpicker-chip" class:mpicker-chip-locked={chip.locked}>
+				{#if chipCheckbox}
+					<input
+						type="checkbox"
+						class="mpicker-chip-checkbox"
+						checked={chipCheckbox.isChecked(chip.id)}
+						disabled={disabled}
+						title={chipCheckbox.label(chip.label)}
+						aria-label={chipCheckbox.label(chip.label)}
+						onchange={(e) => chipCheckbox.onToggle(chip.id, e.currentTarget.checked)}
+					/>
+				{/if}
 				<span class="mpicker-chip-label">{chip.label}</span>
 				<button
 					type="button"
@@ -186,6 +209,16 @@
 		border: 1px solid var(--color-border, #ccc);
 		border-radius: var(--radius-sm, 4px);
 		font-size: 0.9em;
+	}
+
+	.mpicker-chip-checkbox {
+		margin: 0;
+		accent-color: var(--color-gold, #b8860b);
+		cursor: pointer;
+	}
+
+	.mpicker-chip-checkbox:disabled {
+		cursor: not-allowed;
 	}
 
 	.mpicker-chip-remove {

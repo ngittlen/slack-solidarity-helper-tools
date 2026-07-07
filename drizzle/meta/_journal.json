@@ -57,6 +57,13 @@
       "when": 1783301448149,
       "tag": "0007_cynical_starjammers",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783384990458,
+      "tag": "0008_fair_invisible_woman",
+      "breakpoints": true
     }
   ]
 }

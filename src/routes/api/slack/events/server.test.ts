@@ -114,6 +114,7 @@ describe('POST /api/slack/events', () => {
 		mockPostMessage.mockResolvedValue({ ok: true });
 		mockLoadSettings.mockResolvedValue({
 			chapterChannelMap: [{ chapterId: 42, channelId: 'C_COUNTY', name: 'Test County' }],
+			welcomeDisabledChannelIds: new Set<string>(),
 		});
 	});
 
@@ -174,6 +175,7 @@ describe('POST /api/slack/events', () => {
 				{ chapterId: 42, channelId: 'C_SHARED', name: 'Test County' },
 				{ chapterId: 43, channelId: 'C_SHARED', name: 'Other County' },
 			],
+			welcomeDisabledChannelIds: new Set<string>(),
 		});
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42, 43] });
 
@@ -183,6 +185,34 @@ describe('POST /api/slack/events', () => {
 		expect(mockConversationsInvite).toHaveBeenCalledTimes(2);
 		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
 		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_SHARED', users: 'U_NEW' });
+	});
+
+	it('still invites but skips the channel welcome post for welcome-disabled channels', async () => {
+		mockLoadSettings.mockResolvedValue({
+			chapterChannelMap: [
+				{ chapterId: 42, channelId: 'C_COUNTY', name: 'Test County' },
+				{ chapterId: 42, channelId: 'C_QUIET', name: 'Test County' },
+			],
+			welcomeDisabledChannelIds: new Set(['C_QUIET']),
+		});
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
+
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
+		await waitForDm();
+
+		// Invited to both channels…
+		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
+		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_QUIET', users: 'U_NEW' });
+		// …but the welcome post only lands in the non-disabled channel.
+		const welcomeChannels = mockPostMessage.mock.calls
+			.map((c) => (c[0] as { channel: string }).channel)
+			.filter((ch) => ch !== 'DM_CHANNEL');
+		expect(welcomeChannels).toEqual(['C_COUNTY']);
+		// The DM still mentions both channels.
+		const dmCall = mockPostMessage.mock.calls.find(
+			(c) => (c[0] as { channel: string }).channel === 'DM_CHANNEL',
+		);
+		expect((dmCall![0] as { text: string }).text).toContain('<#C_QUIET>');
 	});
 
 	it('falls back to chapter_id when chapter_ids is empty', async () => {

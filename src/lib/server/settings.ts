@@ -15,6 +15,7 @@ import {
 	coalitionChannelMap,
 	allowedSlackUsers,
 	reportExcludedChapters,
+	channelWelcomeFlags,
 	appConfig,
 } from './schema.js';
 import {
@@ -31,6 +32,7 @@ export {
 	coalitionChannelMap,
 	allowedSlackUsers,
 	reportExcludedChapters,
+	channelWelcomeFlags,
 	appConfig,
 };
 
@@ -70,6 +72,9 @@ export interface Settings {
 	coalitionChannelMap: CoalitionEntry[];
 	allowedSlackUserIds: Set<string>;
 	reportExcludedChapterIds: Set<number>;
+	/** Channels the bot should NOT post its channel welcome message in after
+	 *  inviting a new member. Absent = welcome on (the default). DB-only. */
+	welcomeDisabledChannelIds: Set<string>;
 	slackTrackingChannelId: string;
 	slackGrowthReportChannelId: string;
 	slackGrowthReportRankingAlpha: number | undefined;
@@ -100,13 +105,15 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	// when non-empty (FR-012). The app_config singleton row falls back
 	// per-field (FR-013): a NULL column means "use env for that field", while
 	// a missing row means "use env for all three".
-	const [chapterRows, coalitionRows, allowedRows, excludedRows, appConfigRows] = await Promise.all([
-		db.select().from(chapterChannelMap),
-		db.select().from(coalitionChannelMap),
-		db.select().from(allowedSlackUsers),
-		db.select().from(reportExcludedChapters),
-		db.select().from(appConfig).limit(1),
-	]);
+	const [chapterRows, coalitionRows, allowedRows, excludedRows, welcomeRows, appConfigRows] =
+		await Promise.all([
+			db.select().from(chapterChannelMap),
+			db.select().from(coalitionChannelMap),
+			db.select().from(allowedSlackUsers),
+			db.select().from(reportExcludedChapters),
+			db.select().from(channelWelcomeFlags),
+			db.select().from(appConfig).limit(1),
+		]);
 
 	const chapterChannelMapField: ChapterEntry[] =
 		chapterRows.length > 0
@@ -130,6 +137,12 @@ export async function loadSettings(db: Database): Promise<Settings> {
 			? new Set(excludedRows.map((r) => r.chapterId))
 			: REPORT_EXCLUDED_CHAPTER_IDS;
 
+	// DB-only, like the coalition map: no env fallback. Only rows with the
+	// flag off matter — a row toggled back on behaves like no row.
+	const welcomeDisabledChannelIds: Set<string> = new Set(
+		welcomeRows.filter((r) => !r.showWelcomeMessage).map((r) => r.channelId),
+	);
+
 	const cfg = appConfigRows[0];
 	const slackTrackingChannelId =
 		cfg?.slackTrackingChannelId ?? SLACK_TRACKING_CHANNEL_ID;
@@ -143,10 +156,45 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		coalitionChannelMap: coalitionChannelMapField,
 		allowedSlackUserIds,
 		reportExcludedChapterIds,
+		welcomeDisabledChannelIds,
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
 		slackGrowthReportRankingAlpha,
 	};
+}
+
+/** Set whether the bot posts its channel welcome message in `channelId` after
+ *  inviting a new member. Upserts a flag row either way — keeping the row on
+ *  re-enable preserves the audit trail of who last touched the flag. */
+export async function setChannelWelcomeFlag(
+	db: Database,
+	channelId: string,
+	showWelcomeMessage: boolean,
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	const row = {
+		channelId,
+		showWelcomeMessage,
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt,
+	};
+	await db
+		.insert(channelWelcomeFlags)
+		.values(row)
+		.onConflictDoUpdate({
+			target: channelWelcomeFlags.channelId,
+			set: {
+				showWelcomeMessage: row.showWelcomeMessage,
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	console.log(
+		`[settings] saved channel_welcome_flags channel_id=${channelId} show=${showWelcomeMessage} by ${editor.id} (${editor.name})`,
+	);
 }
 
 // Write path — multi-row tables. Each setter upserts in one round-trip via

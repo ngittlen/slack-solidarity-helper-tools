@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { SvelteMap } from 'svelte/reactivity';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { errMessage } from '$lib/err-message.js';
 	import SettingsRow from './SettingsRow.svelte';
 	import MultiSelectAutocomplete from './MultiSelectAutocomplete.svelte';
+	import ChapterMoveButton from './ChapterMoveButton.svelte';
 	import { sharedChannelIds } from './multi-picker-logic.js';
 	import { filterPickerItems } from './picker-logic.js';
 	import type { PickerItem } from './picker-types.js';
@@ -27,15 +28,26 @@
 		channels: ChannelOption[];
 		/** Current chapter ↔ channel rows from loadSettings. */
 		entries: Entry[];
+		/** Channels whose welcome message is toggled off, from loadSettings. */
+		welcomeDisabledChannelIds: string[];
 	}
 
-	let { chapters, channels, entries: initialEntries }: Props = $props();
+	let {
+		chapters,
+		channels,
+		entries: initialEntries,
+		welcomeDisabledChannelIds,
+	}: Props = $props();
 
 	// Local mirror of chapter_channel_map, updated optimistically per op and
 	// reverted if the save fails. Only the id pair matters client-side.
 	let entries = $state<Entry[]>(
 		initialEntries.map((e) => ({ chapterId: e.chapterId, channelId: e.channelId })),
 	);
+
+	// Local mirror of the per-channel welcome-message opt-outs, same optimistic
+	// discipline. Chip checkbox CHECKED = welcome on = id absent from this set.
+	const welcomeDisabled = new SvelteSet<string>(welcomeDisabledChannelIds);
 
 	let selectedChapterIds = $state<number[]>([]);
 	let chapterFilter = $state('');
@@ -95,11 +107,18 @@
 	// so several may be in flight; the status label collapses them into one
 	// saving/saved/error indicator like the other settings rows.
 
-	interface Op {
+	interface MapOp {
 		action: 'add' | 'remove';
 		channelId: string;
 		chapterIds: number[];
 	}
+	/** Toggle of the per-channel welcome-message flag (the chip checkbox). */
+	interface WelcomeOp {
+		action: 'welcome';
+		channelId: string;
+		show: boolean;
+	}
+	type Op = MapOp | WelcomeOp;
 
 	let status = $state<AutosaveStatus>('idle');
 	let error = $state<string | null>(null);
@@ -124,7 +143,7 @@
 
 	/** Apply the op locally; returns the rows actually changed so a failed save
 	 *  reverts exactly what this op did and nothing a concurrent op did. */
-	function applyLocal(op: Op): Entry[] {
+	function applyLocal(op: MapOp): Entry[] {
 		if (op.action === 'add') {
 			const added = op.chapterIds
 				.filter(
@@ -142,7 +161,7 @@
 		return removed;
 	}
 
-	function revertLocal(op: Op, changed: Entry[]): void {
+	function revertLocal(op: MapOp, changed: Entry[]): void {
 		if (op.action === 'add') {
 			entries = entries.filter((e) => !changed.some((c) => sameEntry(c, e)));
 		} else {
@@ -150,16 +169,38 @@
 		}
 	}
 
-	async function runOp(op: Op): Promise<void> {
+	/** Optimistically apply any op and hand back its exact undo. */
+	function applyLocalOp(op: Op): () => void {
+		if (op.action === 'welcome') {
+			const wasDisabled = welcomeDisabled.has(op.channelId);
+			if (op.show) welcomeDisabled.delete(op.channelId);
+			else welcomeDisabled.add(op.channelId);
+			return () => {
+				if (wasDisabled) welcomeDisabled.add(op.channelId);
+				else welcomeDisabled.delete(op.channelId);
+			};
+		}
 		const changed = applyLocal(op);
+		return () => revertLocal(op, changed);
+	}
+
+	async function runOp(op: Op): Promise<void> {
+		const undo = applyLocalOp(op);
 		status = 'saving';
 		error = null;
 		inflight++;
 		try {
-			const res = await fetch('/api/settings/chapter-channels', {
+			const [url, payload] =
+				op.action === 'welcome'
+					? ([
+							'/api/settings/channel-welcome',
+							{ channelId: op.channelId, showWelcome: op.show },
+						] as const)
+					: (['/api/settings/chapter-channels', op] as const);
+			const res = await fetch(url, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(op),
+				body: JSON.stringify(payload),
 			});
 			if (!res.ok) {
 				const body = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -178,7 +219,7 @@
 			}
 		} catch (e) {
 			inflight--;
-			revertLocal(op, changed);
+			undo();
 			const message = errMessage(e);
 			failedOps = [...failedOps, { op, message }];
 			status = 'error';
@@ -281,7 +322,19 @@
 					onRemove={handleRemove}
 					placeholder="Add a channel…"
 					showSublabel={true}
+					chipCheckbox={{
+						isChecked: (id) => !welcomeDisabled.has(id),
+						onToggle: (id, checked) =>
+							void runOp({ action: 'welcome', channelId: id, show: checked }),
+						label: (label) =>
+							`Post the bot’s welcome message in ${label} when someone joins`,
+					}}
 				/>
+				<p class="channel-note">
+					The checkbox on each chip controls whether the bot posts its “everybody welcome”
+					message in that channel when it adds a new member. This is per channel — it applies
+					however the person’s chapters map there.
+				</p>
 				{#if selectedChapterIds.length > 1}
 					<p class="channel-note">
 						Showing only channels shared by all {selectedChapterIds.length} selected chapters.
@@ -291,6 +344,13 @@
 			</SettingsRow>
 		{/if}
 	</div>
+</div>
+
+<div class="chapter-move-row">
+	<ChapterMoveButton channels={channels} />
+	<span class="chapter-move-hint">
+		Preview and invite existing Slack members into their chapters’ channels.
+	</span>
 </div>
 
 <style>
@@ -407,5 +467,19 @@
 
 	.channel-hint {
 		margin: 0;
+	}
+
+	.chapter-move-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin-top: 20px;
+		padding-top: 16px;
+		border-top: 1px solid var(--color-border, #eee);
+	}
+
+	.chapter-move-hint {
+		font-size: 0.85em;
+		color: var(--color-text-muted, #888);
 	}
 </style>

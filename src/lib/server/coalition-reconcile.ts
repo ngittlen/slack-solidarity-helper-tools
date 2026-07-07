@@ -138,7 +138,11 @@ async function mapPool<T, R>(
 	return results;
 }
 
-async function fetchChannelMemberIds(slack: WebClient, channelId: string): Promise<Set<string>> {
+/** Every member id of a channel (paginated). Shared with chapter-reconcile. */
+export async function fetchChannelMemberIds(
+	slack: WebClient,
+	channelId: string,
+): Promise<Set<string>> {
 	const ids = new Set<string>();
 	let cursor: string | undefined;
 	do {

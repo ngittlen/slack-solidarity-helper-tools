@@ -22,6 +22,8 @@ import {
 	ensureChapterChannelMapSeeded,
 	ensureAllowedUsersSeeded,
 	ensureExcludedChaptersSeeded,
+	setChannelWelcomeFlag,
+	channelWelcomeFlags,
 	SYSTEM_EDITOR,
 	saveCoalitionEntry,
 	deleteCoalitionEntry,
@@ -100,10 +102,10 @@ function makeDb(): MockDb {
 	};
 }
 
-// `loadSettings` always issues five reads, in this exact order: chapter,
-// coalition, allowed users, excluded chapters, app_config.
+// `loadSettings` always issues six reads, in this exact order: chapter,
+// coalition, allowed users, excluded chapters, welcome flags, app_config.
 function pushAllEmpty(db: MockDb) {
-	for (let i = 0; i < 5; i++) db._pushSelect([]);
+	for (let i = 0; i < 6; i++) db._pushSelect([]);
 }
 
 describe('loadSettings — Story 1 (env fallback when tables are empty)', () => {
@@ -149,6 +151,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			coalitionChannelMap: [],
 			allowedSlackUserIds: new Set(),
 			reportExcludedChapterIds: new Set(),
+			welcomeDisabledChannelIds: new Set(),
 			slackTrackingChannelId: '',
 			slackGrowthReportChannelId: '',
 			slackGrowthReportRankingAlpha: undefined,
@@ -274,6 +277,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		db._pushSelect([]);
 		db._pushSelect([]);
 		db._pushSelect([]);
+		db._pushSelect([]);
 		db._pushSelect([
 			{
 				id: 1,
@@ -302,6 +306,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'chapterChannelMap',
 				'coalitionChannelMap',
 				'reportExcludedChapterIds',
+				'welcomeDisabledChannelIds',
 				'slackGrowthReportChannelId',
 				'slackGrowthReportRankingAlpha',
 				'slackTrackingChannelId',
@@ -309,7 +314,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		);
 	});
 
-	it('no module-level cache — two calls each hit the DB (5 reads × 2 = 10)', async () => {
+	it('no module-level cache — two calls each hit the DB (6 reads × 2 = 12)', async () => {
 		const db = makeDb();
 		pushAllEmpty(db);
 		pushAllEmpty(db);
@@ -317,7 +322,35 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		await loadSettings(db as never);
 		await loadSettings(db as never);
 
-		expect(db.select).toHaveBeenCalledTimes(10);
+		expect(db.select).toHaveBeenCalledTimes(12);
+	});
+
+	it('welcomeDisabledChannelIds contains only channels with the flag off', async () => {
+		const db = makeDb();
+		db._pushSelect([]);
+		db._pushSelect([]);
+		db._pushSelect([]);
+		db._pushSelect([]);
+		db._pushSelect([
+			{
+				channelId: 'C_QUIET',
+				showWelcomeMessage: false,
+				lastEditedBy: 'U_X',
+				lastEditedByName: 'X',
+				lastEditedAt: '2026-07-06T00:00:00.000Z',
+			},
+			{
+				channelId: 'C_LOUD',
+				showWelcomeMessage: true,
+				lastEditedBy: 'U_X',
+				lastEditedByName: 'X',
+				lastEditedAt: '2026-07-06T00:00:00.000Z',
+			},
+		]);
+		db._pushSelect([]);
+
+		const result = await loadSettings(db as never);
+		expect(result.welcomeDisabledChannelIds).toEqual(new Set(['C_QUIET']));
 	});
 
 	it('chapter row shape matches ChapterEntry — keys chapterId/channelId/name', async () => {
@@ -540,6 +573,29 @@ describe('settings setters — Story 3', () => {
 		for (const line of lines) {
 			expect(line).toMatch(/^\[settings\] deleted .*U_ALICE.*Alice/);
 		}
+	});
+
+	it('setChannelWelcomeFlag upserts the flag row with audit columns and logs', async () => {
+		const db = makeDb();
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		await setChannelWelcomeFlag(db as never, 'C_QUIET', false, editor);
+
+		const [captured] = db._capturedInserts();
+		expect(captured!.table).toBe(channelWelcomeFlags);
+		expect(captured!.values).toMatchObject({
+			channelId: 'C_QUIET',
+			showWelcomeMessage: false,
+			lastEditedBy: 'U_ALICE',
+			lastEditedByName: 'Alice',
+			lastEditedAt: FROZEN.toISOString(),
+		});
+		const onConflict = captured!.onConflict as { target: unknown; set: Record<string, unknown> };
+		expect(onConflict.target).toBe(channelWelcomeFlags.channelId);
+		expect(onConflict.set).toMatchObject({ showWelcomeMessage: false });
+		expect(log).toHaveBeenCalledWith(
+			expect.stringMatching(/^\[settings\] saved channel_welcome_flags .*show=false.*U_ALICE/),
+		);
 	});
 
 	it('saveAppConfig rejects unknown patch keys synchronously (before any DB call)', async () => {

@@ -65,6 +65,7 @@
 				chapters={data.solidarityChapters.items}
 				channels={data.slackChannels.items}
 				entries={data.settings.chapterChannelMap}
+				welcomeDisabledChannelIds={[...data.settings.welcomeDisabledChannelIds]}
 			/>
 		{/if}
 	</section>
