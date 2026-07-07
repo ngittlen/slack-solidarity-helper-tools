@@ -52,10 +52,10 @@
 		flex-direction: column;
 		align-items: center;
 		gap: 2px;
-		font-family: 'LCD14', 'Courier New', monospace;
 		color: var(--color-gold);
 		line-height: 1;
 	}
+	/* The LCD face is for the digits only — the label reads in the app font. */
 	.countdown-label {
 		font-size: 0.7rem;
 		letter-spacing: 0.08em;
@@ -66,6 +66,7 @@
 		white-space: nowrap;
 	}
 	.countdown-time {
+		font-family: 'LCD14', 'Courier New', monospace;
 		font-size: 1.4rem;
 		white-space: nowrap;
 	}
