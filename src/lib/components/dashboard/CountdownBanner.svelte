@@ -51,10 +51,8 @@
 		flex-direction: column;
 		align-items: center;
 		gap: 8px;
-		padding: 24px 20px;
-		background: var(--color-header-bg);
-		border-radius: var(--radius-lg);
-		color: var(--color-gold);
+		padding: 8px 0;
+		color: var(--color-red);
 		line-height: 1;
 	}
 	/* The LCD face is for the digits only — the label reads in the app font. */
@@ -63,7 +61,6 @@
 		font-size: 1rem;
 		font-weight: 600;
 		letter-spacing: 0.06em;
-		color: rgba(251, 240, 228, 0.85);
 		text-align: center;
 	}
 	.countdown-time {
@@ -74,9 +71,6 @@
 	.countdown-unit {
 		font-size: 0.45em;
 		margin-right: 0.3em;
-		color: rgba(251, 240, 228, 0.6);
-	}
-	.countdown-banner.expired .countdown-time {
-		color: var(--color-coral);
+		opacity: 0.65;
 	}
 </style>
