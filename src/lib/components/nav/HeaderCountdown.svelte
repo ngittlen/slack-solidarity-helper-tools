@@ -14,8 +14,6 @@
 
 	let now = $state(Date.now());
 
-	// Minute-precision display, so a 1s tick only touches the DOM at minute
-	// rollovers — the derived text stays referentially equal in between.
 	$effect(() => {
 		const id = setInterval(() => {
 			now = Date.now();
@@ -33,7 +31,7 @@
 		class:expired={parts.expired}
 		role="timer"
 		aria-live="off"
-		aria-label="{label || 'Countdown'}: {parts.days} days {parts.hours} hours {parts.minutes} minutes remaining"
+		aria-label="{label || 'Countdown'}: {parts.days} days {parts.hours} hours {parts.minutes} minutes {parts.seconds} seconds remaining"
 	>
 		{#if label}
 			<span class="countdown-label">{label}</span>
@@ -42,6 +40,7 @@
 			{parts.days}<span class="countdown-unit">d</span>
 			{pad(parts.hours)}<span class="countdown-unit">h</span>
 			{pad(parts.minutes)}<span class="countdown-unit">m</span>
+			{pad(parts.seconds)}<span class="countdown-unit">s</span>
 		</span>
 	</div>
 {/if}

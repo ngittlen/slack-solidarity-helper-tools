@@ -7,20 +7,23 @@ export interface CountdownParts {
 	days: number;
 	hours: number;
 	minutes: number;
+	seconds: number;
 	expired: boolean;
 }
 
-/** Whole days/hours/minutes remaining until `endAtMs`, floored (the final
- *  partial minute displays as 0m). Clamps to zeros once the end has passed. */
+/** Whole days/hours/minutes/seconds remaining until `endAtMs`, floored (the
+ *  final partial second displays as 0s). Clamps to zeros once the end has
+ *  passed. */
 export function countdownParts(endAtMs: number, nowMs: number): CountdownParts {
-	const remainingMinutes = Math.floor((endAtMs - nowMs) / 60_000);
-	if (remainingMinutes <= 0) {
-		return { days: 0, hours: 0, minutes: 0, expired: endAtMs - nowMs <= 0 };
+	const remainingSeconds = Math.floor((endAtMs - nowMs) / 1000);
+	if (remainingSeconds <= 0) {
+		return { days: 0, hours: 0, minutes: 0, seconds: 0, expired: endAtMs - nowMs <= 0 };
 	}
 	return {
-		days: Math.floor(remainingMinutes / 1440),
-		hours: Math.floor(remainingMinutes / 60) % 24,
-		minutes: remainingMinutes % 60,
+		days: Math.floor(remainingSeconds / 86_400),
+		hours: Math.floor(remainingSeconds / 3600) % 24,
+		minutes: Math.floor(remainingSeconds / 60) % 60,
+		seconds: remainingSeconds % 60,
 		expired: false,
 	};
 }
