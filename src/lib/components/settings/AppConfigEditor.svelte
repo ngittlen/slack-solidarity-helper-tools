@@ -7,7 +7,7 @@
 	import AutocompletePicker from './AutocompletePicker.svelte';
 	import type { PickerItem } from './picker-types.js';
 	import { createFieldAutosave, type AutosaveStatus } from './use-field-autosave.svelte.js';
-	import { isoToLocalInput, localInputToIso } from '$lib/components/nav/countdown.js';
+	import { isoToLocalInput, localInputToIso } from '$lib/components/dashboard/countdown.js';
 
 	interface ChannelOption {
 		id: string;
@@ -218,8 +218,8 @@
 			</label>
 		</div>
 		<p class="app-config-note">
-			Shown as a days/hours/minutes countdown in the middle of the header bar on every page.
-			Clear the date to hide it.
+			Shown as a large days/hours/minutes/seconds countdown at the top of the dashboard, above
+			the Solidarity signups chart. Clear the date to hide it.
 		</p>
 	</SettingsRow>
 

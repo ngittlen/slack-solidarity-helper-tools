@@ -1,5 +1,6 @@
 <script lang="ts">
 	import RangePresetPicker from '$lib/components/dashboard/RangePresetPicker.svelte';
+	import CountdownBanner from '$lib/components/dashboard/CountdownBanner.svelte';
 	import ChartCard from '$lib/components/dashboard/ChartCard.svelte';
 	import SlackLeaderboard from '$lib/components/dashboard/SlackLeaderboard.svelte';
 	import {
@@ -55,6 +56,12 @@
 </svelte:head>
 
 <main>
+	{#if data.countdown}
+		<div class="countdown-row">
+			<CountdownBanner label={data.countdown.label} endAt={data.countdown.endAt} />
+		</div>
+	{/if}
+
 	<div class="dashboard-toolbar">
 		<RangePresetPicker current={data.days} />
 	</div>
@@ -74,6 +81,9 @@
 		margin: 0 auto;
 		padding: 2rem 1.5rem;
 		color: var(--color-text);
+	}
+	.countdown-row {
+		margin-bottom: 1.5rem;
 	}
 	.dashboard-toolbar {
 		display: flex;

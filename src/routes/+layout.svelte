@@ -3,7 +3,6 @@
 	import { page } from '$app/state';
 	import { CHART_BAND_STYLE } from '$lib/styles/chart-colors';
 	import UserMenu, { type MenuItem } from '$lib/components/nav/UserMenu.svelte';
-	import HeaderCountdown from '$lib/components/nav/HeaderCountdown.svelte';
 
 	let { data, children } = $props();
 
@@ -22,9 +21,6 @@
 <div class="theme-vars" style={CHART_BAND_STYLE}>
 	<header class="app-header">
 		<h1>{pageTitle}</h1>
-		{#if data.countdown}
-			<HeaderCountdown label={data.countdown.label} endAt={data.countdown.endAt} />
-		{/if}
 		<div class="user-info">
 			<UserMenu items={menuItems} />
 			<span class="user-greeting">
@@ -57,18 +53,13 @@
 		font-weight: 600;
 		color: var(--color-header-text);
 		margin: 0;
-		/* h1 and .user-info flex equally so the countdown sits at the true
-		   center of the bar regardless of how wide either side is. */
-		flex: 1 1 0;
 	}
 	.user-info {
 		font-size: var(--font-size-base);
 		color: rgba(251, 240, 228, 0.75);
 		display: flex;
 		align-items: center;
-		justify-content: flex-end;
 		gap: 14px;
-		flex: 1 1 0;
 	}
 	.user-greeting {
 		display: inline-flex;

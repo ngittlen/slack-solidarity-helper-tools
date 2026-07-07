@@ -50,5 +50,12 @@ export const load: PageServerLoad = async (event) => {
 
 	const leaderboard: LeaderboardPair = { saved, live };
 
-	return { ...base, leaderboard, pageTitle: 'Dashboard' };
+	// Dashboard countdown banner, from the same settings read as the
+	// leaderboard opts. Absent end datetime = no banner.
+	const countdown =
+		settings.countdownEndAt !== ''
+			? { label: settings.countdownLabel, endAt: settings.countdownEndAt }
+			: null;
+
+	return { ...base, leaderboard, countdown, pageTitle: 'Dashboard' };
 };
