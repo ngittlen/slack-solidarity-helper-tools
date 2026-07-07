@@ -1,3 +1,4 @@
+import { redirect } from '@sveltejs/kit';
 import { parseDaysParam, type DashboardDaysPreset } from '$lib/components/dashboard/days.js';
 import {
 	type DaySignups,
@@ -41,6 +42,14 @@ function settledResult(
 export async function loadDashboardPageData(
 	event: DashboardLoadEvent,
 ): Promise<DashboardPageData> {
+	// The +layout.server.ts guard runs concurrently with page loads (SvelteKit
+	// does not order them), so it can't protect this pipeline — check the
+	// session here before doing any DB or Slack work.
+	const session = event.locals.session;
+	if (!session) {
+		redirect(302, '/auth/slack');
+	}
+
 	event.depends('app:dashboard');
 
 	const days = parseDaysParam(event.url.searchParams);
@@ -56,8 +65,8 @@ export async function loadDashboardPageData(
 
 	return {
 		days,
-		userName: event.locals.session!.slackUserName,
-		isAdmin: event.locals.session!.isAdmin,
+		userName: session.slackUserName,
+		isAdmin: session.isAdmin,
 		solidarity: settledResult('solidarity', solidaritySettled),
 		slack: settledResult('slack', slackSettled),
 	};

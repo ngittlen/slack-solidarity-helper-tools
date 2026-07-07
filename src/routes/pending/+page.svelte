@@ -41,6 +41,7 @@
     let comments = $state<Record<number, string>>({});
     let saveStatuses = $state<Record<number, SaveStatus>>({});
     let statusState = $state<Record<number, string>>({});
+    let statusErrors = $state<Record<number, boolean>>({});
     let lastEditedByState = $state<Record<number, string | null>>({});
 
     const saveTimers: Record<number, ReturnType<typeof setTimeout>> = {};
@@ -105,13 +106,24 @@
     }
 
     async function setStatus(id: number, status: string) {
+        const prevStatus = statusState[id];
+        const prevEditedBy = lastEditedByState[id];
         statusState[id] = status;
         lastEditedByState[id] = pageData.userName ?? null;
-        await fetch('/api/helped', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({id, status})
-        });
+        statusErrors[id] = false;
+        try {
+            const res = await fetch('/api/helped', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({id, status})
+            });
+            if (!res.ok) throw new Error(`Save failed: ${res.status}`);
+        } catch (err) {
+            console.error('[setStatus]', err);
+            statusState[id] = prevStatus;
+            lastEditedByState[id] = prevEditedBy;
+            statusErrors[id] = true;
+        }
     }
 
     let copyLabel = $state('Copy uncontacted emails');
@@ -239,13 +251,17 @@
                         <tr class:helped={currentStatus === 'verified_in_slack'} class:contacted={currentStatus === 'contacted'}>
                             <td class="col-helped">
                                 <select
+                                        value={currentStatus}
                                         onchange={(e) => setStatus(entry.id, (e.target as HTMLSelectElement).value)}
                                         aria-label="Status for {entry.name ?? entry.email ?? entry.phone ?? 'volunteer'}"
                                 >
                                     {#each STATUS_OPTIONS as opt (opt.value)}
-                                        <option value={opt.value} selected={opt.value === currentStatus}>{opt.label}</option>
+                                        <option value={opt.value}>{opt.label}</option>
                                     {/each}
                                 </select>
+                                {#if statusErrors[entry.id]}
+                                    <span class="comment-status error" role="alert">Not saved</span>
+                                {/if}
                             </td>
                             <td class="col-name">
                                 {entry.name ?? '—'}

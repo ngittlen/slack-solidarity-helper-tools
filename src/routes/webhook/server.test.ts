@@ -11,6 +11,7 @@ const mockUpdateSet = vi.hoisted(() => vi.fn());
 const mockUpdate = vi.hoisted(() => vi.fn());
 
 const mockInsertReturning = vi.hoisted(() => vi.fn());
+const mockInsertConflict = vi.hoisted(() => vi.fn());
 const mockInsertValues = vi.hoisted(() => vi.fn());
 const mockInsert = vi.hoisted(() => vi.fn());
 
@@ -49,7 +50,8 @@ describe('GET /webhook', () => {
 		mockUpdateWhere.mockResolvedValue(undefined);
 
 		mockInsert.mockReturnValue({ values: mockInsertValues });
-		mockInsertValues.mockReturnValue({ returning: mockInsertReturning });
+		mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertConflict });
+		mockInsertConflict.mockReturnValue({ returning: mockInsertReturning });
 		mockInsertReturning.mockResolvedValue([{ id: 1 }]);
 
 		mockPostMessage.mockResolvedValue({ ok: true });
@@ -199,5 +201,31 @@ describe('GET /webhook', () => {
 
 		expect(mockSelect).toHaveBeenCalledTimes(1);
 		expect(mockUpdate).toHaveBeenCalledTimes(1);
+	});
+
+	it('falls back to the update path when a concurrent insert wins the email race', async () => {
+		// SELECT misses, INSERT conflicts (empty returning), re-SELECT finds the
+		// row the concurrent request created.
+		mockSelectLimit
+			.mockResolvedValueOnce([])           // initial email lookup: no match
+			.mockResolvedValueOnce([{ id: 42 }]); // re-read after conflict
+		mockInsertReturning.mockResolvedValue([]);
+
+		const res = await GET(makeEvent({ secret: 'secret123', email: 'a@b.com' }) as never);
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ success: true, email: 'a@b.com' });
+		expect(mockUpdate).toHaveBeenCalledTimes(1);
+		// The concurrent winner already notified — the loser must not double-post
+		expect(mockPostMessage).not.toHaveBeenCalled();
+	});
+
+	it('returns JSON 500 instead of an HTML error page when the DB throws', async () => {
+		mockSelectLimit.mockRejectedValue(new Error('db down'));
+
+		const res = await GET(makeEvent({ secret: 'secret123', email: 'a@b.com' }) as never);
+
+		expect(res.status).toBe(500);
+		expect(await res.json()).toEqual({ error: 'Database error' });
 	});
 });

@@ -7,7 +7,7 @@ import { env } from '$env/dynamic/private';
 const OAUTH_STATE_COOKIE = 'oauth_state';
 
 export const GET: RequestHandler = async ({ cookies }) => {
-	if ((env as Record<string, string | undefined>)['DEV_SLACK_USER_ID']) {
+	if (dev && (env as Record<string, string | undefined>)['DEV_SLACK_USER_ID']) {
 		redirect(302, '/auth/dev-login');
 	}
 

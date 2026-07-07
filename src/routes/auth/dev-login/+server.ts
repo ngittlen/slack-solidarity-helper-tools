@@ -1,6 +1,8 @@
 // Dev-only endpoint to bypass Slack OAuth during local development.
-// Only active when DEV_SLACK_USER_ID is set. Never present in production
-// (the env var is not set there).
+// Only active in dev builds AND when DEV_SLACK_USER_ID is set — the env var
+// alone must not enable it, or a copied .env would open an unauthenticated
+// admin backdoor in production (hooks.server.ts also refuses to boot in that
+// state, as defense in depth).
 
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
@@ -10,7 +12,7 @@ import { sessionStore } from '$lib/server/db.js';
 
 export const GET: RequestHandler = async ({ cookies }) => {
 	const devUserId = (env as Record<string, string | undefined>)['DEV_SLACK_USER_ID'];
-	if (!devUserId) {
+	if (!dev || !devUserId) {
 		error(404, 'Not found');
 	}
 
