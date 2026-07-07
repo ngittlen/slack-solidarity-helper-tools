@@ -78,6 +78,10 @@ export interface Settings {
 	slackTrackingChannelId: string;
 	slackGrowthReportChannelId: string;
 	slackGrowthReportRankingAlpha: number | undefined;
+	/** Header countdown. DB-only, no env fallback; '' means "not configured". */
+	countdownLabel: string;
+	/** ISO datetime the countdown ends at; '' means "no countdown". */
+	countdownEndAt: string;
 }
 
 export interface Editor {
@@ -91,6 +95,8 @@ export type AppConfigPatch = Partial<{
 	slackTrackingChannelId: string;
 	slackGrowthReportChannelId: string;
 	slackGrowthReportRankingAlpha: number;
+	countdownLabel: string;
+	countdownEndAt: string;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -150,6 +156,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		cfg?.slackGrowthReportChannelId ?? SLACK_GROWTH_REPORT_CHANNEL_ID;
 	const slackGrowthReportRankingAlpha =
 		cfg?.slackGrowthReportRankingAlpha ?? SLACK_GROWTH_REPORT_RANKING_ALPHA;
+	const countdownLabel = cfg?.countdownLabel ?? '';
+	const countdownEndAt = cfg?.countdownEndAt ?? '';
 
 	return {
 		chapterChannelMap: chapterChannelMapField,
@@ -160,6 +168,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
 		slackGrowthReportRankingAlpha,
+		countdownLabel,
+		countdownEndAt,
 	};
 }
 
@@ -504,6 +514,8 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'slackTrackingChannelId',
 	'slackGrowthReportChannelId',
 	'slackGrowthReportRankingAlpha',
+	'countdownLabel',
+	'countdownEndAt',
 ]);
 
 export async function saveAppConfig(

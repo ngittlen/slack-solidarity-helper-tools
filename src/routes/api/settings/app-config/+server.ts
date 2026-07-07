@@ -14,11 +14,19 @@ import { validateSlackChannel } from '$lib/server/settings-validation.js';
 // (503 on a transient list outage, 400 for an unknown id). The ranking alpha
 // must be a finite number in [0, 1] — the range the /settings slider offers
 // and the span of meaningful power-law exponents for the score.
+// The countdown fields use '' as the explicit "not configured" value (the
+// saveAppConfig set-only contract reserves NULL for "keep"), so clearing the
+// countdown posts empty strings. The end datetime must be ISO-parseable and is
+// re-serialized to canonical ISO so every reader gets a uniform format.
 interface AppConfigBody {
 	slackTrackingChannelId?: unknown;
 	slackGrowthReportChannelId?: unknown;
 	slackGrowthReportRankingAlpha?: unknown;
+	countdownLabel?: unknown;
+	countdownEndAt?: unknown;
 }
+
+const COUNTDOWN_LABEL_MAX_LENGTH = 80;
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session) {
@@ -59,6 +67,36 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			);
 		}
 		patch.slackGrowthReportRankingAlpha = alpha;
+	}
+
+	if (body.countdownLabel !== undefined) {
+		const label = body.countdownLabel;
+		if (typeof label !== 'string' || label.trim().length > COUNTDOWN_LABEL_MAX_LENGTH) {
+			return json(
+				{ error: `countdownLabel must be a string of at most ${COUNTDOWN_LABEL_MAX_LENGTH} characters` },
+				{ status: 400 },
+			);
+		}
+		patch.countdownLabel = label.trim();
+	}
+
+	if (body.countdownEndAt !== undefined) {
+		const endAt = body.countdownEndAt;
+		if (typeof endAt !== 'string') {
+			return json({ error: 'countdownEndAt must be a string' }, { status: 400 });
+		}
+		if (endAt === '') {
+			patch.countdownEndAt = '';
+		} else {
+			const parsed = new Date(endAt);
+			if (Number.isNaN(parsed.getTime())) {
+				return json(
+					{ error: 'countdownEndAt must be an ISO datetime or empty to clear' },
+					{ status: 400 },
+				);
+			}
+			patch.countdownEndAt = parsed.toISOString();
+		}
 	}
 
 	if (Object.keys(patch).length === 0) {

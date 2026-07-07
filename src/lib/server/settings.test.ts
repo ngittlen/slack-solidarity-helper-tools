@@ -155,6 +155,8 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			slackTrackingChannelId: '',
 			slackGrowthReportChannelId: '',
 			slackGrowthReportRankingAlpha: undefined,
+			countdownLabel: '',
+			countdownEndAt: '',
 		});
 
 		// Restore the module-level mock for subsequent tests.
@@ -296,7 +298,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		expect(result.slackGrowthReportRankingAlpha).toBe(0.5);
 	});
 
-	it('bundle has exactly the seven documented keys', async () => {
+	it('bundle has exactly the documented keys', async () => {
 		const db = makeDb();
 		pushAllEmpty(db);
 		const result = await loadSettings(db as never);
@@ -310,8 +312,52 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'slackGrowthReportChannelId',
 				'slackGrowthReportRankingAlpha',
 				'slackTrackingChannelId',
+				'countdownLabel',
+				'countdownEndAt',
 			].sort(),
 		);
+	});
+
+	it('countdown fields come from the app_config row and default to empty strings for NULL columns', async () => {
+		const db = makeDb();
+		for (let i = 0; i < 5; i++) db._pushSelect([]);
+		db._pushSelect([
+			{
+				id: 1,
+				slackTrackingChannelId: null,
+				slackGrowthReportChannelId: null,
+				slackGrowthReportRankingAlpha: null,
+				countdownLabel: 'Petition deadline',
+				countdownEndAt: '2026-08-15T12:00:00.000Z',
+				lastEditedBy: 'U_X',
+				lastEditedByName: 'X',
+				lastEditedAt: '2026-07-06T00:00:00.000Z',
+			},
+		]);
+
+		const result = await loadSettings(db as never);
+		expect(result.countdownLabel).toBe('Petition deadline');
+		expect(result.countdownEndAt).toBe('2026-08-15T12:00:00.000Z');
+
+		// NULL columns (or a missing row) mean "not configured" — no env fallback.
+		const db2 = makeDb();
+		for (let i = 0; i < 5; i++) db2._pushSelect([]);
+		db2._pushSelect([
+			{
+				id: 1,
+				slackTrackingChannelId: null,
+				slackGrowthReportChannelId: null,
+				slackGrowthReportRankingAlpha: null,
+				countdownLabel: null,
+				countdownEndAt: null,
+				lastEditedBy: 'U_X',
+				lastEditedByName: 'X',
+				lastEditedAt: '2026-07-06T00:00:00.000Z',
+			},
+		]);
+		const result2 = await loadSettings(db2 as never);
+		expect(result2.countdownLabel).toBe('');
+		expect(result2.countdownEndAt).toBe('');
 	});
 
 	it('no module-level cache — two calls each hit the DB (6 reads × 2 = 12)', async () => {
@@ -631,6 +677,23 @@ describe('settings setters — Story 3', () => {
 		]);
 		expect(onConflict.set).not.toHaveProperty('slackGrowthReportChannelId');
 		expect(onConflict.set).not.toHaveProperty('slackGrowthReportRankingAlpha');
+	});
+
+	it('saveAppConfig accepts the countdown keys, including empty-string clears', async () => {
+		const db = makeDb();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		await saveAppConfig(db as never, { countdownLabel: 'Deadline', countdownEndAt: '' }, editor);
+
+		const [captured] = db._capturedInserts();
+		expect(captured!.values).toMatchObject({
+			id: 1,
+			countdownLabel: 'Deadline',
+			countdownEndAt: '',
+		});
+		const onConflict = captured!.onConflict as { set: Record<string, unknown> };
+		expect(onConflict.set).toMatchObject({ countdownLabel: 'Deadline', countdownEndAt: '' });
+		expect(onConflict.set).not.toHaveProperty('slackTrackingChannelId');
 	});
 
 	it('saveAppConfig treats null and undefined patch values as ABSENT (set-only contract)', async () => {

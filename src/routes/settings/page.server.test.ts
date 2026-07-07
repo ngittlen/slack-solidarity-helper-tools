@@ -46,6 +46,9 @@ const settingsFixture = {
 	slackTrackingChannelId: 'C_TRACK',
 	slackGrowthReportChannelId: 'C_GROWTH',
 	slackGrowthReportRankingAlpha: 0.5,
+	welcomeDisabledChannelIds: new Set<string>(),
+	countdownLabel: '',
+	countdownEndAt: '',
 };
 
 function makeEvent(overrides: {

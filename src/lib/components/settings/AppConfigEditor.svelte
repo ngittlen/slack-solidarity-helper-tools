@@ -7,6 +7,7 @@
 	import AutocompletePicker from './AutocompletePicker.svelte';
 	import type { PickerItem } from './picker-types.js';
 	import { createFieldAutosave, type AutosaveStatus } from './use-field-autosave.svelte.js';
+	import { isoToLocalInput, localInputToIso } from '$lib/components/nav/countdown.js';
 
 	interface ChannelOption {
 		id: string;
@@ -20,6 +21,9 @@
 		trackingChannelId: string;
 		growthReportChannelId: string;
 		rankingAlpha: number | undefined;
+		/** Header countdown config ('' when unset). */
+		countdownLabel: string;
+		countdownEndAt: string;
 		/** Saved/live leaderboards with UNTRIMMED topChapters — the slider
 		 *  preview re-ranks them client-side. */
 		leaderboard: LeaderboardPair;
@@ -30,6 +34,8 @@
 		trackingChannelId,
 		growthReportChannelId,
 		rankingAlpha,
+		countdownLabel,
+		countdownEndAt,
 		leaderboard,
 	}: Props = $props();
 
@@ -104,7 +110,26 @@
 		save: (value) => postAppConfig({ slackGrowthReportRankingAlpha: value }),
 	});
 
-	$effect(() => () => alphaSave.destroy());
+	// --- Header countdown — debounced autosave like the alpha slider. The
+	// datetime-local input speaks local time; the API stores canonical ISO, so
+	// the value converts on the way in and out. An empty date clears the
+	// countdown (the header hides it).
+
+	const countdownLabelSave = createFieldAutosave<string>({
+		initial: countdownLabel,
+		save: (value) => postAppConfig({ countdownLabel: value }),
+	});
+
+	const countdownEndSave = createFieldAutosave<string>({
+		initial: isoToLocalInput(countdownEndAt),
+		save: (value) => postAppConfig({ countdownEndAt: localInputToIso(value) }),
+	});
+
+	$effect(() => () => {
+		alphaSave.destroy();
+		countdownLabelSave.destroy();
+		countdownEndSave.destroy();
+	});
 
 	const previewPair = $derived.by<LeaderboardPair>(() => {
 		const alpha = alphaSave.value;
@@ -163,6 +188,42 @@
 	</SettingsRow>
 
 	<SettingsRow
+		label="Header countdown"
+		status={countdownEndSave.status === 'idle' ? countdownLabelSave.status : countdownEndSave.status}
+		error={countdownEndSave.error ?? countdownLabelSave.error}
+		onRetry={countdownEndSave.status === 'error'
+			? countdownEndSave.retry
+			: countdownLabelSave.status === 'error'
+				? countdownLabelSave.retry
+				: undefined}
+	>
+		<div class="countdown-fields">
+			<label class="countdown-field">
+				<span class="countdown-field-label">Label</span>
+				<input
+					type="text"
+					maxlength="80"
+					placeholder="e.g. Petition deadline"
+					value={countdownLabelSave.value}
+					oninput={countdownLabelSave.oninput}
+				/>
+			</label>
+			<label class="countdown-field">
+				<span class="countdown-field-label">Ends at</span>
+				<input
+					type="datetime-local"
+					value={countdownEndSave.value}
+					oninput={countdownEndSave.oninput}
+				/>
+			</label>
+		</div>
+		<p class="app-config-note">
+			Shown as a days/hours/minutes countdown in the middle of the header bar on every page.
+			Clear the date to hide it.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
 		label="Growth report ranking α = {alphaSave.value.toFixed(2)}"
 		status={alphaSave.status}
 		error={alphaSave.error}
@@ -210,6 +271,36 @@
 
 	.app-config-note code {
 		font-size: 0.95em;
+	}
+
+	.countdown-fields {
+		display: flex;
+		gap: 16px;
+		flex-wrap: wrap;
+	}
+
+	.countdown-field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.countdown-field-label {
+		font-size: 0.8em;
+		color: var(--color-text-muted, #888);
+	}
+
+	.countdown-field input {
+		padding: 6px 8px;
+		border: 1px solid var(--color-border, #ccc);
+		border-radius: var(--radius-md, 6px);
+		font: inherit;
+		color: var(--color-text, inherit);
+		background: var(--color-surface, #fff);
+	}
+
+	.countdown-field input[type='text'] {
+		min-width: 220px;
 	}
 
 	.alpha-control {

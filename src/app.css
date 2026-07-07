@@ -58,6 +58,15 @@
    universal reset never strips layerchart's tooltip padding/margins. */
 @layer reset, theme, base, components, utilities;
 
+/* 14-segment LCD face for the header countdown. Vendored from
+   https://github.com/ctrlcctrlv/lcd-font (OFL 1.1 — license alongside the
+   file). @font-face is unaffected by cascade layers, so it lives outside. */
+@font-face {
+    font-family: 'LCD14';
+    src: url('/fonts/LCD14.otf') format('opentype');
+    font-display: swap;
+}
+
 @layer reset {
     *,
     *::before,

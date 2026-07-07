@@ -125,6 +125,64 @@ describe('POST /api/settings/app-config', () => {
 		expect(mockSaveAppConfig).not.toHaveBeenCalled();
 	});
 
+	it('saves a trimmed countdown label', async () => {
+		const res = await POST(makeEvent(authed, { countdownLabel: '  Petition deadline  ' }) as never);
+		expect(res.status).toBe(200);
+		expect(mockSaveAppConfig).toHaveBeenCalledWith(
+			expect.anything(),
+			{ countdownLabel: 'Petition deadline' },
+			expect.anything(),
+		);
+	});
+
+	it('accepts an empty countdown label (no label shown)', async () => {
+		const res = await POST(makeEvent(authed, { countdownLabel: '' }) as never);
+		expect(res.status).toBe(200);
+		expect(mockSaveAppConfig).toHaveBeenCalledWith(
+			expect.anything(),
+			{ countdownLabel: '' },
+			expect.anything(),
+		);
+	});
+
+	it('400 for a non-string or over-long countdown label', async () => {
+		for (const bad of [7, 'x'.repeat(81)]) {
+			const res = await POST(makeEvent(authed, { countdownLabel: bad }) as never);
+			expect(res.status).toBe(400);
+		}
+		expect(mockSaveAppConfig).not.toHaveBeenCalled();
+	});
+
+	it('normalizes countdownEndAt to canonical ISO', async () => {
+		const res = await POST(
+			makeEvent(authed, { countdownEndAt: '2026-08-15T12:00:00Z' }) as never,
+		);
+		expect(res.status).toBe(200);
+		expect(mockSaveAppConfig).toHaveBeenCalledWith(
+			expect.anything(),
+			{ countdownEndAt: '2026-08-15T12:00:00.000Z' },
+			expect.anything(),
+		);
+	});
+
+	it('accepts an empty countdownEndAt as "clear the countdown"', async () => {
+		const res = await POST(makeEvent(authed, { countdownEndAt: '' }) as never);
+		expect(res.status).toBe(200);
+		expect(mockSaveAppConfig).toHaveBeenCalledWith(
+			expect.anything(),
+			{ countdownEndAt: '' },
+			expect.anything(),
+		);
+	});
+
+	it('400 for a non-string or unparseable countdownEndAt', async () => {
+		for (const bad of [7, 'not-a-date']) {
+			const res = await POST(makeEvent(authed, { countdownEndAt: bad }) as never);
+			expect(res.status).toBe(400);
+		}
+		expect(mockSaveAppConfig).not.toHaveBeenCalled();
+	});
+
 	it('returns 400 for a non-JSON body', async () => {
 		const event = {
 			...authed,

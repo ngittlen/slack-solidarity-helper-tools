@@ -140,6 +140,11 @@ export const appConfig = sqliteTable(
 		slackTrackingChannelId: text('slack_tracking_channel_id'),
 		slackGrowthReportChannelId: text('slack_growth_report_channel_id'),
 		slackGrowthReportRankingAlpha: real('slack_growth_report_ranking_alpha'),
+		// Header countdown (label + ISO end datetime). DB-only, no env fallback;
+		// '' means "not configured" (the set-only save contract reserves NULL for
+		// "use the fallback", so clearing writes '' rather than NULL).
+		countdownLabel: text('countdown_label'),
+		countdownEndAt: text('countdown_end_at'),
 		lastEditedBy: text('last_edited_by').notNull(),
 		lastEditedByName: text('last_edited_by_name').notNull(),
 		lastEditedAt: text('last_edited_at').notNull(),

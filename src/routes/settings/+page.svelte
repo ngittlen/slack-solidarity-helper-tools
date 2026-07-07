@@ -102,6 +102,8 @@
 				trackingChannelId={data.settings.slackTrackingChannelId}
 				growthReportChannelId={data.settings.slackGrowthReportChannelId}
 				rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
+				countdownLabel={data.settings.countdownLabel}
+				countdownEndAt={data.settings.countdownEndAt}
 				leaderboard={data.leaderboard}
 			/>
 		{/if}
