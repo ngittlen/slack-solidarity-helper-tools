@@ -58,7 +58,7 @@
 	/* The LCD face is for the digits only — the label reads in the app font. */
 	.countdown-label {
 		font-family: var(--font-family);
-		font-size: 1rem;
+		font-size: 2rem;
 		font-weight: 600;
 		letter-spacing: 0.06em;
 		text-align: center;
