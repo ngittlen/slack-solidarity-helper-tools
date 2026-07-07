@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest';
 import type { DaySignups } from '$lib/server/dashboard-signups.js';
 import {
 	DASHBOARD_TOP_N,
+	MAX_X_TICKS,
 	OTHER_BAND_LABEL,
 	NO_CHAPTER_BAND_LABEL,
 	buildDetailFrame,
 	buildOverviewFrame,
+	formatDateTick,
+	thinDateTicks,
 } from './chart-data.js';
 
 function day(
@@ -151,6 +154,37 @@ describe('buildDetailFrame', () => {
 		expect(noChapter).toBeDefined();
 		expect(noChapter!.label).toBe(NO_CHAPTER_BAND_LABEL);
 		expect(noChapter!.values).toEqual([1]);
+	});
+
+	it('thinDateTicks keeps every label for short domains and caps long ones near MAX_X_TICKS', () => {
+		const domain = (n: number) => Array.from({ length: n }, (_, i) => `d${i}`);
+
+		// 7-day preset: step 1 — nothing dropped.
+		expect(thinDateTicks(domain(7))).toEqual(domain(7));
+
+		// 30- and 90-day presets: capped, evenly stepped.
+		for (const n of [30, 90]) {
+			const ticks = thinDateTicks(domain(n));
+			expect(ticks.length).toBeLessThanOrEqual(MAX_X_TICKS);
+			const step = Math.ceil(n / MAX_X_TICKS);
+			const indices = ticks.map((t) => Number(t.slice(1)));
+			for (let i = 1; i < indices.length; i++) {
+				expect(indices[i]! - indices[i - 1]!).toBe(step);
+			}
+		}
+
+		expect(thinDateTicks([])).toEqual([]);
+	});
+
+	it('thinDateTicks anchors at the last date so the most recent day keeps its label', () => {
+		const domain = Array.from({ length: 90 }, (_, i) => `d${i}`);
+		const ticks = thinDateTicks(domain);
+		expect(ticks[ticks.length - 1]).toBe('d89');
+	});
+
+	it('formatDateTick shortens ISO dates to MM/DD', () => {
+		expect(formatDateTick('2026-07-06')).toBe('07/06');
+		expect(formatDateTick('2026-12-31')).toBe('12/31');
 	});
 
 	it('mergedChapters are sorted descending by totalInWindow', () => {

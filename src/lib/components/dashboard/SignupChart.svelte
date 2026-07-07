@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { BarChart, Bars } from 'layerchart';
 	import { CHART_BAND_COLORS } from '$lib/styles/chart-colors';
-	import type { ChartBand, ChartFrame } from './chart-data.js';
+	import {
+		formatDateTick,
+		thinDateTicks,
+		type ChartBand,
+		type ChartFrame,
+	} from './chart-data.js';
 
 	type Props = {
 		variant: 'overview' | 'detail';
@@ -66,6 +71,14 @@
 				tooltipContext={variant === 'detail'}
 				legend={false}
 				grid={variant === 'detail'}
+				props={{
+					// One tick per bar overlaps at the 30/90-day presets: thin to
+					// MAX_X_TICKS labels and shorten each to MM/DD.
+					xAxis: {
+						ticks: (scale: { domain: () => string[] }) => thinDateTicks(scale.domain()),
+						format: formatDateTick,
+					},
+				}}
 			>
 				{#snippet marks({ context }: { context: { series: { visibleSeries: Array<{ key: string }> }; xScale: (v: unknown) => number; yScale: (v: unknown) => number } })}
 					{#each context.series.visibleSeries as s (s.key)}

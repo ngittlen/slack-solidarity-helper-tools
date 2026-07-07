@@ -22,6 +22,23 @@ export interface ChartFrame {
 	dailyTotals?: number[];
 }
 
+/** Max x-axis tick labels on the signup charts. A band scale renders one
+ *  label per bar by default, so the 30/90-day presets overlap without this. */
+export const MAX_X_TICKS = 8;
+
+/** Thin a band-scale domain to at most MAX_X_TICKS evenly stepped entries,
+ *  anchored at the LAST date so the most recent day always keeps its label
+ *  (the left edge loses one instead). Identity for short domains. */
+export function thinDateTicks(domain: string[]): string[] {
+	const step = Math.max(1, Math.ceil(domain.length / MAX_X_TICKS));
+	return domain.filter((_, i) => (domain.length - 1 - i) % step === 0);
+}
+
+/** 'YYYY-MM-DD' → 'MM/DD' for compact x-axis tick labels. */
+export function formatDateTick(date: string): string {
+	return date.slice(5).replace('-', '/');
+}
+
 function addDays(date: string, n: number): string {
 	const [y, m, d] = date.split('-').map(Number);
 	const t = Date.UTC(y!, m! - 1, d! + n);
