@@ -133,6 +133,30 @@ export const channelWelcomeFlags = sqliteTable('channel_welcome_flags', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
+// One row per (ET date, conversation code): the code's total door-knock
+// attempts/contacts for that day, captured by the nightly snapshot from
+// Openfield's today-only leaderboard endpoint. chapter_name comes from the
+// "Conversation Codes" Slack canvas at snapshot time.
+export const doorKnockDaily = sqliteTable(
+	'door_knock_daily',
+	{
+		date: text('date').notNull(),
+		code: text('code').notNull(),
+		chapterName: text('chapter_name').notNull(),
+		attempts: integer('attempts').notNull().default(0),
+		contacts: integer('contacts').notNull().default(0),
+	},
+	(table) => [primaryKey({ columns: [table.date, table.code] })],
+);
+
+// Cache of conversation code → Openfield numeric conversation id. Resolving a
+// code costs a POST to /codes/, so each code is resolved once and reused.
+export const doorKnockCodeIds = sqliteTable('door_knock_code_ids', {
+	code: text('code').primaryKey(),
+	conversationId: integer('conversation_id').notNull(),
+	resolvedAt: text('resolved_at').notNull(),
+});
+
 export const appConfig = sqliteTable(
 	'app_config',
 	{
@@ -187,3 +211,9 @@ export type NewChannelWelcomeFlagRow = typeof channelWelcomeFlags.$inferInsert;
 
 export type AppConfigRow = typeof appConfig.$inferSelect;
 export type NewAppConfigRow = typeof appConfig.$inferInsert;
+
+export type DoorKnockDailyRow = typeof doorKnockDaily.$inferSelect;
+export type NewDoorKnockDailyRow = typeof doorKnockDaily.$inferInsert;
+
+export type DoorKnockCodeIdRow = typeof doorKnockCodeIds.$inferSelect;
+export type NewDoorKnockCodeIdRow = typeof doorKnockCodeIds.$inferInsert;

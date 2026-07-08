@@ -27,6 +27,7 @@
 
 	let solidarityMode = $state<ChartMode>('overview');
 	let slackMode = $state<ChartMode>('overview');
+	let doorKnockMode = $state<ChartMode>('detail');
 
 	function buildState(
 		source: { ok: true; days: DaySignups[] } | { ok: false; error: string },
@@ -49,6 +50,12 @@
 
 	const solidarityState = $derived(buildState(data.solidarity, solidarityMode, 'Solidarity'));
 	const slackState = $derived(buildState(data.slack, slackMode, 'Slack'));
+	const doorKnockState = $derived(buildState(data.doorKnock, doorKnockMode, 'Doors'));
+
+	// The door-knock card only appears once the nightly Openfield snapshot has
+	// ever written data (or on a load error) — hidden entirely while the
+	// integration is unconfigured, rather than showing a permanent empty card.
+	const showDoorKnock = $derived(data.doorKnock.ok === false || doorKnockState.kind !== 'empty');
 </script>
 
 <svelte:head>
@@ -72,6 +79,12 @@
 		<ChartCard title="Slack signups" cardState={slackState} bind:mode={slackMode} />
 		<SlackLeaderboard leaderboard={data.leaderboard} />
 	</div>
+
+	{#if showDoorKnock}
+		<div class="door-knock-row">
+			<ChartCard title="Doors knocked" cardState={doorKnockState} bind:mode={doorKnockMode} />
+		</div>
+	{/if}
 </main>
 
 <style>
@@ -95,6 +108,9 @@
 		grid-template-columns: minmax(0, 1fr) 320px;
 		gap: 1.5rem;
 		align-items: start;
+	}
+	.door-knock-row {
+		margin-top: 1.5rem;
 	}
 	@media (max-width: 960px) {
 		.slack-row {

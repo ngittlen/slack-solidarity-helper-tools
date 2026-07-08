@@ -233,6 +233,51 @@ async function loadSlack(
 	return days;
 }
 
+/** Doors knocked per day from the nightly door_knock_daily snapshot, bucketed
+ *  like the signup sources so the dashboard chart pipeline can reuse
+ *  buildDetailFrame. Openfield chapters have no Solidarity ids, so bands get
+ *  stable synthetic ids (index into the window's sorted chapter names) —
+ *  excludedChapterIds deliberately does not apply here. */
+export async function loadDoorKnockSignups(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	options: { days: number; now?: Date },
+): Promise<DaySignups[]> {
+	const startDate = windowStartDate(options.days, options.now ?? new Date());
+	// Chapters can span several codes (metro city codes + a county code), so
+	// aggregate to (date, chapter) in SQL.
+	const rows = (await db.all(sql`
+		SELECT date, chapter_name, SUM(attempts) AS attempts
+		FROM door_knock_daily
+		WHERE date >= ${startDate}
+		GROUP BY date, chapter_name
+		ORDER BY date
+	`)) as Array<{ date: string; chapter_name: string; attempts: number }>;
+
+	const chapterIds = new Map<string, number>(
+		[...new Set(rows.map((r) => r.chapter_name))].sort().map((name, i) => [name, i + 1]),
+	);
+
+	const byDate = new Map<string, DaySignups>();
+	for (const r of rows) {
+		let day = byDate.get(r.date);
+		if (!day) {
+			day = { date: r.date, total: 0, byChapter: [] };
+			byDate.set(r.date, day);
+		}
+		day.byChapter.push({
+			chapterId: chapterIds.get(r.chapter_name)!,
+			chapterName: r.chapter_name,
+			count: Number(r.attempts),
+		});
+		day.total += Number(r.attempts);
+	}
+
+	const days = [...byDate.values()];
+	for (const d of days) d.byChapter.sort(sortByChapter);
+	days.sort((a, b) => a.date.localeCompare(b.date));
+	return days;
+}
+
 export async function getDashboardSignups(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	options: GetDashboardSignupsOptions,

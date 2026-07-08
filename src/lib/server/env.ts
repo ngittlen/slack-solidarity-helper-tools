@@ -59,6 +59,18 @@ export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
 // Callers pass it as ?key=<value>.
 export const INTERNAL_CRON_SECRET = get('INTERNAL_CRON_SECRET');
 
+// Openfield door-knocking integration (all four required for the nightly
+// door-knock snapshot; the endpoint 500s with a clear message when unset).
+// OPENFIELD_BASE_URL e.g. https://abdulforsenate.openfield.ai (no trailing /).
+// The username/password belong to a dedicated service account — the snapshot
+// logs in like a volunteer to read per-conversation leaderboards.
+// DOOR_KNOCK_CHANNEL_ID is the Slack channel whose "Conversation Codes"
+// canvas tab lists the active codes (e.g. #door-knocking).
+export const OPENFIELD_BASE_URL = get('OPENFIELD_BASE_URL').replace(/\/+$/, '');
+export const OPENFIELD_USERNAME = get('OPENFIELD_USERNAME');
+export const OPENFIELD_PASSWORD = get('OPENFIELD_PASSWORD');
+export const DOOR_KNOCK_CHANNEL_ID = get('DOOR_KNOCK_CHANNEL_ID');
+
 export interface ChapterEntry {
 	chapterId: number;
 	channelId: string;

@@ -4,6 +4,7 @@ import {
 	type DaySignups,
 	loadSolidaritySignups,
 	loadSlackSignups,
+	loadDoorKnockSignups,
 } from './dashboard-signups.js';
 import { db } from './db.js';
 import { loadSettings } from './settings.js';
@@ -18,6 +19,7 @@ export interface DashboardPageData {
 	isAdmin: boolean;
 	solidarity: SourceResult;
 	slack: SourceResult;
+	doorKnock: SourceResult;
 }
 
 interface DashboardLoadEvent {
@@ -58,9 +60,10 @@ export async function loadDashboardPageData(
 	// /settings apply to the charts the same as to the weekly growth report.
 	const { reportExcludedChapterIds } = await loadSettings(db);
 
-	const [solidaritySettled, slackSettled] = await Promise.allSettled([
+	const [solidaritySettled, slackSettled, doorKnockSettled] = await Promise.allSettled([
 		loadSolidaritySignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
 		loadSlackSignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
+		loadDoorKnockSignups(db, { days }),
 	]);
 
 	return {
@@ -69,5 +72,6 @@ export async function loadDashboardPageData(
 		isAdmin: session.isAdmin,
 		solidarity: settledResult('solidarity', solidaritySettled),
 		slack: settledResult('slack', slackSettled),
+		doorKnock: settledResult('door-knock', doorKnockSettled),
 	};
 }

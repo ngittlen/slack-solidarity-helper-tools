@@ -1,0 +1,23 @@
+name: Nightly door-knock snapshot
+
+# 03:00 UTC = 23:00 EDT / 22:00 EST — after canvassing ends but before
+# Openfield's "today" (campaign-local, Michigan) rolls over. The endpoint
+# stamps the row date in America/Detroit, so cron drift can't shift the day.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call door-knock snapshot endpoint
+        env:
+          APP_URL: https://slack-solidarity-helper-tools.fly.dev
+          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            --max-time 300 \
+            --retry 3 --retry-delay 30 --retry-connrefused \
+            "${APP_URL}/api/internal/door-knock-snapshot?key=${INTERNAL_CRON_SECRET}"

@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { getDashboardSignups, loadSlackSignups, loadSolidaritySignups } from './dashboard-signups.js';
+import {
+	getDashboardSignups,
+	loadSlackSignups,
+	loadSolidaritySignups,
+	loadDoorKnockSignups,
+} from './dashboard-signups.js';
 
 // The aggregation function makes two kinds of db calls:
 //   - select().from().where().orderBy() and select().from() for Solidarity
@@ -67,6 +72,51 @@ function makeDb(): MockDb {
 }
 
 const NOW = new Date('2026-05-10T12:00:00Z');
+
+describe('loadDoorKnockSignups', () => {
+	it('groups snapshot rows by date with stable synthetic chapter ids', async () => {
+		const db = makeDb();
+		db._pushAll([
+			{ date: '2026-05-09', chapter_name: 'Washtenaw', attempts: 42 },
+			{ date: '2026-05-09', chapter_name: 'Detroit', attempts: 100 },
+			{ date: '2026-05-10', chapter_name: 'Detroit', attempts: 55 },
+		]);
+
+		const days = await loadDoorKnockSignups(db as never, { days: 7, now: NOW });
+
+		// Synthetic ids follow sorted chapter names: Detroit=1, Washtenaw=2 —
+		// so a chapter keeps the same band identity on every day of the window.
+		expect(days).toEqual([
+			{
+				date: '2026-05-09',
+				total: 142,
+				byChapter: [
+					{ chapterId: 1, chapterName: 'Detroit', count: 100 },
+					{ chapterId: 2, chapterName: 'Washtenaw', count: 42 },
+				],
+			},
+			{
+				date: '2026-05-10',
+				total: 55,
+				byChapter: [{ chapterId: 1, chapterName: 'Detroit', count: 55 }],
+			},
+		]);
+	});
+
+	it('bounds the query to the window start date', async () => {
+		const db = makeDb();
+		db._pushAll([]);
+		await loadDoorKnockSignups(db as never, { days: 7, now: NOW });
+		// 2026-05-10 minus 6 days — same window rule as the other sources.
+		expect(JSON.stringify(db.all.mock.calls[0])).toContain('2026-05-04');
+	});
+
+	it('returns [] when the table has no rows in the window', async () => {
+		const db = makeDb();
+		db._pushAll([]);
+		expect(await loadDoorKnockSignups(db as never, { days: 30, now: NOW })).toEqual([]);
+	});
+});
 
 describe('getDashboardSignups', () => {
 	beforeEach(() => {
