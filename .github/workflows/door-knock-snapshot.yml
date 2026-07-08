@@ -1,11 +1,13 @@
 name: Nightly door-knock snapshot
 
-# 03:00 UTC = 23:00 EDT / 22:00 EST — after canvassing ends but before
-# Openfield's "today" (campaign-local, Michigan) rolls over. The endpoint
-# stamps the row date in America/Detroit, so cron drift can't shift the day.
+# 02:00 UTC = 22:00 EDT / 21:00 EST — after canvassing ends but with a wide
+# buffer before Openfield's "today" (campaign-local, Michigan) rolls over,
+# since GitHub's schedule can fire well past the requested minute. The
+# endpoint stamps the row date in America/Detroit, so drift can't shift the
+# day as long as it runs before ET midnight.
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '0 2 * * *'
   workflow_dispatch:
 
 jobs:
