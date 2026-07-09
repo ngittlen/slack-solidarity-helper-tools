@@ -65,7 +65,11 @@
 <main>
 	{#if data.countdown}
 		<div class="countdown-row">
-			<CountdownBanner label={data.countdown.label} endAt={data.countdown.endAt} />
+			<CountdownBanner
+				label={data.countdown.label}
+				endAt={data.countdown.endAt}
+				projectedDoors={data.countdown.projectedDoors}
+			/>
 		</div>
 	{/if}
 

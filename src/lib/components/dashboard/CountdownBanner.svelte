@@ -6,9 +6,12 @@
 		label: string;
 		/** ISO datetime the countdown ends at. */
 		endAt: string;
+		/** Projected doors knocked by the deadline (recent pace extrapolated);
+		 *  null hides the projection line. */
+		projectedDoors?: number | null;
 	}
 
-	let { label, endAt }: Props = $props();
+	let { label, endAt, projectedDoors = null }: Props = $props();
 
 	const endMs = $derived(Date.parse(endAt));
 
@@ -42,6 +45,11 @@
 			{pad(parts.minutes)}<span class="countdown-unit">m</span>
 			{pad(parts.seconds)}<span class="countdown-unit">s</span>
 		</span>
+		{#if projectedDoors !== null && !parts.expired}
+			<span class="countdown-projection">
+				On pace for ~{projectedDoors.toLocaleString('en-US')} doors knocked by zero
+			</span>
+		{/if}
 	</div>
 {/if}
 
@@ -72,5 +80,11 @@
 		font-size: 0.45em;
 		margin-right: 0.3em;
 		opacity: 0.65;
+	}
+	.countdown-projection {
+		font-family: var(--font-family);
+		font-size: 0.9rem;
+		opacity: 0.85;
+		text-align: center;
 	}
 </style>

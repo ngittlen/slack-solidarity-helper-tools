@@ -11,6 +11,10 @@ import {
 	type LeaderboardPair,
 } from '$lib/server/weekly-growth-report.js';
 import { loadSettings } from '$lib/server/settings.js';
+import {
+	loadDoorKnockDayTotals,
+	projectDoorsAtDeadline,
+} from '$lib/server/door-knock-projection.js';
 
 async function safeLoad(
 	label: string,
@@ -51,11 +55,28 @@ export const load: PageServerLoad = async (event) => {
 	const leaderboard: LeaderboardPair = { saved, live };
 
 	// Dashboard countdown banner, from the same settings read as the
-	// leaderboard opts. Absent end datetime = no banner.
-	const countdown =
-		settings.countdownEndAt !== ''
-			? { label: settings.countdownLabel, endAt: settings.countdownEndAt }
-			: null;
+	// leaderboard opts. Absent end datetime = no banner. When door-knock
+	// snapshots exist, the banner also shows the projected doors knocked by
+	// the deadline (recent pace extrapolated over the time remaining) —
+	// best-effort, so a failure just hides the projection line.
+	let countdown: { label: string; endAt: string; projectedDoors: number | null } | null = null;
+	if (settings.countdownEndAt !== '') {
+		let projectedDoors: number | null = null;
+		try {
+			const dayTotals = await loadDoorKnockDayTotals(db);
+			projectedDoors = projectDoorsAtDeadline(
+				dayTotals,
+				Date.parse(settings.countdownEndAt),
+				Date.now(),
+			);
+		} catch (err) {
+			console.error(
+				'[dashboard] door-knock projection failed:',
+				err instanceof Error ? err.message : err,
+			);
+		}
+		countdown = { label: settings.countdownLabel, endAt: settings.countdownEndAt, projectedDoors };
+	}
 
 	return { ...base, leaderboard, countdown, pageTitle: 'Dashboard' };
 };
