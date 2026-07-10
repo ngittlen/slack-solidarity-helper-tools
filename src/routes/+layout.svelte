@@ -1,12 +1,16 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
 	import { CHART_BAND_STYLE } from '$lib/styles/chart-colors';
 	import UserMenu, { type MenuItem } from '$lib/components/nav/UserMenu.svelte';
 
 	let { data, children } = $props();
 
 	const pageTitle = $derived<string>(page.data.pageTitle ?? 'A4M Helper Tools');
+
+	// Back-to-dashboard arrow on every non-root page (/pending, /settings).
+	const showBackLink = $derived(page.url.pathname !== '/');
 
 	const menuItems = $derived<MenuItem[]>(
 		data.isAdmin
@@ -20,7 +24,26 @@
 
 <div class="theme-vars" style={CHART_BAND_STYLE}>
 	<header class="app-header">
-		<h1>{pageTitle}</h1>
+		<div class="header-left">
+			{#if showBackLink}
+				<a class="back-link" href={resolve('/')} aria-label="Back to dashboard">
+					<svg
+						viewBox="0 0 24 24"
+						width="20"
+						height="20"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2.5"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+					>
+						<path d="M15 18l-6-6 6-6" />
+					</svg>
+				</a>
+			{/if}
+			<h1>{pageTitle}</h1>
+		</div>
 		<div class="user-info">
 			<UserMenu items={menuItems} />
 			<span class="user-greeting">
@@ -47,6 +70,25 @@
 		justify-content: space-between;
 		gap: 16px;
 		flex-wrap: wrap;
+	}
+	.header-left {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+	.back-link {
+		display: inline-flex;
+		align-items: center;
+		padding: 4px;
+		margin-left: -6px;
+		border-radius: var(--radius-md);
+		color: var(--color-header-text);
+		opacity: 0.8;
+	}
+	.back-link:hover,
+	.back-link:focus-visible {
+		opacity: 1;
+		background: rgba(255, 255, 255, 0.1);
 	}
 	.app-header h1 {
 		font-size: 1.1rem;
