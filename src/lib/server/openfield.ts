@@ -4,11 +4,15 @@
 // client logs in like a volunteer (username/password → sessionid cookie) and
 // then:
 //   - resolveCode(code):  POST /codes/ with a 6-char conversation code; the
-//     app answers 302 → /street/<id>/, which is the only place the numeric
-//     conversation id is exposed.
-//   - fetchToday(id):     GET /endpoint/<id>/today — the JSON leaderboard for
-//     the CURRENT day only (hence the nightly snapshot). One logged-in
-//     session can read any conversation id; no need to switch codes first.
+//     app answers 302 to the conversation's page — /street/<id>/ for
+//     street-canvass conversations, /<id>/ for door-knocking ones — which is
+//     the only place the numeric conversation id is exposed. Codes Openfield
+//     no longer recognizes get a 404 (observed for retired canvas codes).
+//   - fetchToday(id):     GET /endpoint/<id>/today/ — the JSON leaderboard
+//     for the CURRENT day only (hence the nightly snapshot). The trailing
+//     slash matters: Django 301s without it for door-knock conversations.
+//     One logged-in session can read any conversation id; no need to switch
+//     codes first.
 //
 // Same import discipline as solidarity.ts: no $env/$lib imports — config and
 // fetch are injected so tests run without a network.
@@ -40,7 +44,9 @@ export interface OpenfieldClient {
 type FetchFn = typeof fetch;
 
 const CSRF_INPUT_RE = /name="csrfmiddlewaretoken"\s+value="([^"]+)"/;
-const STREET_ID_RE = /\/street\/(\d+)\//;
+// First numeric path segment of the post-code redirect: /street/6/ (street
+// conversations) or /1230/ (door-knocking conversations).
+const CONVERSATION_ID_RE = /\/(\d+)\//;
 
 export function createOpenfieldClient(
 	config: OpenfieldConfig,
@@ -144,20 +150,20 @@ export function createOpenfieldClient(
 		async resolveCode(code: string): Promise<number | null> {
 			const res = await authed(() => postForm('/codes/', { code }));
 			if (res.status === 302) {
-				const id = STREET_ID_RE.exec(res.headers.get('location') ?? '')?.[1];
+				const id = CONVERSATION_ID_RE.exec(res.headers.get('location') ?? '')?.[1];
 				if (id) return Number(id);
 			}
-			// A 200 means Openfield re-rendered the entry form — unknown code.
+			// 404 = Openfield doesn't know this code (retired canvas entry).
 			console.warn(`[openfield] could not resolve code ${code} (status ${res.status})`);
 			return null;
 		},
 
 		async fetchToday(conversationId: number): Promise<OpenfieldLeaderboardRow[]> {
 			const res = await authed(() =>
-				get(`/endpoint/${conversationId}/today?search=&order=asc`),
+				get(`/endpoint/${conversationId}/today/?search=&order=asc`),
 			);
 			if (res.status !== 200) {
-				throw new Error(`openfield: /endpoint/${conversationId}/today returned ${res.status}`);
+				throw new Error(`openfield: /endpoint/${conversationId}/today/ returned ${res.status}`);
 			}
 			let rows: unknown;
 			try {

@@ -70,11 +70,23 @@ function makeServer(opts: { password?: string } = {}): FakeServer {
 			const body = String(init?.body ?? '');
 			if (!body.includes('csrfmiddlewaretoken=tok-codes')) return res(403, 'CSRF failed');
 			if (body.includes('code=AB12CD')) {
+				// Street-canvass conversations redirect under /street/.
 				return res(302, '', [['location', `${BASE}/street/133/`]]);
 			}
-			return res(200, CODES_PAGE); // unknown code re-renders the form
+			if (body.includes('code=DK34EF')) {
+				// Door-knocking conversations redirect to the bare id path.
+				return res(302, '', [['location', '/1230/']]);
+			}
+			return res(404, 'Whoops! - 404 Error'); // unknown/retired code
 		}
-		if (/^\/endpoint\/133\/today/.test(path)) {
+		// Trailing slash required — Django 301s the slashless form.
+		if (/^\/endpoint\/(133|1230)\/today[^/]/.test(path)) {
+			return res(301, '', [['location', path.replace('/today', '/today/')]]);
+		}
+		if (/^\/endpoint\/1230\/today\//.test(path)) {
+			return res(200, '[]');
+		}
+		if (/^\/endpoint\/133\/today\//.test(path)) {
 			return res(
 				200,
 				JSON.stringify([
@@ -83,7 +95,7 @@ function makeServer(opts: { password?: string } = {}): FakeServer {
 				]),
 			);
 		}
-		if (/^\/endpoint\/134\/today/.test(path)) {
+		if (/^\/endpoint\/134\/today\//.test(path)) {
 			return res(200, '[]');
 		}
 		return res(404, 'not found');
@@ -111,14 +123,20 @@ describe('createOpenfieldClient', () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 	});
 
-	it('logs in, resolves a code from the /street/<id>/ redirect', async () => {
+	it('logs in, resolves a street code from the /street/<id>/ redirect', async () => {
 		const server = makeServer();
 		const client = makeClient(server);
 		expect(await client.resolveCode('AB12CD')).toBe(133);
 		expect(server.loginPosts()).toBe(1);
 	});
 
-	it('returns null for a code Openfield does not recognize', async () => {
+	it('resolves a door-knock code from the bare /<id>/ redirect', async () => {
+		const server = makeServer();
+		const client = makeClient(server);
+		expect(await client.resolveCode('DK34EF')).toBe(1230);
+	});
+
+	it('returns null for a code Openfield does not recognize (404)', async () => {
 		const server = makeServer();
 		const client = makeClient(server);
 		expect(await client.resolveCode('ZZ99ZZ')).toBeNull();
