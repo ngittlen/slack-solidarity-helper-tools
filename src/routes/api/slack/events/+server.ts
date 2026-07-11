@@ -6,8 +6,16 @@ import { slackJoins } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
 import { loadSettings } from '$lib/server/settings.js';
-import { SLACK_SIGNING_SECRET, SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID } from '$lib/server/env.js';
+import {
+	SLACK_SIGNING_SECRET,
+	SLACK_BOT_TOKEN,
+	DOOR_KNOCK_CHANNEL_ID,
+	OPENFIELD_BASE_URL,
+	OPENFIELD_USERNAME,
+	OPENFIELD_PASSWORD,
+} from '$lib/server/env.js';
 import { createCanvasWatcher } from '$lib/server/door-knock-canvas-watch.js';
+import { createOpenfieldClient } from '$lib/server/openfield.js';
 import {
 	findCodesCanvasFile,
 	fetchConversationCodesCanvas,
@@ -15,20 +23,24 @@ import {
 
 // Watches the door-knocking channel's "Conversation Codes" canvas via Slack
 // file_change events (requires the file_change bot event subscription) and
-// posts to the tracking channel when codes are added/removed. Disabled when
-// the door-knock channel isn't configured.
-const canvasWatcher = DOOR_KNOCK_CHANNEL_ID
-	? createCanvasWatcher({
-			db,
-			findCanvasFileId: async () =>
-				(await findCodesCanvasFile(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID)).fileId,
-			fetchCanvasHtml: () => fetchConversationCodesCanvas(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID),
-			postNotification: async (text) => {
-				const { slackTrackingChannelId } = await loadSettings(db);
-				await slack.chat.postMessage({ channel: slackTrackingChannelId, text });
-			},
-		})
-	: null;
+// caches new codes' Openfield conversation ids the moment they appear — so
+// codes swapped out later the same day still get their doors counted by the
+// nightly snapshot. Disabled when the integration isn't configured.
+const canvasWatcher =
+	DOOR_KNOCK_CHANNEL_ID && OPENFIELD_BASE_URL && OPENFIELD_USERNAME && OPENFIELD_PASSWORD
+		? createCanvasWatcher({
+				db,
+				findCanvasFileId: async () =>
+					(await findCodesCanvasFile(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID)).fileId,
+				fetchCanvasHtml: () =>
+					fetchConversationCodesCanvas(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID),
+				openfield: createOpenfieldClient({
+					baseUrl: OPENFIELD_BASE_URL,
+					username: OPENFIELD_USERNAME,
+					password: OPENFIELD_PASSWORD,
+				}),
+			})
+		: null;
 
 // ---------------------------------------------------------------------------
 // Slack signature verification

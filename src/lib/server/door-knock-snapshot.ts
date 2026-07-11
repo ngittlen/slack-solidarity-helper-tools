@@ -77,10 +77,11 @@ export function detroitDate(now: Date): string {
 /** Resolve codes to conversation ids, cache-first. `failed` holds codes that
  *  errored or that Openfield rejected — for candidate tokens the caller
  *  ignores those (they're usually ordinary words), for parsed codes they're
- *  reported. Newly resolved ids are written back to the cache table. */
-async function resolveIds(
+ *  reported. Newly resolved ids are written back to the cache table. Also
+ *  used by the canvas watcher to cache codes the moment they appear. */
+export async function resolveCodeIds(
 	db: Database,
-	openfield: OpenfieldClient,
+	openfield: Pick<OpenfieldClient, 'resolveCode'>,
 	codes: string[],
 	cache: ReadonlyMap<string, number>,
 	nowIso: string,
@@ -150,7 +151,7 @@ export async function runDoorKnockSnapshot(
 	const cachedRows = await db.select().from(doorKnockCodeIds);
 	const cache = new Map(cachedRows.map((r) => [r.code, r.conversationId]));
 
-	const { ids, failed } = await resolveIds(
+	const { ids, failed } = await resolveCodeIds(
 		db,
 		deps.openfield,
 		parsed.map((c) => c.code),
@@ -163,7 +164,7 @@ export async function runDoorKnockSnapshot(
 	// silently (their resolution "failures" are expected, not reported).
 	const parsedSet = new Set(parsed.map((c) => c.code));
 	const candidates = findCandidateCodes(html).filter((c) => !parsedSet.has(c));
-	const { ids: extraIds } = await resolveIds(db, deps.openfield, candidates, cache, nowIso);
+	const { ids: extraIds } = await resolveCodeIds(db, deps.openfield, candidates, cache, nowIso);
 	const unattributedCodes = [...extraIds.keys()].sort();
 	if (unattributedCodes.length > 0) {
 		console.error(
@@ -254,7 +255,8 @@ export async function runDoorKnockSnapshot(
 		});
 		offCanvasCodes.sort();
 		if (offCanvasCodes.length > 0) {
-			console.error(
+			// Routine when a code is swapped mid-day — counted, logged, no alarm.
+			console.log(
 				`[door-knock] ${offCanvasCodes.length} code(s) removed from the canvas still logged doors today: ${offCanvasCodes.join(', ')}`,
 			);
 		}

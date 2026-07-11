@@ -1,23 +1,25 @@
 // Reacts to Slack `file_change` events for the "Conversation Codes" canvas:
-// re-fetches the canvas, diffs its code set against the most recent archived
-// copy (door_knock_canvas_archive — also written by the nightly snapshot),
-// and posts a notification when codes were added or removed. Text-only edits
-// stay silent.
+// re-fetches the canvas, resolves any codes not yet in the door_knock_code_ids
+// cache, and refreshes the daily canvas archive. No notifications — the point
+// is purely to capture code↔conversation ids the moment codes appear, so a
+// code that's added in the morning and swapped out the same afternoon is
+// still in the cache when the nightly snapshot runs its off-canvas sweep and
+// counts that conversation's doors toward the day's total.
 //
 // file_change fires workspace-wide for every file the app can see, and fires
 // repeatedly while someone is actively editing, so the watcher (a) filters by
 // the canvas file id, cached with a TTL to keep the hot path to zero Slack
 // calls, and (b) trailing-debounces the burst so one edit session becomes one
-// diff check.
+// check.
 //
 // No $env/$lib imports — everything is injected (the Slack events route wires
 // it); tests construct their own watcher.
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { desc } from 'drizzle-orm';
-import { doorKnockCanvasArchive } from './schema.js';
+import { doorKnockCanvasArchive, doorKnockCodeIds } from './schema.js';
 import { parseConversationCodes } from './door-knock-canvas.js';
-import { detroitDate } from './door-knock-snapshot.js';
+import { detroitDate, resolveCodeIds } from './door-knock-snapshot.js';
+import type { OpenfieldClient } from './openfield.js';
 import { errMessage } from '../err-message.js';
 
 type Database = LibSQLDatabase<Record<string, unknown>>;
@@ -27,8 +29,7 @@ export interface CanvasWatcherDeps {
 	/** Resolve the "Conversation Codes" canvas file id (cached by the watcher). */
 	findCanvasFileId(): Promise<string>;
 	fetchCanvasHtml(): Promise<string>;
-	/** Post the change notification (the route sends it to the tracking channel). */
-	postNotification(text: string): Promise<void>;
+	openfield: Pick<OpenfieldClient, 'resolveCode'>;
 	/** Trailing-debounce window for edit bursts. Default 60 s. */
 	debounceMs?: number;
 	/** How long the canvas file id lookup is cached. Default 10 min. */
@@ -39,7 +40,7 @@ export interface CanvasWatcherDeps {
 export interface CanvasWatcher {
 	/** Call for every Slack file_change event; cheap for non-canvas files. */
 	handleFileChange(fileId: string): Promise<void>;
-	/** Run the diff check immediately (bypasses the debounce) — for tests. */
+	/** Run the check immediately (bypasses the debounce) — for tests. */
 	_runCheckNow(): Promise<void>;
 }
 
@@ -70,16 +71,10 @@ export function createCanvasWatcher(deps: CanvasWatcherDeps): CanvasWatcher {
 		checking = true;
 		try {
 			const html = await deps.fetchCanvasHtml();
-			const previous = await deps.db
-				.select()
-				.from(doorKnockCanvasArchive)
-				.orderBy(desc(doorKnockCanvasArchive.date))
-				.limit(1);
-
-			// Refresh the archive either way so the NEXT diff runs against the
-			// state we just saw (and the nightly snapshot has today's copy even
-			// if it later fails).
 			const at = now();
+
+			// Refresh the archive so the day's copy reflects the latest edit even
+			// if the nightly snapshot later fails.
 			await deps.db
 				.insert(doorKnockCanvasArchive)
 				.values({ date: detroitDate(at), html, fetchedAt: at.toISOString() })
@@ -88,23 +83,25 @@ export function createCanvasWatcher(deps: CanvasWatcherDeps): CanvasWatcher {
 					set: { html, fetchedAt: at.toISOString() },
 				});
 
-			if (previous.length === 0) return; // first sighting — nothing to diff
+			// Cache any code we haven't seen before while its canvas entry exists.
+			const parsed = parseConversationCodes(html);
+			const cachedRows = await deps.db.select().from(doorKnockCodeIds);
+			const cache = new Map(cachedRows.map((r) => [r.code, r.conversationId]));
+			const newCodes = parsed.map((c) => c.code).filter((code) => !cache.has(code));
+			if (newCodes.length === 0) return;
 
-			const before = new Map(parseConversationCodes(previous[0]!.html).map((c) => [c.code, c.chapter]));
-			const after = new Map(parseConversationCodes(html).map((c) => [c.code, c.chapter]));
-			const added = [...after].filter(([code]) => !before.has(code));
-			const removed = [...before].filter(([code]) => !after.has(code));
-			if (added.length === 0 && removed.length === 0) return;
-
-			const fmt = (entries: Array<[string, string]>) =>
-				entries.map(([code, chapter]) => `${code} (${chapter})`).join(', ');
-			const parts: string[] = [];
-			if (added.length > 0) parts.push(`added ${fmt(added)}`);
-			if (removed.length > 0) parts.push(`removed ${fmt(removed)}`);
-			await deps.postNotification(
-				`:memo: The Conversation Codes canvas changed — ${parts.join('; ')}. ` +
-					`Removed codes keep counting toward the dashboard if their conversations still log doors today.`,
+			const { ids } = await resolveCodeIds(
+				deps.db,
+				deps.openfield,
+				newCodes,
+				cache,
+				at.toISOString(),
 			);
+			if (ids.size > 0) {
+				console.log(
+					`[canvas-watch] cached ${ids.size} new code(s) from a canvas edit: ${[...ids.keys()].join(', ')}`,
+				);
+			}
 		} catch (err) {
 			console.error('[canvas-watch] check failed:', errMessage(err));
 		} finally {

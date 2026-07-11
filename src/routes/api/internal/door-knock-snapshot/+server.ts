@@ -47,31 +47,20 @@ export const POST: RequestHandler = async ({ url }) => {
 				(result.codesFailed.length > 0 ? `, failed: ${result.codesFailed.join(',')}` : ''),
 		);
 
-		// Canvas-drift alarms: codes the parser couldn't attribute to a chapter
-		// (counted under "Unmapped"), and codes removed from the canvas whose
-		// conversations still logged doors today (counted under their last-known
-		// chapter). Both are counted either way; the Slack ping is so someone
-		// updates the canvas or the parser. Best-effort — a Slack outage must
-		// not fail the snapshot that already ran.
-		const warnings: string[] = [];
+		// Parser-drift alarm only: codes the parser couldn't attribute to a
+		// chapter (counted under "Unmapped") need a human to fix the parser or
+		// the canvas. Off-canvas codes are routine (mid-day swaps) and handled
+		// silently. Best-effort — a Slack outage must not fail the snapshot
+		// that already ran.
 		if (result.unattributedCodes.length > 0) {
-			warnings.push(
-				`${result.unattributedCodes.length} code(s) on the canvas couldn't be matched to a chapter ` +
-					`(layout may have changed): ${result.unattributedCodes.join(', ')} — counted under “${UNMAPPED_CHAPTER}”.`,
-			);
-		}
-		if (result.offCanvasCodes.length > 0) {
-			warnings.push(
-				`${result.offCanvasCodes.length} code(s) removed from the canvas still logged doors today ` +
-					`(swapped mid-day?): ${result.offCanvasCodes.join(', ')} — counted under their last-known chapter.`,
-			);
-		}
-		if (warnings.length > 0) {
 			try {
 				const { slackTrackingChannelId } = await loadSettings(db);
 				await slack.chat.postMessage({
 					channel: slackTrackingChannelId,
-					text: `:warning: Door-knock snapshot canvas checks:\n• ${warnings.join('\n• ')}`,
+					text:
+						`:warning: Door-knock snapshot: ${result.unattributedCodes.length} code(s) on the canvas ` +
+						`couldn't be matched to a chapter (layout may have changed): ${result.unattributedCodes.join(', ')} — ` +
+						`counted under “${UNMAPPED_CHAPTER}” until the canvas or the parser is fixed.`,
 				});
 			} catch (err) {
 				console.error(

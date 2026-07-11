@@ -123,7 +123,7 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 		);
 	});
 
-	it('posts a warning when removed-from-canvas codes still logged doors', async () => {
+	it('does not ping Slack for off-canvas codes (routine mid-day swaps)', async () => {
 		mockRunSnapshot.mockResolvedValueOnce({
 			date: '2026-07-06',
 			codesFound: 10,
@@ -136,9 +136,7 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 		});
 		const res = await POST(makeReq('?key=test-cron-secret') as never);
 		expect(res.status).toBe(200);
-		expect(mockPostMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ text: expect.stringContaining('OLD123') }),
-		);
+		expect(mockPostMessage).not.toHaveBeenCalled();
 	});
 
 	it('a Slack failure does not fail the snapshot response', async () => {

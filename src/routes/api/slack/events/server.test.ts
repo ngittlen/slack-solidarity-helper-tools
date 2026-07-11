@@ -35,8 +35,13 @@ vi.mock('$lib/server/db', () => ({ db: { insert: mockInsert } }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
 	SLACK_BOT_TOKEN: 'xoxb-test',
-	DOOR_KNOCK_CHANNEL_ID: 'C_DOOR', // enables the canvas watcher
+	// All four required to enable the canvas watcher
+	DOOR_KNOCK_CHANNEL_ID: 'C_DOOR',
+	OPENFIELD_BASE_URL: 'https://campaign.openfield.ai',
+	OPENFIELD_USERNAME: 'bot',
+	OPENFIELD_PASSWORD: 'pw',
 }));
+vi.mock('$lib/server/openfield', () => ({ createOpenfieldClient: vi.fn(() => ({})) }));
 
 // --- Helpers ---
 
