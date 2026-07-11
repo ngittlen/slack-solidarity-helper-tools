@@ -58,6 +58,7 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 			codesResolved: 2,
 			codesFailed: [],
 			unattributedCodes: [],
+			offCanvasCodes: [],
 			rowsWritten: 2,
 			totalAttempts: 42,
 		});
@@ -108,6 +109,7 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 			codesResolved: 12,
 			codesFailed: [],
 			unattributedCodes: ['ZZ9ZZ9', 'YY8YY8'],
+			offCanvasCodes: [],
 			rowsWritten: 12,
 			totalAttempts: 500,
 		});
@@ -121,6 +123,24 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 		);
 	});
 
+	it('posts a warning when removed-from-canvas codes still logged doors', async () => {
+		mockRunSnapshot.mockResolvedValueOnce({
+			date: '2026-07-06',
+			codesFound: 10,
+			codesResolved: 10,
+			codesFailed: [],
+			unattributedCodes: [],
+			offCanvasCodes: ['OLD123'],
+			rowsWritten: 11,
+			totalAttempts: 500,
+		});
+		const res = await POST(makeReq('?key=test-cron-secret') as never);
+		expect(res.status).toBe(200);
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ text: expect.stringContaining('OLD123') }),
+		);
+	});
+
 	it('a Slack failure does not fail the snapshot response', async () => {
 		mockRunSnapshot.mockResolvedValueOnce({
 			date: '2026-07-06',
@@ -128,6 +148,7 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 			codesResolved: 11,
 			codesFailed: [],
 			unattributedCodes: ['ZZ9ZZ9'],
+			offCanvasCodes: [],
 			rowsWritten: 11,
 			totalAttempts: 500,
 		});

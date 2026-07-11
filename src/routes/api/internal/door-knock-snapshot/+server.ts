@@ -47,25 +47,35 @@ export const POST: RequestHandler = async ({ url }) => {
 				(result.codesFailed.length > 0 ? `, failed: ${result.codesFailed.join(',')}` : ''),
 		);
 
-		// Canvas-layout-drift alarm: codes that resolve on Openfield but that
-		// the parser couldn't attribute to a chapter. Their doors ARE counted
-		// (under the "Unmapped" band); the Slack ping is so someone updates the
-		// parser or the canvas. Best-effort — a Slack outage must not fail the
-		// snapshot that already ran.
+		// Canvas-drift alarms: codes the parser couldn't attribute to a chapter
+		// (counted under "Unmapped"), and codes removed from the canvas whose
+		// conversations still logged doors today (counted under their last-known
+		// chapter). Both are counted either way; the Slack ping is so someone
+		// updates the canvas or the parser. Best-effort — a Slack outage must
+		// not fail the snapshot that already ran.
+		const warnings: string[] = [];
 		if (result.unattributedCodes.length > 0) {
+			warnings.push(
+				`${result.unattributedCodes.length} code(s) on the canvas couldn't be matched to a chapter ` +
+					`(layout may have changed): ${result.unattributedCodes.join(', ')} — counted under “${UNMAPPED_CHAPTER}”.`,
+			);
+		}
+		if (result.offCanvasCodes.length > 0) {
+			warnings.push(
+				`${result.offCanvasCodes.length} code(s) removed from the canvas still logged doors today ` +
+					`(swapped mid-day?): ${result.offCanvasCodes.join(', ')} — counted under their last-known chapter.`,
+			);
+		}
+		if (warnings.length > 0) {
 			try {
 				const { slackTrackingChannelId } = await loadSettings(db);
 				await slack.chat.postMessage({
 					channel: slackTrackingChannelId,
-					text:
-						`:warning: Door-knock snapshot: the Conversation Codes canvas layout seems to have changed — ` +
-						`${result.unattributedCodes.length} code(s) couldn't be matched to a chapter: ` +
-						`${result.unattributedCodes.join(', ')}. Their doors are counted under “${UNMAPPED_CHAPTER}” ` +
-						`on the dashboard until the canvas or the parser is fixed.`,
+					text: `:warning: Door-knock snapshot canvas checks:\n• ${warnings.join('\n• ')}`,
 				});
 			} catch (err) {
 				console.error(
-					'[door-knock] failed to post layout-drift warning to Slack:',
+					'[door-knock] failed to post canvas-drift warning to Slack:',
 					err instanceof Error ? err.message : err,
 				);
 			}

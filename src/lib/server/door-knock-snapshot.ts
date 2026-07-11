@@ -23,7 +23,7 @@
 // (the HTTP endpoint wires them from env).
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { inArray } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { doorKnockCodeIds, doorKnockDaily } from './schema.js';
 import {
 	parseConversationCodes,
@@ -55,6 +55,10 @@ export interface DoorKnockSnapshotResult {
 	 *  attribute to a chapter — a canvas-layout-drift alarm. Their doors are
 	 *  recorded under UNMAPPED_CHAPTER. */
 	unattributedCodes: string[];
+	/** Previously-cached codes no longer on the canvas whose conversations
+	 *  still logged doors today (e.g. a code swapped out mid-day). Counted
+	 *  under their last-known chapter so those doors aren't lost. */
+	offCanvasCodes: string[];
 	rowsWritten: number;
 	totalAttempts: number;
 }
@@ -73,21 +77,20 @@ export function detroitDate(now: Date): string {
 /** Resolve codes to conversation ids, cache-first. `failed` holds codes that
  *  errored or that Openfield rejected — for candidate tokens the caller
  *  ignores those (they're usually ordinary words), for parsed codes they're
- *  reported. */
+ *  reported. Newly resolved ids are written back to the cache table. */
 async function resolveIds(
 	db: Database,
 	openfield: OpenfieldClient,
 	codes: string[],
+	cache: ReadonlyMap<string, number>,
 	nowIso: string,
 ): Promise<{ ids: Map<string, number>; failed: string[] }> {
 	const ids = new Map<string, number>();
 	if (codes.length === 0) return { ids, failed: [] };
-
-	const cached = await db
-		.select()
-		.from(doorKnockCodeIds)
-		.where(inArray(doorKnockCodeIds.code, codes));
-	for (const row of cached) ids.set(row.code, row.conversationId);
+	for (const code of codes) {
+		const cachedId = cache.get(code);
+		if (cachedId !== undefined) ids.set(code, cachedId);
+	}
 
 	const failed: string[] = [];
 	for (const code of codes) {
@@ -130,10 +133,16 @@ export async function runDoorKnockSnapshot(
 		throw new Error('no conversation codes parsed from the canvas');
 	}
 
+	// The whole cache in one read — used for cache-first resolution AND to
+	// find previously-known codes that vanished from the canvas.
+	const cachedRows = await db.select().from(doorKnockCodeIds);
+	const cache = new Map(cachedRows.map((r) => [r.code, r.conversationId]));
+
 	const { ids, failed } = await resolveIds(
 		db,
 		deps.openfield,
 		parsed.map((c) => c.code),
+		cache,
 		nowIso,
 	);
 
@@ -142,7 +151,7 @@ export async function runDoorKnockSnapshot(
 	// silently (their resolution "failures" are expected, not reported).
 	const parsedSet = new Set(parsed.map((c) => c.code));
 	const candidates = findCandidateCodes(html).filter((c) => !parsedSet.has(c));
-	const { ids: extraIds } = await resolveIds(db, deps.openfield, candidates, nowIso);
+	const { ids: extraIds } = await resolveIds(db, deps.openfield, candidates, cache, nowIso);
 	const unattributedCodes = [...extraIds.keys()].sort();
 	if (unattributedCodes.length > 0) {
 		console.error(
@@ -150,6 +159,13 @@ export async function runDoorKnockSnapshot(
 		);
 		for (const [code, id] of extraIds) ids.set(code, id);
 	}
+
+	// Codes we knew on previous nights that are gone from today's canvas.
+	// Their conversations usually just retire quietly — but when a code is
+	// swapped out MID-day, the morning's doors live in the old conversation
+	// and only the old code's cached id can reach them.
+	const onCanvas = new Set([...parsedSet, ...candidates]);
+	const offCanvasCandidates = cachedRows.filter((r) => !onCanvas.has(r.code));
 
 	const allCodes: ConversationCode[] = [
 		...parsed,
@@ -183,6 +199,55 @@ export async function runDoorKnockSnapshot(
 		}
 	});
 
+	// Off-canvas actives: only conversations that logged doors today get a row
+	// (a retired code's permanent zeros aren't part of the canvas contract).
+	// Chapter comes from the code's most recent daily row; UNMAPPED otherwise.
+	const offCanvasCodes: string[] = [];
+	if (offCanvasCandidates.length > 0) {
+		// Codes are CODE_RE-shaped (written by this module), so inlining the IN
+		// list is safe; the filter is defense in depth.
+		const inList = sql.raw(
+			offCanvasCandidates
+				.map((r) => r.code)
+				.filter((c) => /^[A-Z0-9]{6}$/.test(c))
+				.map((c) => `'${c}'`)
+				.join(','),
+		);
+		const prevChapters = (await db.all(sql`
+			SELECT code, chapter_name, MAX(date)
+			FROM door_knock_daily
+			WHERE code IN (${inList})
+			GROUP BY code
+		`)) as Array<{ code: string; chapter_name: string }>;
+		const chapterByCode = new Map(prevChapters.map((r) => [r.code, r.chapter_name]));
+
+		const offSettled = await Promise.allSettled(
+			offCanvasCandidates.map((r) => deps.openfield.fetchToday(r.conversationId)),
+		);
+		offSettled.forEach((s, i) => {
+			const code = offCanvasCandidates[i]!.code;
+			if (s.status !== 'fulfilled') {
+				console.error(`[door-knock] off-canvas fetch for ${code} failed:`, errMessage(s.reason));
+				return;
+			}
+			const attempts = s.value.reduce((sum, r) => sum + r.attempts, 0);
+			if (attempts === 0) return;
+			offCanvasCodes.push(code);
+			rows.push({
+				code,
+				chapterName: chapterByCode.get(code) ?? UNMAPPED_CHAPTER,
+				attempts,
+				contacts: s.value.reduce((sum, r) => sum + r.contact, 0),
+			});
+		});
+		offCanvasCodes.sort();
+		if (offCanvasCodes.length > 0) {
+			console.error(
+				`[door-knock] ${offCanvasCodes.length} code(s) removed from the canvas still logged doors today: ${offCanvasCodes.join(', ')}`,
+			);
+		}
+	}
+
 	for (const row of rows) {
 		await db
 			.insert(doorKnockDaily)
@@ -199,6 +264,7 @@ export async function runDoorKnockSnapshot(
 		codesResolved: ids.size,
 		codesFailed: failed,
 		unattributedCodes,
+		offCanvasCodes,
 		rowsWritten: rows.length,
 		totalAttempts: rows.reduce((sum, r) => sum + r.attempts, 0),
 	};

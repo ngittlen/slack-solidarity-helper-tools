@@ -16,11 +16,13 @@ interface CapturedInsert {
 	onConflict: unknown;
 }
 
-function makeDb(cachedIdRows: unknown[] = []) {
+function makeDb(cachedIdRows: unknown[] = [], prevChapterRows: unknown[] = []) {
 	const inserts: CapturedInsert[] = [];
-	const where = vi.fn().mockResolvedValue(cachedIdRows);
-	const from = vi.fn(() => ({ where }));
+	// The snapshot reads the whole code-id cache in one select().from().
+	const from = vi.fn().mockResolvedValue(cachedIdRows);
 	const select = vi.fn(() => ({ from }));
+	// db.all serves the off-canvas last-known-chapter lookup.
+	const all = vi.fn(async () => prevChapterRows);
 	const insert = vi.fn((table: unknown) => ({
 		values: (values: unknown) => ({
 			onConflictDoUpdate: (onConflict: unknown) => {
@@ -29,7 +31,7 @@ function makeDb(cachedIdRows: unknown[] = []) {
 			},
 		}),
 	}));
-	return { db: { select, insert } as never, inserts };
+	return { db: { select, insert, all } as never, inserts, all };
 }
 
 // 02:30 UTC on Jul 7 is 22:30 EDT on Jul 6 — the nightly cron's situation.
@@ -81,6 +83,7 @@ describe('runDoorKnockSnapshot', () => {
 			codesResolved: 2,
 			codesFailed: [],
 			unattributedCodes: [],
+			offCanvasCodes: [],
 			rowsWritten: 2,
 			totalAttempts: 42,
 		});
@@ -189,5 +192,65 @@ describe('runDoorKnockSnapshot', () => {
 			contacts: 2,
 		});
 		expect(deps.openfield.resolveCode).toHaveBeenCalledWith('COUNTY');
+	});
+
+	it('counts doors from cached codes that vanished from the canvas (mid-day swap)', async () => {
+		// OLD123 was cached on a previous night but is gone from today's canvas;
+		// its conversation logged 156 doors this morning. GONE99 also vanished
+		// but logged nothing — no row, not reported.
+		const { db, inserts } = makeDb(
+			[
+				{ code: 'ZT2H5D', conversationId: 71, resolvedAt: 'x' },
+				{ code: 'AB12CD', conversationId: 72, resolvedAt: 'x' },
+				{ code: 'OLD123', conversationId: 88, resolvedAt: 'x' },
+				{ code: 'GONE99', conversationId: 89, resolvedAt: 'x' },
+			],
+			[{ code: 'OLD123', chapter_name: 'Kent' }],
+		);
+		const deps = makeDeps();
+		deps.openfield.fetchToday = vi.fn(async (id: number) => {
+			if (id === 88) return [{ canvasser: 'M', attempts: 156, contact: 30 }];
+			if (id === 71) return [{ canvasser: 'A', attempts: 10, contact: 2 }];
+			return [];
+		});
+
+		const result = await runDoorKnockSnapshot(db, deps);
+
+		expect(result.offCanvasCodes).toEqual(['OLD123']);
+		expect(result.totalAttempts).toBe(166);
+		const dailyInserts = inserts.filter((i) => i.table === doorKnockDaily);
+		expect(dailyInserts.map((i) => i.values)).toContainEqual({
+			date: '2026-07-06',
+			code: 'OLD123',
+			chapterName: 'Kent',
+			attempts: 156,
+			contacts: 30,
+		});
+		expect(dailyInserts.map((i) => i.values)).not.toContainEqual(
+			expect.objectContaining({ code: 'GONE99' }),
+		);
+	});
+
+	it('off-canvas codes with no chapter history land under UNMAPPED_CHAPTER', async () => {
+		const { db, inserts } = makeDb(
+			[
+				{ code: 'ZT2H5D', conversationId: 71, resolvedAt: 'x' },
+				{ code: 'AB12CD', conversationId: 72, resolvedAt: 'x' },
+				{ code: 'OLD123', conversationId: 88, resolvedAt: 'x' },
+			],
+			[], // no previous daily rows for OLD123
+		);
+		const deps = makeDeps();
+		deps.openfield.fetchToday = vi.fn(async (id: number) =>
+			id === 88 ? [{ canvasser: 'M', attempts: 9, contact: 1 }] : [],
+		);
+
+		const result = await runDoorKnockSnapshot(db, deps);
+
+		expect(result.offCanvasCodes).toEqual(['OLD123']);
+		const dailyInserts = inserts.filter((i) => i.table === doorKnockDaily);
+		expect(dailyInserts.map((i) => i.values)).toContainEqual(
+			expect.objectContaining({ code: 'OLD123', chapterName: UNMAPPED_CHAPTER }),
+		);
 	});
 });
