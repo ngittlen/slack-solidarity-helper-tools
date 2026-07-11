@@ -157,6 +157,16 @@ export const doorKnockCodeIds = sqliteTable('door_knock_code_ids', {
 	resolvedAt: text('resolved_at').notNull(),
 });
 
+// Nightly archive of the "Conversation Codes" canvas HTML (~30 KB/night) —
+// Slack has no canvas version-history API, so this is our own record of what
+// the canvas said on each date. One row per ET date; a re-run the same
+// evening overwrites with the fresher copy.
+export const doorKnockCanvasArchive = sqliteTable('door_knock_canvas_archive', {
+	date: text('date').primaryKey(),
+	html: text('html').notNull(),
+	fetchedAt: text('fetched_at').notNull(),
+});
+
 export const appConfig = sqliteTable(
 	'app_config',
 	{
@@ -217,3 +227,6 @@ export type NewDoorKnockDailyRow = typeof doorKnockDaily.$inferInsert;
 
 export type DoorKnockCodeIdRow = typeof doorKnockCodeIds.$inferSelect;
 export type NewDoorKnockCodeIdRow = typeof doorKnockCodeIds.$inferInsert;
+
+export type DoorKnockCanvasArchiveRow = typeof doorKnockCanvasArchive.$inferSelect;
+export type NewDoorKnockCanvasArchiveRow = typeof doorKnockCanvasArchive.$inferInsert;

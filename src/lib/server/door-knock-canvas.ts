@@ -200,13 +200,13 @@ async function slackApi<T extends SlackApiEnvelope>(
 
 const CANVAS_TITLE = 'conversation codes';
 
-/** Locate the "Conversation Codes" canvas among the channel's canvas tabs and
- *  download its HTML. Throws with a descriptive message on any miss. */
-export async function fetchConversationCodesCanvas(
+/** Locate the "Conversation Codes" canvas among the channel's canvas tabs.
+ *  Throws with a descriptive message on any miss. */
+export async function findCodesCanvasFile(
 	slackToken: string,
 	channelId: string,
 	fetchFn: FetchFn = fetch,
-): Promise<string> {
+): Promise<{ fileId: string; urlPrivate: string }> {
 	const info = await slackApi<
 		SlackApiEnvelope & {
 			channel?: { properties?: { tabs?: Array<{ type: string; data?: { file_id?: string } }> } };
@@ -225,11 +225,23 @@ export async function fetchConversationCodesCanvas(
 			SlackApiEnvelope & { file?: { title?: string; url_private?: string } }
 		>(fetchFn, slackToken, 'files.info', { file: fileId });
 		if (file.file?.title?.trim().toLowerCase() !== CANVAS_TITLE) continue;
-		const url = file.file.url_private;
-		if (!url) throw new Error(`canvas ${fileId} has no url_private`);
-		const res = await fetchFn(url, { headers: { Authorization: `Bearer ${slackToken}` } });
-		if (!res.ok) throw new Error(`canvas download failed with HTTP ${res.status}`);
-		return res.text();
+		const urlPrivate = file.file.url_private;
+		if (!urlPrivate) throw new Error(`canvas ${fileId} has no url_private`);
+		return { fileId, urlPrivate };
 	}
 	throw new Error(`no canvas titled "Conversation Codes" in channel ${channelId}`);
+}
+
+/** Locate and download the "Conversation Codes" canvas HTML. */
+export async function fetchConversationCodesCanvas(
+	slackToken: string,
+	channelId: string,
+	fetchFn: FetchFn = fetch,
+): Promise<string> {
+	const { urlPrivate } = await findCodesCanvasFile(slackToken, channelId, fetchFn);
+	const res = await fetchFn(urlPrivate, {
+		headers: { Authorization: `Bearer ${slackToken}` },
+	});
+	if (!res.ok) throw new Error(`canvas download failed with HTTP ${res.status}`);
+	return res.text();
 }

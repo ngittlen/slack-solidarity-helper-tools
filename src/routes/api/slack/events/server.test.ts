@@ -14,8 +14,12 @@ const mockInsertValues = vi.hoisted(() =>
 );
 const mockInsert = vi.hoisted(() => vi.fn(() => ({ values: mockInsertValues })));
 const mockLoadSettings = vi.hoisted(() => vi.fn());
+const mockHandleFileChange = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock('$lib/server/solidarity', () => ({ getUserByEmail: mockGetUserByEmail }));
+vi.mock('$lib/server/door-knock-canvas-watch', () => ({
+	createCanvasWatcher: vi.fn(() => ({ handleFileChange: mockHandleFileChange })),
+}));
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
 vi.mock('$lib/server/slack', () => ({
 	slack: {
@@ -30,6 +34,8 @@ vi.mock('$lib/server/slack', () => ({
 vi.mock('$lib/server/db', () => ({ db: { insert: mockInsert } }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
+	SLACK_BOT_TOKEN: 'xoxb-test',
+	DOOR_KNOCK_CHANNEL_ID: 'C_DOOR', // enables the canvas watcher
 }));
 
 // --- Helpers ---
@@ -136,6 +142,23 @@ describe('POST /api/slack/events', () => {
 		const res = await POST({ request: makeSignedRequest(body) } as never);
 		expect(res.status).toBe(200);
 		expect(mockConversationsInvite).not.toHaveBeenCalled();
+	});
+
+	it('delegates file_change events to the canvas watcher', async () => {
+		const body = JSON.stringify({
+			type: 'event_callback',
+			event: { type: 'file_change', file_id: 'F0B3E3SNU01' },
+		});
+		const res = await POST({ request: makeSignedRequest(body) } as never);
+		expect(res.status).toBe(200);
+		expect(mockHandleFileChange).toHaveBeenCalledWith('F0B3E3SNU01');
+	});
+
+	it('ignores file_change events without a file_id', async () => {
+		const body = JSON.stringify({ type: 'event_callback', event: { type: 'file_change' } });
+		const res = await POST({ request: makeSignedRequest(body) } as never);
+		expect(res.status).toBe(200);
+		expect(mockHandleFileChange).not.toHaveBeenCalled();
 	});
 
 	it('invites user to county channel and sends DM on team_join', async () => {

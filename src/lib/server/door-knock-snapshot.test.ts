@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runDoorKnockSnapshot, detroitDate, UNMAPPED_CHAPTER } from './door-knock-snapshot.js';
-import { doorKnockCodeIds, doorKnockDaily } from './schema.js';
+import { doorKnockCanvasArchive, doorKnockCodeIds, doorKnockDaily } from './schema.js';
 
 // Two chapters, two codes — the minimal shape parseConversationCodes accepts
 // (a table with a header row and two chapter rows).
@@ -154,6 +154,24 @@ describe('runDoorKnockSnapshot', () => {
 		const { db } = makeDb();
 		const deps = makeDeps({ fetchCanvasHtml: async () => '<p>nothing here</p>' });
 		await expect(runDoorKnockSnapshot(db, deps)).rejects.toThrow(/no conversation codes/);
+	});
+
+	it('archives the canvas HTML per date, even when parsing fails', async () => {
+		const { db, inserts } = makeDb();
+		await runDoorKnockSnapshot(db, makeDeps());
+		let archive = inserts.filter((i) => i.table === doorKnockCanvasArchive);
+		expect(archive).toHaveLength(1);
+		expect(archive[0]!.values).toMatchObject({ date: '2026-07-06', html: CANVAS });
+
+		// A canvas that breaks the parser still gets archived — that copy is
+		// the debugging evidence.
+		const { db: db2, inserts: inserts2 } = makeDb();
+		await expect(
+			runDoorKnockSnapshot(db2, makeDeps({ fetchCanvasHtml: async () => '<p>broken</p>' })),
+		).rejects.toThrow();
+		archive = inserts2.filter((i) => i.table === doorKnockCanvasArchive);
+		expect(archive).toHaveLength(1);
+		expect(archive[0]!.values).toMatchObject({ html: '<p>broken</p>' });
 	});
 
 	it('counts resolvable codes the parser missed under UNMAPPED_CHAPTER and reports them', async () => {

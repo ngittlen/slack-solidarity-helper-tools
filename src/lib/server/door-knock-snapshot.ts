@@ -24,7 +24,7 @@
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { sql } from 'drizzle-orm';
-import { doorKnockCodeIds, doorKnockDaily } from './schema.js';
+import { doorKnockCanvasArchive, doorKnockCodeIds, doorKnockDaily } from './schema.js';
 import {
 	parseConversationCodes,
 	findCandidateCodes,
@@ -126,6 +126,18 @@ export async function runDoorKnockSnapshot(
 	const nowIso = now.toISOString();
 
 	const html = await deps.fetchCanvasHtml();
+
+	// Archive the canvas verbatim BEFORE parsing — Slack has no canvas
+	// version-history API, and when parsing breaks, tonight's copy is exactly
+	// the evidence needed. One row per date; same-evening re-runs overwrite.
+	await db
+		.insert(doorKnockCanvasArchive)
+		.values({ date, html, fetchedAt: nowIso })
+		.onConflictDoUpdate({
+			target: doorKnockCanvasArchive.date,
+			set: { html, fetchedAt: nowIso },
+		});
+
 	const parsed = parseConversationCodes(html);
 	if (parsed.length === 0) {
 		// Zero parsed codes means the canvas moved or was restructured — fail
