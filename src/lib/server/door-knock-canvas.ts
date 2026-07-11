@@ -3,19 +3,24 @@
 // snapshot.
 //
 // The canvas (a Slack quip document, downloaded as HTML) has two code layouts:
-//   1. Metro sections — a bold header paragraph naming the chapter/metro
-//      (DETROIT, WAYNE CITIES, KENT COUNTY, …) followed by a <ul> whose items
-//      read "LABEL - CODE" or "LABEL: CODE".
+//   1. Chapter sections — a shouted heading line naming the chapter
+//      ("DETROIT", "WAYNE CHAPTER - PRIORITY CITIES", "LANSING CHAPTER
+//      (Clinton County, …)") followed by "LABEL - CODE" / "LABEL: CODE"
+//      lines (list items or bare paragraphs — editors switch freely).
 //   2. A <table> with CHAPTER | COUNTIES IN CHAPTER | CODE rows, where the
 //      chapter cell is blank on continuation rows (carried forward) and the
 //      same code repeats across a chapter's counties.
 // Training/practice and voter-lookup-only codes are listed too and must be
-// excluded — their surrounding text says "practice"/"training"/"lookup only".
+// excluded — their surrounding text says "practice"/"training"/"lookup".
 //
-// Canvas edits are human and unpredictable, so the parser is tolerant: it
-// takes anything matching the code shape (exactly 6 chars of A-Z0-9 — real
-// codes can be all letters, e.g. QUJAUF) in either layout, and callers treat
-// "zero codes parsed" as an error.
+// Canvas edits are human and unpredictable — observed drift includes headers
+// gaining parentheticals, list items becoming paragraphs, and stray
+// annotation text landing INSIDE a code's bold tag ("662DZC>>[ppi:"). So the
+// non-table pass is line-based rather than element-structural: block-level
+// tags delimit lines, short ALL-CAPS lines set the current chapter, and any
+// "LABEL sep CODE" line under it counts, tolerating trailing junk. A code is
+// exactly 6 chars of A-Z0-9 (real codes can be all letters, e.g. QUJAUF).
+// Callers treat "zero codes parsed" as an error.
 //
 // No $env/$lib imports — the Slack token and fetch are injected (same
 // discipline as solidarity.ts) so tests run without a network.
@@ -48,14 +53,32 @@ function stripTags(html: string): string {
 		.trim();
 }
 
-/** "WAYNE CITIES" → "Wayne", "OAKLAND COUNTY" → "Oakland", "DETROIT" →
- *  "Detroit" — matches the chapter names used in the canvas table. */
-function chapterFromHeader(header: string): string {
-	const bare = header
-		.trim()
-		.replace(/\s+(CITIES|COUNTIES|COUNTY)\s*$/i, '')
-		.toLowerCase();
-	return bare.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+/** "WAYNE CHAPTER - PRIORITY CITIES" → "Wayne", "LANSING CHAPTER (…)" →
+ *  "Lansing", "OAKLAND COUNTY" → "Oakland", "DETROIT" → "Detroit". */
+function chapterFromHeading(line: string): string {
+	let head = line.replace(/\(.*$/, '').trim();
+	const beforeChapter = /^(.*?)\s+CHAPTER\b/.exec(head)?.[1];
+	if (beforeChapter) {
+		head = beforeChapter;
+	} else {
+		head = head.replace(/\s+(CITIES|COUNTIES|COUNTY)\s*$/i, '');
+	}
+	return head.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
+/** Chapter headings are short shouted lines ("DETROIT", "KENT CHAPTER") —
+ *  possibly with a lowercase parenthetical tail ("LANSING CHAPTER (Clinton
+ *  County, …)"). Long all-caps prose and "…CODES…" banners don't qualify. */
+function isChapterHeading(line: string): boolean {
+	// A trailing separator means a code label whose code is missing/removed
+	// ("GRAND RAPIDS WARD 1 (WEST) -"), not a heading.
+	if (/[:\-–—]\s*$/.test(line.trim())) return false;
+	const head = line.replace(/\(.*$/, '').trim();
+	if (!head || head.length > 60) return false;
+	if (/[a-z]/.test(head) || !/[A-Z]/.test(head)) return false;
+	if (/\bCODES?\b/.test(head)) return false;
+	if (EXCLUDED_CONTEXT_RE.test(head)) return false;
+	return true;
 }
 
 function parseTableCodes(html: string, out: ConversationCode[]): void {
@@ -74,18 +97,30 @@ function parseTableCodes(html: string, out: ConversationCode[]): void {
 	}
 }
 
-function parseMetroSectionCodes(html: string, out: ConversationCode[]): void {
-	// A bold header paragraph immediately followed by a list block.
-	const sectionRe = /<p[^>]*>\s*<b>([^<]+)<\/b>\s*<\/p>\s*<div[^>]*>\s*<ul[\s\S]*?<\/ul>\s*<\/div>/g;
-	for (const [sectionHtml, header] of html.matchAll(sectionRe)) {
-		const chapter = chapterFromHeader(stripTags(header!));
-		if (!chapter || EXCLUDED_CONTEXT_RE.test(header!)) continue;
-		for (const [, itemHtml] of sectionHtml.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/g)) {
-			const text = stripTags(itemHtml!);
-			if (EXCLUDED_CONTEXT_RE.test(text)) continue;
-			const code = /(?<![A-Z0-9])([A-Z0-9]{6})\s*$/.exec(text)?.[1];
-			if (code && CODE_RE.test(code)) out.push({ code, chapter });
+// "LABEL - CODE" / "LABEL: CODE" with optional trailing junk that isn't
+// uppercase-alphanumeric (stray annotation text has been observed right after
+// a code: "DEARBORN HEIGHTS: 662DZC>>[ppi:").
+const LABELED_CODE_RE = /[:\-–—]\s*([A-Z0-9]{6})(?![A-Z0-9])[^A-Z0-9]*$/;
+
+function parseLabeledLineCodes(html: string, out: ConversationCode[]): void {
+	// Tables are handled by parseTableCodes with real chapter cells — strip
+	// them so this pass can't double-attribute their codes.
+	const withoutTables = html.replace(/<table>[\s\S]*?<\/table>/g, ' ');
+	const lines = withoutTables
+		.split(/<\/p>|<\/li>|<\/h[1-6]>|<br\s*\/?>/)
+		.map(stripTags)
+		.filter(Boolean);
+
+	let chapter = '';
+	for (const line of lines) {
+		const code = LABELED_CODE_RE.exec(line)?.[1];
+		if (code && CODE_RE.test(code)) {
+			if (chapter && !EXCLUDED_CONTEXT_RE.test(line)) {
+				out.push({ code, chapter });
+			}
+			continue;
 		}
+		if (isChapterHeading(line)) chapter = chapterFromHeading(line);
 	}
 }
 
@@ -95,7 +130,7 @@ function parseMetroSectionCodes(html: string, out: ConversationCode[]): void {
 export function parseConversationCodes(html: string): ConversationCode[] {
 	const found: ConversationCode[] = [];
 	parseTableCodes(html, found);
-	parseMetroSectionCodes(html, found);
+	parseLabeledLineCodes(html, found);
 
 	// Codes whose IMMEDIATE surroundings carry excluded wording — e.g. the
 	// "( CODE - for practice only! - XXXXXX)" paragraph, or "STREET CANVASSING
