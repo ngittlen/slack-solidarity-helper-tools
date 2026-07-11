@@ -1,14 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import {
 	projectDoorsAtDeadline,
+	knockableMsBetween,
 	loadDoorKnockDayTotals,
 	PROJECTION_WINDOW_DAYS,
+	KNOCK_DAY_MS,
 	type DoorKnockDayTotal,
 } from './door-knock-projection.js';
 import { vi } from 'vitest';
 
+const HOUR = 3_600_000;
 const DAY = 86_400_000;
-const NOW = Date.UTC(2026, 6, 9, 12); // 2026-07-09T12:00Z
+// 2026-07-09T12:00Z = 8:00 AM EDT — the start of a canvassing day, so
+// whole-DAY offsets from NOW are whole 13-hour canvassing days.
+const NOW = Date.UTC(2026, 6, 9, 12);
 
 function days(totals: number[]): DoorKnockDayTotal[] {
 	return totals.map((total, i) => ({
@@ -17,11 +22,46 @@ function days(totals: number[]): DoorKnockDayTotal[] {
 	}));
 }
 
+describe('knockableMsBetween', () => {
+	it('counts a full 8am–9pm canvassing day as 13 hours', () => {
+		// 8:00 AM EDT → 9:00 PM EDT the same day.
+		expect(knockableMsBetween(NOW, NOW + 13 * HOUR)).toBe(13 * HOUR);
+		expect(KNOCK_DAY_MS).toBe(13 * HOUR);
+	});
+
+	it('starts counting mid-window from the current instant', () => {
+		// Noon EDT → 9 PM EDT = 9 knockable hours.
+		expect(knockableMsBetween(NOW + 4 * HOUR, NOW + 13 * HOUR)).toBe(9 * HOUR);
+	});
+
+	it('skips night hours entirely', () => {
+		// 10 PM EDT → 9 AM EDT next day: only 8–9 AM counts.
+		expect(knockableMsBetween(NOW + 14 * HOUR, NOW + 25 * HOUR)).toBe(1 * HOUR);
+		// 9:30 PM → 7:30 AM: nothing.
+		expect(knockableMsBetween(NOW + 13.5 * HOUR, NOW + 23.5 * HOUR)).toBe(0);
+	});
+
+	it('sums windows across multiple days', () => {
+		// 8 AM day 1 → 9 PM day 3 = 3 full canvassing days.
+		expect(knockableMsBetween(NOW, NOW + 2 * DAY + 13 * HOUR)).toBe(39 * HOUR);
+	});
+});
+
 describe('projectDoorsAtDeadline', () => {
-	it('adds the mean daily pace times the fractional remaining days', () => {
-		// 100/day pace over 7 days, 2.5 days remaining → 700 + 250.
-		const result = projectDoorsAtDeadline(days([100, 100, 100, 100, 100, 100, 100]), NOW + 2.5 * DAY, NOW);
-		expect(result).toBe(950);
+	it('extrapolates the pace over remaining canvassing days, not wall-clock days', () => {
+		// 100/day pace over 7 days. Deadline 9 PM tomorrow = 2 canvassing days
+		// away (13h today + 13h tomorrow) even though it's 37 wall-clock hours.
+		const week = days([100, 100, 100, 100, 100, 100, 100]);
+		expect(projectDoorsAtDeadline(week, NOW + DAY + 13 * HOUR, NOW)).toBe(900);
+		// Overnight hours add nothing: 9 PM today vs 8 AM tomorrow.
+		expect(projectDoorsAtDeadline(week, NOW + 13 * HOUR, NOW)).toBe(800);
+		expect(projectDoorsAtDeadline(week, NOW + DAY, NOW)).toBe(800);
+	});
+
+	it('counts a partial canvassing day fractionally', () => {
+		// Deadline 2:30 PM today: 6.5 of 13 knockable hours → half a day's pace.
+		const week = days([100, 100, 100, 100, 100, 100, 100]);
+		expect(projectDoorsAtDeadline(week, NOW + 6.5 * HOUR, NOW)).toBe(750);
 	});
 
 	it('uses only the last PROJECTION_WINDOW_DAYS dates for the pace but all data for the base', () => {
