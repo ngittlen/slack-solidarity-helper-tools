@@ -124,6 +124,40 @@ function parseLabeledLineCodes(html: string, out: ConversationCode[]): void {
 	}
 }
 
+// Codes whose IMMEDIATE surroundings carry excluded wording — e.g. the
+// "( CODE - for practice only! - XXXXXX)" paragraph, or "STREET CANVASSING
+// CODE - XXXXXX (Voter lookup…)" — are banned globally, so they stay out even
+// if they also appear in a structured spot. The window is deliberately tight:
+// in the table, the lookup-only row sits directly above real rows, and a wide
+// window would poison those neighbors.
+function bannedCodes(text: string): Set<string> {
+	const banned = new Set<string>();
+	for (const match of text.matchAll(/(?<![A-Z0-9])[A-Z0-9]{6}(?![A-Z0-9])/g)) {
+		const code = match[0];
+		if (!CODE_RE.test(code)) continue;
+		const context = text.slice(Math.max(0, match.index - 30), match.index + 36);
+		if (EXCLUDED_CONTEXT_RE.test(context)) banned.add(code);
+	}
+	return banned;
+}
+
+/** Every code-SHAPED token in the canvas text, minus the practice/lookup
+ *  bans — deliberately structure-free, so it keeps working when the layout
+ *  changes. Includes ordinary 6-letter uppercase words (COUNTY, CITIES, …):
+ *  the snapshot's completeness check separates words from real codes by
+ *  asking Openfield, which resolves codes and 404s words. Anything that
+ *  resolves but wasn't attributed by parseConversationCodes means the canvas
+ *  layout drifted past the parser. */
+export function findCandidateCodes(html: string): string[] {
+	const text = stripTags(html);
+	const banned = bannedCodes(text);
+	const candidates = new Set<string>();
+	for (const match of text.matchAll(/(?<![A-Za-z0-9])[A-Z0-9]{6}(?![A-Za-z0-9])/g)) {
+		if (CODE_RE.test(match[0]) && !banned.has(match[0])) candidates.add(match[0]);
+	}
+	return [...candidates].sort();
+}
+
 /** Extract unique (code, chapter) pairs from the canvas HTML. Codes whose
  *  surrounding text marks them as practice/training or lookup-only are
  *  excluded everywhere they appear. */
@@ -132,20 +166,7 @@ export function parseConversationCodes(html: string): ConversationCode[] {
 	parseTableCodes(html, found);
 	parseLabeledLineCodes(html, found);
 
-	// Codes whose IMMEDIATE surroundings carry excluded wording — e.g. the
-	// "( CODE - for practice only! - XXXXXX)" paragraph, or "STREET CANVASSING
-	// CODE - XXXXXX (Voter lookup…)" — are banned globally, so they stay out
-	// even if they also appear in a structured spot. The window is deliberately
-	// tight: in the table, the lookup-only row sits directly above real rows,
-	// and a wide window would poison those neighbors.
-	const banned = new Set<string>();
-	const text = stripTags(html);
-	for (const match of text.matchAll(/(?<![A-Z0-9])[A-Z0-9]{6}(?![A-Z0-9])/g)) {
-		const code = match[0];
-		if (!CODE_RE.test(code)) continue;
-		const context = text.slice(Math.max(0, match.index - 30), match.index + 36);
-		if (EXCLUDED_CONTEXT_RE.test(context)) banned.add(code);
-	}
+	const banned = bannedCodes(stripTags(html));
 
 	const byCode = new Map<string, ConversationCode>();
 	for (const entry of found) {

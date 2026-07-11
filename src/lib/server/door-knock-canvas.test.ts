@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseConversationCodes, fetchConversationCodesCanvas } from './door-knock-canvas.js';
+import {
+	parseConversationCodes,
+	findCandidateCodes,
+	fetchConversationCodesCanvas,
+} from './door-knock-canvas.js';
 
 // Condensed from real "Conversation Codes" canvas HTML across its observed
 // revisions: shouted chapter headings (bare, with a "CHAPTER - …" tail, or
@@ -71,6 +75,31 @@ describe('parseConversationCodes', () => {
 			parseConversationCodes('<p><b>HEADER</b></p><div><ul><li>WARD 12 - ABC1234</li></ul></div>'),
 		).toEqual([]);
 		expect(parseConversationCodes('')).toEqual([]);
+	});
+});
+
+describe('findCandidateCodes', () => {
+	it('collects every code-shaped token regardless of layout, minus practice/lookup bans', () => {
+		const candidates = findCandidateCodes(CANVAS_FIXTURE);
+		// Everything the structured parser finds is a candidate too…
+		for (const { code } of parseConversationCodes(CANVAS_FIXTURE)) {
+			expect(candidates).toContain(code);
+		}
+		// …as are ordinary 6-letter uppercase words — the snapshot separates
+		// words from codes by asking Openfield (words 404).
+		expect(candidates).toContain('CITIES');
+		// Banned codes stay out even of the structure-free scan.
+		expect(candidates).not.toContain('26VKY9');
+		expect(candidates).not.toContain('MYU5PV');
+	});
+
+	it('finds codes the structured parser cannot attribute (the drift signal)', () => {
+		// A code dropped into a bare paragraph with no label separator and no
+		// heading — unparseable, but still a candidate.
+		const html = CANVAS_FIXTURE.replace('<table>', '<p id="zz">new code ZZ9ZZ9</p><table>');
+		const parsed = parseConversationCodes(html).map((c) => c.code);
+		expect(parsed).not.toContain('ZZ9ZZ9');
+		expect(findCandidateCodes(html)).toContain('ZZ9ZZ9');
 	});
 });
 

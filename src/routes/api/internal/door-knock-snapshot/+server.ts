@@ -1,7 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
-import { runDoorKnockSnapshot } from '$lib/server/door-knock-snapshot.js';
+import { slack } from '$lib/server/slack.js';
+import { loadSettings } from '$lib/server/settings.js';
+import { runDoorKnockSnapshot, UNMAPPED_CHAPTER } from '$lib/server/door-knock-snapshot.js';
 import { fetchConversationCodesCanvas } from '$lib/server/door-knock-canvas.js';
 import { createOpenfieldClient } from '$lib/server/openfield.js';
 import {
@@ -44,6 +46,31 @@ export const POST: RequestHandler = async ({ url }) => {
 			`[door-knock] ${result.date}: ${result.rowsWritten} rows, ${result.totalAttempts} attempts` +
 				(result.codesFailed.length > 0 ? `, failed: ${result.codesFailed.join(',')}` : ''),
 		);
+
+		// Canvas-layout-drift alarm: codes that resolve on Openfield but that
+		// the parser couldn't attribute to a chapter. Their doors ARE counted
+		// (under the "Unmapped" band); the Slack ping is so someone updates the
+		// parser or the canvas. Best-effort — a Slack outage must not fail the
+		// snapshot that already ran.
+		if (result.unattributedCodes.length > 0) {
+			try {
+				const { slackTrackingChannelId } = await loadSettings(db);
+				await slack.chat.postMessage({
+					channel: slackTrackingChannelId,
+					text:
+						`:warning: Door-knock snapshot: the Conversation Codes canvas layout seems to have changed — ` +
+						`${result.unattributedCodes.length} code(s) couldn't be matched to a chapter: ` +
+						`${result.unattributedCodes.join(', ')}. Their doors are counted under “${UNMAPPED_CHAPTER}” ` +
+						`on the dashboard until the canvas or the parser is fixed.`,
+				});
+			} catch (err) {
+				console.error(
+					'[door-knock] failed to post layout-drift warning to Slack:',
+					err instanceof Error ? err.message : err,
+				);
+			}
+		}
+
 		return json(result);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

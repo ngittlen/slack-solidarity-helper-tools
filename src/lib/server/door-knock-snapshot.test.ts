@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runDoorKnockSnapshot, detroitDate } from './door-knock-snapshot.js';
+import { runDoorKnockSnapshot, detroitDate, UNMAPPED_CHAPTER } from './door-knock-snapshot.js';
 import { doorKnockCodeIds, doorKnockDaily } from './schema.js';
 
 // Two chapters, two codes — the minimal shape parseConversationCodes accepts
@@ -80,6 +80,7 @@ describe('runDoorKnockSnapshot', () => {
 			codesFound: 2,
 			codesResolved: 2,
 			codesFailed: [],
+			unattributedCodes: [],
 			rowsWritten: 2,
 			totalAttempts: 42,
 		});
@@ -150,5 +151,43 @@ describe('runDoorKnockSnapshot', () => {
 		const { db } = makeDb();
 		const deps = makeDeps({ fetchCanvasHtml: async () => '<p>nothing here</p>' });
 		await expect(runDoorKnockSnapshot(db, deps)).rejects.toThrow(/no conversation codes/);
+	});
+
+	it('counts resolvable codes the parser missed under UNMAPPED_CHAPTER and reports them', async () => {
+		const { db, inserts } = makeDb();
+		// A code in a bare paragraph (no label separator, no heading) — the
+		// structured parser misses it, the candidate scan does not. Plus an
+		// ordinary uppercase word that Openfield will reject.
+		const deps = makeDeps({
+			fetchCanvasHtml: async () =>
+				CANVAS + '<p>new code ZZ9ZZ9</p><p>SEE THE COUNTY TABLE ABOVE</p>',
+		});
+		deps.openfield.resolveCode = vi.fn(async (code: string) => {
+			if (code === 'ZT2H5D') return 71;
+			if (code === 'AB12CD') return 72;
+			if (code === 'ZZ9ZZ9') return 99; // real code the parser missed
+			return null; // COUNTY and any other word
+		});
+		deps.openfield.fetchToday = vi.fn(async (id: number) =>
+			id === 99 ? [{ canvasser: 'X', attempts: 7, contact: 2 }] : [],
+		);
+
+		const result = await runDoorKnockSnapshot(db, deps);
+
+		expect(result.unattributedCodes).toEqual(['ZZ9ZZ9']);
+		// The word is neither unattributed nor failed — expected 404, dropped.
+		expect(result.codesFailed).toEqual([]);
+		expect(result.codesResolved).toBe(3);
+		expect(result.totalAttempts).toBe(7);
+
+		const dailyInserts = inserts.filter((i) => i.table === doorKnockDaily);
+		expect(dailyInserts.map((i) => i.values)).toContainEqual({
+			date: '2026-07-06',
+			code: 'ZZ9ZZ9',
+			chapterName: UNMAPPED_CHAPTER,
+			attempts: 7,
+			contacts: 2,
+		});
+		expect(deps.openfield.resolveCode).toHaveBeenCalledWith('COUNTY');
 	});
 });

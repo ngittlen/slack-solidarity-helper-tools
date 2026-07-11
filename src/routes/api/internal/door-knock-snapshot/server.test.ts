@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
 
 const mockRunSnapshot = vi.hoisted(() => vi.fn());
+const mockPostMessage = vi.hoisted(() => vi.fn());
+const mockLoadSettings = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({
 	INTERNAL_CRON_SECRET: 'test-cron-secret',
 	SLACK_BOT_TOKEN: 'xoxb-test',
@@ -11,7 +13,12 @@ const mockEnv = vi.hoisted(() => ({
 	DOOR_KNOCK_CHANNEL_ID: 'C_DOOR',
 }));
 
-vi.mock('$lib/server/door-knock-snapshot', () => ({ runDoorKnockSnapshot: mockRunSnapshot }));
+vi.mock('$lib/server/door-knock-snapshot', () => ({
+	runDoorKnockSnapshot: mockRunSnapshot,
+	UNMAPPED_CHAPTER: 'Unmapped',
+}));
+vi.mock('$lib/server/slack', () => ({ slack: { chat: { postMessage: mockPostMessage } } }));
+vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
 vi.mock('$lib/server/door-knock-canvas', () => ({ fetchConversationCodesCanvas: vi.fn() }));
 vi.mock('$lib/server/openfield', () => ({ createOpenfieldClient: vi.fn(() => ({})) }));
 vi.mock('$lib/server/db', () => ({ db: {} }));
@@ -50,9 +57,12 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 			codesFound: 2,
 			codesResolved: 2,
 			codesFailed: [],
+			unattributedCodes: [],
 			rowsWritten: 2,
 			totalAttempts: 42,
 		});
+		mockPostMessage.mockResolvedValue({ ok: true });
+		mockLoadSettings.mockResolvedValue({ slackTrackingChannelId: 'C_TRACK' });
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 	});
@@ -83,6 +93,48 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toMatchObject({ date: '2026-07-06', totalAttempts: 42 });
 		expect(mockRunSnapshot).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not ping Slack when every code was attributed', async () => {
+		const res = await POST(makeReq('?key=test-cron-secret') as never);
+		expect(res.status).toBe(200);
+		expect(mockPostMessage).not.toHaveBeenCalled();
+	});
+
+	it('posts a layout-drift warning to the tracking channel for unattributed codes', async () => {
+		mockRunSnapshot.mockResolvedValueOnce({
+			date: '2026-07-06',
+			codesFound: 10,
+			codesResolved: 12,
+			codesFailed: [],
+			unattributedCodes: ['ZZ9ZZ9', 'YY8YY8'],
+			rowsWritten: 12,
+			totalAttempts: 500,
+		});
+		const res = await POST(makeReq('?key=test-cron-secret') as never);
+		expect(res.status).toBe(200);
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				channel: 'C_TRACK',
+				text: expect.stringContaining('ZZ9ZZ9, YY8YY8'),
+			}),
+		);
+	});
+
+	it('a Slack failure does not fail the snapshot response', async () => {
+		mockRunSnapshot.mockResolvedValueOnce({
+			date: '2026-07-06',
+			codesFound: 10,
+			codesResolved: 11,
+			codesFailed: [],
+			unattributedCodes: ['ZZ9ZZ9'],
+			rowsWritten: 11,
+			totalAttempts: 500,
+		});
+		mockPostMessage.mockRejectedValueOnce(new Error('slack down'));
+		const res = await POST(makeReq('?key=test-cron-secret') as never);
+		expect(res.status).toBe(200);
+		expect((await res.json()).unattributedCodes).toEqual(['ZZ9ZZ9']);
 	});
 
 	it('returns 500 with the error message when the snapshot throws', async () => {
