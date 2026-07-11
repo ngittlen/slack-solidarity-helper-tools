@@ -71,6 +71,7 @@
 				tooltipContext={variant === 'detail'}
 				legend={false}
 				grid={variant === 'detail'}
+				padding={{ top: 4, left: 40, bottom: 20, right: 4 }}
 				props={{
 					// One tick per bar overlaps at the 30/90-day presets: thin to
 					// MAX_X_TICKS labels and shorten each to MM/DD.
@@ -132,6 +133,8 @@
 		flex-direction: column;
 		gap: 0.75rem;
 	}
+	/* layerchart's default left padding (20px) clips 4-digit y-axis labels, so
+	   the BarChart gets explicit padding with a wider left gutter instead. */
 	.signup-chart__plot {
 		width: 100%;
 		height: 320px;

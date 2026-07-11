@@ -22,9 +22,18 @@
 		cardState: CardState;
 		/** Bound by the parent so it can rebuild `cardState` for the chosen view. */
 		mode?: ChartMode;
+		/** The multi-chapter-members disclaimer only applies to sources where a
+		 *  person can appear in several bands (signups); doors-knocked counts
+		 *  are per-conversation and don't need it. */
+		showMultiChapterNote?: boolean;
 	};
 
-	let { title, cardState, mode = $bindable('overview') }: Props = $props();
+	let {
+		title,
+		cardState,
+		mode = $bindable('overview'),
+		showMultiChapterNote = true,
+	}: Props = $props();
 
 	let isRetrying = $state(false);
 
@@ -115,7 +124,7 @@
 			</table>
 		{/if}
 	</div>
-	{#if displayState.kind === 'ready'}
+	{#if displayState.kind === 'ready' && showMultiChapterNote}
 		<!-- Always rendered so toggling overview/detail doesn't shift the page;
 		     only visible in detail mode. -->
 		<p

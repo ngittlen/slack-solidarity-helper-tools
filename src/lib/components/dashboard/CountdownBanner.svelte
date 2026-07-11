@@ -47,7 +47,7 @@
 		</span>
 		{#if projectedDoors !== null && !parts.expired}
 			<span class="countdown-projection">
-				On pace for ~{projectedDoors.toLocaleString('en-US')} doors knocked by zero
+				On pace for ~{projectedDoors.toLocaleString('en-US')} doors knocked when the timer hits 0
 			</span>
 		{/if}
 	</div>
@@ -83,7 +83,7 @@
 	}
 	.countdown-projection {
 		font-family: var(--font-family);
-		font-size: 0.9rem;
+		font-size: 1rem;
 		opacity: 0.85;
 		text-align: center;
 	}

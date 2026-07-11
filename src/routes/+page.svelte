@@ -33,6 +33,7 @@
 		source: { ok: true; days: DaySignups[] } | { ok: false; error: string },
 		mode: ChartMode,
 		label: string,
+		options: { totalOverlay?: boolean } = {},
 	): CardState {
 		if (!source.ok) return { kind: 'error', message: source.error };
 		// Always build the detail frame: even in overview mode its band list
@@ -43,14 +44,19 @@
 		return {
 			kind: 'ready',
 			frame,
-			showTotalOverlay: mode === 'detail',
+			// The dark daily-total marker shows the deduped member count above
+			// the stacked bands — meaningless for doors, where the total is just
+			// the sum of the bands.
+			showTotalOverlay: (options.totalOverlay ?? true) && mode === 'detail',
 			legendBands: detailFrame.bands,
 		};
 	}
 
 	const solidarityState = $derived(buildState(data.solidarity, solidarityMode, 'Solidarity'));
 	const slackState = $derived(buildState(data.slack, slackMode, 'Slack'));
-	const doorKnockState = $derived(buildState(data.doorKnock, doorKnockMode, 'Doors'));
+	const doorKnockState = $derived(
+		buildState(data.doorKnock, doorKnockMode, 'Doors', { totalOverlay: false }),
+	);
 
 	// The door-knock card only appears once the nightly Openfield snapshot has
 	// ever written data (or on a load error) — hidden entirely while the
@@ -77,18 +83,24 @@
 		<RangePresetPicker current={data.days} />
 	</div>
 
+
+	{#if showDoorKnock}
+		<div class="door-knock-row">
+			<ChartCard
+				title="Doors knocked"
+				cardState={doorKnockState}
+				bind:mode={doorKnockMode}
+				showMultiChapterNote={false}
+			/>
+		</div>
+	{/if}
+
 	<ChartCard title="Solidarity signups" cardState={solidarityState} bind:mode={solidarityMode} />
 
 	<div class="slack-row">
 		<ChartCard title="Slack signups" cardState={slackState} bind:mode={slackMode} />
 		<SlackLeaderboard leaderboard={data.leaderboard} />
 	</div>
-
-	{#if showDoorKnock}
-		<div class="door-knock-row">
-			<ChartCard title="Doors knocked" cardState={doorKnockState} bind:mode={doorKnockMode} />
-		</div>
-	{/if}
 </main>
 
 <style>
