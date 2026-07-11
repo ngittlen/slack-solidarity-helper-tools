@@ -15,6 +15,10 @@ import {
 	loadDoorKnockDayTotals,
 	projectDoorsAtDeadline,
 } from '$lib/server/door-knock-projection.js';
+import {
+	computeDoorsLeaderboardPair,
+	type DoorsLeaderboardPair,
+} from '$lib/server/door-knock-leaderboard.js';
 
 async function safeLoad(
 	label: string,
@@ -54,6 +58,22 @@ export const load: PageServerLoad = async (event) => {
 
 	const leaderboard: LeaderboardPair = { saved, live };
 
+	// Doors-knocked leaderboard — same α, week windows from door_knock_daily.
+	// A failure degrades both tabs rather than the whole page.
+	let doorsLeaderboard: DoorsLeaderboardPair;
+	try {
+		doorsLeaderboard = await computeDoorsLeaderboardPair(db, {
+			rankingAlpha: settings.slackGrowthReportRankingAlpha,
+		});
+	} catch (err) {
+		console.error(
+			'[dashboard] doors leaderboard load failed:',
+			err instanceof Error ? err.message : err,
+		);
+		const failed = { ok: false as const, error: 'Failed to load leaderboard. Please try again.' };
+		doorsLeaderboard = { lastWeek: failed, thisWeek: failed };
+	}
+
 	// Dashboard countdown banner, from the same settings read as the
 	// leaderboard opts. Absent end datetime = no banner. When door-knock
 	// snapshots exist, the banner also shows the projected doors knocked by
@@ -78,5 +98,5 @@ export const load: PageServerLoad = async (event) => {
 		countdown = { label: settings.countdownLabel, endAt: settings.countdownEndAt, projectedDoors };
 	}
 
-	return { ...base, leaderboard, countdown, pageTitle: 'Dashboard' };
+	return { ...base, leaderboard, doorsLeaderboard, countdown, pageTitle: 'Dashboard' };
 };

@@ -3,6 +3,7 @@
 	import CountdownBanner from '$lib/components/dashboard/CountdownBanner.svelte';
 	import ChartCard from '$lib/components/dashboard/ChartCard.svelte';
 	import SlackLeaderboard from '$lib/components/dashboard/SlackLeaderboard.svelte';
+	import DoorsLeaderboard from '$lib/components/dashboard/DoorsLeaderboard.svelte';
 	import {
 		buildOverviewFrame,
 		buildDetailFrame,
@@ -92,6 +93,7 @@
 				bind:mode={doorKnockMode}
 				showMultiChapterNote={false}
 			/>
+			<DoorsLeaderboard leaderboard={data.doorsLeaderboard} />
 		</div>
 	{/if}
 
@@ -126,7 +128,16 @@
 		align-items: start;
 	}
 	.door-knock-row {
-		margin-top: 1.5rem;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 320px;
+		gap: 1.5rem;
+		align-items: start;
+		margin-bottom: 1.5rem;
+	}
+	@media (max-width: 960px) {
+		.door-knock-row {
+			grid-template-columns: 1fr;
+		}
 	}
 	@media (max-width: 960px) {
 		.slack-row {
