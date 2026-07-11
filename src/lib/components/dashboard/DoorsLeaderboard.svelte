@@ -19,6 +19,9 @@
 	<strong>{lb.totalDoors.toLocaleString('en-US')}</strong>
 	{lb.totalDoors === 1 ? 'door' : 'doors'} knocked
 	{tab === 'lastWeek' ? 'that week' : 'so far this week'}
+	{#if lb.totalDoors > 0}
+		· <strong>{Math.round(lb.contactRatePct * 10) / 10}%</strong> contact rate
+	{/if}
 {/snippet}
 
 {#snippet empty(tab: LeaderboardTab)}

@@ -27,6 +27,10 @@ describe('computeDoorsLeaderboardPair', () => {
 
 		expect(pair.lastWeek.ok && pair.lastWeek.leaderboard.totalDoors).toBe(250);
 		expect(pair.thisWeek.ok && pair.thisWeek.leaderboard.totalDoors).toBe(100);
+		// Contact rate = window contacts / window doors: 50/250 and 20/100.
+		expect(pair.lastWeek.ok && pair.lastWeek.leaderboard.contactRatePct).toBe(20);
+		expect(pair.thisWeek.ok && pair.thisWeek.leaderboard.totalContacts).toBe(20);
+		expect(pair.thisWeek.ok && pair.thisWeek.leaderboard.contactRatePct).toBe(20);
 		expect(pair.lastWeek.ok && pair.lastWeek.leaderboard.windowStart).toBe(
 			'2026-07-06T00:00:00.000Z',
 		);
@@ -130,6 +134,7 @@ describe('computeDoorsLeaderboardPair', () => {
 		if (!pair.thisWeek.ok || !pair.lastWeek.ok) throw new Error('expected ok');
 		expect(pair.thisWeek.leaderboard.topChapters).toEqual([]);
 		expect(pair.thisWeek.leaderboard.totalDoors).toBe(0);
+		expect(pair.thisWeek.leaderboard.contactRatePct).toBe(0);
 		expect(pair.lastWeek.leaderboard.topChapters).toEqual([]);
 	});
 });

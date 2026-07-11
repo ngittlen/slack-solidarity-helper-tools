@@ -35,6 +35,10 @@ export interface DoorsLeaderboard {
 	windowEnd: string;
 	/** Doors knocked across ALL chapters in the window, not just the top 5. */
 	totalDoors: number;
+	/** Contacts across ALL chapters in the window. */
+	totalContacts: number;
+	/** totalContacts / totalDoors * 100; 0 when no doors. */
+	contactRatePct: number;
 	/** Top TOP_N entries by ranking score, descending. */
 	topChapters: DoorsChapterEntry[];
 }
@@ -95,10 +99,14 @@ function buildLeaderboard(
 		}),
 	);
 
+	const totalDoors = [...byChapter.values()].reduce((sum, t) => sum + t.doors, 0);
+	const totalContacts = [...byChapter.values()].reduce((sum, t) => sum + t.contacts, 0);
 	return {
 		windowStart: windowStart.toISOString(),
 		windowEnd: windowEnd.toISOString(),
-		totalDoors: [...byChapter.values()].reduce((sum, t) => sum + t.doors, 0),
+		totalDoors,
+		totalContacts,
+		contactRatePct: totalDoors > 0 ? (totalContacts / totalDoors) * 100 : 0,
 		topChapters: top,
 	};
 }
