@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { computeDoorsLeaderboardPair } from './door-knock-leaderboard.js';
 
-// Wednesday 2026-07-15 → computeWindow pins the last completed week to
-// Mon Jul 6 → Mon Jul 13; this week is Jul 13 → Jul 20; the ranking
-// denominator week for lastWeek is Jun 29 → Jul 6.
+// Wednesday 2026-07-15 → the campaign-local (Detroit) Monday is Jul 13, so
+// this week is Jul 13 → Jul 20 and last week is Mon Jul 6 → Mon Jul 13; the
+// ranking denominator week for lastWeek is Jun 29 → Jul 6.
 const NOW = new Date('2026-07-15T12:00:00Z');
 
 type Row = { date: string; chapter_name: string; doors: number; contacts: number };
@@ -40,6 +40,29 @@ describe('computeDoorsLeaderboardPair', () => {
 		// One read spans all three windows.
 		expect(JSON.stringify(all.mock.calls[0])).toContain('2026-06-29');
 		expect(JSON.stringify(all.mock.calls[0])).toContain('2026-07-20');
+	});
+
+	it('pins the week to Detroit time so a Sunday-night ET run stays on the current week', async () => {
+		// 2026-07-13T02:00Z is Sun 10 pm EDT — still Jul 12 in Detroit, but
+		// already Mon Jul 13 in UTC. A UTC-pinned window jumps a week ahead to an
+		// empty [Jul 13, Jul 20) "this week"; the campaign-local window must stay
+		// on [Jul 6, Jul 13) and still show this week's doors.
+		const sundayNight = new Date('2026-07-13T02:00:00Z');
+		const { db } = makeDb([
+			{ date: '2026-07-01', chapter_name: 'Kent', doors: 200, contacts: 40 }, // last week
+			{ date: '2026-07-11', chapter_name: 'Kent', doors: 90, contacts: 18 }, // this week (Sat)
+		]);
+
+		const pair = await computeDoorsLeaderboardPair(db, { now: sundayNight });
+
+		expect(pair.thisWeek.ok && pair.thisWeek.leaderboard.windowStart).toBe(
+			'2026-07-06T00:00:00.000Z',
+		);
+		expect(pair.thisWeek.ok && pair.thisWeek.leaderboard.windowEnd).toBe(
+			'2026-07-13T00:00:00.000Z',
+		);
+		expect(pair.thisWeek.ok && pair.thisWeek.leaderboard.totalDoors).toBe(90);
+		expect(pair.lastWeek.ok && pair.lastWeek.leaderboard.totalDoors).toBe(200);
 	});
 
 	it('ranks by raw doors when no chapter has previous-week data', async () => {

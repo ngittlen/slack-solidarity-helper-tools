@@ -1,5 +1,6 @@
 // Doors-knocked leaderboard for the dashboard, mirroring the Slack growth
-// leaderboard: same Monday-pinned week windows (computeWindow) and the same
+// leaderboard: same Monday-pinned week windows (campaign-local, see
+// currentWeekMonday) and the same
 // power-law ranking math, with "doors knocked the previous week" as the
 // denominator — score = doors / (prevWeekDoors + 1)^α — so the board
 // highlights chapters improving the most week-over-week. While no prior-week
@@ -15,7 +16,6 @@
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { sql } from 'drizzle-orm';
-import { computeWindow } from './weekly-growth-report.js';
 import { reRank, DEFAULT_RANKING_ALPHA, TOP_N } from '../growth-ranking.js';
 
 export interface DoorsChapterEntry {
@@ -63,6 +63,37 @@ function fmtDate(d: Date): string {
 
 function addDays(d: Date, days: number): Date {
 	return new Date(d.getTime() + days * 86_400_000);
+}
+
+// Start of the current week (Monday) pinned to the campaign's clock
+// (America/Detroit), NOT UTC. The Slack board's computeWindow uses UTC day
+// boundaries, so every Sunday between 8 pm ET (Monday 00:00 UTC) and midnight
+// ET it already reports the *next* Monday — which pushed this board a full week
+// ahead into an empty "this week so far" window while the Slack board (anchored
+// to the last saved Monday snapshot) still showed the real current week.
+// Pinning to Detroit keeps the two boards in step. Returns UTC midnight of the
+// Detroit Monday's calendar date so fmtDate() yields the intended day string.
+function currentWeekMonday(now: Date): Date {
+	const parts = new Intl.DateTimeFormat('en-US', {
+		timeZone: 'America/Detroit',
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+		weekday: 'short',
+	}).formatToParts(now);
+	const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+	const daysBackToMonday: Record<string, number> = {
+		Mon: 0,
+		Tue: 1,
+		Wed: 2,
+		Thu: 3,
+		Fri: 4,
+		Sat: 5,
+		Sun: 6,
+	};
+	const back = daysBackToMonday[get('weekday')] ?? 0;
+	const midnight = Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day')));
+	return new Date(midnight - back * 86_400_000);
 }
 
 function buildLeaderboard(
@@ -121,10 +152,12 @@ export async function computeDoorsLeaderboardPair(
 	const rankingAlpha = options.rankingAlpha ?? DEFAULT_RANKING_ALPHA;
 	const now = options.now ?? new Date();
 
-	// computeWindow gives the last COMPLETED Mon→Mon window; the current week
-	// runs from its end. The ranking denominators need one more week back.
-	const { start: lastWeekStart, end: lastWeekEnd } = computeWindow(now);
-	const thisWeekEnd = addDays(lastWeekEnd, 7);
+	// Pin the current week to the campaign's Monday (America/Detroit); its start
+	// is last week's end. The ranking denominators need one more week back.
+	const thisWeekStart = currentWeekMonday(now);
+	const lastWeekEnd = thisWeekStart;
+	const lastWeekStart = addDays(thisWeekStart, -7);
+	const thisWeekEnd = addDays(thisWeekStart, 7);
 	const weekBeforeStart = addDays(lastWeekStart, -7);
 
 	// Rows are keyed by ET date string; window date strings bucket them.
