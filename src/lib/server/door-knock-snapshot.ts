@@ -63,11 +63,22 @@ export interface DoorKnockSnapshotResult {
 	totalAttempts: number;
 }
 
-// Openfield's "today" follows the campaign's local clock (Michigan), so the
-// snapshot date must too — at the nightly cron run, UTC is already tomorrow.
-export function detroitDate(now: Date): string {
+// Openfield's /endpoint/<id>/today/ reports whatever its Django server calls
+// "today" — there's no timezone parameter (see openfield.ts), so the boundary
+// is the server's clock, NOT the campaign's Michigan clock. And it is not ET
+// midnight: on 2026-07-12, snapshot runs at 12:34–2:10 am ET still returned
+// Jul 11's completed total, which only fits a rollover at or after ~3 am ET —
+// i.e. midnight US Pacific. So the snapshot must stamp its rows in Openfield's
+// zone; stamping in Detroit meant any run between ET midnight and the Pacific
+// rollover read the prior campaign day but labelled it with today's ET date,
+// the off-by-one that duplicated a day's totals into the next date.
+//
+// Inferred as America/Los_Angeles (handles PT DST automatically). If a winter
+// observation shows the boundary stays at 3 am ET rather than shifting to 2 am
+// EST, Openfield is on a fixed UTC-7 zone and this should become that instead.
+export function openfieldDate(now: Date): string {
 	return new Intl.DateTimeFormat('en-CA', {
-		timeZone: 'America/Detroit',
+		timeZone: 'America/Los_Angeles',
 		year: 'numeric',
 		month: '2-digit',
 		day: '2-digit',
@@ -123,7 +134,7 @@ export async function runDoorKnockSnapshot(
 	deps: DoorKnockSnapshotDeps,
 ): Promise<DoorKnockSnapshotResult> {
 	const now = (deps.now ?? (() => new Date()))();
-	const date = detroitDate(now);
+	const date = openfieldDate(now);
 	const nowIso = now.toISOString();
 
 	const html = await deps.fetchCanvasHtml();

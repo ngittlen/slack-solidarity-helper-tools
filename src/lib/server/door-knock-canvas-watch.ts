@@ -18,7 +18,7 @@
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { doorKnockCanvasArchive, doorKnockCodeIds } from './schema.js';
 import { parseConversationCodes } from './door-knock-canvas.js';
-import { detroitDate, resolveCodeIds } from './door-knock-snapshot.js';
+import { openfieldDate, resolveCodeIds } from './door-knock-snapshot.js';
 import type { OpenfieldClient } from './openfield.js';
 import { errMessage } from '../err-message.js';
 
@@ -77,7 +77,7 @@ export function createCanvasWatcher(deps: CanvasWatcherDeps): CanvasWatcher {
 			// if the nightly snapshot later fails.
 			await deps.db
 				.insert(doorKnockCanvasArchive)
-				.values({ date: detroitDate(at), html, fetchedAt: at.toISOString() })
+				.values({ date: openfieldDate(at), html, fetchedAt: at.toISOString() })
 				.onConflictDoUpdate({
 					target: doorKnockCanvasArchive.date,
 					set: { html, fetchedAt: at.toISOString() },

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runDoorKnockSnapshot, detroitDate, UNMAPPED_CHAPTER } from './door-knock-snapshot.js';
+import { runDoorKnockSnapshot, openfieldDate, UNMAPPED_CHAPTER } from './door-knock-snapshot.js';
 import { doorKnockCanvasArchive, doorKnockCodeIds, doorKnockDaily } from './schema.js';
 
 // Two chapters, two codes — the minimal shape parseConversationCodes accepts
@@ -56,11 +56,15 @@ function makeDeps(overrides: Partial<Parameters<typeof runDoorKnockSnapshot>[1]>
 	};
 }
 
-describe('detroitDate', () => {
-	it('uses the Michigan calendar day, not UTC', () => {
-		expect(detroitDate(new Date('2026-07-07T02:30:00Z'))).toBe('2026-07-06'); // 22:30 EDT
-		expect(detroitDate(new Date('2026-07-07T12:00:00Z'))).toBe('2026-07-07'); // 08:00 EDT
-		expect(detroitDate(new Date('2026-01-15T04:30:00Z'))).toBe('2026-01-14'); // 23:30 EST
+describe('openfieldDate', () => {
+	// Openfield's server rolls over at midnight US Pacific, not Michigan
+	// midnight, so a post-ET-midnight run must still stamp the campaign day that
+	// just ended (the 12am–3am ET off-by-one that duplicated a day's totals).
+	it('uses the US Pacific calendar day (Openfield server rollover)', () => {
+		expect(openfieldDate(new Date('2026-07-12T02:00:00Z'))).toBe('2026-07-11'); // 10:00 pm EDT / 7:00 pm PDT
+		expect(openfieldDate(new Date('2026-07-12T06:10:00Z'))).toBe('2026-07-11'); // 2:10 am EDT / 11:10 pm PDT — still yesterday
+		expect(openfieldDate(new Date('2026-07-12T07:30:00Z'))).toBe('2026-07-12'); // 3:30 am EDT / 12:30 am PDT — rolled over
+		expect(openfieldDate(new Date('2026-01-15T07:30:00Z'))).toBe('2026-01-14'); // 2:30 am EST / 11:30 pm PST
 	});
 });
 
