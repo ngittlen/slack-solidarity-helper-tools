@@ -115,8 +115,9 @@ describe('fetchConversationCodesCanvas', () => {
 				return jsonRes({
 					ok: true,
 					channel: {
+						// Slack returns the tab bar under `tabz` (observed 2026-07).
 						properties: {
-							tabs: [
+							tabz: [
 								{ type: 'canvas', data: { file_id: 'F_OTHER' } },
 								{ type: 'files', data: {} },
 								{ type: 'canvas', data: { file_id: 'F_CODES' } },
@@ -143,6 +144,27 @@ describe('fetchConversationCodesCanvas', () => {
 
 	it('finds the canvas by title (case/whitespace-insensitive) and downloads it', async () => {
 		const html = await fetchConversationCodesCanvas('xoxb-test', 'C_DOOR', makeFetch());
+		expect(html).toBe(CANVAS_FIXTURE);
+	});
+
+	it('reads canvas tabs from the legacy `tabs` field too', async () => {
+		const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url.includes('conversations.info')) {
+				return jsonRes({
+					ok: true,
+					channel: { properties: { tabs: [{ type: 'canvas', data: { file_id: 'F_CODES' } }] } },
+				});
+			}
+			if (url.includes('file=F_CODES')) {
+				return jsonRes({ ok: true, file: { title: 'Conversation Codes', url_private: 'https://dl/codes' } });
+			}
+			if (url === 'https://dl/codes') {
+				return { ok: true, text: async () => CANVAS_FIXTURE, json: async () => ({}) };
+			}
+			throw new Error(`unexpected fetch: ${url}`);
+		}) as unknown as typeof fetch;
+		const html = await fetchConversationCodesCanvas('xoxb-test', 'C_DOOR', fetchFn);
 		expect(html).toBe(CANVAS_FIXTURE);
 	});
 

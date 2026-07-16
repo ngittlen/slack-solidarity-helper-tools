@@ -77,8 +77,8 @@ function isChapterHeading(line: string): boolean {
 	if (!head || head.length > 60) return false;
 	if (/[a-z]/.test(head) || !/[A-Z]/.test(head)) return false;
 	if (/\bCODES?\b/.test(head)) return false;
-	if (EXCLUDED_CONTEXT_RE.test(head)) return false;
-	return true;
+	return !EXCLUDED_CONTEXT_RE.test(head);
+
 }
 
 function parseTableCodes(html: string, out: ConversationCode[]): void {
@@ -207,13 +207,18 @@ export async function findCodesCanvasFile(
 	channelId: string,
 	fetchFn: FetchFn = fetch,
 ): Promise<{ fileId: string; urlPrivate: string }> {
+	// Slack returns the channel's tab bar under `properties.tabz` (observed
+	// 2026-07); older responses used `properties.tabs`. Read whichever is
+	// present so a rename in either direction doesn't strand the lookup.
+	type CanvasTab = { type: string; data?: { file_id?: string } };
 	const info = await slackApi<
 		SlackApiEnvelope & {
-			channel?: { properties?: { tabs?: Array<{ type: string; data?: { file_id?: string } }> } };
+			channel?: { properties?: { tabs?: CanvasTab[]; tabz?: CanvasTab[] } };
 		}
 	>(fetchFn, slackToken, 'conversations.info', { channel: channelId });
 
-	const fileIds = (info.channel?.properties?.tabs ?? [])
+	const tabs = info.channel?.properties?.tabz ?? info.channel?.properties?.tabs ?? [];
+	const fileIds = tabs
 		.filter((t) => t.type === 'canvas' && t.data?.file_id)
 		.map((t) => t.data!.file_id!);
 	if (fileIds.length === 0) {
