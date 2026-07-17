@@ -19,9 +19,10 @@
 	import { page } from '$app/state';
 	import { isCurrentPath } from './menu-helpers.js';
 
-	// `resolve` is overloaded per-route, so it rejects a `RouteId` *union*
-	// argument even though it accepts any RouteId at runtime. Re-type it once as
-	// a single-signature function so the dynamic `item.href` below type-checks.
+	// `resolve`'s argument type distributes over a `RouteId` *union* into a union
+	// of singleton tuples that a single call can't satisfy, even though it
+	// accepts any RouteId at runtime. Re-type it once as a plain single-signature
+	// function so the dynamic `item.href` below type-checks.
 	const resolveRoute = resolve as (route: RouteId) => string;
 
 	interface Props {
@@ -54,6 +55,7 @@
 						class="user-menu-item"
 						data-current={isCurrentPath(item.href, page.url.pathname) ? 'true' : undefined}
 					>
+						<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolveRoute is `resolve` re-typed; the rule can't see through the alias -->
 						<a href={resolveRoute(item.href)}>{item.label}</a>
 					</DropdownMenu.Item>
 				{/each}

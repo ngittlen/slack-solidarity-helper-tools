@@ -2,9 +2,10 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
-import { loadSettings } from '$lib/server/settings.js';
+import { loadSettings, type ChapterEntry } from '$lib/server/settings.js';
+import { getUserByEmail } from '$lib/server/solidarity.js';
 import { getSlackChannels } from '$lib/server/autocomplete-sources.js';
-import { renderWelcomeDm } from '$lib/welcome-dm.js';
+import { DEFAULT_WELCOME_DM, renderWelcomeDm, resolveChannelLinks } from '$lib/welcome-dm.js';
 
 // "Send this DM to me" — renders the welcome template and DMs it to the signed-
 // in admin so they can proof-read the real thing (links, emoji, formatting)
@@ -12,15 +13,47 @@ import { renderWelcomeDm } from '$lib/welcome-dm.js';
 // value (body.welcomeDmMessage) so testing doesn't require saving first; when
 // absent it falls back to the saved setting.
 //
-// `{{channels}}` is filled with a representative sample of real chapter
-// channels (the first couple from the chapter→channel map) so the preview shows
-// genuine clickable links rather than a fabricated one; with no map configured
-// it falls back to a single literal example.
+// `{{channels}}` is filled with the ADMIN's own chapter channels — resolved the
+// same way the real join flow does (Slack id → email → Solidarity chapters →
+// channel map) — so the preview matches what they'd actually receive. When the
+// admin isn't a mapped Solidarity member it falls back to a labeled placeholder
+// so the substitution is never silently empty.
 interface TestBody {
 	welcomeDmMessage?: unknown;
 }
 
-const SAMPLE_CHANNEL_COUNT = 2;
+const NO_CHANNELS_PLACEHOLDER = '#your-chapter-channel(s)';
+
+/** The admin's own chapter channels (deduped), or [] when their Slack account
+ *  can't be mapped to a Solidarity member with mapped chapters. Never throws —
+ *  a lookup failure just yields the placeholder preview. */
+async function resolveOwnChannelIds(
+	slackUserId: string,
+	chapterChannelMap: ChapterEntry[],
+): Promise<string[]> {
+	try {
+		const info = await slack.users.info({ user: slackUserId });
+		const email = (info.user as { profile?: { email?: string } } | undefined)?.profile?.email;
+		if (!email) return [];
+		const solidarityUser = await getUserByEmail(email);
+		if (!solidarityUser) return [];
+		const chapterIds = solidarityUser.chapter_ids?.length
+			? solidarityUser.chapter_ids
+			: solidarityUser.chapter_id != null
+				? [solidarityUser.chapter_id]
+				: [];
+		if (chapterIds.length === 0) return [];
+		return [
+			...new Set(
+				chapterChannelMap
+					.filter((e) => chapterIds.includes(e.chapterId))
+					.map((e) => e.channelId),
+			),
+		];
+	} catch {
+		return [];
+	}
+}
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session) {
@@ -43,11 +76,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const settings = await loadSettings(db);
 	const template = body.welcomeDmMessage ?? settings.welcomeDmMessage;
 
-	// Sample channels for {{channels}}: distinct channel ids from the chapter
-	// map, capped so the preview stays short.
-	const sampleChannelIds = [...new Set(settings.chapterChannelMap.map((e) => e.channelId))].slice(
-		0,
-		SAMPLE_CHANNEL_COUNT,
+	const ownChannelIds = await resolveOwnChannelIds(
+		locals.session.slackUserId,
+		settings.chapterChannelMap,
 	);
 
 	let nameToId = new Map<string, string>();
@@ -58,13 +89,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// Non-fatal: `#name` tokens stay literal in the test message.
 	}
 
-	const rendered = renderWelcomeDm(template, sampleChannelIds, nameToId);
-	// Signal the sample when there's no real channel to point at, so the admin
-	// isn't confused by a missing {{channels}} substitution.
+	// With real channels, render exactly as the join flow would. Without them,
+	// fill {{channels}} with a labeled placeholder (still resolving #name links
+	// and the blank-template default) so the preview is honest, not empty.
 	const text =
-		sampleChannelIds.length === 0
-			? rendered.replaceAll('{{channels}}', '#your-chapter-channel')
-			: rendered;
+		ownChannelIds.length > 0
+			? renderWelcomeDm(template, ownChannelIds, nameToId)
+			: resolveChannelLinks(
+					(template.trim() || DEFAULT_WELCOME_DM).replaceAll(
+						'{{channels}}',
+						NO_CHANNELS_PLACEHOLDER,
+					),
+					nameToId,
+				);
 
 	try {
 		const dm = await slack.conversations.open({ users: locals.session.slackUserId });

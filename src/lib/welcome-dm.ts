@@ -40,8 +40,13 @@ export function extractChannelNames(template: string): string[] {
 }
 
 /** Replace every `#name` token with `<#id>` when the name is known, leaving
- *  unknown names as-is. `nameToId` keys are lowercased channel names. */
-function linkChannelNames(template: string, nameToId: ReadonlyMap<string, string>): string {
+ *  unknown names as-is. `nameToId` keys are lowercased channel names. Exported
+ *  for callers (e.g. the "send test DM" endpoint) that fill `{{channels}}`
+ *  themselves and still need `#name` links resolved. */
+export function resolveChannelLinks(
+	template: string,
+	nameToId: ReadonlyMap<string, string>,
+): string {
 	return template.replace(CHANNEL_TOKEN_RE, (whole, name: string) => {
 		const id = nameToId.get(name.toLowerCase());
 		return id ? `<#${id}>` : whole;
@@ -60,5 +65,5 @@ export function renderWelcomeDm(
 	const body = template.trim() || DEFAULT_WELCOME_DM;
 	const mentions = channelIds.map((id) => `<#${id}>`).join(', ');
 	const withChannels = body.replaceAll('{{channels}}', mentions);
-	return linkChannelNames(withChannels, nameToId);
+	return resolveChannelLinks(withChannels, nameToId);
 }
