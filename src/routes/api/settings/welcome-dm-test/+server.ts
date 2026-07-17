@@ -13,16 +13,31 @@ import { DEFAULT_WELCOME_DM, renderWelcomeDm, resolveChannelLinks } from '$lib/w
 // value (body.welcomeDmMessage) so testing doesn't require saving first; when
 // absent it falls back to the saved setting.
 //
-// `{{channels}}` is filled with the ADMIN's own chapter channels — resolved the
-// same way the real join flow does (Slack id → email → Solidarity chapters →
-// channel map) — so the preview matches what they'd actually receive. When the
-// admin isn't a mapped Solidarity member it falls back to a labeled placeholder
-// so the substitution is never silently empty.
+// `{{channels}}` is filled with the ADMIN's own chapter channels when their
+// Slack account maps to a Solidarity member (resolved the same way the real
+// join flow does: Slack id → email → Solidarity chapters → channel map). Many
+// admins aren't mapped members — their Slack email may not match their
+// Solidarity email, or they have no account — so when the personal lookup comes
+// up empty we fall back to a small SAMPLE of real mapped channels so the
+// preview still shows genuine clickable links. The test DM's header states
+// which mode was used so the sample is never mistaken for the recipient's
+// actual channels. Only with no channel map at all do we show a placeholder.
 interface TestBody {
 	welcomeDmMessage?: unknown;
 }
 
 const NO_CHANNELS_PLACEHOLDER = '#your-chapter-channel(s)';
+const SAMPLE_CHANNEL_COUNT = 2;
+
+type PreviewMode = 'personalized' | 'sample' | 'placeholder';
+
+const MODE_NOTE: Record<PreviewMode, string> = {
+	personalized: ':test_tube: Welcome DM preview — showing *your* chapter channels',
+	sample:
+		":test_tube: Welcome DM preview — your Slack email isn't linked to a Solidarity chapter, so {{channels}} shows *example* channels",
+	placeholder:
+		':test_tube: Welcome DM preview — no chapter channels are configured, so {{channels}} shows a placeholder',
+};
 
 /** The admin's own chapter channels (deduped), or [] when their Slack account
  *  can't be mapped to a Solidarity member with mapped chapters. Never throws —
@@ -80,6 +95,25 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		locals.session.slackUserId,
 		settings.chapterChannelMap,
 	);
+	// Sample of real mapped channels for the fallback — first couple of distinct
+	// channel ids in the chapter map, so the preview shows genuine links.
+	const sampleChannelIds = [...new Set(settings.chapterChannelMap.map((e) => e.channelId))].slice(
+		0,
+		SAMPLE_CHANNEL_COUNT,
+	);
+
+	let previewChannelIds: string[];
+	let mode: PreviewMode;
+	if (ownChannelIds.length > 0) {
+		previewChannelIds = ownChannelIds;
+		mode = 'personalized';
+	} else if (sampleChannelIds.length > 0) {
+		previewChannelIds = sampleChannelIds;
+		mode = 'sample';
+	} else {
+		previewChannelIds = [];
+		mode = 'placeholder';
+	}
 
 	let nameToId = new Map<string, string>();
 	try {
@@ -89,19 +123,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// Non-fatal: `#name` tokens stay literal in the test message.
 	}
 
-	// With real channels, render exactly as the join flow would. Without them,
-	// fill {{channels}} with a labeled placeholder (still resolving #name links
-	// and the blank-template default) so the preview is honest, not empty.
+	// Personalized/sample render exactly as the join flow would (real <#…>
+	// links). The placeholder path fills {{channels}} with a labeled stand-in,
+	// still resolving #name links and the blank-template default.
 	const text =
-		ownChannelIds.length > 0
-			? renderWelcomeDm(template, ownChannelIds, nameToId)
-			: resolveChannelLinks(
+		mode === 'placeholder'
+			? resolveChannelLinks(
 					(template.trim() || DEFAULT_WELCOME_DM).replaceAll(
 						'{{channels}}',
 						NO_CHANNELS_PLACEHOLDER,
 					),
 					nameToId,
-				);
+				)
+			: renderWelcomeDm(template, previewChannelIds, nameToId);
 
 	try {
 		const dm = await slack.conversations.open({ users: locals.session.slackUserId });
@@ -111,12 +145,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		}
 		await slack.chat.postMessage({
 			channel: dmChannelId,
-			text: `:test_tube: *Welcome DM preview*\n${text}`,
+			text: `${MODE_NOTE[mode]}\n${text}`,
 			blocks: [
-				{
-					type: 'context',
-					elements: [{ type: 'mrkdwn', text: ':test_tube: Welcome DM preview — this is a test' }],
-				},
+				{ type: 'context', elements: [{ type: 'mrkdwn', text: MODE_NOTE[mode] }] },
 				{ type: 'section', text: { type: 'mrkdwn', text } },
 			],
 		});

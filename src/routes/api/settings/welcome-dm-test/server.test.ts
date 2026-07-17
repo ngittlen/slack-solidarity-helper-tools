@@ -28,12 +28,22 @@ function makeEvent(session: unknown, body: unknown) {
 	return { ...(session as object), request: { json: async () => body } as Request };
 }
 
+function lastBlocks(): Array<{
+	type: string;
+	text?: { text: string };
+	elements?: Array<{ text: string }>;
+}> {
+	return (mockPostMessage.mock.calls.at(-1)![0] as { blocks: ReturnType<typeof lastBlocks> }).blocks;
+}
+
 /** The mrkdwn section block's text — where {{channels}} lands. */
 function sectionText(): string {
-	const call = mockPostMessage.mock.calls.at(-1)![0] as {
-		blocks: Array<{ type: string; text?: { text: string } }>;
-	};
-	return call.blocks.find((b) => b.type === 'section')!.text!.text;
+	return lastBlocks().find((b) => b.type === 'section')!.text!.text;
+}
+
+/** The context block's note — states which preview mode was used. */
+function contextNote(): string {
+	return lastBlocks().find((b) => b.type === 'context')!.elements![0]!.text;
 }
 
 describe('POST /api/settings/welcome-dm-test', () => {
@@ -81,19 +91,39 @@ describe('POST /api/settings/welcome-dm-test', () => {
 		expect(sectionText()).toContain('Draft for <#C_MINE>');
 	});
 
-	it('falls back to a labeled placeholder when the admin is not a mapped member', async () => {
+	it('personalized mode labels the preview as showing your own channels', async () => {
+		await POST(makeEvent(authed, {}) as never);
+		expect(contextNote()).toContain('your');
+	});
+
+	it('falls back to a SAMPLE of real channels (labeled) when not a mapped member', async () => {
 		mockGetUserByEmail.mockResolvedValue(null);
 		const res = await POST(makeEvent(authed, {}) as never);
 		expect(res.status).toBe(200);
 		const text = sectionText();
-		expect(text).toContain('#your-chapter-channel(s)');
-		expect(text).not.toContain('<#C_MINE>');
+		// Real, clickable channels from the map — not a bare placeholder.
+		expect(text).toContain('<#C_MINE>');
+		expect(text).toContain('<#C_OTHER>');
+		expect(text).not.toContain('#your-chapter-channel(s)');
+		expect(contextNote()).toContain('example');
 	});
 
-	it('still sends when the Slack lookup throws (placeholder, no crash)', async () => {
-		mockUsersInfo.mockRejectedValue(new Error('scope'));
+	it('shows a placeholder only when no chapter channels are configured', async () => {
+		mockGetUserByEmail.mockResolvedValue(null);
+		mockLoadSettings.mockResolvedValue({
+			welcomeDmMessage: 'Welcome to {{channels}}!',
+			chapterChannelMap: [],
+		});
 		const res = await POST(makeEvent(authed, {}) as never);
 		expect(res.status).toBe(200);
 		expect(sectionText()).toContain('#your-chapter-channel(s)');
+		expect(contextNote()).toContain('placeholder');
+	});
+
+	it('still sends when the Slack lookup throws (sample fallback, no crash)', async () => {
+		mockUsersInfo.mockRejectedValue(new Error('scope'));
+		const res = await POST(makeEvent(authed, {}) as never);
+		expect(res.status).toBe(200);
+		expect(sectionText()).toContain('<#C_MINE>');
 	});
 });
