@@ -49,6 +49,7 @@ const settingsFixture = {
 	welcomeDisabledChannelIds: new Set<string>(),
 	countdownLabel: '',
 	countdownEndAt: '',
+	welcomeDmMessage: '',
 };
 
 function makeEvent(overrides: {

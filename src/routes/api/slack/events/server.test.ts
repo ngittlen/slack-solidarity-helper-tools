@@ -21,6 +21,9 @@ vi.mock('$lib/server/door-knock-canvas-watch', () => ({
 	createCanvasWatcher: vi.fn(() => ({ handleFileChange: mockHandleFileChange })),
 }));
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
+vi.mock('$lib/server/autocomplete-sources', () => ({
+	getSlackChannels: vi.fn(async () => ({ items: [], fetchedAt: 0 })),
+}));
 vi.mock('$lib/server/slack', () => ({
 	slack: {
 		users: { info: mockUsersInfo },
@@ -126,6 +129,7 @@ describe('POST /api/slack/events', () => {
 		mockLoadSettings.mockResolvedValue({
 			chapterChannelMap: [{ chapterId: 42, channelId: 'C_COUNTY', name: 'Test County' }],
 			welcomeDisabledChannelIds: new Set<string>(),
+			welcomeDmMessage: '',
 		});
 	});
 
@@ -204,6 +208,7 @@ describe('POST /api/slack/events', () => {
 				{ chapterId: 43, channelId: 'C_SHARED', name: 'Other County' },
 			],
 			welcomeDisabledChannelIds: new Set<string>(),
+			welcomeDmMessage: '',
 		});
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42, 43] });
 
@@ -222,6 +227,7 @@ describe('POST /api/slack/events', () => {
 				{ chapterId: 42, channelId: 'C_QUIET', name: 'Test County' },
 			],
 			welcomeDisabledChannelIds: new Set(['C_QUIET']),
+			welcomeDmMessage: '',
 		});
 		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
 

@@ -104,6 +104,7 @@
 				rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
 				countdownLabel={data.settings.countdownLabel}
 				countdownEndAt={data.settings.countdownEndAt}
+				welcomeDmMessage={data.settings.welcomeDmMessage}
 				leaderboard={data.leaderboard}
 			/>
 		{/if}

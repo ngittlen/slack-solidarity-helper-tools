@@ -3,12 +3,16 @@ import { POST } from './+server.js';
 
 const mockSaveAppConfig = vi.hoisted(() => vi.fn());
 const mockValidateChannel = vi.hoisted(() => vi.fn());
+const mockGetSlackChannels = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/slack', () => ({ slack: {} }));
 vi.mock('$lib/server/settings', () => ({ saveAppConfig: mockSaveAppConfig }));
 vi.mock('$lib/server/settings-validation', () => ({
 	validateSlackChannel: mockValidateChannel,
+}));
+vi.mock('$lib/server/autocomplete-sources', () => ({
+	getSlackChannels: mockGetSlackChannels,
 }));
 
 const authed = {
@@ -31,6 +35,10 @@ describe('POST /api/settings/app-config', () => {
 		vi.clearAllMocks();
 		mockSaveAppConfig.mockResolvedValue(undefined);
 		mockValidateChannel.mockResolvedValue({ ok: true, name: 'general' });
+		mockGetSlackChannels.mockResolvedValue({
+			items: [{ id: 'C_GEN', name: 'general', isPrivate: false }],
+			fetchedAt: 0,
+		});
 	});
 
 	it('returns 401 when not authenticated', async () => {
@@ -178,6 +186,53 @@ describe('POST /api/settings/app-config', () => {
 	it('400 for a non-string or unparseable countdownEndAt', async () => {
 		for (const bad of [7, 'not-a-date']) {
 			const res = await POST(makeEvent(authed, { countdownEndAt: bad }) as never);
+			expect(res.status).toBe(400);
+		}
+		expect(mockSaveAppConfig).not.toHaveBeenCalled();
+	});
+
+	it('saves a trimmed welcome DM message whose #channels all resolve', async () => {
+		const res = await POST(
+			makeEvent(authed, { welcomeDmMessage: '  Welcome to {{channels}} and #general  ' }) as never,
+		);
+		expect(res.status).toBe(200);
+		expect(mockSaveAppConfig).toHaveBeenCalledWith(
+			expect.anything(),
+			{ welcomeDmMessage: 'Welcome to {{channels}} and #general' },
+			expect.anything(),
+		);
+	});
+
+	it('accepts an empty welcome DM message (use the default) without a channel lookup', async () => {
+		const res = await POST(makeEvent(authed, { welcomeDmMessage: '' }) as never);
+		expect(res.status).toBe(200);
+		expect(mockGetSlackChannels).not.toHaveBeenCalled();
+		expect(mockSaveAppConfig).toHaveBeenCalledWith(
+			expect.anything(),
+			{ welcomeDmMessage: '' },
+			expect.anything(),
+		);
+	});
+
+	it('400 when the welcome DM references an unknown #channel', async () => {
+		const res = await POST(
+			makeEvent(authed, { welcomeDmMessage: 'Join #general and #nope' }) as never,
+		);
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ error: 'Unknown channel(s): #nope' });
+		expect(mockSaveAppConfig).not.toHaveBeenCalled();
+	});
+
+	it('503 when the channel list is down and the message has #channels', async () => {
+		mockGetSlackChannels.mockRejectedValue(new Error('cache cold'));
+		const res = await POST(makeEvent(authed, { welcomeDmMessage: 'See #general' }) as never);
+		expect(res.status).toBe(503);
+		expect(mockSaveAppConfig).not.toHaveBeenCalled();
+	});
+
+	it('400 for a non-string or over-long welcome DM message', async () => {
+		for (const bad of [7, 'x'.repeat(3001)]) {
+			const res = await POST(makeEvent(authed, { welcomeDmMessage: bad }) as never);
 			expect(res.status).toBe(400);
 		}
 		expect(mockSaveAppConfig).not.toHaveBeenCalled();

@@ -157,6 +157,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			slackGrowthReportRankingAlpha: undefined,
 			countdownLabel: '',
 			countdownEndAt: '',
+			welcomeDmMessage: '',
 		});
 
 		// Restore the module-level mock for subsequent tests.
@@ -314,6 +315,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'slackTrackingChannelId',
 				'countdownLabel',
 				'countdownEndAt',
+				'welcomeDmMessage',
 			].sort(),
 		);
 	});

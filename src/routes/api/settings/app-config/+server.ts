@@ -4,6 +4,8 @@ import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { saveAppConfig, type AppConfigPatch, type Editor } from '$lib/server/settings.js';
 import { validateSlackChannel } from '$lib/server/settings-validation.js';
+import { getSlackChannels } from '$lib/server/autocomplete-sources.js';
+import { extractChannelNames } from '$lib/welcome-dm.js';
 
 // App-config writes for the settings page. The body is a patch: only the keys
 // present are validated and written (saveAppConfig's set-only contract keeps
@@ -24,9 +26,13 @@ interface AppConfigBody {
 	slackGrowthReportRankingAlpha?: unknown;
 	countdownLabel?: unknown;
 	countdownEndAt?: unknown;
+	welcomeDmMessage?: unknown;
 }
 
 const COUNTDOWN_LABEL_MAX_LENGTH = 80;
+// Slack renders a section block's text up to 3000 chars; keep the stored
+// template within that so a saved message can never be rejected at send time.
+const WELCOME_DM_MAX_LENGTH = 3000;
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session) {
@@ -97,6 +103,41 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			}
 			patch.countdownEndAt = parsed.toISOString();
 		}
+	}
+
+	if (body.welcomeDmMessage !== undefined) {
+		const message = body.welcomeDmMessage;
+		if (typeof message !== 'string' || message.length > WELCOME_DM_MAX_LENGTH) {
+			return json(
+				{ error: `welcomeDmMessage must be a string of at most ${WELCOME_DM_MAX_LENGTH} characters` },
+				{ status: 400 },
+			);
+		}
+		// Reject a typo'd `#channel-name` now so the admin fixes it here rather
+		// than shipping a dead link into every new member's DM. An empty message
+		// clears back to the built-in default and references nothing.
+		const names = extractChannelNames(message);
+		if (names.length > 0) {
+			let items;
+			try {
+				({ items } = await getSlackChannels(slack));
+			} catch {
+				return json(
+					{ error: 'Slack channel list is temporarily unavailable. Try again in a moment.' },
+					{ status: 503 },
+				);
+			}
+			const known = new Set(items.map((c) => c.name.toLowerCase()));
+			const unknown = names.filter((n) => !known.has(n));
+			if (unknown.length > 0) {
+				return json(
+					{ error: `Unknown channel(s): ${unknown.map((n) => `#${n}`).join(', ')}` },
+					{ status: 400 },
+				);
+			}
+		}
+		// Store trimmed; '' means "use the built-in default" at send time.
+		patch.welcomeDmMessage = message.trim();
 	}
 
 	if (Object.keys(patch).length === 0) {

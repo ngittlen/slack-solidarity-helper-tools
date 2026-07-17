@@ -179,6 +179,10 @@ export const appConfig = sqliteTable(
 		// "use the fallback", so clearing writes '' rather than NULL).
 		countdownLabel: text('countdown_label'),
 		countdownEndAt: text('countdown_end_at'),
+		// New-member welcome DM template. NULL / '' means "use the built-in
+		// default" (see DEFAULT_WELCOME_DM). Stored raw with `{{channels}}` and
+		// friendly `#channel-name` tokens; resolution happens at send time.
+		welcomeDmMessage: text('welcome_dm_message'),
 		lastEditedBy: text('last_edited_by').notNull(),
 		lastEditedByName: text('last_edited_by_name').notNull(),
 		lastEditedAt: text('last_edited_at').notNull(),

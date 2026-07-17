@@ -8,6 +8,7 @@
 	import type { PickerItem } from './picker-types.js';
 	import { createFieldAutosave, type AutosaveStatus } from './use-field-autosave.svelte.js';
 	import { isoToLocalInput, localInputToIso } from '$lib/components/dashboard/countdown.js';
+	import { extractChannelNames, DEFAULT_WELCOME_DM } from '$lib/welcome-dm.js';
 
 	interface ChannelOption {
 		id: string;
@@ -24,6 +25,8 @@
 		/** Header countdown config ('' when unset). */
 		countdownLabel: string;
 		countdownEndAt: string;
+		/** New-member welcome DM template ('' means "use the built-in default"). */
+		welcomeDmMessage: string;
 		/** Saved/live leaderboards with UNTRIMMED topChapters — the slider
 		 *  preview re-ranks them client-side. */
 		leaderboard: LeaderboardPair;
@@ -36,6 +39,7 @@
 		rankingAlpha,
 		countdownLabel,
 		countdownEndAt,
+		welcomeDmMessage,
 		leaderboard,
 	}: Props = $props();
 
@@ -125,11 +129,67 @@
 		save: (value) => postAppConfig({ countdownEndAt: localInputToIso(value) }),
 	});
 
+	// --- Welcome DM template — debounced autosave. `{{channels}}` and friendly
+	// `#channel-name` tokens are resolved server-side when the DM is sent; the
+	// preview and warning below are computed locally from the channel list.
+
+	const welcomeDmSave = createFieldAutosave<string>({
+		initial: welcomeDmMessage,
+		save: (value) => postAppConfig({ welcomeDmMessage: value }),
+	});
+
 	$effect(() => () => {
 		alphaSave.destroy();
 		countdownLabelSave.destroy();
 		countdownEndSave.destroy();
+		welcomeDmSave.destroy();
 	});
+
+	const knownChannelNames = $derived(new Set(channels.map((c) => c.name.toLowerCase())));
+
+	// `#name` tokens in the current draft that don't match any known channel —
+	// the save endpoint rejects these, so warn before the admin hits that.
+	const unknownChannels = $derived(
+		extractChannelNames(welcomeDmSave.value).filter((n) => !knownChannelNames.has(n)),
+	);
+
+	// Human-readable preview: the effective message (default when blank) with
+	// `{{channels}}` shown as a sample chapter channel. `#name` tokens stay as-is
+	// since that's exactly how they read in Slack.
+	const previewText = $derived(
+		(welcomeDmSave.value.trim() || DEFAULT_WELCOME_DM).replaceAll(
+			'{{channels}}',
+			'#your-chapter-channel',
+		),
+	);
+
+	// --- "Send this DM to me" test button.
+
+	let testStatus = $state<'idle' | 'sending' | 'sent' | 'error'>('idle');
+	let testError = $state<string | null>(null);
+
+	async function sendTestDm(): Promise<void> {
+		testStatus = 'sending';
+		testError = null;
+		try {
+			const res = await fetch('/api/settings/welcome-dm-test', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ welcomeDmMessage: welcomeDmSave.value }),
+			});
+			if (!res.ok) {
+				const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
+				throw new Error(parsed?.error ?? `Send failed (HTTP ${res.status})`);
+			}
+			testStatus = 'sent';
+			setTimeout(() => {
+				if (testStatus === 'sent') testStatus = 'idle';
+			}, 3000);
+		} catch (e) {
+			testStatus = 'error';
+			testError = errMessage(e);
+		}
+	}
 
 	const previewPair = $derived.by<LeaderboardPair>(() => {
 		const alpha = alphaSave.value;
@@ -221,6 +281,54 @@
 			Shown as a large days/hours/minutes/seconds countdown at the top of the dashboard, above
 			the Solidarity signups chart. Clear the date to hide it.
 		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		label="New-member welcome DM"
+		status={welcomeDmSave.status}
+		error={welcomeDmSave.error}
+		onRetry={welcomeDmSave.status === 'error' ? welcomeDmSave.retry : undefined}
+	>
+		<textarea
+			class="welcome-dm-input"
+			rows="4"
+			maxlength="3000"
+			placeholder={DEFAULT_WELCOME_DM}
+			value={welcomeDmSave.value}
+			oninput={welcomeDmSave.oninput}
+		></textarea>
+		<p class="app-config-note">
+			The DM sent to each new member after they're added to their chapter channel(s). Use
+			<code>{'{{channels}}'}</code> where the list of channels they were added to should appear, and
+			write a channel name like <code>#general</code> to link any other channel. Leave blank to use the
+			default message.
+		</p>
+		{#if unknownChannels.length > 0}
+			<p class="welcome-dm-warning">
+				⚠️ Unknown channel{unknownChannels.length > 1 ? 's' : ''}: {unknownChannels
+					.map((n) => `#${n}`)
+					.join(', ')} — saving will fail until these match a real channel.
+			</p>
+		{/if}
+		<div class="welcome-dm-preview">
+			<span class="welcome-dm-preview-label">Preview</span>
+			<p class="welcome-dm-preview-body">{previewText}</p>
+		</div>
+		<div class="welcome-dm-test">
+			<button
+				type="button"
+				class="welcome-dm-test-btn"
+				onclick={sendTestDm}
+				disabled={testStatus === 'sending'}
+			>
+				{testStatus === 'sending' ? 'Sending…' : 'Send this DM to me'}
+			</button>
+			{#if testStatus === 'sent'}
+				<span class="welcome-dm-test-ok">Sent — check your Slack DMs.</span>
+			{:else if testStatus === 'error'}
+				<span class="welcome-dm-test-err">{testError}</span>
+			{/if}
+		</div>
 	</SettingsRow>
 
 	<SettingsRow
@@ -323,5 +431,85 @@
 
 	.alpha-preview {
 		margin-top: 8px;
+	}
+
+	.welcome-dm-input {
+		width: 100%;
+		max-width: 560px;
+		padding: 8px 10px;
+		border: 1px solid var(--color-border, #ccc);
+		border-radius: var(--radius-md, 6px);
+		font: inherit;
+		line-height: 1.5;
+		color: var(--color-text, inherit);
+		background: var(--color-surface, #fff);
+		resize: vertical;
+	}
+
+	.welcome-dm-warning {
+		color: var(--color-danger, #c0392b);
+		font-size: 0.9em;
+		margin: 6px 0 0;
+	}
+
+	.welcome-dm-preview {
+		margin-top: 8px;
+		max-width: 560px;
+		padding: 8px 12px;
+		border-left: 3px solid var(--color-gold, #b8860b);
+		background: var(--color-surface-alt, rgba(184, 134, 11, 0.06));
+		border-radius: var(--radius-md, 6px);
+	}
+
+	.welcome-dm-preview-label {
+		display: block;
+		font-size: 0.75em;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--color-text-muted, #888);
+		margin-bottom: 4px;
+	}
+
+	.welcome-dm-preview-body {
+		margin: 0;
+		white-space: pre-wrap;
+		line-height: 1.5;
+	}
+
+	.welcome-dm-test {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+		margin-top: 10px;
+	}
+
+	.welcome-dm-test-btn {
+		padding: 6px 12px;
+		border: 1px solid var(--color-border, #ccc);
+		border-radius: var(--radius-md, 6px);
+		font: inherit;
+		color: var(--color-text, inherit);
+		background: var(--color-surface, #fff);
+		cursor: pointer;
+	}
+
+	.welcome-dm-test-btn:hover:not(:disabled) {
+		border-color: var(--color-gold, #b8860b);
+	}
+
+	.welcome-dm-test-btn:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.welcome-dm-test-ok {
+		color: var(--color-success, #2e7d32);
+		font-size: 0.9em;
+	}
+
+	.welcome-dm-test-err {
+		color: var(--color-danger, #c0392b);
+		font-size: 0.9em;
 	}
 </style>

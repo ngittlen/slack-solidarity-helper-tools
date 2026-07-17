@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `welcome_dm_message` text;

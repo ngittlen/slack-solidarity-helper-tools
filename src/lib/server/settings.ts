@@ -82,6 +82,10 @@ export interface Settings {
 	countdownLabel: string;
 	/** ISO datetime the countdown ends at; '' means "no countdown". */
 	countdownEndAt: string;
+	/** New-member welcome DM template. DB-only; '' means "use the built-in
+	 *  default" (renderWelcomeDm falls back). Stored raw with `{{channels}}`
+	 *  and `#channel-name` tokens resolved at send time. */
+	welcomeDmMessage: string;
 }
 
 export interface Editor {
@@ -97,6 +101,7 @@ export type AppConfigPatch = Partial<{
 	slackGrowthReportRankingAlpha: number;
 	countdownLabel: string;
 	countdownEndAt: string;
+	welcomeDmMessage: string;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -158,6 +163,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		cfg?.slackGrowthReportRankingAlpha ?? SLACK_GROWTH_REPORT_RANKING_ALPHA;
 	const countdownLabel = cfg?.countdownLabel ?? '';
 	const countdownEndAt = cfg?.countdownEndAt ?? '';
+	const welcomeDmMessage = cfg?.welcomeDmMessage ?? '';
 
 	return {
 		chapterChannelMap: chapterChannelMapField,
@@ -170,6 +176,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		slackGrowthReportRankingAlpha,
 		countdownLabel,
 		countdownEndAt,
+		welcomeDmMessage,
 	};
 }
 
@@ -516,6 +523,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'slackGrowthReportRankingAlpha',
 	'countdownLabel',
 	'countdownEndAt',
+	'welcomeDmMessage',
 ]);
 
 export async function saveAppConfig(

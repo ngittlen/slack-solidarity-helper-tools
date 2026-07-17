@@ -6,6 +6,8 @@ import { slackJoins } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
 import { loadSettings } from '$lib/server/settings.js';
+import { getSlackChannels } from '$lib/server/autocomplete-sources.js';
+import { renderWelcomeDm } from '$lib/welcome-dm.js';
 import {
 	SLACK_SIGNING_SECRET,
 	SLACK_BOT_TOKEN,
@@ -167,7 +169,8 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 	// The mapping is admin-editable on /settings (DB-backed) and many-to-many:
 	// every channel mapped to any of the joiner's chapters, deduped since
 	// sibling chapters often share a channel.
-	const { chapterChannelMap, welcomeDisabledChannelIds } = await loadSettingsWithRetry();
+	const { chapterChannelMap, welcomeDisabledChannelIds, welcomeDmMessage } =
+		await loadSettingsWithRetry();
 	const channelIds = [
 		...new Set(
 			chapterChannelMap
@@ -199,7 +202,7 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		await announceInChannels(user.id, announceChannelIds);
 	}
 
-	const sent = await sendWelcomeDm(user.id, successfulChannelIds);
+	const sent = await sendWelcomeDm(user.id, successfulChannelIds, welcomeDmMessage);
 	if (sent) {
 		const channelMentions = successfulChannelIds.map((id) => `<#${id}>`).join(', ');
 		console.log(`[slack-events] invited ${user.id} (${email}) to ${channelMentions} and sent DM`);
@@ -306,7 +309,27 @@ async function announceInChannels(slackUserId: string, channelIds: string[]): Pr
 	}
 }
 
-async function sendWelcomeDm(slackUserId: string, channelIds: string[]): Promise<boolean> {
+// Lowercased-channel-name → id map from the cached channel list, for resolving
+// `#channel-name` tokens in the welcome template to real Slack links. A cache
+// miss (cold + fetch fail) is non-fatal: names stay literal, the DM still goes.
+async function channelNameToId(): Promise<Map<string, string>> {
+	try {
+		const { items } = await getSlackChannels(slack);
+		return new Map(items.map((c) => [c.name.toLowerCase(), c.id]));
+	} catch (err) {
+		console.error(
+			'[slack-events] channel list unavailable for welcome-DM link resolution:',
+			err instanceof Error ? err.message : err,
+		);
+		return new Map();
+	}
+}
+
+async function sendWelcomeDm(
+	slackUserId: string,
+	channelIds: string[],
+	template: string,
+): Promise<boolean> {
 	const dm = await slack.conversations.open({ users: slackUserId });
 	const dmChannelId = (dm as { channel?: { id?: string } }).channel?.id;
 	if (!dmChannelId) {
@@ -314,24 +337,12 @@ async function sendWelcomeDm(slackUserId: string, channelIds: string[]): Promise
 		return false;
 	}
 
-	const channelMentions = channelIds.map((id) => `<#${id}>`).join(', ');
-	const channelText =
-		channelIds.length === 1
-			? `your county chapter channel: ${channelMentions}`
-			: `your county chapter channels: ${channelMentions}`;
+	const text = renderWelcomeDm(template, channelIds, await channelNameToId());
 
 	await slack.chat.postMessage({
 		channel: dmChannelId,
-		text: `Welcome! We've added you to ${channelText}.`,
-		blocks: [
-			{
-				type: 'section',
-				text: {
-					type: 'mrkdwn',
-					text: `:wave: Welcome to the volunteer slack! We've added you to ${channelText} based on your zip code. Feel free to introduce yourself there!`,
-				},
-			},
-		],
+		text,
+		blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
 	});
 	return true;
 }

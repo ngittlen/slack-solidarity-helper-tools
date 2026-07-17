@@ -19,6 +19,11 @@
 	import { page } from '$app/state';
 	import { isCurrentPath } from './menu-helpers.js';
 
+	// `resolve` is overloaded per-route, so it rejects a `RouteId` *union*
+	// argument even though it accepts any RouteId at runtime. Re-type it once as
+	// a single-signature function so the dynamic `item.href` below type-checks.
+	const resolveRoute = resolve as (route: RouteId) => string;
+
 	interface Props {
 		items: MenuItem[];
 	}
@@ -49,7 +54,7 @@
 						class="user-menu-item"
 						data-current={isCurrentPath(item.href, page.url.pathname) ? 'true' : undefined}
 					>
-						<a href={resolve(item.href)}>{item.label}</a>
+						<a href={resolveRoute(item.href)}>{item.label}</a>
 					</DropdownMenu.Item>
 				{/each}
 			</DropdownMenu.Content>
