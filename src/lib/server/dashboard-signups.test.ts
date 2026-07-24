@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
 	getDashboardSignups,
 	loadSlackSignups,
@@ -6,13 +6,18 @@ import {
 	loadDoorKnockSignups,
 } from './dashboard-signups.js';
 
-// The aggregation function makes two kinds of db calls:
+// The aggregation function makes several kinds of db calls:
+//   - a latest-date probe per source (MAX(date) / MAX(DATE(joined_at))) that
+//     anchors the window to the newest data rather than to "today"
 //   - select().from().where().orderBy() and select().from() for Solidarity
 //     snapshot rows and chapter-name lookup
-//   - db.all(sql`...`) three times for Slack (per-chapter, null-chapter, total)
+//   - db.all(sql`...`) for the door-knock query and the three Slack queries
+//     (per-chapter, null-chapter, total)
 //
 // We model the chained select with a queue so we can return different rows for
-// the snapshot query vs the chapter-name query, and a separate queue for db.all.
+// the max-date probe / snapshot query / chapter-name query, and a separate
+// queue for db.all. Both queues are FIFO; the loaders consume them in a fixed
+// order (see each test's push sequence).
 
 interface MockDb {
 	select: ReturnType<typeof vi.fn>;
@@ -22,6 +27,11 @@ interface MockDb {
 	/** All values passed to any `.where()` call across every select chain, in
 	 *  call order. Each entry is the single SQL object drizzle was handed. */
 	_whereArgs: () => unknown[];
+}
+
+// A latest-date probe result row (`MAX(...) AS max`). Anchors the window.
+function maxDateRows(date: string | null): Array<{ max: string | null }> {
+	return [{ max: date }];
 }
 
 // Drizzle's SQL objects contain circular references (column → table → column),
@@ -71,18 +81,17 @@ function makeDb(): MockDb {
 	};
 }
 
-const NOW = new Date('2026-05-10T12:00:00Z');
-
 describe('loadDoorKnockSignups', () => {
 	it('groups snapshot rows by date with stable synthetic chapter ids', async () => {
 		const db = makeDb();
+		db._pushAll(maxDateRows('2026-05-10')); // latest-date probe
 		db._pushAll([
 			{ date: '2026-05-09', chapter_name: 'Washtenaw', attempts: 42 },
 			{ date: '2026-05-09', chapter_name: 'Detroit', attempts: 100 },
 			{ date: '2026-05-10', chapter_name: 'Detroit', attempts: 55 },
 		]);
 
-		const days = await loadDoorKnockSignups(db as never, { days: 7, now: NOW });
+		const days = await loadDoorKnockSignups(db as never, { days: 7 });
 
 		// Synthetic ids follow sorted chapter names: Detroit=1, Washtenaw=2 —
 		// so a chapter keeps the same band identity on every day of the window.
@@ -103,49 +112,36 @@ describe('loadDoorKnockSignups', () => {
 		]);
 	});
 
-	it('bounds the query to the window start date', async () => {
+	it('anchors the window to the latest data date, not today', async () => {
 		const db = makeDb();
+		db._pushAll(maxDateRows('2026-05-10')); // latest data date
 		db._pushAll([]);
-		await loadDoorKnockSignups(db as never, { days: 7, now: NOW });
-		// 2026-05-10 minus 6 days — same window rule as the other sources.
-		expect(JSON.stringify(db.all.mock.calls[0])).toContain('2026-05-04');
+		await loadDoorKnockSignups(db as never, { days: 7 });
+		// Window ends on the latest data date (2026-05-10), days=7 → start
+		// 2026-05-04. The data query is the second db.all call (after the probe).
+		expect(JSON.stringify(db.all.mock.calls[1])).toContain('2026-05-04');
 	});
 
-	it('returns [] when the table has no rows in the window', async () => {
+	it('returns [] when the table is empty (no latest date)', async () => {
 		const db = makeDb();
-		db._pushAll([]);
-		expect(await loadDoorKnockSignups(db as never, { days: 30, now: NOW })).toEqual([]);
+		db._pushAll(maxDateRows(null));
+		expect(await loadDoorKnockSignups(db as never, { days: 30 })).toEqual([]);
 	});
 });
 
 describe('getDashboardSignups', () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
-		vi.setSystemTime(NOW);
-	});
-
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
 	it('groups Solidarity snapshot rows by date and sums total', async () => {
 		const db = makeDb();
+		db._pushSelect(maxDateRows('2026-05-10')); // Solidarity latest-date probe
 		// Snapshot select
 		db._pushSelect([
 			{ date: '2026-05-09', chapterId: 100, chapterName: 'Alpha', count: 3 },
 			{ date: '2026-05-09', chapterId: 200, chapterName: 'Beta', count: 5 },
 			{ date: '2026-05-10', chapterId: 100, chapterName: 'Alpha', count: 7 },
 		]);
-		// Slack chapter-name select
-		db._pushSelect([]);
-		db._pushAll([]); // chapter rows
-		db._pushAll([]); // null chapter rows
-		db._pushAll([]); // total rows
+		db._pushAll(maxDateRows(null)); // Slack empty → short-circuits
 
-		const result = await getDashboardSignups(
-			db as never,
-			{ days: 90, now: NOW },
-		);
+		const result = await getDashboardSignups(db as never, { days: 90 });
 
 		expect(result.solidarity).toEqual([
 			{
@@ -166,16 +162,14 @@ describe('getDashboardSignups', () => {
 
 	it('maps Solidarity sentinel chapterId=-1 to null/null in the response', async () => {
 		const db = makeDb();
+		db._pushSelect(maxDateRows('2026-05-10'));
 		db._pushSelect([
 			{ date: '2026-05-10', chapterId: -1, chapterName: null, count: 4 },
 			{ date: '2026-05-10', chapterId: 100, chapterName: 'Alpha', count: 2 },
 		]);
-		db._pushSelect([]);
-		db._pushAll([]);
-		db._pushAll([]);
-		db._pushAll([]);
+		db._pushAll(maxDateRows(null));
 
-		const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+		const result = await getDashboardSignups(db as never, { days: 90 });
 
 		expect(result.solidarity[0]!.byChapter).toEqual([
 			{ chapterId: 100, chapterName: 'Alpha', count: 2 },
@@ -186,8 +180,9 @@ describe('getDashboardSignups', () => {
 
 	it('builds Slack days from per-chapter, null-chapter, and total queries', async () => {
 		const db = makeDb();
-		db._pushSelect([]); // no Solidarity snapshot rows
+		db._pushSelect(maxDateRows(null)); // no Solidarity data → short-circuits
 		db._pushSelect([{ chapterId: 100, chapterName: 'Alpha' }]); // chapter names
+		db._pushAll(maxDateRows('2026-05-10')); // Slack latest-date probe
 		db._pushAll([
 			{ date: '2026-05-10', chapter_id: 100, count: 4 },
 			{ date: '2026-05-10', chapter_id: 200, count: 1 },
@@ -197,7 +192,7 @@ describe('getDashboardSignups', () => {
 		// multiple chapters and are counted once here.
 		db._pushAll([{ date: '2026-05-10', total: 5 }]);
 
-		const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+		const result = await getDashboardSignups(db as never, { days: 90 });
 
 		expect(result.slack).toEqual([
 			{
@@ -214,13 +209,14 @@ describe('getDashboardSignups', () => {
 
 	it('falls back to "Chapter #N" when no snapshot row carries the name', async () => {
 		const db = makeDb();
-		db._pushSelect([]);
+		db._pushSelect(maxDateRows(null)); // no Solidarity data
 		db._pushSelect([]); // no chapter names known
+		db._pushAll(maxDateRows('2026-05-10'));
 		db._pushAll([{ date: '2026-05-10', chapter_id: 999, count: 3 }]);
 		db._pushAll([]);
 		db._pushAll([{ date: '2026-05-10', total: 3 }]);
 
-		const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+		const result = await getDashboardSignups(db as never, { days: 90 });
 
 		expect(result.slack[0]!.byChapter[0]).toEqual({
 			chapterId: 999,
@@ -229,56 +225,57 @@ describe('getDashboardSignups', () => {
 		});
 	});
 
-	it('asks both queries for dates >= today − (days − 1) at UTC midnight', async () => {
+	it('anchors the Slack window to the latest join date − (days − 1), not today', async () => {
 		const db = makeDb();
+		db._pushSelect(maxDateRows(null)); // Solidarity unused here
 		db._pushSelect([]);
-		db._pushSelect([]);
+		db._pushAll(maxDateRows('2026-05-10')); // latest join date
 		db._pushAll([]);
 		db._pushAll([]);
 		db._pushAll([]);
 
-		await getDashboardSignups(db as never, { days: 7, now: NOW });
+		await getDashboardSignups(db as never, { days: 7 });
 
-		// today (UTC) is 2026-05-10; days=7 → start = 2026-05-04
-		// Spot-check the SQL fragments passed to db.all include that date string.
-		const allArgs = db.all.mock.calls.map((c) => JSON.stringify(c[0]));
-		for (const s of allArgs) {
+		// latest join date 2026-05-10; days=7 → window start 2026-05-04. The three
+		// Slack data queries (calls after the latest-date probe) carry that start.
+		const dataSql = db.all.mock.calls.slice(1).map((c) => JSON.stringify(c[0]));
+		expect(dataSql).toHaveLength(3);
+		for (const s of dataSql) {
 			expect(s).toContain('2026-05-04');
 		}
 	});
 
-	it('days=1 covers only today (UTC)', async () => {
+	it('days=1 covers only the latest data date', async () => {
 		const db = makeDb();
+		db._pushSelect(maxDateRows(null));
 		db._pushSelect([]);
-		db._pushSelect([]);
+		db._pushAll(maxDateRows('2026-05-10'));
 		db._pushAll([]);
 		db._pushAll([]);
 		db._pushAll([]);
 
-		await getDashboardSignups(db as never, { days: 1, now: NOW });
+		await getDashboardSignups(db as never, { days: 1 });
 
-		const allArgs = db.all.mock.calls.map((c) => JSON.stringify(c[0]));
-		for (const s of allArgs) {
+		const dataSql = db.all.mock.calls.slice(1).map((c) => JSON.stringify(c[0]));
+		for (const s of dataSql) {
 			expect(s).toContain('2026-05-10');
 		}
 	});
 
 	it('returns empty arrays when there is no data', async () => {
 		const db = makeDb();
-		db._pushSelect([]);
-		db._pushSelect([]);
-		db._pushAll([]);
-		db._pushAll([]);
-		db._pushAll([]);
+		db._pushSelect(maxDateRows(null)); // Solidarity empty
+		db._pushAll(maxDateRows(null)); // Slack empty
 
-		const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+		const result = await getDashboardSignups(db as never, { days: 90 });
 		expect(result).toEqual({ solidarity: [], slack: [] });
 	});
 
 	it('sorts Slack days ascending by date', async () => {
 		const db = makeDb();
+		db._pushSelect(maxDateRows(null));
 		db._pushSelect([]);
-		db._pushSelect([]);
+		db._pushAll(maxDateRows('2026-05-10'));
 		db._pushAll([
 			{ date: '2026-05-10', chapter_id: 100, count: 1 },
 			{ date: '2026-05-08', chapter_id: 100, count: 1 },
@@ -291,25 +288,23 @@ describe('getDashboardSignups', () => {
 			{ date: '2026-05-09', total: 1 },
 		]);
 
-		const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+		const result = await getDashboardSignups(db as never, { days: 90 });
 		expect(result.slack.map((d) => d.date)).toEqual(['2026-05-08', '2026-05-09', '2026-05-10']);
 	});
 
 	describe('distinct-total sentinel', () => {
 		it('uses the -2 sentinel row as the daily total instead of summing chapter buckets', async () => {
 			const db = makeDb();
+			db._pushSelect(maxDateRows('2026-05-10'));
 			// Two users, both in chapters 100 and 200. Sum-of-buckets = 4; distinct = 2.
 			db._pushSelect([
 				{ date: '2026-05-10', chapterId: -2, chapterName: null, count: 2 },
 				{ date: '2026-05-10', chapterId: 100, chapterName: 'Alpha', count: 2 },
 				{ date: '2026-05-10', chapterId: 200, chapterName: 'Beta', count: 2 },
 			]);
-			db._pushSelect([]);
-			db._pushAll([]);
-			db._pushAll([]);
-			db._pushAll([]);
+			db._pushAll(maxDateRows(null));
 
-			const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+			const result = await getDashboardSignups(db as never, { days: 90 });
 
 			expect(result.solidarity).toEqual([
 				{
@@ -325,16 +320,14 @@ describe('getDashboardSignups', () => {
 
 		it('falls back to sum-of-bands when no sentinel row exists (legacy data)', async () => {
 			const db = makeDb();
+			db._pushSelect(maxDateRows('2026-05-10'));
 			db._pushSelect([
 				{ date: '2026-05-10', chapterId: 100, chapterName: 'Alpha', count: 3 },
 				{ date: '2026-05-10', chapterId: 200, chapterName: 'Beta', count: 4 },
 			]);
-			db._pushSelect([]);
-			db._pushAll([]);
-			db._pushAll([]);
-			db._pushAll([]);
+			db._pushAll(maxDateRows(null));
 
-			const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+			const result = await getDashboardSignups(db as never, { days: 90 });
 			expect(result.solidarity[0]!.total).toBe(7);
 		});
 
@@ -343,18 +336,15 @@ describe('getDashboardSignups', () => {
 			// 3 distinct users; chapter 100 has 3, chapter 200 has 1.
 			// With chapter 100 excluded, sum-of-non-excluded-bands = 1.
 			// The sentinel (3) would include the excluded users, so we must skip it.
+			db._pushSelect(maxDateRows('2026-05-10'));
 			db._pushSelect([
 				{ date: '2026-05-10', chapterId: -2, chapterName: null, count: 3 },
 				{ date: '2026-05-10', chapterId: 200, chapterName: 'Beta', count: 1 },
 			]);
-			db._pushSelect([]);
-			db._pushAll([]);
-			db._pushAll([]);
-			db._pushAll([]);
+			db._pushAll(maxDateRows(null));
 
 			const result = await getDashboardSignups(db as never, {
 				days: 90,
-				now: NOW,
 				excludedChapterIds: new Set([100]),
 			});
 			expect(result.solidarity[0]!.total).toBe(1);
@@ -362,16 +352,14 @@ describe('getDashboardSignups', () => {
 
 		it('never surfaces the -2 sentinel as a byChapter entry', async () => {
 			const db = makeDb();
+			db._pushSelect(maxDateRows('2026-05-10'));
 			db._pushSelect([
 				{ date: '2026-05-10', chapterId: -2, chapterName: null, count: 1 },
 				{ date: '2026-05-10', chapterId: 100, chapterName: 'Alpha', count: 1 },
 			]);
-			db._pushSelect([]);
-			db._pushAll([]);
-			db._pushAll([]);
-			db._pushAll([]);
+			db._pushAll(maxDateRows(null));
 
-			const result = await getDashboardSignups(db as never, { days: 90, now: NOW });
+			const result = await getDashboardSignups(db as never, { days: 90 });
 			for (const day of result.solidarity) {
 				for (const c of day.byChapter) {
 					expect(c.chapterId).not.toBe(-2);
@@ -383,13 +371,15 @@ describe('getDashboardSignups', () => {
 	describe('excludedChapterIds', () => {
 		it('omits a NOT IN clause from every query when the set is empty', async () => {
 			const db = makeDb();
-			db._pushSelect([]);
-			db._pushSelect([]);
+			db._pushSelect(maxDateRows('2026-05-10')); // Solidarity probe
+			db._pushSelect([]); // snapshot rows
+			db._pushSelect([]); // Slack chapter names
+			db._pushAll(maxDateRows('2026-05-10')); // Slack probe
 			db._pushAll([]);
 			db._pushAll([]);
 			db._pushAll([]);
 
-			await getDashboardSignups(db as never, { days: 90, now: NOW });
+			await getDashboardSignups(db as never, { days: 90 });
 
 			const allSql = db.all.mock.calls.map((c) => JSON.stringify(c[0]));
 			for (const s of allSql) {
@@ -400,31 +390,32 @@ describe('getDashboardSignups', () => {
 
 		it('passes the exclusion through to every query when the set is non-empty', async () => {
 			const db = makeDb();
-			db._pushSelect([]);
-			db._pushSelect([]);
+			db._pushSelect(maxDateRows('2026-05-10')); // Solidarity probe
+			db._pushSelect([]); // snapshot rows
+			db._pushSelect([]); // Slack chapter names
+			db._pushAll(maxDateRows('2026-05-10')); // Slack probe
 			db._pushAll([]);
 			db._pushAll([]);
 			db._pushAll([]);
 
 			await getDashboardSignups(db as never, {
 				days: 90,
-				now: NOW,
 				excludedChapterIds: new Set([1008, 1999]),
 			});
 
-			// db.all is called three times for Slack (per-chapter, null-chapter, total).
-			// chapter and total queries get a NOT IN clause; null-chapter doesn't,
-			// because those rows have no chapter IDs to match against.
-			const allSql = db.all.mock.calls.map((c) => JSON.stringify(c[0]));
-			expect(allSql).toHaveLength(3);
-			expect(allSql[0]).toContain('NOT IN');
-			expect(allSql[0]).toContain('1008');
-			expect(allSql[0]).toContain('1999');
-			expect(allSql[1]).not.toContain('NOT IN');
-			expect(allSql[2]).toContain('EXISTS');
-			expect(allSql[2]).toContain('NOT IN');
-			expect(allSql[2]).toContain('1008');
-			expect(allSql[2]).toContain('1999');
+			// Slack issues three data queries after the latest-date probe (per-chapter,
+			// null-chapter, total). chapter and total queries get a NOT IN clause;
+			// null-chapter doesn't, because those rows have no chapter IDs to match.
+			const dataSql = db.all.mock.calls.slice(1).map((c) => JSON.stringify(c[0]));
+			expect(dataSql).toHaveLength(3);
+			expect(dataSql[0]).toContain('NOT IN');
+			expect(dataSql[0]).toContain('1008');
+			expect(dataSql[0]).toContain('1999');
+			expect(dataSql[1]).not.toContain('NOT IN');
+			expect(dataSql[2]).toContain('EXISTS');
+			expect(dataSql[2]).toContain('NOT IN');
+			expect(dataSql[2]).toContain('1008');
+			expect(dataSql[2]).toContain('1999');
 
 			// The Solidarity query is built via drizzle's query builder, so the
 			// exclusion lands in the `.where()` call as an AND of (gte, notInArray).
@@ -441,12 +432,11 @@ describe('getDashboardSignups', () => {
 
 		it('loadSolidaritySignups receives the exclusion (top-level entry point)', async () => {
 			const db = makeDb();
-			db._pushSelect([]);
-			db._pushSelect([]); // chapter-name lookup not needed here, but loaded by loadChapterNames
+			db._pushSelect(maxDateRows('2026-05-10')); // latest-date probe
+			db._pushSelect([]); // snapshot rows
 
 			await loadSolidaritySignups(db as never, {
 				days: 30,
-				now: NOW,
 				excludedChapterIds: new Set([42]),
 			});
 
@@ -458,6 +448,7 @@ describe('getDashboardSignups', () => {
 
 		it('loadSlackSignups receives the exclusion (top-level entry point)', async () => {
 			const db = makeDb();
+			db._pushAll(maxDateRows('2026-05-10')); // latest-date probe
 			db._pushSelect([]); // chapter-name lookup
 			db._pushAll([]);
 			db._pushAll([]);
@@ -465,15 +456,14 @@ describe('getDashboardSignups', () => {
 
 			await loadSlackSignups(db as never, {
 				days: 30,
-				now: NOW,
 				excludedChapterIds: new Set([42]),
 			});
 
-			const allSql = db.all.mock.calls.map((c) => JSON.stringify(c[0]));
-			expect(allSql[0]).toContain('NOT IN');
-			expect(allSql[0]).toContain('42');
-			expect(allSql[2]).toContain('EXISTS');
-			expect(allSql[2]).toContain('42');
+			const dataSql = db.all.mock.calls.slice(1).map((c) => JSON.stringify(c[0]));
+			expect(dataSql[0]).toContain('NOT IN');
+			expect(dataSql[0]).toContain('42');
+			expect(dataSql[2]).toContain('EXISTS');
+			expect(dataSql[2]).toContain('42');
 		});
 	});
 });

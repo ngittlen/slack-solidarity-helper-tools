@@ -33,7 +33,6 @@ export interface DashboardSignups {
 
 export interface GetDashboardSignupsOptions {
 	days: number;
-	now?: Date;
 	/** Chapter IDs to omit from the result (e.g. test / internal-only chapters).
 	 *  Solidarity: drops rows entirely. Slack: drops per-chapter rows and also
 	 *  drops users whose chapter_ids contain ONLY excluded chapters (so totals
@@ -41,12 +40,49 @@ export interface GetDashboardSignupsOptions {
 	excludedChapterIds?: ReadonlySet<number>;
 }
 
-// Window covers the last `days` calendar dates (UTC), inclusive of today.
-// e.g. days=1 → just today; days=90 → today and the 89 prior days.
-function windowStartDate(days: number, now: Date): string {
-	const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-	const start = new Date(todayUtc - (days - 1) * 24 * 60 * 60 * 1000);
-	return start.toISOString().slice(0, 10);
+// Window covers `days` calendar dates (UTC) ending on `endDate`, inclusive.
+// e.g. days=7 → endDate and the 6 prior dates; days=90 → endDate and the 89
+// prior dates.
+//
+// `endDate` is the latest date a source actually has data for — NOT today (see
+// the latest*Date helpers). Anchoring to the newest data instead of "today"
+// means a 7/30/90-day view always spans that many days of real data even when
+// today's nightly snapshot hasn't been written yet. Anchoring to today instead
+// dropped a day off the right edge (the chart's x-axis stops at the last day
+// with data), so the view rendered `days - 1` days.
+function windowStartDate(endDate: string, days: number): string {
+	const [y, m, d] = endDate.split('-').map(Number);
+	const start = Date.UTC(y!, m! - 1, d! - (days - 1));
+	return new Date(start).toISOString().slice(0, 10);
+}
+
+// Latest date each source has data for. Returns null when the source is empty,
+// in which case the loader short-circuits to [].
+async function latestSolidarityDate(
+	db: LibSQLDatabase<Record<string, unknown>>,
+): Promise<string | null> {
+	const rows = await db
+		.select({ max: sql<string | null>`MAX(${solidarityDailySnapshots.date})` })
+		.from(solidarityDailySnapshots);
+	return rows[0]?.max ?? null;
+}
+
+async function latestSlackDate(
+	db: LibSQLDatabase<Record<string, unknown>>,
+): Promise<string | null> {
+	const rows = (await db.all(
+		sql`SELECT MAX(DATE(joined_at)) AS max FROM slack_joins WHERE joined_at IS NOT NULL`,
+	)) as Array<{ max: string | null }>;
+	return rows[0]?.max ?? null;
+}
+
+async function latestDoorKnockDate(
+	db: LibSQLDatabase<Record<string, unknown>>,
+): Promise<string | null> {
+	const rows = (await db.all(sql`SELECT MAX(date) AS max FROM door_knock_daily`)) as Array<{
+		max: string | null;
+	}>;
+	return rows[0]?.max ?? null;
 }
 
 // Sort byChapter ascending by chapterId, with the null bucket last.
@@ -60,29 +96,24 @@ export async function loadSolidaritySignups(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	options: GetDashboardSignupsOptions,
 ): Promise<DaySignups[]> {
-	return loadSolidarity(
-		db,
-		windowStartDate(options.days, options.now ?? new Date()),
-		options.excludedChapterIds ?? new Set(),
-	);
+	return loadSolidarity(db, options.days, options.excludedChapterIds ?? new Set());
 }
 
 export async function loadSlackSignups(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	options: GetDashboardSignupsOptions,
 ): Promise<DaySignups[]> {
-	return loadSlack(
-		db,
-		windowStartDate(options.days, options.now ?? new Date()),
-		options.excludedChapterIds ?? new Set(),
-	);
+	return loadSlack(db, options.days, options.excludedChapterIds ?? new Set());
 }
 
 async function loadSolidarity(
 	db: LibSQLDatabase<Record<string, unknown>>,
-	startDate: string,
+	days: number,
 	excluded: ReadonlySet<number>,
 ): Promise<DaySignups[]> {
+	const endDate = await latestSolidarityDate(db);
+	if (endDate === null) return [];
+	const startDate = windowStartDate(endDate, days);
 	// User-supplied excluded IDs only contain real chapter IDs, so the SQL
 	// filter naturally leaves the DISTINCT_TOTAL_SENTINEL row through. We
 	// separate it from real-chapter rows in JS below.
@@ -135,17 +166,20 @@ async function loadSolidarity(
 			if (day) day.total = distinctTotal;
 		}
 	}
-	const days = [...byDate.values()];
-	for (const d of days) d.byChapter.sort(sortByChapter);
-	days.sort((a, b) => a.date.localeCompare(b.date));
-	return days;
+	const result = [...byDate.values()];
+	for (const d of result) d.byChapter.sort(sortByChapter);
+	result.sort((a, b) => a.date.localeCompare(b.date));
+	return result;
 }
 
 async function loadSlack(
 	db: LibSQLDatabase<Record<string, unknown>>,
-	startDate: string,
+	days: number,
 	excluded: ReadonlySet<number>,
 ): Promise<DaySignups[]> {
+	const endDate = await latestSlackDate(db);
+	if (endDate === null) return [];
+	const startDate = windowStartDate(endDate, days);
 	// Excluded chapter IDs come from a trusted env var, so inlining as a comma
 	// list is safe (drizzle's `sql.raw` skips bind parameters). When empty, the
 	// fragments below collapse to `sql``.
@@ -227,10 +261,10 @@ async function loadSlack(
 		day(r.date).total = Number(r.total);
 	}
 
-	const days = [...byDate.values()];
-	for (const d of days) d.byChapter.sort(sortByChapter);
-	days.sort((a, b) => a.date.localeCompare(b.date));
-	return days;
+	const result = [...byDate.values()];
+	for (const d of result) d.byChapter.sort(sortByChapter);
+	result.sort((a, b) => a.date.localeCompare(b.date));
+	return result;
 }
 
 /** Doors knocked per day from the nightly door_knock_daily snapshot, bucketed
@@ -240,9 +274,11 @@ async function loadSlack(
  *  excludedChapterIds deliberately does not apply here. */
 export async function loadDoorKnockSignups(
 	db: LibSQLDatabase<Record<string, unknown>>,
-	options: { days: number; now?: Date },
+	options: { days: number },
 ): Promise<DaySignups[]> {
-	const startDate = windowStartDate(options.days, options.now ?? new Date());
+	const endDate = await latestDoorKnockDate(db);
+	if (endDate === null) return [];
+	const startDate = windowStartDate(endDate, options.days);
 	// Chapters can span several codes (metro city codes + a county code), so
 	// aggregate to (date, chapter) in SQL.
 	const rows = (await db.all(sql`
@@ -272,21 +308,20 @@ export async function loadDoorKnockSignups(
 		day.total += Number(r.attempts);
 	}
 
-	const days = [...byDate.values()];
-	for (const d of days) d.byChapter.sort(sortByChapter);
-	days.sort((a, b) => a.date.localeCompare(b.date));
-	return days;
+	const result = [...byDate.values()];
+	for (const d of result) d.byChapter.sort(sortByChapter);
+	result.sort((a, b) => a.date.localeCompare(b.date));
+	return result;
 }
 
 export async function getDashboardSignups(
 	db: LibSQLDatabase<Record<string, unknown>>,
 	options: GetDashboardSignupsOptions,
 ): Promise<DashboardSignups> {
-	const startDate = windowStartDate(options.days, options.now ?? new Date());
 	const excluded = options.excludedChapterIds ?? new Set<number>();
 	const [solidarity, slack] = await Promise.all([
-		loadSolidarity(db, startDate, excluded),
-		loadSlack(db, startDate, excluded),
+		loadSolidarity(db, options.days, excluded),
+		loadSlack(db, options.days, excluded),
 	]);
 	return { solidarity, slack };
 }

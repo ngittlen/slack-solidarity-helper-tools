@@ -6,7 +6,9 @@
 // highlights chapters improving the most week-over-week. While no prior-week
 // data exists (denominator 1 for everyone) this is exactly a raw-total
 // ranking, and it transitions to improvement-weighted automatically once a
-// previous week is on record.
+// previous week is on record. Chapters with no prior-week data are ranked below
+// every chapter that has a week-over-week comparison, so a brand-new chapter's
+// raw volume can't leapfrog established chapters to the top (see buildLeaderboard).
 //
 // Both tabs read door_knock_daily only (data through last night's snapshot) —
 // unlike the Slack board, history is already frozen per day, so no separate
@@ -16,7 +18,7 @@
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { sql } from 'drizzle-orm';
-import { reRank, DEFAULT_RANKING_ALPHA, TOP_N } from '../growth-ranking.js';
+import { rankingScore, DEFAULT_RANKING_ALPHA, TOP_N } from '../growth-ranking.js';
 
 export interface DoorsChapterEntry {
 	chapterName: string;
@@ -120,15 +122,29 @@ function buildLeaderboard(
 			};
 		});
 
-	const top = reRank(entries, rankingAlpha, TOP_N).map(
-		({ chapterName, doors, contacts, prevDoors, pct }) => ({
-			chapterName,
-			doors,
-			contacts,
-			prevDoors,
-			pct,
-		}),
-	);
+	// Chapters with no prior-week doors have a denominator of 1 (prevDoors + 1),
+	// so their raw volume would otherwise float them straight to the top even
+	// though there's no week-over-week improvement to reward. Rank every chapter
+	// that HAS a prior-week comparison ahead of every chapter that doesn't, then
+	// fall back to the shared power-law score (raw doors as the final tiebreak).
+	// When nobody has prior-week data this collapses to a raw-doors ranking, same
+	// as before.
+	entries.sort((a, b) => {
+		const aHasPrev = a.prevDoors > 0;
+		const bHasPrev = b.prevDoors > 0;
+		if (aHasPrev !== bHasPrev) return aHasPrev ? -1 : 1;
+		const scoreDelta = rankingScore(b, rankingAlpha) - rankingScore(a, rankingAlpha);
+		if (scoreDelta !== 0) return scoreDelta;
+		return b.doors - a.doors;
+	});
+
+	const top = entries.slice(0, TOP_N).map(({ chapterName, doors, contacts, prevDoors, pct }) => ({
+		chapterName,
+		doors,
+		contacts,
+		prevDoors,
+		pct,
+	}));
 
 	const totalDoors = [...byChapter.values()].reduce((sum, t) => sum + t.doors, 0);
 	const totalContacts = [...byChapter.values()].reduce((sum, t) => sum + t.contacts, 0);

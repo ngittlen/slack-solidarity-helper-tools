@@ -88,6 +88,52 @@ describe('computeDoorsLeaderboardPair', () => {
 		});
 	});
 
+	it('ranks chapters with no prior-week data below those that have it, even on higher raw volume', async () => {
+		// "Newcomer" knocked the most doors this week but has no prior week, so its
+		// score (400 / 1) would otherwise top the board. "Established" improved
+		// 100 → 150 week-over-week. The established chapter must rank first; the
+		// newcomer drops to the bottom despite its larger raw total.
+		const { db } = makeDb([
+			{ date: '2026-07-08', chapter_name: 'Established', doors: 100, contacts: 0 }, // last week
+			{ date: '2026-07-14', chapter_name: 'Established', doors: 150, contacts: 0 }, // this week
+			{ date: '2026-07-14', chapter_name: 'Newcomer', doors: 400, contacts: 0 }, // this week only
+		]);
+
+		const pair = await computeDoorsLeaderboardPair(db, { now: NOW, rankingAlpha: 0.7 });
+
+		if (!pair.thisWeek.ok) throw new Error('expected ok');
+		expect(pair.thisWeek.leaderboard.topChapters.map((c) => c.chapterName)).toEqual([
+			'Established',
+			'Newcomer',
+		]);
+		// The newcomer is still listed (below the established chapter), with no
+		// prior-week comparison.
+		expect(pair.thisWeek.leaderboard.topChapters[1]).toMatchObject({
+			chapterName: 'Newcomer',
+			doors: 400,
+			prevDoors: 0,
+			pct: 0,
+		});
+	});
+
+	it('orders multiple prior-week-less chapters among themselves by raw doors, at the bottom', async () => {
+		const { db } = makeDb([
+			{ date: '2026-07-08', chapter_name: 'Established', doors: 50, contacts: 0 }, // last week
+			{ date: '2026-07-14', chapter_name: 'Established', doors: 60, contacts: 0 }, // this week
+			{ date: '2026-07-14', chapter_name: 'NewBig', doors: 300, contacts: 0 }, // this week only
+			{ date: '2026-07-14', chapter_name: 'NewSmall', doors: 90, contacts: 0 }, // this week only
+		]);
+
+		const pair = await computeDoorsLeaderboardPair(db, { now: NOW, rankingAlpha: 0.7 });
+
+		if (!pair.thisWeek.ok) throw new Error('expected ok');
+		expect(pair.thisWeek.leaderboard.topChapters.map((c) => c.chapterName)).toEqual([
+			'Established',
+			'NewBig',
+			'NewSmall',
+		]);
+	});
+
 	it('weights by week-over-week improvement once previous-week data exists', async () => {
 		// α = 1: Steady 100→100 scores 100/101 ≈ 0.99; Surging 10→60 scores
 		// 60/11 ≈ 5.45 — Surging ranks first despite fewer doors.
