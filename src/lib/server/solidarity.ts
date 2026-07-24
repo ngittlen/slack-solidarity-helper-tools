@@ -1,6 +1,6 @@
 import { errMessage } from '../err-message.js';
 import { SOLIDARITY_API_TOKEN } from './env.js';
-import { fetchPaginated } from './solidarity-paginate.js';
+import { fetchPaginated, fetchWithRetry } from './solidarity-paginate.js';
 
 export interface SolidarityUser {
 	id: number;
@@ -24,9 +24,13 @@ export async function findUserByEmailStrict(
 	email: string,
 ): Promise<SolidarityUser | null> {
 	const url = `https://api.solidarity.tech/v1/users?email=${encodeURIComponent(email)}&_limit=1`;
-	const response = await fetch(url, {
-		headers: { Authorization: `Bearer ${token}` },
-	});
+	const response = await fetchWithRetry(
+		url,
+		{ headers: { Authorization: `Bearer ${token}` } },
+		`user lookup for ${email}`,
+		'solidarity',
+		{ retriesUsed: 0 },
+	);
 	if (!response.ok) {
 		throw new Error(`Solidarity user lookup returned ${response.status} for ${email}`);
 	}
@@ -81,17 +85,23 @@ export async function setUserCustomProperty(
 	internalName: string,
 	value: string,
 ): Promise<void> {
-	const response = await fetch(`https://api.solidarity.tech/v1/users/${userId}`, {
-		method: 'PUT',
-		headers: {
-			Authorization: `Bearer ${token}`,
-			'Content-Type': 'application/json',
+	const response = await fetchWithRetry(
+		`https://api.solidarity.tech/v1/users/${userId}`,
+		{
+			method: 'PUT',
+			headers: {
+				Authorization: `Bearer ${token}`,
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				custom_user_properties: { [internalName]: value },
+				append_custom_user_properties: true,
+			}),
 		},
-		body: JSON.stringify({
-			custom_user_properties: { [internalName]: value },
-			append_custom_user_properties: true,
-		}),
-	});
+		`user update for ${userId}`,
+		'solidarity',
+		{ retriesUsed: 0 },
+	);
 	if (!response.ok) {
 		throw new Error(
 			`Solidarity user update returned ${response.status}: ${await response.text()}`,
