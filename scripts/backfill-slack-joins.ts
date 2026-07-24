@@ -21,6 +21,7 @@
 import { createClient } from '@libsql/client';
 import { WebClient } from '@slack/web-api';
 import { dbConfig } from '../bin/db-config.js';
+import { fetchWithRetry } from '../src/lib/server/solidarity-paginate.js';
 
 // ---------------------------------------------------------------------------
 // Config from env
@@ -51,15 +52,15 @@ interface SolidarityUser {
 
 async function getSolidarityUser(email: string): Promise<SolidarityUser | null> {
 	const url = `https://api.solidarity.tech/v1/users?email=${encodeURIComponent(email)}&_limit=1`;
-	const res = await fetch(url, {
-		headers: { Authorization: `Bearer ${SOLIDARITY_API_TOKEN}` },
-	});
-	if (res.status === 429) {
-		const retryAfter = parseInt(res.headers.get('Retry-After') ?? '30', 10);
-		console.warn(`  [solidarity] rate limited — waiting ${retryAfter}s`);
-		await sleep(retryAfter * 1000);
-		return getSolidarityUser(email);
-	}
+	// Bounded 429 retry via the shared helper — the previous hand-rolled version
+	// recursed with no budget and could spin forever on a persistent rate limit.
+	const res = await fetchWithRetry(
+		url,
+		{ headers: { Authorization: `Bearer ${SOLIDARITY_API_TOKEN}` } },
+		`user lookup for ${email}`,
+		'backfill',
+		{ retriesUsed: 0 },
+	);
 	if (!res.ok) return null;
 	const data = (await res.json()) as { data?: SolidarityUser[] };
 	return data.data?.[0] ?? null;
