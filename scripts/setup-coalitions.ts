@@ -36,7 +36,7 @@
  * Required env vars: SOLIDARITY_API_TOKEN
  */
 
-import { fetchPaginated } from '../src/lib/server/solidarity-paginate.js';
+import { fetchPaginated, fetchWithRetry } from '../src/lib/server/solidarity-paginate.js';
 
 const API_BASE = 'https://api.solidarity.tech';
 const TOKEN = process.env.SOLIDARITY_API_TOKEN ?? '';
@@ -97,14 +97,21 @@ function propertyLabel(p: RawProperty): string {
 }
 
 async function apiPost(path: string, body: unknown): Promise<unknown> {
-	const res = await fetch(`${API_BASE}${path}`, {
-		method: 'POST',
-		headers: {
-			Authorization: `Bearer ${TOKEN}`,
-			'Content-Type': 'application/json',
+	// A 429 rejects the POST before it applies, so a bounded retry is safe.
+	const res = await fetchWithRetry(
+		`${API_BASE}${path}`,
+		{
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${TOKEN}`,
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify(body),
 		},
-		body: JSON.stringify(body),
-	});
+		`POST ${path}`,
+		'setup-coalitions',
+		{ retriesUsed: 0 },
+	);
 	const text = await res.text();
 	if (!res.ok) {
 		throw new Error(`POST ${path} returned ${res.status}: ${text}`);
