@@ -1,5 +1,8 @@
-// Projects the total doors knocked by the countdown deadline: doors recorded
-// so far plus the recent daily pace extrapolated over the time remaining.
+// Projects the doors that will be knocked between now and the countdown
+// deadline: the recent daily pace extrapolated over the knock-time remaining.
+// This is the incremental figure the banner promises ("~N more doors knocked
+// between today and when the timer hits 0"), so it deliberately does NOT
+// include the doors already knocked to date.
 //
 // Pace = mean of the last PROJECTION_WINDOW_DAYS snapshot dates (or as many
 // as exist). Dates come from door_knock_daily, which records a row per code
@@ -32,11 +35,12 @@ export async function loadDoorKnockDayTotals(
 	return rows.map((r) => ({ date: r.date, total: Number(r.total) }));
 }
 
-/** Doors knocked so far plus the recent pace times the (fractional) days
- *  until `endAtMs`. The pace is per CANVASSING day (the snapshot rows are
- *  whole-day totals), so the remaining time counts only door-knocking hours
- *  (8 am – 9 pm America/Detroit) rather than assuming 24/7 knocking. Null
- *  when there's no data to extrapolate from or the deadline is
+/** The recent pace times the (fractional) canvassing days until `endAtMs` —
+ *  i.e. the *additional* doors expected between `nowMs` and the deadline, NOT
+ *  including the doors already knocked. The pace is per CANVASSING day (the
+ *  snapshot rows are whole-day totals), so the remaining time counts only
+ *  door-knocking hours (8 am – 9 pm America/Detroit) rather than assuming 24/7
+ *  knocking. Null when there's no data to extrapolate from or the deadline is
  *  invalid/already passed. */
 export function projectDoorsAtDeadline(
 	dayTotals: DoorKnockDayTotal[],
@@ -46,12 +50,11 @@ export function projectDoorsAtDeadline(
 	if (dayTotals.length === 0) return null;
 	if (!Number.isFinite(endAtMs) || endAtMs <= nowMs) return null;
 
-	const totalToDate = dayTotals.reduce((sum, d) => sum + d.total, 0);
 	const window = dayTotals.slice(-PROJECTION_WINDOW_DAYS);
 	const dailyPace = window.reduce((sum, d) => sum + d.total, 0) / window.length;
 
 	const remainingCanvassDays = knockableMsBetween(nowMs, endAtMs) / KNOCK_DAY_MS;
-	return Math.round(totalToDate + dailyPace * remainingCanvassDays);
+	return Math.round(dailyPace * remainingCanvassDays);
 }
 
 // Door-knocking hours: 8 am – 9 pm campaign-local (America/Detroit).

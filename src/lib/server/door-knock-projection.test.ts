@@ -51,36 +51,40 @@ describe('projectDoorsAtDeadline', () => {
 	it('extrapolates the pace over remaining canvassing days, not wall-clock days', () => {
 		// 100/day pace over 7 days. Deadline 9 PM tomorrow = 2 canvassing days
 		// away (13h today + 13h tomorrow) even though it's 37 wall-clock hours.
+		// The projection is the ADDITIONAL doors only (2 days × 100), not the
+		// running total.
 		const week = days([100, 100, 100, 100, 100, 100, 100]);
-		expect(projectDoorsAtDeadline(week, NOW + DAY + 13 * HOUR, NOW)).toBe(900);
+		expect(projectDoorsAtDeadline(week, NOW + DAY + 13 * HOUR, NOW)).toBe(200);
 		// Overnight hours add nothing: 9 PM today vs 8 AM tomorrow.
-		expect(projectDoorsAtDeadline(week, NOW + 13 * HOUR, NOW)).toBe(800);
-		expect(projectDoorsAtDeadline(week, NOW + DAY, NOW)).toBe(800);
+		expect(projectDoorsAtDeadline(week, NOW + 13 * HOUR, NOW)).toBe(100);
+		expect(projectDoorsAtDeadline(week, NOW + DAY, NOW)).toBe(100);
 	});
 
 	it('counts a partial canvassing day fractionally', () => {
 		// Deadline 2:30 PM today: 6.5 of 13 knockable hours → half a day's pace.
 		const week = days([100, 100, 100, 100, 100, 100, 100]);
-		expect(projectDoorsAtDeadline(week, NOW + 6.5 * HOUR, NOW)).toBe(750);
+		expect(projectDoorsAtDeadline(week, NOW + 6.5 * HOUR, NOW)).toBe(50);
 	});
 
-	it('uses only the last PROJECTION_WINDOW_DAYS dates for the pace but all data for the base', () => {
+	it('uses only the last PROJECTION_WINDOW_DAYS dates for the pace', () => {
 		// 10 days: first three at 1000/day (old surge), last seven at 100/day.
+		// The surge days fall outside the pace window, so pace is 100/day; the
+		// projection is 100 × 1 remaining day. Doors already knocked (including
+		// the surge) are NOT part of the projection.
 		const totals = [1000, 1000, 1000, 100, 100, 100, 100, 100, 100, 100];
 		const result = projectDoorsAtDeadline(days(totals), NOW + 1 * DAY, NOW);
-		// Base 3700 + pace 100 × 1 day — the surge days count toward the total
-		// but not the pace.
-		expect(result).toBe(3800);
+		expect(result).toBe(100);
 		expect(totals.length).toBeGreaterThan(PROJECTION_WINDOW_DAYS);
 	});
 
 	it('averages over however many days exist when fewer than the window', () => {
 		// Two days at 80 and 120 → pace 100/day, 3 days left.
-		expect(projectDoorsAtDeadline(days([80, 120]), NOW + 3 * DAY, NOW)).toBe(500);
+		expect(projectDoorsAtDeadline(days([80, 120]), NOW + 3 * DAY, NOW)).toBe(300);
 	});
 
 	it('counts zero-door days against the pace', () => {
-		expect(projectDoorsAtDeadline(days([100, 0]), NOW + 2 * DAY, NOW)).toBe(200);
+		// [100, 0] → pace 50/day; 2 canvassing days left → 100 additional doors.
+		expect(projectDoorsAtDeadline(days([100, 0]), NOW + 2 * DAY, NOW)).toBe(100);
 	});
 
 	it('returns null with no data, a passed deadline, or an invalid deadline', () => {
