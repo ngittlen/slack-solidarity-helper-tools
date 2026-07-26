@@ -1,0 +1,1 @@
+ALTER TABLE `door_knock_canvasser_daily` ADD `chapter_name` text DEFAULT '' NOT NULL;

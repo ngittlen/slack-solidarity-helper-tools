@@ -17,6 +17,7 @@ beforeEach(async () => {
 		canvasser text NOT NULL,
 		attempts integer DEFAULT 0 NOT NULL,
 		contacts integer DEFAULT 0 NOT NULL,
+		chapter_name text DEFAULT '' NOT NULL,
 		PRIMARY KEY(date, code, canvasser)
 	)`);
 });
@@ -24,12 +25,14 @@ beforeEach(async () => {
 afterEach(() => client.close());
 
 async function seed(
-	rows: Array<[date: string, code: string, canvasser: string, attempts: number]>,
+	rows: Array<
+		[date: string, code: string, canvasser: string, attempts: number, chapter?: string]
+	>,
 ): Promise<void> {
-	for (const [date, code, canvasser, attempts] of rows) {
+	for (const [date, code, canvasser, attempts, chapter] of rows) {
 		await client.execute({
-			sql: 'INSERT INTO door_knock_canvasser_daily VALUES (?, ?, ?, ?, 0)',
-			args: [date, code, canvasser, attempts],
+			sql: 'INSERT INTO door_knock_canvasser_daily VALUES (?, ?, ?, ?, 0, ?)',
+			args: [date, code, canvasser, attempts, chapter ?? 'Wayne'],
 		});
 	}
 }
@@ -51,8 +54,8 @@ describe('loadDoorKnockTicker', () => {
 		expect(await loadDoorKnockTicker(db)).toEqual({
 			date: '2026-07-25',
 			entries: [
-				{ canvasser: 'Maria T.', doors: 102, rank: 1 },
-				{ canvasser: 'James R.', doors: 71, rank: 2 },
+				{ canvasser: 'Maria T.', doors: 102, chapter: 'Wayne', rank: 1 },
+				{ canvasser: 'James R.', doors: 71, chapter: 'Wayne', rank: 2 },
 			],
 		});
 	});
@@ -65,7 +68,9 @@ describe('loadDoorKnockTicker', () => {
 
 		const ticker = await loadDoorKnockTicker(db);
 		expect(ticker.date).toBe('2026-07-25');
-		expect(ticker.entries).toEqual([{ canvasser: 'Today T.', doors: 5, rank: 1 }]);
+		expect(ticker.entries).toEqual([
+			{ canvasser: 'Today T.', doors: 5, chapter: 'Wayne', rank: 1 },
+		]);
 	});
 
 	// Overnight the table's latest date is the day that just finished, so the
@@ -90,7 +95,7 @@ describe('loadDoorKnockTicker', () => {
 
 		const { entries } = await loadDoorKnockTicker(db);
 		expect(entries).toHaveLength(TICKER_TOP_N);
-		expect(entries[0]).toEqual({ canvasser: 'Person 14', doors: 15, rank: 1 });
+		expect(entries[0]).toEqual({ canvasser: 'Person 14', doors: 15, chapter: 'Wayne', rank: 1 });
 		expect(entries.map((e) => e.doors)).toEqual([15, 14, 13, 12, 11, 10, 9, 8, 7, 6]);
 		expect(entries.map((e) => e.rank)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 	});
@@ -125,7 +130,41 @@ describe('loadDoorKnockTicker', () => {
 		]);
 
 		const { entries } = await loadDoorKnockTicker(db);
-		expect(entries).toEqual([{ canvasser: 'Knocked', doors: 12, rank: 1 }]);
+		expect(entries).toEqual([{ canvasser: 'Knocked', doors: 12, chapter: 'Wayne', rank: 1 }]);
+	});
+
+	// A ticker cell has room for one region, so someone split across chapters
+	// is shown under the one they knocked most in.
+	it('names the chapter a person knocked the most doors in', async () => {
+		await seed([
+			['2026-07-25', 'ZT2H5D', 'Maria T.', 40, 'Washtenaw'],
+			['2026-07-25', 'AB12CD', 'Maria T.', 62, 'Wayne'],
+		]);
+
+		const { entries } = await loadDoorKnockTicker(db);
+		expect(entries).toEqual([
+			{ canvasser: 'Maria T.', doors: 102, chapter: 'Wayne', rank: 1 },
+		]);
+	});
+
+	it('breaks a chapter tie alphabetically so the region does not flip', async () => {
+		await seed([
+			['2026-07-25', 'ZT2H5D', 'Split S.', 50, 'Wayne'],
+			['2026-07-25', 'AB12CD', 'Split S.', 50, 'Ingham'],
+		]);
+
+		const { entries } = await loadDoorKnockTicker(db);
+		expect(entries[0]).toEqual({
+			canvasser: 'Split S.',
+			doors: 100,
+			chapter: 'Ingham',
+			rank: 1,
+		});
+	});
+
+	it('leaves the region blank rather than inventing one', async () => {
+		await seed([['2026-07-25', 'ZT2H5D', 'Nameless N.', 12, '']]);
+		expect((await loadDoorKnockTicker(db)).entries[0]?.chapter).toBe('');
 	});
 
 	it('reports an empty ticker when the latest day is all zeros', async () => {

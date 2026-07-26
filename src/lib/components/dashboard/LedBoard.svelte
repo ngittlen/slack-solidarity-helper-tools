@@ -19,10 +19,6 @@
 
 <style>
 	.board {
-		/* Spacing of the diode grid. Small enough to read as dots rather than
-		   as a screen door over the text. */
-		--led-pitch: 3px;
-
 		/* Silkscreen is drawn on a 10-unit grid per em (caps are 7 of those
 		   units, verified from the font's head/OS2 tables), so one glyph pixel
 		   is exactly font-size / 10 — which makes glyph pixels, not font-size,
@@ -30,9 +26,26 @@
 		   glyph edge on a device pixel; the bitmap letterforms go soft at
 		   arbitrary sizes, and softness is the one thing that breaks the LED
 		   illusion.
-		   --glyph-px is the body size the ticker inherits. It stays at 2.5px
-		   (a deliberate half pixel: crisp at 2x, marginally soft at 1x). */
-		--glyph-px: 2.5px;
+		   The diode pitch and the ticker's glyph pixel are ONE value, and must
+		   stay that way. The scrolling message advances exactly one pitch per
+		   step, so when a glyph pixel is the same size as a diode, every lit
+		   pixel lands on the next diode and the board reads as LEDs switching
+		   on and off. At any other ratio each hole samples a different part of
+		   a glyph pixel on every step, the on/off pattern beats against itself,
+		   and the eye reads that moiré as the message sliding under a screen
+		   door — that is what a 3px pitch against 2.5px glyph pixels looked
+		   like, a five-step beat. Anything in the ticker that scrolls must
+		   therefore be sized at exactly --glyph-px, never a fraction of it.
+		   A whole number of CSS pixels matters here beyond ordinary crispness:
+		   the message advances one pitch per step, so a fractional pitch puts
+		   alternating steps on half device pixels and the board breathes
+		   between sharp and soft. (Only exact at 100% and 200% display
+		   scaling — at 125% nothing lands whole and there is no fixing it
+		   from here.) Changing this resizes the ticker's type with it. */
+		--led-pitch: 3px;
+		--glyph-px: var(--led-pitch);
+		/* The countdown is static, so it is free of the alignment rule above —
+		   nothing beats when nothing moves. */
 		--glyph-px-label: 3px;
 		--glyph-px-note: 2px;
 		/* The clock steps through whole pixels rather than using a fluid
@@ -73,12 +86,18 @@
 	   as one overlay rather than masking each glyph means nothing has to align
 	   with the font's pixel grid, and the dots can't shimmer against moving
 	   letters.
-	   Hole radius ~1px on a 3px pitch leaves roughly a third of the panel
-	   open — close to the fill factor of a real board. */
+	   The hole radius is a fraction of the pitch rather than a fixed length, so
+	   retuning --glyph-px keeps the same ~1/3 open area — close to the fill
+	   factor of a real board. Smaller reads as a screen door over the text;
+	   larger loses the dot structure. */
 	.board__grid {
 		position: absolute;
 		inset: 0;
-		background-image: radial-gradient(circle at center, transparent 0 1px, #07070a 1.3px 100%);
+		background-image: radial-gradient(
+			circle at center,
+			transparent 0 calc(var(--led-pitch) * 0.34),
+			#07070a calc(var(--led-pitch) * 0.44) 100%
+		);
 		background-size: var(--led-pitch) var(--led-pitch);
 		pointer-events: none;
 		z-index: 5;

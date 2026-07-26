@@ -3,46 +3,106 @@
 
 	interface Props {
 		entries: TickerEntry[];
-		/** Seconds for one full pass of the list. Scaled by entry count below so
-		 *  a long list doesn't crawl and a short one doesn't race. */
-		secondsPerEntry?: number;
+		/** LED columns advanced per second — the board's actual speed.
+		 *
+		 *  Timing is driven from this rather than from a total duration
+		 *  because the motion is stepped: what the eye judges is the cadence
+		 *  of the steps, not how long a lap takes. Deriving it the other way
+		 *  round (a duration from the entry count, with the step count coming
+		 *  from a measurement) left the real rate to fall out of whatever the
+		 *  rendered names happened to be wide — unstable, and fast enough that
+		 *  each step lasted barely more than a frame. Steps that short land on
+		 *  ragged frame boundaries, and that is what read as stutter.
+		 *
+		 *  30 divides both common refresh rates exactly — a step every 2 frames
+		 *  at 60 Hz, every 4 at 120 Hz — so every step is held the same length.
+		 *  If you retune this, the other clean values are 20, 15, 12 and 10.
+		 *  Dividing exactly isn't strictly required (nearby rates only wobble
+		 *  by a fraction of a frame), but going much above 30 is: past that,
+		 *  a step is barely one frame and the cadence turns ragged again. */
+		columnsPerSecond?: number;
 	}
 
-	let { entries, secondsPerEntry = 3.2 }: Props = $props();
+	let { entries, columnsPerSecond = 30 }: Props = $props();
+
+	// A real matrix sign doesn't glide — it shifts the message one LED column
+	// at a time. steps() gives exactly that, but only if the step count equals
+	// how many LED columns the strip spans, which depends on rendered text
+	// width and so can't be known in CSS. Measure it.
+	//
+	// Stepping the travel (-50%, i.e. exactly one strip) into N parts rather
+	// than translating by a computed N x pitch keeps the loop seam exact; the
+	// cost is that each step is stripWidth/N instead of precisely one pitch,
+	// which for a strip of any real length is off by thousandths of a pixel.
+	let steps = $state(0);
+
+	/** Attachment on the measured strip: counts how many LED columns it spans
+	 *  and keeps that current. The ResizeObserver also catches the reflow when
+	 *  Silkscreen finishes loading — font-display: swap renders the fallback
+	 *  first, at a different width. */
+	function countColumns(node: HTMLElement) {
+		const measure = () => {
+			const pitch = parseFloat(getComputedStyle(node).getPropertyValue('--led-pitch')) || 3;
+			steps = Math.max(1, Math.round(node.getBoundingClientRect().width / pitch));
+		};
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(node);
+		return () => observer.disconnect();
+	}
+
+	// Before the strip is measured — during SSR and the first frames — stand in
+	// a nominal column count so the animation is well-formed rather than
+	// steps(0), which is invalid and would kill it outright. The observer
+	// replaces it as soon as layout settles.
+	const FALLBACK_COLUMNS = 400;
+	const columns = $derived(steps > 0 ? steps : FALLBACK_COLUMNS);
 
 	// The strip is rendered twice back to back and translated by exactly -50%,
 	// so the second copy is under the cursor the instant the first scrolls out
-	// and the loop has no visible seam. Duration covers one copy.
-	const duration = $derived(Math.max(entries.length * secondsPerEntry, 8));
-	const durationStyle = $derived(`--ticker-duration:${duration}s`);
+	// and the loop has no visible seam. One lap covers one copy — which at a
+	// fixed column rate takes as long as that copy is wide.
+	const duration = $derived(columns / columnsPerSecond);
+
+	const trackStyle = $derived(`--ticker-duration:${duration}s;--ticker-steps:${columns}`);
 </script>
 
 {#if entries.length > 0}
 	<!-- The whole board is aria-hidden: it's a moving target, it renders the
 	     list twice for the seamless loop, and the sr-only list below carries
 	     the same information in a readable form. -->
-	<div class="ticker" style={durationStyle} aria-hidden="true">
+	{#snippet cells()}
+		{#each entries as entry (entry.canvasser)}
+			<div class="cell" class:cell--lead={entry.rank === 1}>
+				<span class="cell__name">{entry.canvasser}</span>
+				<!-- No separators between count, unit and region: colour does that
+				     job, and a punctuation glyph would just eat LED columns. -->
+				<span class="cell__doors"
+					><span class="cell__count">{entry.doors.toLocaleString('en-US')}</span
+					><span class="cell__unit">doors</span
+					>{#if entry.chapter}<span class="cell__region">{entry.chapter}</span>{/if}</span
+				>
+			</div>
+		{/each}
+	{/snippet}
+
+	<div class="ticker" style={trackStyle} aria-hidden="true">
 		<p class="ticker__header">Most doors knocked today:</p>
 		<div class="ticker__track">
-			{#each [0, 1] as copy (copy)}
-				<div class="ticker__strip">
-					{#each entries as entry (entry.canvasser)}
-						<div class="cell" class:cell--lead={entry.rank === 1}>
-							<span class="cell__name">{entry.canvasser}</span>
-							<span class="cell__doors">
-								{entry.doors.toLocaleString('en-US')}
-								<span class="cell__unit">doors</span>
-							</span>
-						</div>
-					{/each}
-				</div>
-			{/each}
+			<!-- Only the first copy is measured; the second exists to cover the
+			     seam and is identical by construction. -->
+			<div class="ticker__strip" {@attach countColumns}>{@render cells()}</div>
+			<div class="ticker__strip">{@render cells()}</div>
 		</div>
 	</div>
 
 	<ol class="ticker__sr" aria-label="Most doors knocked today">
 		{#each entries as entry (entry.canvasser)}
-			<li>{entry.canvasser}: {entry.doors} doors knocked</li>
+			<li>
+				{entry.canvasser}: {entry.doors} doors knocked{entry.chapter
+					? ` in ${entry.chapter}`
+					: ''}
+			</li>
 		{/each}
 	</ol>
 {/if}
@@ -79,12 +139,13 @@
 	/* Static caption line, the way a real board holds a fixed label above the
 	   scrolling message. It sits under the board's diode grid like everything
 	   else, so it reads as part of the sign rather than as a caption on top
-	   of one. */
+	   of one. Exempt from the one-glyph-pixel-per-LED rule the cells follow:
+	   it never moves, so it has nothing to beat against. */
 	.ticker__header {
 		margin: 0 0 8px;
 		text-align: center;
 		font-family: 'Silkscreen', 'Courier New', monospace;
-		font-size: calc(var(--glyph-px, 2.5px) * 10 * 0.75);
+		font-size: calc(var(--glyph-px, 3px) * 10 * 0.75);
 		letter-spacing: 0.12em;
 		text-transform: uppercase;
 		/* Amber, the classic caption colour on these boards. It's the same
@@ -97,10 +158,16 @@
 			0 0 16px rgba(255, 140, 20, 0.35);
 	}
 
+	/* steps() rather than linear: the message jumps one LED column per step
+	   instead of gliding between them, which is what a physical matrix sign
+	   does and what keeps the glyphs registered with the diode grid.
+	   --ticker-steps is measured in script; the fallback only covers the first
+	   frames before that lands, and is deliberately coarse rather than smooth
+	   so the motion never starts out gliding and then snap-changes. */
 	.ticker__track {
 		display: flex;
 		width: max-content;
-		animation: ticker-scroll var(--ticker-duration) linear infinite;
+		animation: ticker-scroll var(--ticker-duration) steps(var(--ticker-steps, 400)) infinite;
 	}
 	.ticker:hover .ticker__track {
 		animation-play-state: paused;
@@ -125,8 +192,10 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		gap: 6px;
-		padding: 0 2.5rem;
+		/* Whole LED columns/rows, so the two lines and each cell keep a
+		   consistent phase against the diode grid. */
+		gap: calc(var(--led-pitch, 3px) * 2);
+		padding: 0 calc(var(--led-pitch, 3px) * 16);
 		white-space: nowrap;
 		/* Blocky bitmap glyphs survive being chopped into dots; a smooth
 		   typeface would come out as mush at this pitch. */
@@ -134,7 +203,7 @@
 	}
 
 	.cell__name {
-		font-size: calc(var(--glyph-px, 2.5px) * 10);
+		font-size: calc(var(--glyph-px, 3px) * 10);
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
@@ -144,22 +213,51 @@
 			0 0 12px rgba(120, 170, 255, 0.5);
 	}
 
+	/* Count, unit and region all sit at ONE glyph pixel per LED. They used to
+	   be 0.75x, which put them on a grid the diodes don't share and left them
+	   moiréing while the rest of the cell stepped cleanly. Hierarchy on this
+	   line is carried entirely by colour, which costs no alignment. Gaps are
+	   whole LED columns for the same reason. */
 	.cell__doors {
-		font-size: calc(var(--glyph-px, 2.5px) * 10);
+		font-size: calc(var(--glyph-px, 3px) * 10);
 		font-weight: 700;
 		letter-spacing: 0.04em;
-		/* Green for the counts, matching the up-ticks on a stock board. */
+		text-transform: uppercase;
+	}
+	/* Green for the counts, matching the up-ticks on a stock board. */
+	.cell__count {
 		color: #3dff85;
 		text-shadow:
 			0 0 5px rgba(61, 255, 133, 0.9),
 			0 0 16px rgba(61, 255, 133, 0.45);
 	}
-	/* Three quarters of the shared glyph size, so the word stays subordinate
-	   to the number it labels while still scaling with the board. */
+	/* Same green, burning lower — reads as the number's unit, not as a value. */
 	.cell__unit {
-		font-size: calc(var(--glyph-px, 2.5px) * 10 * 0.75);
-		opacity: 0.7;
-		margin-left: 0.3em;
+		margin-left: calc(var(--led-pitch, 3px) * 2);
+		color: #1f8a4a;
+		text-shadow: 0 0 4px rgba(45, 190, 100, 0.4);
+	}
+	/* The region in the names' cool white, so the eye separates "how many"
+	   from "where" without a separator or a third row. */
+	.cell__region {
+		margin-left: calc(var(--led-pitch, 3px) * 3);
+		color: #b9cfe8;
+		text-shadow: 0 0 5px rgba(150, 190, 240, 0.5);
+	}
+
+	.cell--lead .cell__count {
+		color: #ffb02e;
+		text-shadow:
+			0 0 6px rgba(255, 176, 46, 0.95),
+			0 0 18px rgba(255, 140, 20, 0.5);
+	}
+	.cell--lead .cell__unit {
+		color: #9c6a15;
+		text-shadow: 0 0 4px rgba(200, 140, 40, 0.4);
+	}
+	.cell--lead .cell__region {
+		color: #ffd98a;
+		text-shadow: 0 0 5px rgba(255, 200, 110, 0.6);
 	}
 
 	/* Day's leader burns amber, the way a board highlights the mover. */
@@ -168,12 +266,6 @@
 		text-shadow:
 			0 0 4px rgba(255, 200, 110, 0.9),
 			0 0 14px rgba(255, 170, 60, 0.55);
-	}
-	.cell--lead .cell__doors {
-		color: #ffb02e;
-		text-shadow:
-			0 0 6px rgba(255, 176, 46, 0.95),
-			0 0 18px rgba(255, 140, 20, 0.5);
 	}
 
 	/* A scrolling marquee is exactly what this setting is for — hold the board

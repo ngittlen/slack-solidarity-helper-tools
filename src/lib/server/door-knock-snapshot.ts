@@ -94,6 +94,7 @@ export function openfieldDate(now: Date): string {
 
 interface CanvasserRow {
 	code: string;
+	chapterName: string;
 	canvasser: string;
 	attempts: number;
 	contacts: number;
@@ -110,6 +111,7 @@ const totalContacts = (rows: OpenfieldLeaderboardRow[]) =>
  *  than left to fight over the same key. */
 export function perCanvasserRows(
 	code: string,
+	chapterName: string,
 	leaderboard: OpenfieldLeaderboardRow[],
 ): CanvasserRow[] {
 	const byName = new Map<string, CanvasserRow>();
@@ -121,7 +123,13 @@ export function perCanvasserRows(
 			existing.attempts += row.attempts;
 			existing.contacts += row.contact;
 		} else {
-			byName.set(canvasser, { code, canvasser, attempts: row.attempts, contacts: row.contact });
+			byName.set(canvasser, {
+				code,
+				chapterName,
+				canvasser,
+				attempts: row.attempts,
+				contacts: row.contact,
+			});
 		}
 	}
 	return [...byName.values()];
@@ -265,7 +273,7 @@ export async function runDoorKnockSnapshot(
 				attempts: totalAttempts(leaderboard),
 				contacts: totalContacts(leaderboard),
 			});
-			canvasserRows.push(...perCanvasserRows(code, leaderboard));
+			canvasserRows.push(...perCanvasserRows(code, chapterName, leaderboard));
 		} else {
 			const code = fetchable[i]!.code;
 			console.error(`[door-knock] fetch for ${code} failed:`, errMessage(s.reason));
@@ -316,8 +324,11 @@ export async function runDoorKnockSnapshot(
 				contacts: totalContacts(s.value),
 			});
 			// Doors knocked under a swapped-out code still belong to the person
-			// who knocked them, so the ticker counts them too.
-			canvasserRows.push(...perCanvasserRows(code, s.value));
+			// who knocked them, so the ticker counts them too — under the
+			// code's last-known chapter, same as the daily row above.
+			canvasserRows.push(
+				...perCanvasserRows(code, chapterByCode.get(code) ?? UNMAPPED_CHAPTER, s.value),
+			);
 		});
 		offCanvasCodes.sort();
 		if (offCanvasCodes.length > 0) {

@@ -166,6 +166,12 @@ export const doorKnockCanvasserDaily = sqliteTable(
 		code: text('code').notNull(),
 		/** Openfield's display name for the canvasser, trimmed. */
 		canvasser: text('canvasser').notNull(),
+		/** Chapter the code belonged to that day, denormalised from the canvas
+		 *  the same way door_knock_daily stores it — so the ticker can name a
+		 *  canvasser's region without joining back on (date, code). Defaulted
+		 *  because it was added after the table; every row the snapshot writes
+		 *  sets it. */
+		chapterName: text('chapter_name').notNull().default(''),
 		attempts: integer('attempts').notNull().default(0),
 		contacts: integer('contacts').notNull().default(0),
 	},

@@ -122,8 +122,20 @@ describe('runDoorKnockSnapshot', () => {
 		const dailyInserts = inserts.filter((i) => i.table === doorKnockDaily);
 		expect(dailyInserts.map((i) => i.values)).toEqual([
 			// Empty leaderboard is a real zero — the row is still written.
-			{ date: '2026-07-06', code: 'AB12CD', chapterName: 'Wayne', attempts: 0, contacts: 0 },
-			{ date: '2026-07-06', code: 'ZT2H5D', chapterName: 'Washtenaw', attempts: 42, contacts: 13 },
+			{
+				date: '2026-07-06',
+				code: 'AB12CD',
+				chapterName: 'Wayne',
+				attempts: 0,
+				contacts: 0,
+			},
+			{
+				date: '2026-07-06',
+				code: 'ZT2H5D',
+				chapterName: 'Washtenaw',
+				attempts: 42,
+				contacts: 13,
+			},
 		]);
 	});
 
@@ -143,9 +155,7 @@ describe('runDoorKnockSnapshot', () => {
 	it('reports unresolvable codes as failed without writing rows for them', async () => {
 		const { db, inserts } = makeDb();
 		const deps = makeDeps();
-		deps.openfield.resolveCode = vi.fn(async (code: string) =>
-			code === 'ZT2H5D' ? 71 : null,
-		);
+		deps.openfield.resolveCode = vi.fn(async (code: string) => (code === 'ZT2H5D' ? 71 : null));
 
 		const result = await runDoorKnockSnapshot(db, deps);
 
@@ -176,7 +186,9 @@ describe('runDoorKnockSnapshot', () => {
 
 	it('throws when the canvas yields zero codes (moved/restructured canvas)', async () => {
 		const { db } = makeDb();
-		const deps = makeDeps({ fetchCanvasHtml: async () => '<p>nothing here</p>' });
+		const deps = makeDeps({
+			fetchCanvasHtml: async () => '<p>nothing here</p>',
+		});
 		await expect(runDoorKnockSnapshot(db, deps)).rejects.toThrow(/no conversation codes/);
 	});
 
@@ -185,7 +197,10 @@ describe('runDoorKnockSnapshot', () => {
 		await runDoorKnockSnapshot(db, makeDeps());
 		let archive = inserts.filter((i) => i.table === doorKnockCanvasArchive);
 		expect(archive).toHaveLength(1);
-		expect(archive[0]!.values).toMatchObject({ date: '2026-07-06', html: CANVAS });
+		expect(archive[0]!.values).toMatchObject({
+			date: '2026-07-06',
+			html: CANVAS,
+		});
 
 		// A canvas that breaks the parser still gets archived — that copy is
 		// the debugging evidence.
@@ -292,7 +307,10 @@ describe('runDoorKnockSnapshot', () => {
 		expect(result.offCanvasCodes).toEqual(['OLD123']);
 		const dailyInserts = inserts.filter((i) => i.table === doorKnockDaily);
 		expect(dailyInserts.map((i) => i.values)).toContainEqual(
-			expect.objectContaining({ code: 'OLD123', chapterName: UNMAPPED_CHAPTER }),
+			expect.objectContaining({
+				code: 'OLD123',
+				chapterName: UNMAPPED_CHAPTER,
+			}),
 		);
 	});
 });
@@ -300,27 +318,47 @@ describe('runDoorKnockSnapshot', () => {
 describe('perCanvasserRows', () => {
 	it('keeps one row per named canvasser', () => {
 		expect(
-			perCanvasserRows('ZT2H5D', [
+			perCanvasserRows('ZT2H5D', 'Washtenaw', [
 				{ canvasser: 'Maria T.', attempts: 30, contact: 9 },
 				{ canvasser: 'James R.', attempts: 12, contact: 4 },
 			]),
 		).toEqual([
-			{ code: 'ZT2H5D', canvasser: 'Maria T.', attempts: 30, contacts: 9 },
-			{ code: 'ZT2H5D', canvasser: 'James R.', attempts: 12, contacts: 4 },
+			{
+				code: 'ZT2H5D',
+				chapterName: 'Washtenaw',
+				canvasser: 'Maria T.',
+				attempts: 30,
+				contacts: 9,
+			},
+			{
+				code: 'ZT2H5D',
+				chapterName: 'Washtenaw',
+				canvasser: 'James R.',
+				attempts: 12,
+				contacts: 4,
+			},
 		]);
 	});
 
 	it('trims names so spacing differences do not split a person in two', () => {
-		expect(perCanvasserRows('AB12CD', [{ canvasser: '  Ada L. ', attempts: 5, contact: 1 }])).toEqual(
-			[{ code: 'AB12CD', canvasser: 'Ada L.', attempts: 5, contacts: 1 }],
-		);
+		expect(
+			perCanvasserRows('AB12CD', 'Wayne', [{ canvasser: '  Ada L. ', attempts: 5, contact: 1 }]),
+		).toEqual([
+			{
+				code: 'AB12CD',
+				chapterName: 'Wayne',
+				canvasser: 'Ada L.',
+				attempts: 5,
+				contacts: 1,
+			},
+		]);
 	});
 
 	// '' would collide on the (date, code, canvasser) primary key and has
 	// nothing to show on a ticker anyway.
 	it('drops unnamed rows', () => {
 		expect(
-			perCanvasserRows('AB12CD', [
+			perCanvasserRows('AB12CD', 'Wayne', [
 				{ canvasser: '', attempts: 9, contact: 2 },
 				{ canvasser: '   ', attempts: 4, contact: 0 },
 			]),
@@ -329,11 +367,19 @@ describe('perCanvasserRows', () => {
 
 	it('merges a name that appears twice rather than letting the rows collide', () => {
 		expect(
-			perCanvasserRows('AB12CD', [
+			perCanvasserRows('AB12CD', 'Wayne', [
 				{ canvasser: 'Ada L.', attempts: 5, contact: 1 },
 				{ canvasser: 'Ada L.', attempts: 7, contact: 3 },
 			]),
-		).toEqual([{ code: 'AB12CD', canvasser: 'Ada L.', attempts: 12, contacts: 4 }]);
+		).toEqual([
+			{
+				code: 'AB12CD',
+				chapterName: 'Wayne',
+				canvasser: 'Ada L.',
+				attempts: 12,
+				contacts: 4,
+			},
+		]);
 	});
 });
 
@@ -345,8 +391,22 @@ describe('runDoorKnockSnapshot canvasser capture', () => {
 
 		const canvasserInserts = inserts.filter((i) => i.table === doorKnockCanvasserDaily);
 		expect(canvasserInserts.map((i) => i.values)).toEqual([
-			{ date: '2026-07-06', code: 'ZT2H5D', canvasser: 'A', attempts: 30, contacts: 9 },
-			{ date: '2026-07-06', code: 'ZT2H5D', canvasser: 'B', attempts: 12, contacts: 4 },
+			{
+				date: '2026-07-06',
+				code: 'ZT2H5D',
+				chapterName: 'Washtenaw',
+				canvasser: 'A',
+				attempts: 30,
+				contacts: 9,
+			},
+			{
+				date: '2026-07-06',
+				code: 'ZT2H5D',
+				chapterName: 'Washtenaw',
+				canvasser: 'B',
+				attempts: 12,
+				contacts: 4,
+			},
 		]);
 	});
 
@@ -370,7 +430,14 @@ describe('runDoorKnockSnapshot canvasser capture', () => {
 
 		const canvasserInserts = inserts.filter((i) => i.table === doorKnockCanvasserDaily);
 		expect(canvasserInserts.map((i) => i.values)).toEqual([
-			{ date: '2026-07-06', code: 'OLD123', canvasser: 'Maria T.', attempts: 156, contacts: 30 },
+			{
+				date: '2026-07-06',
+				code: 'OLD123',
+				chapterName: 'Kent',
+				canvasser: 'Maria T.',
+				attempts: 156,
+				contacts: 30,
+			},
 		]);
 	});
 
