@@ -18,11 +18,15 @@
 </script>
 
 {#if entries.length > 0}
-	<div class="ticker" style={durationStyle}>
-		<div class="ticker__glass" aria-hidden="true"></div>
+	<!-- The whole board is aria-hidden: it's a moving target, it renders the
+	     list twice for the seamless loop, and the sr-only list below carries
+	     the same information in a readable form. -->
+	<div class="ticker" style={durationStyle} aria-hidden="true">
+		<div class="ticker__glass"></div>
+		<p class="ticker__header">Most doors knocked today:</p>
 		<div class="ticker__track">
 			{#each [0, 1] as copy (copy)}
-				<div class="ticker__strip" aria-hidden={copy === 1 ? 'true' : undefined}>
+				<div class="ticker__strip">
 					{#each entries as entry (entry.canvasser)}
 						<div class="cell" class:cell--lead={entry.rank === 1}>
 							<span class="cell__name">{entry.canvasser}</span>
@@ -37,9 +41,7 @@
 		</div>
 	</div>
 
-	<!-- The scrolling board is decorative motion; screen readers get the
-	     standings as a plain ordered list instead of a moving target. -->
-	<ol class="ticker__sr">
+	<ol class="ticker__sr" aria-label="Most doors knocked today">
 		{#each entries as entry (entry.canvasser)}
 			<li>{entry.canvasser}: {entry.doors} doors knocked</li>
 		{/each}
@@ -109,6 +111,27 @@
 			transparent 94%,
 			#07070a 100%
 		);
+	}
+
+	/* Static caption line inside the panel, the way a real board holds a fixed
+	   label above the scrolling message. Being inside .ticker means the LED
+	   grid overlay chops it into dots along with everything else — it reads as
+	   part of the board rather than as a caption sitting on top of one. */
+	.ticker__header {
+		margin: 0 0 8px;
+		text-align: center;
+		font-family: 'Silkscreen', 'Courier New', monospace;
+		font-size: calc(var(--glyph-px) * 10 * 0.75);
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		/* Amber, the classic caption colour on these boards. It's the same
+		   amber the day's leader burns below — shared on purpose, so the eye
+		   reads caption and leader as the board's own voice while the ordinary
+		   entries stay white-on-green. */
+		color: #ffb02e;
+		text-shadow:
+			0 0 6px rgba(255, 176, 46, 0.6),
+			0 0 16px rgba(255, 140, 20, 0.35);
 	}
 
 	.ticker__track {
