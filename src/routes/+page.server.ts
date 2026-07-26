@@ -24,6 +24,7 @@ import {
 	readDoorKnockRefreshStatus,
 } from '$lib/server/door-knock-refresh.js';
 import { isDoorKnockConfigured } from '$lib/server/door-knock-env.js';
+import { loadDoorKnockTicker, type DoorKnockTicker } from '$lib/server/door-knock-ticker.js';
 
 async function safeLoad(
 	label: string,
@@ -123,12 +124,25 @@ export const load: PageServerLoad = async (event) => {
 		}
 	}
 
+	// Daily personal leaderboard for the LED ticker under the countdown.
+	// Best-effort like the projection: an empty ticker just hides the board.
+	let doorKnockTicker: DoorKnockTicker = { date: null, entries: [] };
+	try {
+		doorKnockTicker = await loadDoorKnockTicker(db);
+	} catch (err) {
+		console.error(
+			'[dashboard] door-knock ticker load failed:',
+			err instanceof Error ? err.message : err,
+		);
+	}
+
 	return {
 		...base,
 		leaderboard,
 		doorsLeaderboard,
 		countdown,
 		doorKnockRefreshDue,
+		doorKnockTicker,
 		pageTitle: 'Dashboard',
 	};
 };

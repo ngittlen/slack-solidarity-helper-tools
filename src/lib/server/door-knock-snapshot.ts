@@ -24,13 +24,18 @@
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { inArray, max } from 'drizzle-orm';
-import { doorKnockCanvasArchive, doorKnockCodeIds, doorKnockDaily } from './schema.js';
+import {
+	doorKnockCanvasArchive,
+	doorKnockCanvasserDaily,
+	doorKnockCodeIds,
+	doorKnockDaily,
+} from './schema.js';
 import {
 	parseConversationCodes,
 	findCandidateCodes,
 	type ConversationCode,
 } from './door-knock-canvas.js';
-import type { OpenfieldClient } from './openfield.js';
+import type { OpenfieldClient, OpenfieldLeaderboardRow } from './openfield.js';
 import { errMessage } from '../err-message.js';
 
 type Database = LibSQLDatabase<Record<string, unknown>>;
@@ -60,6 +65,8 @@ export interface DoorKnockSnapshotResult {
 	 *  under their last-known chapter so those doors aren't lost. */
 	offCanvasCodes: string[];
 	rowsWritten: number;
+	/** Rows written to door_knock_canvasser_daily (one per code × person). */
+	canvasserRowsWritten: number;
 	totalAttempts: number;
 }
 
@@ -83,6 +90,41 @@ export function openfieldDate(now: Date): string {
 		month: '2-digit',
 		day: '2-digit',
 	}).format(now);
+}
+
+interface CanvasserRow {
+	code: string;
+	canvasser: string;
+	attempts: number;
+	contacts: number;
+}
+
+const totalAttempts = (rows: OpenfieldLeaderboardRow[]) =>
+	rows.reduce((sum, r) => sum + r.attempts, 0);
+const totalContacts = (rows: OpenfieldLeaderboardRow[]) =>
+	rows.reduce((sum, r) => sum + r.contact, 0);
+
+/** One row per named canvasser on a conversation's leaderboard. Unnamed rows
+ *  are dropped (nothing to show on a ticker, and '' would collide on the
+ *  primary key); a name appearing twice in one leaderboard is merged rather
+ *  than left to fight over the same key. */
+export function perCanvasserRows(
+	code: string,
+	leaderboard: OpenfieldLeaderboardRow[],
+): CanvasserRow[] {
+	const byName = new Map<string, CanvasserRow>();
+	for (const row of leaderboard) {
+		const canvasser = row.canvasser.trim();
+		if (canvasser === '') continue;
+		const existing = byName.get(canvasser);
+		if (existing) {
+			existing.attempts += row.attempts;
+			existing.contacts += row.contact;
+		} else {
+			byName.set(canvasser, { code, canvasser, attempts: row.attempts, contacts: row.contact });
+		}
+	}
+	return [...byName.values()];
 }
 
 /** Resolve codes to conversation ids, cache-first. `failed` holds codes that
@@ -199,23 +241,31 @@ export async function runDoorKnockSnapshot(
 	// Fetch every resolved code's today-leaderboard. Per-code failures skip the
 	// row (no zero written — an error is not "zero doors"); empty leaderboards
 	// DO write a zero row so the chart has continuous per-day data.
+	//
+	// The leaderboard is kept, not just its totals: the same response feeds
+	// door_knock_daily (per code) and door_knock_canvasser_daily (per person),
+	// so the personal ticker costs no extra Openfield calls.
 	const fetchable = allCodes.filter((c) => ids.has(c.code));
 	const rows: Array<{ code: string; chapterName: string; attempts: number; contacts: number }> =
 		[];
+	const canvasserRows: CanvasserRow[] = [];
 	const settled = await Promise.allSettled(
-		fetchable.map(async (c) => {
-			const leaderboard = await deps.openfield.fetchToday(ids.get(c.code)!);
-			return {
-				code: c.code,
-				chapterName: c.chapter,
-				attempts: leaderboard.reduce((sum, r) => sum + r.attempts, 0),
-				contacts: leaderboard.reduce((sum, r) => sum + r.contact, 0),
-			};
-		}),
+		fetchable.map(async (c) => ({
+			code: c.code,
+			chapterName: c.chapter,
+			leaderboard: await deps.openfield.fetchToday(ids.get(c.code)!),
+		})),
 	);
 	settled.forEach((s, i) => {
 		if (s.status === 'fulfilled') {
-			rows.push(s.value);
+			const { code, chapterName, leaderboard } = s.value;
+			rows.push({
+				code,
+				chapterName,
+				attempts: totalAttempts(leaderboard),
+				contacts: totalContacts(leaderboard),
+			});
+			canvasserRows.push(...perCanvasserRows(code, leaderboard));
 		} else {
 			const code = fetchable[i]!.code;
 			console.error(`[door-knock] fetch for ${code} failed:`, errMessage(s.reason));
@@ -256,15 +306,18 @@ export async function runDoorKnockSnapshot(
 				console.error(`[door-knock] off-canvas fetch for ${code} failed:`, errMessage(s.reason));
 				return;
 			}
-			const attempts = s.value.reduce((sum, r) => sum + r.attempts, 0);
+			const attempts = totalAttempts(s.value);
 			if (attempts === 0) return;
 			offCanvasCodes.push(code);
 			rows.push({
 				code,
 				chapterName: chapterByCode.get(code) ?? UNMAPPED_CHAPTER,
 				attempts,
-				contacts: s.value.reduce((sum, r) => sum + r.contact, 0),
+				contacts: totalContacts(s.value),
 			});
+			// Doors knocked under a swapped-out code still belong to the person
+			// who knocked them, so the ticker counts them too.
+			canvasserRows.push(...perCanvasserRows(code, s.value));
 		});
 		offCanvasCodes.sort();
 		if (offCanvasCodes.length > 0) {
@@ -285,6 +338,20 @@ export async function runDoorKnockSnapshot(
 			});
 	}
 
+	for (const row of canvasserRows) {
+		await db
+			.insert(doorKnockCanvasserDaily)
+			.values({ date, ...row })
+			.onConflictDoUpdate({
+				target: [
+					doorKnockCanvasserDaily.date,
+					doorKnockCanvasserDaily.code,
+					doorKnockCanvasserDaily.canvasser,
+				],
+				set: { attempts: row.attempts, contacts: row.contacts },
+			});
+	}
+
 	return {
 		date,
 		codesFound: parsed.length,
@@ -293,6 +360,7 @@ export async function runDoorKnockSnapshot(
 		unattributedCodes,
 		offCanvasCodes,
 		rowsWritten: rows.length,
+		canvasserRowsWritten: canvasserRows.length,
 		totalAttempts: rows.reduce((sum, r) => sum + r.attempts, 0),
 	};
 }

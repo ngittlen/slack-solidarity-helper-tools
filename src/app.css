@@ -67,6 +67,23 @@
     font-display: swap;
 }
 
+/* Blocky 5x7 pixel face for the door-knock ticker's names. Vendored from
+   Google Fonts (Silkscreen, OFL 1.1 — license alongside the files), latin
+   subset only. The ticker masks each pixel into a round dot to get the LED
+   matrix look; a bitmap-style font is what makes that alignment possible. */
+@font-face {
+    font-family: 'Silkscreen';
+    src: url('/fonts/Silkscreen-Regular.woff2') format('woff2');
+    font-weight: 400;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Silkscreen';
+    src: url('/fonts/Silkscreen-Bold.woff2') format('woff2');
+    font-weight: 700;
+    font-display: swap;
+}
+
 @layer reset {
     *,
     *::before,

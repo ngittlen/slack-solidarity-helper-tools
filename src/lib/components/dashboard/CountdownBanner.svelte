@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { countdownParts } from './countdown.js';
+	import DoorTicker from './DoorTicker.svelte';
+	import type { TickerEntry } from '$lib/server/door-knock-ticker.js';
 
 	interface Props {
 		/** Admin-configured caption; '' hides the label line. */
@@ -9,9 +11,11 @@
 		/** Projected doors knocked by the deadline (recent pace extrapolated);
 		 *  null hides the projection line. */
 		projectedDoors?: number | null;
+		/** Today's top canvassers for the LED ticker; [] hides the board. */
+		tickerEntries?: TickerEntry[];
 	}
 
-	let { label, endAt, projectedDoors = null }: Props = $props();
+	let { label, endAt, projectedDoors = null, tickerEntries = [] }: Props = $props();
 
 	const endMs = $derived(Date.parse(endAt));
 
@@ -50,6 +54,11 @@
 				On pace for ~{projectedDoors.toLocaleString('en-US')} more doors knocked between today and when the timer hits 0
 			</span>
 		{/if}
+		{#if tickerEntries.length > 0}
+			<div class="countdown-ticker">
+				<DoorTicker entries={tickerEntries} />
+			</div>
+		{/if}
 	</div>
 {/if}
 
@@ -86,5 +95,11 @@
 		font-size: 1rem;
 		opacity: 0.85;
 		text-align: center;
+	}
+	/* Full-width board under the projection line; the banner itself is a
+	   centered column, so the ticker needs its own stretch. */
+	.countdown-ticker {
+		align-self: stretch;
+		margin-top: 4px;
 	}
 </style>

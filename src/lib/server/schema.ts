@@ -149,6 +149,29 @@ export const doorKnockDaily = sqliteTable(
 	(table) => [primaryKey({ columns: [table.date, table.code] })],
 );
 
+// One row per (date, code, canvasser): an individual's door-knock attempts on
+// that conversation for that day. Openfield's today-leaderboard already breaks
+// its totals down per canvasser — door_knock_daily throws that detail away, so
+// this table keeps it for the dashboard's daily personal ticker.
+//
+// Keyed by code as well as canvasser (rather than pre-summing per person)
+// because the snapshot writes code by code and upserts; a mid-day re-run then
+// overwrites exactly the rows it rewrote, the same contract door_knock_daily
+// has. Summing across codes is the reader's job — one person can canvass under
+// several codes in a day.
+export const doorKnockCanvasserDaily = sqliteTable(
+	'door_knock_canvasser_daily',
+	{
+		date: text('date').notNull(),
+		code: text('code').notNull(),
+		/** Openfield's display name for the canvasser, trimmed. */
+		canvasser: text('canvasser').notNull(),
+		attempts: integer('attempts').notNull().default(0),
+		contacts: integer('contacts').notNull().default(0),
+	},
+	(table) => [primaryKey({ columns: [table.date, table.code, table.canvasser] })],
+);
+
 // Cache of conversation code → Openfield numeric conversation id. Resolving a
 // code costs a POST to /codes/, so each code is resolved once and reused.
 export const doorKnockCodeIds = sqliteTable('door_knock_code_ids', {
@@ -248,6 +271,9 @@ export type NewAppConfigRow = typeof appConfig.$inferInsert;
 
 export type DoorKnockDailyRow = typeof doorKnockDaily.$inferSelect;
 export type NewDoorKnockDailyRow = typeof doorKnockDaily.$inferInsert;
+
+export type DoorKnockCanvasserDailyRow = typeof doorKnockCanvasserDaily.$inferSelect;
+export type NewDoorKnockCanvasserDailyRow = typeof doorKnockCanvasserDaily.$inferInsert;
 
 export type DoorKnockCodeIdRow = typeof doorKnockCodeIds.$inferSelect;
 export type NewDoorKnockCodeIdRow = typeof doorKnockCodeIds.$inferInsert;

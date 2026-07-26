@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runDoorKnockSnapshot, openfieldDate, UNMAPPED_CHAPTER } from './door-knock-snapshot.js';
-import { doorKnockCanvasArchive, doorKnockCodeIds, doorKnockDaily } from './schema.js';
+import {
+	runDoorKnockSnapshot,
+	openfieldDate,
+	perCanvasserRows,
+	UNMAPPED_CHAPTER,
+} from './door-knock-snapshot.js';
+import {
+	doorKnockCanvasArchive,
+	doorKnockCanvasserDaily,
+	doorKnockCodeIds,
+	doorKnockDaily,
+} from './schema.js';
 
 // Two chapters, two codes — the minimal shape parseConversationCodes accepts
 // (a table with a header row and two chapter rows).
@@ -97,6 +107,8 @@ describe('runDoorKnockSnapshot', () => {
 			unattributedCodes: [],
 			offCanvasCodes: [],
 			rowsWritten: 2,
+			// ZT2H5D's leaderboard has two canvassers; AB12CD's is empty.
+			canvasserRowsWritten: 2,
 			totalAttempts: 42,
 		});
 
@@ -282,5 +294,94 @@ describe('runDoorKnockSnapshot', () => {
 		expect(dailyInserts.map((i) => i.values)).toContainEqual(
 			expect.objectContaining({ code: 'OLD123', chapterName: UNMAPPED_CHAPTER }),
 		);
+	});
+});
+
+describe('perCanvasserRows', () => {
+	it('keeps one row per named canvasser', () => {
+		expect(
+			perCanvasserRows('ZT2H5D', [
+				{ canvasser: 'Maria T.', attempts: 30, contact: 9 },
+				{ canvasser: 'James R.', attempts: 12, contact: 4 },
+			]),
+		).toEqual([
+			{ code: 'ZT2H5D', canvasser: 'Maria T.', attempts: 30, contacts: 9 },
+			{ code: 'ZT2H5D', canvasser: 'James R.', attempts: 12, contacts: 4 },
+		]);
+	});
+
+	it('trims names so spacing differences do not split a person in two', () => {
+		expect(perCanvasserRows('AB12CD', [{ canvasser: '  Ada L. ', attempts: 5, contact: 1 }])).toEqual(
+			[{ code: 'AB12CD', canvasser: 'Ada L.', attempts: 5, contacts: 1 }],
+		);
+	});
+
+	// '' would collide on the (date, code, canvasser) primary key and has
+	// nothing to show on a ticker anyway.
+	it('drops unnamed rows', () => {
+		expect(
+			perCanvasserRows('AB12CD', [
+				{ canvasser: '', attempts: 9, contact: 2 },
+				{ canvasser: '   ', attempts: 4, contact: 0 },
+			]),
+		).toEqual([]);
+	});
+
+	it('merges a name that appears twice rather than letting the rows collide', () => {
+		expect(
+			perCanvasserRows('AB12CD', [
+				{ canvasser: 'Ada L.', attempts: 5, contact: 1 },
+				{ canvasser: 'Ada L.', attempts: 7, contact: 3 },
+			]),
+		).toEqual([{ code: 'AB12CD', canvasser: 'Ada L.', attempts: 12, contacts: 4 }]);
+	});
+});
+
+describe('runDoorKnockSnapshot canvasser capture', () => {
+	it('writes a dated row per person alongside the per-code totals', async () => {
+		const { db, inserts } = makeDb();
+
+		await runDoorKnockSnapshot(db, makeDeps());
+
+		const canvasserInserts = inserts.filter((i) => i.table === doorKnockCanvasserDaily);
+		expect(canvasserInserts.map((i) => i.values)).toEqual([
+			{ date: '2026-07-06', code: 'ZT2H5D', canvasser: 'A', attempts: 30, contacts: 9 },
+			{ date: '2026-07-06', code: 'ZT2H5D', canvasser: 'B', attempts: 12, contacts: 4 },
+		]);
+	});
+
+	// Doors knocked under a code that was swapped out mid-day still belong to
+	// the person who knocked them.
+	it('captures canvassers on off-canvas codes too', async () => {
+		const { db, inserts } = makeDb(
+			[
+				{ code: 'ZT2H5D', conversationId: 71, resolvedAt: 'x' },
+				{ code: 'AB12CD', conversationId: 72, resolvedAt: 'x' },
+				{ code: 'OLD123', conversationId: 88, resolvedAt: 'x' },
+			],
+			[{ code: 'OLD123', chapterName: 'Kent' }],
+		);
+		const deps = makeDeps();
+		deps.openfield.fetchToday = vi.fn(async (id: number) =>
+			id === 88 ? [{ canvasser: 'Maria T.', attempts: 156, contact: 30 }] : [],
+		);
+
+		await runDoorKnockSnapshot(db, deps);
+
+		const canvasserInserts = inserts.filter((i) => i.table === doorKnockCanvasserDaily);
+		expect(canvasserInserts.map((i) => i.values)).toEqual([
+			{ date: '2026-07-06', code: 'OLD123', canvasser: 'Maria T.', attempts: 156, contacts: 30 },
+		]);
+	});
+
+	it('writes nothing when no conversation reported a named canvasser', async () => {
+		const { db, inserts } = makeDb();
+		const deps = makeDeps();
+		deps.openfield.fetchToday = vi.fn(async () => []);
+
+		const result = await runDoorKnockSnapshot(db, deps);
+
+		expect(result.canvasserRowsWritten).toBe(0);
+		expect(inserts.filter((i) => i.table === doorKnockCanvasserDaily)).toEqual([]);
 	});
 });

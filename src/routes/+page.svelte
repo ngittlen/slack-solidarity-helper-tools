@@ -108,6 +108,7 @@
 				label={data.countdown.label}
 				endAt={data.countdown.endAt}
 				projectedDoors={data.countdown.projectedDoors}
+				tickerEntries={data.doorKnockTicker.entries}
 			/>
 		</div>
 	{/if}
