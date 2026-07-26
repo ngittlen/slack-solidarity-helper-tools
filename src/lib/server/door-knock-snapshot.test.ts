@@ -441,6 +441,24 @@ describe('runDoorKnockSnapshot canvasser capture', () => {
 		]);
 	});
 
+	// The upsert's set clause is the re-run path: rows written by an earlier
+	// run already exist, so anything missing here is silently never refreshed.
+	// chapter_name was omitted once and regions stayed blank on the board even
+	// after re-running the snapshot.
+	it('refreshes the chapter on a re-run, not just the counts', async () => {
+		const { db, inserts } = makeDb();
+
+		await runDoorKnockSnapshot(db, makeDeps());
+
+		const canvasserInserts = inserts.filter((i) => i.table === doorKnockCanvasserDaily);
+		expect(canvasserInserts.length).toBeGreaterThan(0);
+		for (const insert of canvasserInserts) {
+			expect(insert.onConflict).toMatchObject({
+				set: { chapterName: 'Washtenaw', attempts: expect.any(Number) },
+			});
+		}
+	});
+
 	it('writes nothing when no conversation reported a named canvasser', async () => {
 		const { db, inserts } = makeDb();
 		const deps = makeDeps();

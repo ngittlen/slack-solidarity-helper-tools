@@ -254,8 +254,7 @@ export async function runDoorKnockSnapshot(
 	// door_knock_daily (per code) and door_knock_canvasser_daily (per person),
 	// so the personal ticker costs no extra Openfield calls.
 	const fetchable = allCodes.filter((c) => ids.has(c.code));
-	const rows: Array<{ code: string; chapterName: string; attempts: number; contacts: number }> =
-		[];
+	const rows: Array<{ code: string; chapterName: string; attempts: number; contacts: number }> = [];
 	const canvasserRows: CanvasserRow[] = [];
 	const settled = await Promise.allSettled(
 		fetchable.map(async (c) => ({
@@ -359,7 +358,15 @@ export async function runDoorKnockSnapshot(
 					doorKnockCanvasserDaily.code,
 					doorKnockCanvasserDaily.canvasser,
 				],
-				set: { attempts: row.attempts, contacts: row.contacts },
+				// chapterName belongs in the update, not just the insert: a code can
+				// be reassigned on the canvas mid-day, and rows written before the
+				// column existed carry ''. Leaving it out meant a re-run refreshed
+				// the numbers but never the region.
+				set: {
+					chapterName: row.chapterName,
+					attempts: row.attempts,
+					contacts: row.contacts,
+				},
 			});
 	}
 
