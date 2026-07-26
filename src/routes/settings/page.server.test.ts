@@ -50,6 +50,7 @@ const settingsFixture = {
 	countdownLabel: '',
 	countdownEndAt: '',
 	welcomeDmMessage: '',
+	doorTickerColumnsPerSecond: 30,
 };
 
 function makeEvent(overrides: {

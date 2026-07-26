@@ -117,7 +117,10 @@
 						projectedDoors={data.countdown.projectedDoors}
 					/>
 				{/if}
-				<DoorTicker entries={data.doorKnockTicker.entries} />
+				<DoorTicker
+					entries={data.doorKnockTicker.entries}
+					columnsPerSecond={data.tickerColumnsPerSecond}
+				/>
 			</LedBoard>
 		</div>
 	{/if}

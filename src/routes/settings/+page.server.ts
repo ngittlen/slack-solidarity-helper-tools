@@ -7,6 +7,10 @@ import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import { loadSettings, type Settings } from '$lib/server/settings.js';
 import {
+	loadDoorKnockTicker,
+	type TickerEntry,
+} from '$lib/server/door-knock-ticker.js';
+import {
 	computeWeeklyLeaderboard,
 	computeLiveLeaderboardSinceSnapshot,
 	firstChannelByChapter,
@@ -50,6 +54,10 @@ export interface SettingsPageData {
 		userLists?: string;
 	};
 	oldestFetchedAt: number | null;
+	/** Today's real ticker standings, so the speed slider previews the board
+	 *  the way the alpha slider previews the leaderboard. Empty before the
+	 *  first canvasser snapshot — the editor falls back to sample names. */
+	tickerEntries: TickerEntry[];
 	/** Same saved/live pair the dashboard renders, but with UNTRIMMED
 	 *  topChapters so the App-config alpha slider can re-rank the full list
 	 *  client-side and show how the top 5 would change. */
@@ -150,6 +158,17 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		.map((r) => r.fetchedAt);
 	const oldestFetchedAt = fetchedAts.length === 0 ? null : Math.min(...fetchedAts);
 
+	// Best-effort: an empty ticker just means the preview uses sample names.
+	let tickerEntries: TickerEntry[] = [];
+	try {
+		tickerEntries = (await loadDoorKnockTicker(db)).entries;
+	} catch (err) {
+		console.error(
+			'[settings] door-knock ticker load failed:',
+			err instanceof Error ? err.message : err,
+		);
+	}
+
 	return {
 		pageTitle: 'Settings' as const,
 		selfSlackUserId: locals.session.slackUserId,
@@ -162,5 +181,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		userLists,
 		errors,
 		oldestFetchedAt,
+		tickerEntries,
 	} satisfies SettingsPageData;
 };

@@ -143,6 +143,7 @@ export const load: PageServerLoad = async (event) => {
 		countdown,
 		doorKnockRefreshDue,
 		doorKnockTicker,
+		tickerColumnsPerSecond: settings.doorTickerColumnsPerSecond,
 		pageTitle: 'Dashboard',
 	};
 };

@@ -26,6 +26,7 @@ import {
 	SLACK_GROWTH_REPORT_CHANNEL_ID,
 	SLACK_GROWTH_REPORT_RANKING_ALPHA,
 } from './env.js';
+import { clampTickerColumnsPerSecond } from '../ticker-speed.js';
 
 export {
 	chapterChannelMap,
@@ -86,6 +87,10 @@ export interface Settings {
 	 *  default" (renderWelcomeDm falls back). Stored raw with `{{channels}}`
 	 *  and `#channel-name` tokens resolved at send time. */
 	welcomeDmMessage: string;
+	/** Door-knock ticker scroll speed, in LED columns per second. DB-only;
+	 *  always resolved to a usable number (see clampTickerColumnsPerSecond),
+	 *  never undefined. */
+	doorTickerColumnsPerSecond: number;
 }
 
 export interface Editor {
@@ -102,6 +107,7 @@ export type AppConfigPatch = Partial<{
 	countdownLabel: string;
 	countdownEndAt: string;
 	welcomeDmMessage: string;
+	doorTickerColumnsPerSecond: number;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -164,6 +170,12 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	const countdownLabel = cfg?.countdownLabel ?? '';
 	const countdownEndAt = cfg?.countdownEndAt ?? '';
 	const welcomeDmMessage = cfg?.welcomeDmMessage ?? '';
+	// DB-only with a code default rather than an env fallback — it's a display
+	// preference, not deployment config. Clamped on read so a hand-edited row
+	// can't hand the board an unusable rate.
+	const doorTickerColumnsPerSecond = clampTickerColumnsPerSecond(
+		cfg?.doorTickerColumnsPerSecond,
+	);
 
 	return {
 		chapterChannelMap: chapterChannelMapField,
@@ -177,6 +189,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		countdownLabel,
 		countdownEndAt,
 		welcomeDmMessage,
+		doorTickerColumnsPerSecond,
 	};
 }
 
@@ -524,6 +537,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'countdownLabel',
 	'countdownEndAt',
 	'welcomeDmMessage',
+	'doorTickerColumnsPerSecond',
 ]);
 
 export async function saveAppConfig(

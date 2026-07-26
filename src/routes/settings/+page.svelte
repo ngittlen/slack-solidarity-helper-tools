@@ -105,6 +105,8 @@
 				countdownLabel={data.settings.countdownLabel}
 				countdownEndAt={data.settings.countdownEndAt}
 				welcomeDmMessage={data.settings.welcomeDmMessage}
+				tickerColumnsPerSecond={data.settings.doorTickerColumnsPerSecond}
+				tickerEntries={data.tickerEntries}
 				leaderboard={data.leaderboard}
 			/>
 		{/if}

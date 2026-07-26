@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
+import {
+	MAX_TICKER_COLUMNS_PER_SECOND,
+	MIN_TICKER_COLUMNS_PER_SECOND,
+} from '$lib/ticker-speed.js';
 
 const mockSaveAppConfig = vi.hoisted(() => vi.fn());
 const mockValidateChannel = vi.hoisted(() => vi.fn());
@@ -128,6 +132,38 @@ describe('POST /api/settings/app-config', () => {
 			const res = await POST(
 				makeEvent(authed, { slackGrowthReportRankingAlpha: bad }) as never,
 			);
+			expect(res.status).toBe(400);
+		}
+		expect(mockSaveAppConfig).not.toHaveBeenCalled();
+	});
+
+	it('saves a ticker speed inside the supported range, endpoints included', async () => {
+		for (const rate of [MIN_TICKER_COLUMNS_PER_SECOND, 20, MAX_TICKER_COLUMNS_PER_SECOND]) {
+			const res = await POST(makeEvent(authed, { doorTickerColumnsPerSecond: rate }) as never);
+			expect(res.status).toBe(200);
+		}
+		expect(mockSaveAppConfig).toHaveBeenLastCalledWith(
+			expect.anything(),
+			{ doorTickerColumnsPerSecond: MAX_TICKER_COLUMNS_PER_SECOND },
+			expect.anything(),
+		);
+	});
+
+	// Above the maximum a step lasts under a frame and the stepped animation
+	// turns back into the stutter it exists to avoid, so the bound is enforced
+	// rather than merely suggested in the UI.
+	it('400 for an out-of-range or non-numeric ticker speed', async () => {
+		const bad = [
+			MIN_TICKER_COLUMNS_PER_SECOND - 1,
+			MAX_TICKER_COLUMNS_PER_SECOND + 1,
+			0,
+			-5,
+			NaN,
+			Infinity,
+			'30',
+		];
+		for (const rate of bad) {
+			const res = await POST(makeEvent(authed, { doorTickerColumnsPerSecond: rate }) as never);
 			expect(res.status).toBe(400);
 		}
 		expect(mockSaveAppConfig).not.toHaveBeenCalled();

@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `door_ticker_columns_per_second` real;

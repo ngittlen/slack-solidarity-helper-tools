@@ -232,6 +232,9 @@ export const appConfig = sqliteTable(
 		// default" (see DEFAULT_WELCOME_DM). Stored raw with `{{channels}}` and
 		// friendly `#channel-name` tokens; resolution happens at send time.
 		welcomeDmMessage: text('welcome_dm_message'),
+		// Door-knock ticker scroll speed in LED columns per second. DB-only,
+		// no env fallback; NULL means DEFAULT_TICKER_COLUMNS_PER_SECOND.
+		doorTickerColumnsPerSecond: real('door_ticker_columns_per_second'),
 		lastEditedBy: text('last_edited_by').notNull(),
 		lastEditedByName: text('last_edited_by_name').notNull(),
 		lastEditedAt: text('last_edited_at').notNull(),

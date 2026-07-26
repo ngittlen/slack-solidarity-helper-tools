@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { TickerEntry } from '$lib/server/door-knock-ticker.js';
+	import { DEFAULT_TICKER_COLUMNS_PER_SECOND } from '$lib/ticker-speed.js';
 
 	interface Props {
 		entries: TickerEntry[];
@@ -16,14 +17,16 @@
 		 *
 		 *  30 divides both common refresh rates exactly — a step every 2 frames
 		 *  at 60 Hz, every 4 at 120 Hz — so every step is held the same length.
-		 *  If you retune this, the other clean values are 20, 15, 12 and 10.
-		 *  Dividing exactly isn't strictly required (nearby rates only wobble
-		 *  by a fraction of a frame), but going much above 30 is: past that,
-		 *  a step is barely one frame and the cadence turns ragged again. */
+		 *  The other even cadences are 60/k for whole k: 60, 20, 15, 12, 10.
+		 *  Nothing between 30 and 60 divides evenly, so rates in that gap
+		 *  alternate one- and two-frame steps; that still reads acceptably.
+		 *  60 is the hard ceiling — one column per frame at 60 Hz. Beyond it
+		 *  the browser cannot draw every step and starts skipping columns,
+		 *  which is the jumping this animation exists to avoid. */
 		columnsPerSecond?: number;
 	}
 
-	let { entries, columnsPerSecond = 30 }: Props = $props();
+	let { entries, columnsPerSecond = DEFAULT_TICKER_COLUMNS_PER_SECOND }: Props = $props();
 
 	// A real matrix sign doesn't glide — it shifts the message one LED column
 	// at a time. steps() gives exactly that, but only if the step count equals

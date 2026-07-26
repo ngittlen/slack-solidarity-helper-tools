@@ -3,12 +3,21 @@
 	import { reRank, DEFAULT_RANKING_ALPHA } from '$lib/growth-ranking.js';
 	import type { LeaderboardPair, LeaderboardResult } from '$lib/server/weekly-growth-report';
 	import SlackLeaderboard from '$lib/components/dashboard/SlackLeaderboard.svelte';
+	import LedBoard from '$lib/components/dashboard/LedBoard.svelte';
+	import DoorTicker from '$lib/components/dashboard/DoorTicker.svelte';
+	import type { TickerEntry } from '$lib/server/door-knock-ticker';
 	import SettingsRow from './SettingsRow.svelte';
 	import AutocompletePicker from './AutocompletePicker.svelte';
 	import type { PickerItem } from './picker-types.js';
 	import { createFieldAutosave, type AutosaveStatus } from './use-field-autosave.svelte.js';
 	import { isoToLocalInput, localInputToIso } from '$lib/components/dashboard/countdown.js';
 	import { extractChannelNames, DEFAULT_WELCOME_DM } from '$lib/welcome-dm.js';
+	import {
+		DEFAULT_TICKER_COLUMNS_PER_SECOND,
+		RECOMMENDED_TICKER_RATES,
+		MAX_TICKER_COLUMNS_PER_SECOND,
+		MIN_TICKER_COLUMNS_PER_SECOND,
+	} from '$lib/ticker-speed.js';
 
 	interface ChannelOption {
 		id: string;
@@ -27,6 +36,11 @@
 		countdownEndAt: string;
 		/** New-member welcome DM template ('' means "use the built-in default"). */
 		welcomeDmMessage: string;
+		/** Door-knock ticker scroll speed, in LED columns per second. */
+		tickerColumnsPerSecond: number;
+		/** Today's real standings for the speed preview; [] before the first
+		 *  canvasser snapshot, in which case the preview uses sample names. */
+		tickerEntries: TickerEntry[];
 		/** Saved/live leaderboards with UNTRIMMED topChapters — the slider
 		 *  preview re-ranks them client-side. */
 		leaderboard: LeaderboardPair;
@@ -40,6 +54,8 @@
 		countdownLabel,
 		countdownEndAt,
 		welcomeDmMessage,
+		tickerColumnsPerSecond,
+		tickerEntries,
 		leaderboard,
 	}: Props = $props();
 
@@ -138,8 +154,48 @@
 		save: (value) => postAppConfig({ welcomeDmMessage: value }),
 	});
 
+	// --- Door-knock ticker speed — debounced autosave like the alpha slider.
+	// Measured in LED columns per second because that is what the board
+	// actually does: it advances one column per animation step.
+
+	const tickerSpeedSave = createFieldAutosave<number>({
+		initial: tickerColumnsPerSecond,
+		parse: (raw) => parseInt(raw, 10),
+		save: (value) => postAppConfig({ doorTickerColumnsPerSecond: value }),
+	});
+
+	// How long each step is held, in frames. A whole number means every step is
+	// identical; otherwise the browser alternates between the floor and the
+	// ceiling, and the shorter the step the more that one-frame swing shows.
+	// Both common refresh rates are reported because they disagree: 40/sec is
+	// a 3:2 alternation at 60 Hz but exactly 3 frames at 120 Hz, which makes it
+	// the one good choice in the 30–60 gap. Nothing in the UI hard-codes that —
+	// the numbers just show it.
+	function cadence(rate: number, refresh: number) {
+		const frames = refresh / rate;
+		return {
+			frames,
+			even: Number.isInteger(frames),
+			label: Number.isInteger(frames) ? `${frames}` : frames.toFixed(2),
+		};
+	}
+	const at60 = $derived(cadence(tickerSpeedSave.value, 60));
+	const at120 = $derived(cadence(tickerSpeedSave.value, 120));
+
+	// Stand-ins so the slider still previews before the first canvasser
+	// snapshot lands. Same shape the dashboard renders.
+	const SAMPLE_TICKER: TickerEntry[] = [
+		{ canvasser: 'Maria Torres', doors: 412, chapter: 'Wayne', rank: 1 },
+		{ canvasser: 'James Rowe', doors: 388, chapter: 'Washtenaw', rank: 2 },
+		{ canvasser: 'Aisha Bell', doors: 351, chapter: 'Wayne', rank: 3 },
+		{ canvasser: 'Kai Nguyen', doors: 231, chapter: 'Ingham', rank: 4 },
+		{ canvasser: 'Ruth Feld', doors: 198, chapter: 'Oakland', rank: 5 },
+	];
+	const previewTicker = $derived(tickerEntries.length > 0 ? tickerEntries : SAMPLE_TICKER);
+
 	$effect(() => () => {
 		alphaSave.destroy();
+		tickerSpeedSave.destroy();
 		countdownLabelSave.destroy();
 		countdownEndSave.destroy();
 		welcomeDmSave.destroy();
@@ -360,6 +416,61 @@
 			<SlackLeaderboard leaderboard={previewPair} />
 		</div>
 	</SettingsRow>
+
+	<SettingsRow
+		label="Doors ticker speed = {tickerSpeedSave.value} columns/sec"
+		status={tickerSpeedSave.status}
+		error={tickerSpeedSave.error}
+		onRetry={tickerSpeedSave.status === 'error' ? tickerSpeedSave.retry : undefined}
+	>
+		<div class="alpha-control">
+			<span class="alpha-end">Slower</span>
+			<input
+				type="range"
+				min={MIN_TICKER_COLUMNS_PER_SECOND}
+				max={MAX_TICKER_COLUMNS_PER_SECOND}
+				step="1"
+				value={tickerSpeedSave.value}
+				oninput={tickerSpeedSave.oninput}
+				aria-label="Doors ticker speed in LED columns per second"
+			/>
+			<span class="alpha-end">Faster</span>
+		</div>
+		<p class="app-config-note">
+			How fast the dashboard's doors-knocked ticker scrolls. The board moves one LED column per
+			step, so this is its speed in columns per second. Default {DEFAULT_TICKER_COLUMNS_PER_SECOND};
+			the {MAX_TICKER_COLUMNS_PER_SECOND} ceiling is one column per frame on a 60&nbsp;Hz screen,
+			the fastest a browser can actually draw without skipping columns.
+		</p>
+		<p class="app-config-note" class:ticker-speed-warn={!at60.even && !at120.even}>
+			Each step is held {at60.label} frame{at60.frames === 1 ? '' : 's'} at 60&nbsp;Hz and {at120.label}
+			at 120&nbsp;Hz.
+			{#if at60.even && at120.even}
+				Every step the same length on both.
+			{:else if at60.even}
+				Even at 60&nbsp;Hz; at 120&nbsp;Hz steps alternate between {Math.floor(at120.frames)} and {Math.ceil(
+					at120.frames,
+				)}.
+			{:else if at120.even}
+				Even at 120&nbsp;Hz; at 60&nbsp;Hz steps alternate between {Math.floor(at60.frames)} and {Math.ceil(
+					at60.frames,
+				)} — a regular alternation, not a drift.
+			{:else}
+				Steps alternate on both. Any rate works, but the shorter the step the more that one-frame
+				swing shows. Smoothest: {RECOMMENDED_TICKER_RATES.join(', ')}.
+			{/if}
+		</p>
+		<div class="ticker-preview">
+			<LedBoard>
+				<DoorTicker entries={previewTicker} columnsPerSecond={tickerSpeedSave.value} />
+			</LedBoard>
+			{#if tickerEntries.length === 0}
+				<p class="app-config-note">
+					No doors recorded yet today — previewing with sample names.
+				</p>
+			{/if}
+		</div>
+	</SettingsRow>
 </div>
 
 <style>
@@ -379,6 +490,15 @@
 
 	.app-config-note code {
 		font-size: 0.95em;
+	}
+
+	/* Advisory, not an error — an uneven rate still works. */
+	.ticker-speed-warn {
+		color: var(--color-warning, #d3951e);
+	}
+
+	.ticker-preview {
+		margin-top: 10px;
 	}
 
 	.countdown-fields {

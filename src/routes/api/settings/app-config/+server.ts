@@ -6,6 +6,10 @@ import { saveAppConfig, type AppConfigPatch, type Editor } from '$lib/server/set
 import { validateSlackChannel } from '$lib/server/settings-validation.js';
 import { getSlackChannels } from '$lib/server/autocomplete-sources.js';
 import { extractChannelNames } from '$lib/welcome-dm.js';
+import {
+	MAX_TICKER_COLUMNS_PER_SECOND,
+	MIN_TICKER_COLUMNS_PER_SECOND,
+} from '$lib/ticker-speed.js';
 
 // App-config writes for the settings page. The body is a patch: only the keys
 // present are validated and written (saveAppConfig's set-only contract keeps
@@ -27,6 +31,7 @@ interface AppConfigBody {
 	countdownLabel?: unknown;
 	countdownEndAt?: unknown;
 	welcomeDmMessage?: unknown;
+	doorTickerColumnsPerSecond?: unknown;
 }
 
 const COUNTDOWN_LABEL_MAX_LENGTH = 80;
@@ -73,6 +78,27 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			);
 		}
 		patch.slackGrowthReportRankingAlpha = alpha;
+	}
+
+	// Ticker speed is bounded rather than free: below the minimum the board is
+	// unreadable, and above the maximum a step lasts under a frame and the
+	// stepped animation turns to stutter.
+	if (body.doorTickerColumnsPerSecond !== undefined) {
+		const rate = body.doorTickerColumnsPerSecond;
+		if (
+			typeof rate !== 'number' ||
+			!Number.isFinite(rate) ||
+			rate < MIN_TICKER_COLUMNS_PER_SECOND ||
+			rate > MAX_TICKER_COLUMNS_PER_SECOND
+		) {
+			return json(
+				{
+					error: `doorTickerColumnsPerSecond must be a number between ${MIN_TICKER_COLUMNS_PER_SECOND} and ${MAX_TICKER_COLUMNS_PER_SECOND}`,
+				},
+				{ status: 400 },
+			);
+		}
+		patch.doorTickerColumnsPerSecond = rate;
 	}
 
 	if (body.countdownLabel !== undefined) {
