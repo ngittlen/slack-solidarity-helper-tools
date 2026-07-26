@@ -22,7 +22,6 @@
 	     list twice for the seamless loop, and the sr-only list below carries
 	     the same information in a readable form. -->
 	<div class="ticker" style={durationStyle} aria-hidden="true">
-		<div class="ticker__glass"></div>
 		<p class="ticker__header">Most doors knocked today:</p>
 		<div class="ticker__track">
 			{#each [0, 1] as copy (copy)}
@@ -49,61 +48,25 @@
 {/if}
 
 <style>
+	/* Renders inside <LedBoard>, which supplies the panel, the diode grid and
+	   the --glyph-px / --led-pitch sizes; the fallbacks below only matter if
+	   this is ever used on its own. Only the marquee's clipping and edge
+	   fades are the ticker's own business. */
 	.ticker {
-		/* LED pitch — the spacing of the diode grid. Small enough to read as
-		   dots rather than as a screen door. */
-		--led-pitch: 3px;
-		/* Silkscreen is drawn on a 10-unit grid per em (caps are 7 of those
-		   units, verified from the font's head/OS2 tables), so one glyph pixel
-		   is exactly font-size / 10 — which makes glyph pixels, not font-size,
-		   the honest unit to size this board in. Name and count share one
-		   value so the two lines read as a single uniform panel; the count is
-		   set apart by colour, not by size.
-		   At 2.5px the caps are 17.5px tall. Note that's a half glyph pixel:
-		   crisp on a 2x display, marginally soft on a 1x one. Whole-pixel
-		   values (2px, 3px) are the hard-edged alternatives if that ever
-		   matters more than the exact size. */
-		--glyph-px: 2.5px;
 		position: relative;
 		overflow: hidden;
 		width: 100%;
-		border-radius: 6px;
-		/* Dark recessed panel with a bezel, like the physical board. */
-		background: #07070a;
-		border: 1px solid #26262e;
-		box-shadow:
-			inset 0 2px 10px rgba(0, 0, 0, 0.9),
-			0 1px 3px rgba(0, 0, 0, 0.35);
-		padding: 10px 0;
+		margin-top: 14px;
 	}
 
-	/* The LED grid itself: opaque panel colour everywhere EXCEPT a lattice of
-	   small holes. It sits ON TOP of the text, so both lit glyphs and dark
-	   background get chopped into the same uniform dot pitch — which is how a
-	   physical board works, the diodes are fixed and the message slides
-	   through them. Doing it here rather than masking each glyph also means
-	   nothing has to align with the font's pixel grid, and the dots can't
-	   shimmer against the letters as they scroll. */
-	.ticker__glass {
-		position: absolute;
-		inset: 0;
-		/* Hole radius ~1px on a 3px pitch leaves roughly a third of the panel
-		   open — close to the fill factor of a real board. Smaller reads as a
-		   screen door over the text; larger loses the dot structure. */
-		background-image: radial-gradient(circle at center, transparent 0 1px, #07070a 1.3px 100%);
-		background-size: var(--led-pitch) var(--led-pitch);
-		pointer-events: none;
-		z-index: 2;
-	}
-
-	/* Both ends fade into the bezel so cells enter and leave instead of
+	/* Both ends fade into the panel so cells enter and leave instead of
 	   popping at a hard edge. */
 	.ticker::after {
 		content: '';
 		position: absolute;
 		inset: 0;
 		pointer-events: none;
-		z-index: 3;
+		z-index: 2;
 		background: linear-gradient(
 			90deg,
 			#07070a 0%,
@@ -113,15 +76,15 @@
 		);
 	}
 
-	/* Static caption line inside the panel, the way a real board holds a fixed
-	   label above the scrolling message. Being inside .ticker means the LED
-	   grid overlay chops it into dots along with everything else — it reads as
-	   part of the board rather than as a caption sitting on top of one. */
+	/* Static caption line, the way a real board holds a fixed label above the
+	   scrolling message. It sits under the board's diode grid like everything
+	   else, so it reads as part of the sign rather than as a caption on top
+	   of one. */
 	.ticker__header {
 		margin: 0 0 8px;
 		text-align: center;
 		font-family: 'Silkscreen', 'Courier New', monospace;
-		font-size: calc(var(--glyph-px) * 10 * 0.75);
+		font-size: calc(var(--glyph-px, 2.5px) * 10 * 0.75);
 		letter-spacing: 0.12em;
 		text-transform: uppercase;
 		/* Amber, the classic caption colour on these boards. It's the same
@@ -171,7 +134,7 @@
 	}
 
 	.cell__name {
-		font-size: calc(var(--glyph-px) * 10);
+		font-size: calc(var(--glyph-px, 2.5px) * 10);
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
@@ -182,7 +145,7 @@
 	}
 
 	.cell__doors {
-		font-size: calc(var(--glyph-px) * 10);
+		font-size: calc(var(--glyph-px, 2.5px) * 10);
 		font-weight: 700;
 		letter-spacing: 0.04em;
 		/* Green for the counts, matching the up-ticks on a stock board. */
@@ -194,7 +157,7 @@
 	/* Three quarters of the shared glyph size, so the word stays subordinate
 	   to the number it labels while still scaling with the board. */
 	.cell__unit {
-		font-size: calc(var(--glyph-px) * 10 * 0.75);
+		font-size: calc(var(--glyph-px, 2.5px) * 10 * 0.75);
 		opacity: 0.7;
 		margin-left: 0.3em;
 	}

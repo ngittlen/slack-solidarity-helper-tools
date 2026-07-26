@@ -3,6 +3,8 @@
 	import { invalidate } from '$app/navigation';
 	import RangePresetPicker from '$lib/components/dashboard/RangePresetPicker.svelte';
 	import CountdownBanner from '$lib/components/dashboard/CountdownBanner.svelte';
+	import LedBoard from '$lib/components/dashboard/LedBoard.svelte';
+	import DoorTicker from '$lib/components/dashboard/DoorTicker.svelte';
 	import ChartCard from '$lib/components/dashboard/ChartCard.svelte';
 	import SlackLeaderboard from '$lib/components/dashboard/SlackLeaderboard.svelte';
 	import DoorsLeaderboard from '$lib/components/dashboard/DoorsLeaderboard.svelte';
@@ -102,14 +104,21 @@
 </svelte:head>
 
 <main>
-	{#if data.countdown}
+	<!-- One LED sign carrying the countdown and the day's personal standings.
+	     Either half can be absent — an unconfigured countdown no longer hides
+	     the ticker, and vice versa. -->
+	{#if data.countdown || data.doorKnockTicker.entries.length > 0}
 		<div class="countdown-row">
-			<CountdownBanner
-				label={data.countdown.label}
-				endAt={data.countdown.endAt}
-				projectedDoors={data.countdown.projectedDoors}
-				tickerEntries={data.doorKnockTicker.entries}
-			/>
+			<LedBoard>
+				{#if data.countdown}
+					<CountdownBanner
+						label={data.countdown.label}
+						endAt={data.countdown.endAt}
+						projectedDoors={data.countdown.projectedDoors}
+					/>
+				{/if}
+				<DoorTicker entries={data.doorKnockTicker.entries} />
+			</LedBoard>
 		</div>
 	{/if}
 

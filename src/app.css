@@ -58,19 +58,12 @@
    universal reset never strips layerchart's tooltip padding/margins. */
 @layer reset, theme, base, components, utilities;
 
-/* 14-segment LCD face for the header countdown. Vendored from
-   https://github.com/ctrlcctrlv/lcd-font (OFL 1.1 — license alongside the
-   file). @font-face is unaffected by cascade layers, so it lives outside. */
-@font-face {
-    font-family: 'LCD14';
-    src: url('/fonts/LCD14.otf') format('opentype');
-    font-display: swap;
-}
-
-/* Blocky 5x7 pixel face for the door-knock ticker's names. Vendored from
-   Google Fonts (Silkscreen, OFL 1.1 — license alongside the files), latin
-   subset only. The ticker masks each pixel into a round dot to get the LED
-   matrix look; a bitmap-style font is what makes that alignment possible. */
+/* Blocky bitmap face for the dashboard's LED board — countdown, projection
+   and door-knock ticker alike. Vendored from Google Fonts (Silkscreen, OFL
+   1.1 — license alongside the files), latin subset only. Drawn on a 10-unit
+   grid per em, which is what lets LedBoard size everything in whole glyph
+   pixels; a smooth typeface would turn to mush under the diode grid.
+   @font-face is unaffected by cascade layers, so it lives outside. */
 @font-face {
     font-family: 'Silkscreen';
     src: url('/fonts/Silkscreen-Regular.woff2') format('woff2');
