@@ -6,21 +6,45 @@ import { computeDoorsLeaderboardPair } from './door-knock-leaderboard.js';
 // ranking denominator week for lastWeek is Jun 29 → Jul 6.
 const NOW = new Date('2026-07-15T12:00:00Z');
 
-type Row = { date: string; chapter_name: string; doors: number; contacts: number };
+type Row = { date: string; chapterName: string; doors: number; contacts: number };
 
+// Drizzle SQL objects are circular (column → table → column), so plain
+// JSON.stringify throws; this is enough to inspect the bound window dates.
+function safeStringify(obj: unknown): string {
+	const seen = new WeakSet();
+	return JSON.stringify(obj, (_key, value: unknown) => {
+		if (typeof value === 'object' && value !== null) {
+			if (seen.has(value as object)) return '[Circular]';
+			seen.add(value as object);
+		}
+		return value;
+	});
+}
+
+// The module aggregates in SQL (SUM ... GROUP BY date, chapter_name), so these
+// rows stand in for the already-grouped result; `whereArgs` captures the
+// window predicate so tests can assert the read spans all three weeks.
 function makeDb(rows: Row[]) {
-	const all = vi.fn(async () => rows);
-	return { db: { all } as never, all };
+	const whereArgs: unknown[] = [];
+	const chain = {
+		where: vi.fn((arg: unknown) => {
+			whereArgs.push(arg);
+			return chain;
+		}),
+		groupBy: vi.fn(async () => rows),
+	};
+	const select = vi.fn(() => ({ from: () => chain }));
+	return { db: { select } as never, whereArgs };
 }
 
 describe('computeDoorsLeaderboardPair', () => {
 	it('buckets rows into the three Monday-pinned windows', async () => {
-		const { db, all } = makeDb([
-			{ date: '2026-07-01', chapter_name: 'Kent', doors: 100, contacts: 20 }, // week before
-			{ date: '2026-07-08', chapter_name: 'Kent', doors: 200, contacts: 40 }, // last week
-			{ date: '2026-07-12', chapter_name: 'Kent', doors: 50, contacts: 10 }, // last week (Sun)
-			{ date: '2026-07-13', chapter_name: 'Kent', doors: 75, contacts: 15 }, // this week (Mon)
-			{ date: '2026-07-14', chapter_name: 'Kent', doors: 25, contacts: 5 }, // this week
+		const { db, whereArgs } = makeDb([
+			{ date: '2026-07-01', chapterName: 'Kent', doors: 100, contacts: 20 }, // week before
+			{ date: '2026-07-08', chapterName: 'Kent', doors: 200, contacts: 40 }, // last week
+			{ date: '2026-07-12', chapterName: 'Kent', doors: 50, contacts: 10 }, // last week (Sun)
+			{ date: '2026-07-13', chapterName: 'Kent', doors: 75, contacts: 15 }, // this week (Mon)
+			{ date: '2026-07-14', chapterName: 'Kent', doors: 25, contacts: 5 }, // this week
 		]);
 
 		const pair = await computeDoorsLeaderboardPair(db, { now: NOW });
@@ -38,8 +62,8 @@ describe('computeDoorsLeaderboardPair', () => {
 			'2026-07-20T00:00:00.000Z',
 		);
 		// One read spans all three windows.
-		expect(JSON.stringify(all.mock.calls[0])).toContain('2026-06-29');
-		expect(JSON.stringify(all.mock.calls[0])).toContain('2026-07-20');
+		expect(safeStringify(whereArgs[0])).toContain('2026-06-29');
+		expect(safeStringify(whereArgs[0])).toContain('2026-07-20');
 	});
 
 	it('pins the week to Detroit time so a Sunday-night ET run stays on the current week', async () => {
@@ -49,8 +73,8 @@ describe('computeDoorsLeaderboardPair', () => {
 		// on [Jul 6, Jul 13) and still show this week's doors.
 		const sundayNight = new Date('2026-07-13T02:00:00Z');
 		const { db } = makeDb([
-			{ date: '2026-07-01', chapter_name: 'Kent', doors: 200, contacts: 40 }, // last week
-			{ date: '2026-07-11', chapter_name: 'Kent', doors: 90, contacts: 18 }, // this week (Sat)
+			{ date: '2026-07-01', chapterName: 'Kent', doors: 200, contacts: 40 }, // last week
+			{ date: '2026-07-11', chapterName: 'Kent', doors: 90, contacts: 18 }, // this week (Sat)
 		]);
 
 		const pair = await computeDoorsLeaderboardPair(db, { now: sundayNight });
@@ -67,9 +91,9 @@ describe('computeDoorsLeaderboardPair', () => {
 
 	it('ranks by raw doors when no chapter has previous-week data', async () => {
 		const { db } = makeDb([
-			{ date: '2026-07-14', chapter_name: 'Small', doors: 40, contacts: 8 },
-			{ date: '2026-07-14', chapter_name: 'Big', doors: 400, contacts: 80 },
-			{ date: '2026-07-14', chapter_name: 'Mid', doors: 100, contacts: 20 },
+			{ date: '2026-07-14', chapterName: 'Small', doors: 40, contacts: 8 },
+			{ date: '2026-07-14', chapterName: 'Big', doors: 400, contacts: 80 },
+			{ date: '2026-07-14', chapterName: 'Mid', doors: 100, contacts: 20 },
 		]);
 
 		const pair = await computeDoorsLeaderboardPair(db, { now: NOW, rankingAlpha: 0.7 });
@@ -94,9 +118,9 @@ describe('computeDoorsLeaderboardPair', () => {
 		// 100 → 150 week-over-week. The established chapter must rank first; the
 		// newcomer drops to the bottom despite its larger raw total.
 		const { db } = makeDb([
-			{ date: '2026-07-08', chapter_name: 'Established', doors: 100, contacts: 0 }, // last week
-			{ date: '2026-07-14', chapter_name: 'Established', doors: 150, contacts: 0 }, // this week
-			{ date: '2026-07-14', chapter_name: 'Newcomer', doors: 400, contacts: 0 }, // this week only
+			{ date: '2026-07-08', chapterName: 'Established', doors: 100, contacts: 0 }, // last week
+			{ date: '2026-07-14', chapterName: 'Established', doors: 150, contacts: 0 }, // this week
+			{ date: '2026-07-14', chapterName: 'Newcomer', doors: 400, contacts: 0 }, // this week only
 		]);
 
 		const pair = await computeDoorsLeaderboardPair(db, { now: NOW, rankingAlpha: 0.7 });
@@ -118,10 +142,10 @@ describe('computeDoorsLeaderboardPair', () => {
 
 	it('orders multiple prior-week-less chapters among themselves by raw doors, at the bottom', async () => {
 		const { db } = makeDb([
-			{ date: '2026-07-08', chapter_name: 'Established', doors: 50, contacts: 0 }, // last week
-			{ date: '2026-07-14', chapter_name: 'Established', doors: 60, contacts: 0 }, // this week
-			{ date: '2026-07-14', chapter_name: 'NewBig', doors: 300, contacts: 0 }, // this week only
-			{ date: '2026-07-14', chapter_name: 'NewSmall', doors: 90, contacts: 0 }, // this week only
+			{ date: '2026-07-08', chapterName: 'Established', doors: 50, contacts: 0 }, // last week
+			{ date: '2026-07-14', chapterName: 'Established', doors: 60, contacts: 0 }, // this week
+			{ date: '2026-07-14', chapterName: 'NewBig', doors: 300, contacts: 0 }, // this week only
+			{ date: '2026-07-14', chapterName: 'NewSmall', doors: 90, contacts: 0 }, // this week only
 		]);
 
 		const pair = await computeDoorsLeaderboardPair(db, { now: NOW, rankingAlpha: 0.7 });
@@ -138,10 +162,10 @@ describe('computeDoorsLeaderboardPair', () => {
 		// α = 1: Steady 100→100 scores 100/101 ≈ 0.99; Surging 10→60 scores
 		// 60/11 ≈ 5.45 — Surging ranks first despite fewer doors.
 		const { db } = makeDb([
-			{ date: '2026-07-08', chapter_name: 'Steady', doors: 100, contacts: 0 },
-			{ date: '2026-07-08', chapter_name: 'Surging', doors: 10, contacts: 0 },
-			{ date: '2026-07-14', chapter_name: 'Steady', doors: 100, contacts: 0 },
-			{ date: '2026-07-14', chapter_name: 'Surging', doors: 60, contacts: 0 },
+			{ date: '2026-07-08', chapterName: 'Steady', doors: 100, contacts: 0 },
+			{ date: '2026-07-08', chapterName: 'Surging', doors: 10, contacts: 0 },
+			{ date: '2026-07-14', chapterName: 'Steady', doors: 100, contacts: 0 },
+			{ date: '2026-07-14', chapterName: 'Surging', doors: 60, contacts: 0 },
 		]);
 
 		const pair = await computeDoorsLeaderboardPair(db, { now: NOW, rankingAlpha: 1 });
@@ -160,9 +184,9 @@ describe('computeDoorsLeaderboardPair', () => {
 
 	it("lastWeek ranks against the week before it and thisWeek against lastWeek", async () => {
 		const { db } = makeDb([
-			{ date: '2026-07-01', chapter_name: 'Kent', doors: 80, contacts: 0 }, // week before
-			{ date: '2026-07-08', chapter_name: 'Kent', doors: 120, contacts: 0 }, // last week
-			{ date: '2026-07-14', chapter_name: 'Kent', doors: 30, contacts: 0 }, // this week
+			{ date: '2026-07-01', chapterName: 'Kent', doors: 80, contacts: 0 }, // week before
+			{ date: '2026-07-08', chapterName: 'Kent', doors: 120, contacts: 0 }, // last week
+			{ date: '2026-07-14', chapterName: 'Kent', doors: 30, contacts: 0 }, // this week
 		]);
 
 		const pair = await computeDoorsLeaderboardPair(db, { now: NOW });
@@ -183,7 +207,7 @@ describe('computeDoorsLeaderboardPair', () => {
 	it('caps topChapters at 5 but totals all chapters', async () => {
 		const rows: Row[] = Array.from({ length: 7 }, (_, i) => ({
 			date: '2026-07-14',
-			chapter_name: `Chapter ${i + 1}`,
+			chapterName: `Chapter ${i + 1}`,
 			doors: (i + 1) * 10,
 			contacts: 0,
 		}));

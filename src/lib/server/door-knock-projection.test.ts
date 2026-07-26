@@ -96,16 +96,23 @@ describe('projectDoorsAtDeadline', () => {
 });
 
 describe('loadDoorKnockDayTotals', () => {
+	// SUM() can come back as a string, so the loader coerces on the way out.
 	it('maps and numbers the grouped rows', async () => {
-		const all = vi.fn(async () => [
+		const orderBy = vi.fn(async () => [
 			{ date: '2026-07-01', total: 140 },
 			{ date: '2026-07-02', total: '175' },
 		]);
-		const rows = await loadDoorKnockDayTotals({ all } as never);
+		const groupBy = vi.fn(() => ({ orderBy }));
+		const select = vi.fn(() => ({ from: () => ({ groupBy }) }));
+
+		const rows = await loadDoorKnockDayTotals({ select } as never);
+
 		expect(rows).toEqual([
 			{ date: '2026-07-01', total: 140 },
 			{ date: '2026-07-02', total: 175 },
 		]);
-		expect(JSON.stringify(all.mock.calls[0])).toContain('GROUP BY date');
+		// One row per date, oldest first — the pace window slices off the tail.
+		expect(groupBy).toHaveBeenCalledTimes(1);
+		expect(orderBy).toHaveBeenCalledTimes(1);
 	});
 });

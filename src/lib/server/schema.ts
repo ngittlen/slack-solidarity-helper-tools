@@ -167,6 +167,26 @@ export const doorKnockCanvasArchive = sqliteTable('door_knock_canvas_archive', {
 	fetchedAt: text('fetched_at').notNull(),
 });
 
+// Singleton row recording the last door-knock snapshot ATTEMPT, so dashboard
+// visits can re-run the snapshot at most once every DOOR_KNOCK_REFRESH_MS
+// (see door-knock-refresh.ts). Stamped at claim time — before the snapshot
+// runs — so a failing Openfield/Slack call throttles the retry the same as a
+// success instead of letting every page view start a new attempt.
+export const doorKnockRefresh = sqliteTable(
+	'door_knock_refresh',
+	{
+		id: integer('id').primaryKey(),
+		/** ISO timestamp the attempt was claimed. */
+		startedAt: text('started_at').notNull(),
+		/** ISO timestamp the attempt settled; NULL while one is in flight. */
+		finishedAt: text('finished_at'),
+		ok: integer('ok', { mode: 'boolean' }),
+		/** Error message of the last failed attempt, for debugging. */
+		error: text('error'),
+	},
+	(table) => [check('door_knock_refresh_singleton', sql`${table.id} = 1`)],
+);
+
 export const appConfig = sqliteTable(
 	'app_config',
 	{
@@ -234,3 +254,6 @@ export type NewDoorKnockCodeIdRow = typeof doorKnockCodeIds.$inferInsert;
 
 export type DoorKnockCanvasArchiveRow = typeof doorKnockCanvasArchive.$inferSelect;
 export type NewDoorKnockCanvasArchiveRow = typeof doorKnockCanvasArchive.$inferInsert;
+
+export type DoorKnockRefreshRow = typeof doorKnockRefresh.$inferSelect;
+export type NewDoorKnockRefreshRow = typeof doorKnockRefresh.$inferInsert;

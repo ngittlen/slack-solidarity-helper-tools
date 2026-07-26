@@ -170,17 +170,16 @@ describe('computeLiveLeaderboardSinceSnapshot', () => {
 		totalNewJoins?: number;
 	}) {
 		// `select()` is issued in this order: windows → snapshot rows (only
-		// when a window row exists) → chapter names (via loadChapterNames).
-		// Skip the snapshot-rows entry when there's no window so the queue
-		// stays aligned with the actual call sequence.
+		// when a window row exists) → chapter names (via loadChapterNames) →
+		// the new-joins count. Skip the snapshot-rows entry when there's no
+		// window so the queue stays aligned with the actual call sequence.
+		const countRows = [{ cnt: opts.totalNewJoins ?? 0 }] satisfies CountRow[];
 		const selectQueue: unknown[][] = (opts.windows?.length ?? 0) > 0
-			? [opts.windows ?? [], opts.snapshotRows ?? [], opts.nameRows ?? []]
-			: [opts.windows ?? [], opts.nameRows ?? []];
-		// `db.all()` results: aggRows → totalNewJoinsRow.
-		const allQueue: unknown[][] = [
-			opts.aggRows ?? [],
-			[{ cnt: opts.totalNewJoins ?? 0 }] satisfies CountRow[],
-		];
+			? [opts.windows ?? [], opts.snapshotRows ?? [], opts.nameRows ?? [], countRows]
+			: [opts.windows ?? [], opts.nameRows ?? [], countRows];
+		// `db.all()` is only the json_each aggregation now — the count moved to
+		// the query builder.
+		const allQueue: unknown[][] = [opts.aggRows ?? []];
 		const select = vi.fn(() => {
 			const result = selectQueue.shift() ?? [];
 			const terminal = {

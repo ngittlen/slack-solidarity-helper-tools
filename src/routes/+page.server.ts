@@ -19,6 +19,11 @@ import {
 	computeDoorsLeaderboardPair,
 	type DoorsLeaderboardPair,
 } from '$lib/server/door-knock-leaderboard.js';
+import {
+	needsDoorKnockRefresh,
+	readDoorKnockRefreshStatus,
+} from '$lib/server/door-knock-refresh.js';
+import { isDoorKnockConfigured } from '$lib/server/door-knock-env.js';
 
 async function safeLoad(
 	label: string,
@@ -98,5 +103,32 @@ export const load: PageServerLoad = async (event) => {
 		countdown = { label: settings.countdownLabel, endAt: settings.countdownEndAt, projectedDoors };
 	}
 
-	return { ...base, leaderboard, doorsLeaderboard, countdown, pageTitle: 'Dashboard' };
+	// Close to election day the nightly snapshot is too stale to be useful, so
+	// the page tells the client when nobody has refreshed the door-knock
+	// numbers recently; the client then kicks off a background refresh and
+	// reloads the chart (see the on-demand refresh endpoint). Best-effort — if
+	// the bookkeeping read fails we just serve what we have.
+	let doorKnockRefreshDue = false;
+	if (isDoorKnockConfigured()) {
+		try {
+			doorKnockRefreshDue = needsDoorKnockRefresh(
+				await readDoorKnockRefreshStatus(db),
+				Date.now(),
+			);
+		} catch (err) {
+			console.error(
+				'[dashboard] door-knock refresh status read failed:',
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+
+	return {
+		...base,
+		leaderboard,
+		doorsLeaderboard,
+		countdown,
+		doorKnockRefreshDue,
+		pageTitle: 'Dashboard',
+	};
 };

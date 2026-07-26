@@ -17,7 +17,8 @@
 // Same import discipline as weekly-growth-report.ts: no $env/$lib imports.
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { sql } from 'drizzle-orm';
+import { and, gte, lt, sum } from 'drizzle-orm';
+import { doorKnockDaily } from './schema.js';
 import { rankingScore, DEFAULT_RANKING_ALPHA, TOP_N } from '../growth-ranking.js';
 
 export interface DoorsChapterEntry {
@@ -178,12 +179,21 @@ export async function computeDoorsLeaderboardPair(
 
 	// Rows are keyed by ET date string; window date strings bucket them.
 	// [weekBeforeStart, thisWeekEnd) spans all three windows in one read.
-	const rows = (await db.all(sql`
-		SELECT date, chapter_name, SUM(attempts) AS doors, SUM(contacts) AS contacts
-		FROM door_knock_daily
-		WHERE date >= ${fmtDate(weekBeforeStart)} AND date < ${fmtDate(thisWeekEnd)}
-		GROUP BY date, chapter_name
-	`)) as Array<{ date: string; chapter_name: string; doors: number; contacts: number }>;
+	const rows = await db
+		.select({
+			date: doorKnockDaily.date,
+			chapterName: doorKnockDaily.chapterName,
+			doors: sum(doorKnockDaily.attempts),
+			contacts: sum(doorKnockDaily.contacts),
+		})
+		.from(doorKnockDaily)
+		.where(
+			and(
+				gte(doorKnockDaily.date, fmtDate(weekBeforeStart)),
+				lt(doorKnockDaily.date, fmtDate(thisWeekEnd)),
+			),
+		)
+		.groupBy(doorKnockDaily.date, doorKnockDaily.chapterName);
 
 	const weekBefore = new Map<string, WindowTotals>();
 	const lastWeek = new Map<string, WindowTotals>();
@@ -194,10 +204,10 @@ export async function computeDoorsLeaderboardPair(
 	for (const row of rows) {
 		const bucket =
 			row.date < lastWeekStartStr ? weekBefore : row.date < lastWeekEndStr ? lastWeek : thisWeek;
-		const totals = bucket.get(row.chapter_name) ?? { doors: 0, contacts: 0 };
+		const totals = bucket.get(row.chapterName) ?? { doors: 0, contacts: 0 };
 		totals.doors += Number(row.doors);
 		totals.contacts += Number(row.contacts);
-		bucket.set(row.chapter_name, totals);
+		bucket.set(row.chapterName, totals);
 	}
 
 	return {

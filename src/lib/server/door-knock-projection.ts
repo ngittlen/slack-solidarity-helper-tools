@@ -13,7 +13,8 @@
 // imports, db injected.
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { sql } from 'drizzle-orm';
+import { asc, sum } from 'drizzle-orm';
+import { doorKnockDaily } from './schema.js';
 
 export const PROJECTION_WINDOW_DAYS = 7;
 
@@ -26,12 +27,13 @@ export interface DoorKnockDayTotal {
 export async function loadDoorKnockDayTotals(
 	db: LibSQLDatabase<Record<string, unknown>>,
 ): Promise<DoorKnockDayTotal[]> {
-	const rows = (await db.all(sql`
-		SELECT date, SUM(attempts) AS total
-		FROM door_knock_daily
-		GROUP BY date
-		ORDER BY date
-	`)) as Array<{ date: string; total: number }>;
+	// SUM() comes back as a string (drizzle types it that way, and libsql can
+	// hand back either), hence the Number() on the way out.
+	const rows = await db
+		.select({ date: doorKnockDaily.date, total: sum(doorKnockDaily.attempts) })
+		.from(doorKnockDaily)
+		.groupBy(doorKnockDaily.date)
+		.orderBy(asc(doorKnockDaily.date));
 	return rows.map((r) => ({ date: r.date, total: Number(r.total) }));
 }
 

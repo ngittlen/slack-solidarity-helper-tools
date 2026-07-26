@@ -18,11 +18,19 @@ interface CapturedInsert {
 
 function makeDb(cachedIdRows: unknown[] = [], prevChapterRows: unknown[] = []) {
 	const inserts: CapturedInsert[] = [];
-	// The snapshot reads the whole code-id cache in one select().from().
-	const from = vi.fn().mockResolvedValue(cachedIdRows);
+	// Two selects, told apart by shape rather than call order: the code-id
+	// cache read awaits `.from()` directly, while the off-canvas last-known-
+	// chapter lookup continues `.where().groupBy()`.
+	const whereArgs: unknown[] = [];
+	const from = vi.fn(() => ({
+		then: (r: (v: unknown) => unknown) => Promise.resolve(cachedIdRows).then(r),
+		where: (arg: unknown) => {
+			whereArgs.push(arg);
+			return { groupBy: async () => prevChapterRows };
+		},
+	}));
 	const select = vi.fn(() => ({ from }));
-	// db.all serves the off-canvas last-known-chapter lookup.
-	const all = vi.fn(async () => prevChapterRows);
+	const all = vi.fn(async () => []);
 	const insert = vi.fn((table: unknown) => ({
 		values: (values: unknown) => ({
 			onConflictDoUpdate: (onConflict: unknown) => {
@@ -31,7 +39,7 @@ function makeDb(cachedIdRows: unknown[] = [], prevChapterRows: unknown[] = []) {
 			},
 		}),
 	}));
-	return { db: { select, insert, all } as never, inserts, all };
+	return { db: { select, insert, all } as never, inserts, all, whereArgs };
 }
 
 // 02:30 UTC on Jul 7 is 22:30 EDT on Jul 6 — the nightly cron's situation.
@@ -227,7 +235,7 @@ describe('runDoorKnockSnapshot', () => {
 				{ code: 'OLD123', conversationId: 88, resolvedAt: 'x' },
 				{ code: 'GONE99', conversationId: 89, resolvedAt: 'x' },
 			],
-			[{ code: 'OLD123', chapter_name: 'Kent' }],
+			[{ code: 'OLD123', chapterName: 'Kent' }],
 		);
 		const deps = makeDeps();
 		deps.openfield.fetchToday = vi.fn(async (id: number) => {

@@ -8,9 +8,9 @@
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import type { KnownBlock, WebClient } from '@slack/web-api';
-import { sql, eq, desc } from 'drizzle-orm';
+import { sql, and, count, eq, desc, gte, lt } from 'drizzle-orm';
 import { loadChapterNames } from './chapter-names.js';
-import { weeklyGrowthWindows, weeklyChapterGrowth } from './schema.js';
+import { weeklyGrowthWindows, weeklyChapterGrowth, slackJoins } from './schema.js';
 // Ranking math lives in a client-safe module so the /settings alpha-slider
 // preview can re-rank the same data in the browser. The app_config setting
 // (env fallback SLACK_GROWTH_REPORT_RANKING_ALPHA) overrides the default.
@@ -242,6 +242,23 @@ export async function computeWeeklyLeaderboard(
 // every page load. Only successful lookups are cached — failures fall through
 // so the next load retries. The cron deliberately does NOT use this; it wants
 // fresh ground truth.
+/** Distinct count of users who joined the workspace in [start, end). Each
+ *  slack_joins row is one user, so multi-chapter users aren't double-counted,
+ *  and excluded chapters don't drop anyone — this answers "how many joined
+ *  Slack this window?" overall. Shared by the cron report and the live tab,
+ *  which must agree on the headline number. */
+async function countNewJoins(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	windowStartIso: string,
+	windowEndIso: string,
+): Promise<number> {
+	const rows = await db
+		.select({ cnt: count() })
+		.from(slackJoins)
+		.where(and(gte(slackJoins.joinedAt, windowStartIso), lt(slackJoins.joinedAt, windowEndIso)));
+	return Number(rows[0]?.cnt ?? 0);
+}
+
 const CHANNEL_COUNT_TTL_MS = 5 * 60 * 1000;
 const channelCountCache = new Map<string, { numMembers: number; fetchedAt: number }>();
 
@@ -410,11 +427,7 @@ export async function computeLiveLeaderboardSinceSnapshot(
 
 	sortByRanking(leaderboard, rankingAlpha);
 
-	const totalNewJoinsRow = (await db.all(sql`
-		SELECT COUNT(*) AS cnt FROM slack_joins
-		WHERE joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso}
-	`)) as Array<{ cnt: number }>;
-	const totalNewJoins = Number(totalNewJoinsRow[0]?.cnt ?? 0);
+	const totalNewJoins = await countNewJoins(db, windowStartIso, windowEndIso);
 
 	return {
 		windowStart: windowStartIso,
@@ -597,15 +610,7 @@ export async function runWeeklyGrowthReport(
 	sortByRanking(leaderboard, rankingAlpha);
 
 	const topChapters = leaderboard.slice(0, TOP_N);
-	// Distinct count of users who joined the workspace this window. Counted
-	// against the slack_joins rows directly (each row is one user) so multi-
-	// chapter users don't get double-counted, and excluded chapters don't drop
-	// anyone — this answers "how many joined Slack this week?" overall.
-	const totalNewJoinsRow = (await db.all(sql`
-		SELECT COUNT(*) AS cnt FROM slack_joins
-		WHERE joined_at >= ${windowStartIso} AND joined_at < ${windowEndIso}
-	`)) as Array<{ cnt: number }>;
-	const totalNewJoins = Number(totalNewJoinsRow[0]?.cnt ?? 0);
+	const totalNewJoins = await countNewJoins(db, windowStartIso, windowEndIso);
 
 	if (!options.dryRun) {
 		await persistSnapshot(db, windowStartIso, windowEndIso, totalNewJoins, leaderboard);

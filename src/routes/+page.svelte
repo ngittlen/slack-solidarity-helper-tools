@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { invalidate } from '$app/navigation';
 	import RangePresetPicker from '$lib/components/dashboard/RangePresetPicker.svelte';
 	import CountdownBanner from '$lib/components/dashboard/CountdownBanner.svelte';
 	import ChartCard from '$lib/components/dashboard/ChartCard.svelte';
@@ -63,6 +65,36 @@
 	// ever written data (or on a load error) — hidden entirely while the
 	// integration is unconfigured, rather than showing a permanent empty card.
 	const showDoorKnock = $derived(data.doorKnock.ok === false || doorKnockState.kind !== 'empty');
+
+	// On-demand door-knock refresh. When the server says nobody has pulled
+	// fresh Openfield numbers within the refresh window, this visit triggers
+	// one in the background: the chart keeps showing the numbers it loaded
+	// with, the header shows a spinner, and the page data is invalidated once
+	// the snapshot lands. The server throttles, so a visit inside the window
+	// never reaches Openfield.
+	let refreshingDoorKnock = $state(false);
+
+	async function refreshDoorKnock() {
+		refreshingDoorKnock = true;
+		try {
+			await fetch('/api/dashboard/door-knock-refresh', { method: 'POST' });
+		} catch (err) {
+			// A failed refresh is not worth interrupting the page for — the
+			// already-rendered numbers stay valid, just older.
+			console.error('[dashboard] door-knock refresh request failed:', err);
+		} finally {
+			refreshingDoorKnock = false;
+		}
+		// Reload regardless: on success this brings in the new numbers, and on
+		// failure it costs one cheap page-data round trip.
+		await invalidate('app:dashboard');
+	}
+
+	// Once per visit — onMount rather than $effect so a mid-refresh data change
+	// (or a failed refresh) can't kick off a second round.
+	onMount(() => {
+		if (data.doorKnockRefreshDue) void refreshDoorKnock();
+	});
 </script>
 
 <svelte:head>
@@ -92,6 +124,7 @@
 				cardState={doorKnockState}
 				bind:mode={doorKnockMode}
 				showMultiChapterNote={false}
+				refreshing={refreshingDoorKnock}
 			/>
 			<DoorsLeaderboard leaderboard={data.doorsLeaderboard} />
 		</div>

@@ -23,7 +23,7 @@
 // (the HTTP endpoint wires them from env).
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { sql } from 'drizzle-orm';
+import { inArray, max } from 'drizzle-orm';
 import { doorKnockCanvasArchive, doorKnockCodeIds, doorKnockDaily } from './schema.js';
 import {
 	parseConversationCodes,
@@ -228,22 +228,24 @@ export async function runDoorKnockSnapshot(
 	// Chapter comes from the code's most recent daily row; UNMAPPED otherwise.
 	const offCanvasCodes: string[] = [];
 	if (offCanvasCandidates.length > 0) {
-		// Codes are CODE_RE-shaped (written by this module), so inlining the IN
-		// list is safe; the filter is defense in depth.
-		const inList = sql.raw(
-			offCanvasCandidates
-				.map((r) => r.code)
-				.filter((c) => /^[A-Z0-9]{6}$/.test(c))
-				.map((c) => `'${c}'`)
-				.join(','),
-		);
-		const prevChapters = (await db.all(sql`
-			SELECT code, chapter_name, MAX(date)
-			FROM door_knock_daily
-			WHERE code IN (${inList})
-			GROUP BY code
-		`)) as Array<{ code: string; chapter_name: string }>;
-		const chapterByCode = new Map(prevChapters.map((r) => [r.code, r.chapter_name]));
+		// SQLite's bare-column rule for min/max: selecting chapter_name alongside
+		// MAX(date) yields the chapter from the row holding that max — i.e. the
+		// code's most recent known chapter, which is what we want here.
+		const prevChapters = await db
+			.select({
+				code: doorKnockDaily.code,
+				chapterName: doorKnockDaily.chapterName,
+				latest: max(doorKnockDaily.date),
+			})
+			.from(doorKnockDaily)
+			.where(
+				inArray(
+					doorKnockDaily.code,
+					offCanvasCandidates.map((r) => r.code),
+				),
+			)
+			.groupBy(doorKnockDaily.code);
+		const chapterByCode = new Map(prevChapters.map((r) => [r.code, r.chapterName]));
 
 		const offSettled = await Promise.allSettled(
 			offCanvasCandidates.map((r) => deps.openfield.fetchToday(r.conversationId)),

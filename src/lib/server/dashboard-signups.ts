@@ -7,8 +7,8 @@
 // and standalone scripts.
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { and, asc, gte, notInArray, sql, type SQL } from 'drizzle-orm';
-import { solidarityDailySnapshots } from './schema.js';
+import { and, asc, gte, max, notInArray, sql, sum, type SQL } from 'drizzle-orm';
+import { doorKnockDaily, solidarityDailySnapshots } from './schema.js';
 import { loadChapterNames } from './chapter-names.js';
 import { DISTINCT_TOTAL_SENTINEL } from './solidarity-snapshot.js';
 
@@ -79,9 +79,7 @@ async function latestSlackDate(
 async function latestDoorKnockDate(
 	db: LibSQLDatabase<Record<string, unknown>>,
 ): Promise<string | null> {
-	const rows = (await db.all(sql`SELECT MAX(date) AS max FROM door_knock_daily`)) as Array<{
-		max: string | null;
-	}>;
+	const rows = await db.select({ max: max(doorKnockDaily.date) }).from(doorKnockDaily);
 	return rows[0]?.max ?? null;
 }
 
@@ -281,16 +279,19 @@ export async function loadDoorKnockSignups(
 	const startDate = windowStartDate(endDate, options.days);
 	// Chapters can span several codes (metro city codes + a county code), so
 	// aggregate to (date, chapter) in SQL.
-	const rows = (await db.all(sql`
-		SELECT date, chapter_name, SUM(attempts) AS attempts
-		FROM door_knock_daily
-		WHERE date >= ${startDate}
-		GROUP BY date, chapter_name
-		ORDER BY date
-	`)) as Array<{ date: string; chapter_name: string; attempts: number }>;
+	const rows = await db
+		.select({
+			date: doorKnockDaily.date,
+			chapterName: doorKnockDaily.chapterName,
+			attempts: sum(doorKnockDaily.attempts),
+		})
+		.from(doorKnockDaily)
+		.where(gte(doorKnockDaily.date, startDate))
+		.groupBy(doorKnockDaily.date, doorKnockDaily.chapterName)
+		.orderBy(asc(doorKnockDaily.date));
 
 	const chapterIds = new Map<string, number>(
-		[...new Set(rows.map((r) => r.chapter_name))].sort().map((name, i) => [name, i + 1]),
+		[...new Set(rows.map((r) => r.chapterName))].sort().map((name, i) => [name, i + 1]),
 	);
 
 	const byDate = new Map<string, DaySignups>();
@@ -301,8 +302,8 @@ export async function loadDoorKnockSignups(
 			byDate.set(r.date, day);
 		}
 		day.byChapter.push({
-			chapterId: chapterIds.get(r.chapter_name)!,
-			chapterName: r.chapter_name,
+			chapterId: chapterIds.get(r.chapterName)!,
+			chapterName: r.chapterName,
 			count: Number(r.attempts),
 		});
 		day.total += Number(r.attempts);

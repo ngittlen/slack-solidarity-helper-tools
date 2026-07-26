@@ -53,16 +53,14 @@ function makeDb(): MockDb {
 	const whereArgs: unknown[] = [];
 
 	function chain(rows: unknown[]) {
+		const thenable = (r: (v: unknown) => unknown) => Promise.resolve(rows).then(r);
 		const orderBy = vi.fn().mockResolvedValue(rows);
+		const groupBy = vi.fn(() => ({ orderBy, then: thenable }));
 		const where = vi.fn((arg: unknown) => {
 			whereArgs.push(arg);
-			return { orderBy, then: (r: (v: unknown) => unknown) => Promise.resolve(rows).then(r) };
+			return { orderBy, groupBy, then: thenable };
 		});
-		const from = vi.fn(() => ({
-			where,
-			orderBy,
-			then: (r: (v: unknown) => unknown) => Promise.resolve(rows).then(r),
-		}));
+		const from = vi.fn(() => ({ where, orderBy, groupBy, then: thenable }));
 		return { from };
 	}
 
@@ -84,11 +82,11 @@ function makeDb(): MockDb {
 describe('loadDoorKnockSignups', () => {
 	it('groups snapshot rows by date with stable synthetic chapter ids', async () => {
 		const db = makeDb();
-		db._pushAll(maxDateRows('2026-05-10')); // latest-date probe
-		db._pushAll([
-			{ date: '2026-05-09', chapter_name: 'Washtenaw', attempts: 42 },
-			{ date: '2026-05-09', chapter_name: 'Detroit', attempts: 100 },
-			{ date: '2026-05-10', chapter_name: 'Detroit', attempts: 55 },
+		db._pushSelect(maxDateRows('2026-05-10')); // latest-date probe
+		db._pushSelect([
+			{ date: '2026-05-09', chapterName: 'Washtenaw', attempts: 42 },
+			{ date: '2026-05-09', chapterName: 'Detroit', attempts: 100 },
+			{ date: '2026-05-10', chapterName: 'Detroit', attempts: 55 },
 		]);
 
 		const days = await loadDoorKnockSignups(db as never, { days: 7 });
@@ -114,17 +112,18 @@ describe('loadDoorKnockSignups', () => {
 
 	it('anchors the window to the latest data date, not today', async () => {
 		const db = makeDb();
-		db._pushAll(maxDateRows('2026-05-10')); // latest data date
-		db._pushAll([]);
+		db._pushSelect(maxDateRows('2026-05-10')); // latest data date
+		db._pushSelect([]);
 		await loadDoorKnockSignups(db as never, { days: 7 });
 		// Window ends on the latest data date (2026-05-10), days=7 → start
-		// 2026-05-04. The data query is the second db.all call (after the probe).
-		expect(JSON.stringify(db.all.mock.calls[1])).toContain('2026-05-04');
+		// 2026-05-04. The probe has no where(), so the data query's predicate is
+		// the only one captured.
+		expect(safeStringify(db._whereArgs()[0])).toContain('2026-05-04');
 	});
 
 	it('returns [] when the table is empty (no latest date)', async () => {
 		const db = makeDb();
-		db._pushAll(maxDateRows(null));
+		db._pushSelect(maxDateRows(null));
 		expect(await loadDoorKnockSignups(db as never, { days: 30 })).toEqual([]);
 	});
 });

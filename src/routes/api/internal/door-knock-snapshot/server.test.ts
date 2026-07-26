@@ -4,6 +4,8 @@ import { POST } from './+server.js';
 const mockRunSnapshot = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockLoadSettings = vi.hoisted(() => vi.fn());
+const mockBeginRefresh = vi.hoisted(() => vi.fn());
+const mockEndRefresh = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({
 	INTERNAL_CRON_SECRET: 'test-cron-secret',
 	SLACK_BOT_TOKEN: 'xoxb-test',
@@ -22,6 +24,10 @@ vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
 vi.mock('$lib/server/door-knock-canvas', () => ({ fetchConversationCodesCanvas: vi.fn() }));
 vi.mock('$lib/server/openfield', () => ({ createOpenfieldClient: vi.fn(() => ({})) }));
 vi.mock('$lib/server/db', () => ({ db: {} }));
+vi.mock('$lib/server/door-knock-refresh', () => ({
+	beginDoorKnockRefresh: mockBeginRefresh,
+	endDoorKnockRefresh: mockEndRefresh,
+}));
 vi.mock('$lib/server/env', () => ({
 	get INTERNAL_CRON_SECRET() {
 		return mockEnv.INTERNAL_CRON_SECRET;
@@ -94,6 +100,28 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toMatchObject({ date: '2026-07-06', totalAttempts: 42 });
 		expect(mockRunSnapshot).toHaveBeenCalledTimes(1);
+	});
+
+	// The scheduled run resets the dashboard's on-demand refresh window, so a
+	// visit right after the cron doesn't re-fetch the same numbers.
+	it('stamps the refresh window around a successful run', async () => {
+		await POST(makeReq('?key=test-cron-secret') as never);
+		expect(mockBeginRefresh).toHaveBeenCalledTimes(1);
+		expect(mockEndRefresh).toHaveBeenCalledTimes(1);
+		expect(mockEndRefresh.mock.calls[0]![2]).toBeNull();
+	});
+
+	it('records the failure on the refresh window when the snapshot throws', async () => {
+		mockRunSnapshot.mockRejectedValueOnce(new Error('openfield 503'));
+		const res = await POST(makeReq('?key=test-cron-secret') as never);
+		expect(res.status).toBe(500);
+		expect(mockEndRefresh.mock.calls[0]![2]).toBe('openfield 503');
+	});
+
+	it('does not stamp the window when config is missing', async () => {
+		mockEnv.DOOR_KNOCK_CHANNEL_ID = '';
+		await POST(makeReq('?key=test-cron-secret') as never);
+		expect(mockBeginRefresh).not.toHaveBeenCalled();
 	});
 
 	it('does not ping Slack when every code was attributed', async () => {

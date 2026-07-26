@@ -26,6 +26,10 @@
 		 *  person can appear in several bands (signups); doors-knocked counts
 		 *  are per-conversation and don't need it. */
 		showMultiChapterNote?: boolean;
+		/** Shows a "Fetching new data…" spinner beside the title while newer
+		 *  numbers are being pulled in the background. The chart keeps showing
+		 *  the data it already has until they land. */
+		refreshing?: boolean;
 	};
 
 	let {
@@ -33,6 +37,7 @@
 		cardState,
 		mode = $bindable('overview'),
 		showMultiChapterNote = true,
+		refreshing = false,
 	}: Props = $props();
 
 	let isRetrying = $state(false);
@@ -55,7 +60,15 @@
 
 <section class="chart-card" aria-labelledby={headingId}>
 	<header class="chart-card__header">
-		<h2 class="chart-card__title" id={headingId}>{title}</h2>
+		<div class="chart-card__heading">
+			<h2 class="chart-card__title" id={headingId}>{title}</h2>
+			{#if refreshing}
+				<p class="chart-card__refreshing" role="status">
+					<span class="chart-card__spinner" aria-hidden="true"></span>
+					Fetching new data…
+				</p>
+			{/if}
+		</div>
 		<div class="chart-card__toggle" role="group" aria-label="{title} breakdown">
 			<button
 				type="button"
@@ -155,10 +168,45 @@
 		flex-wrap: wrap;
 		margin-bottom: 0.75rem;
 	}
+	.chart-card__heading {
+		display: flex;
+		align-items: center;
+		gap: 0.625rem;
+		flex-wrap: wrap;
+		min-width: 0;
+	}
 	.chart-card__title {
 		margin: 0;
 		font-size: 1.125rem;
 		color: var(--color-text);
+	}
+	.chart-card__refreshing {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin: 0;
+		font-size: var(--font-size-sm);
+		color: var(--color-text-muted);
+	}
+	.chart-card__spinner {
+		display: block;
+		width: 0.85em;
+		height: 0.85em;
+		border: 2px solid var(--color-border);
+		border-top-color: var(--color-blue);
+		border-radius: 50%;
+		animation: chart-card-spin 0.7s linear infinite;
+	}
+	@keyframes chart-card-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	/* Respect reduced-motion: the label alone carries the meaning. */
+	@media (prefers-reduced-motion: reduce) {
+		.chart-card__spinner {
+			animation-duration: 3s;
+		}
 	}
 	.chart-card__toggle {
 		display: inline-flex;
