@@ -155,9 +155,20 @@ export async function createUser(
 	if (!res.ok) {
 		throw new Error(`Solidarity user create returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
 	}
-	const created = (await res.json()) as { data?: { id?: number } };
-	const id = created.data?.id;
-	if (typeof id !== 'number') throw new Error('Solidarity user create returned no id');
+	// `/v1/users` breaks the envelope convention the rest of the API follows: a
+	// single user comes back BARE, while `/v1/event_rsvps/:id` and every list
+	// endpoint wrap in `data`. Reading only `data.id` here threw "returned no id"
+	// on profiles Solidarity had in fact created, so the person existed but their
+	// RSVP never got filed. Both shapes are accepted rather than betting on one.
+	const created = (await res.json()) as { id?: number; data?: { id?: number } };
+	const id = typeof created.id === 'number' ? created.id : created.data?.id;
+	if (typeof id !== 'number') {
+		// Keys only — this response carries the person's email and phone, and this
+		// message reaches Slack.
+		throw new Error(
+			`Solidarity user create returned no id (response keys: ${Object.keys(created).join(', ') || 'none'})`,
+		);
+	}
 	return { id };
 }
 

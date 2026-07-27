@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { normalizeParticipation, PARTICIPATION_STATUS } from './attendees.js';
 import {
 	buildZipChapterMap,
+	createUser,
 	findExistingUser,
 	normalizeEmail,
 	normalizePhone,
@@ -127,6 +128,38 @@ describe('findExistingUser', () => {
 
 		expect(result).toBeNull();
 		expect(spy).not.toHaveBeenCalled();
+	});
+});
+
+describe('createUser', () => {
+	const person = {
+		firstName: 'A',
+		lastName: 'B',
+		email: 'a@example.com',
+		phone: '6165551234',
+		zipcode: '49504',
+	};
+
+	// Regression: `/v1/users` returns a single user BARE while the rest of the API
+	// wraps in `data`. Reading only `data.id` threw "returned no id" on profiles
+	// Solidarity had really created — the person existed, their RSVP did not.
+	it('reads the id from a bare response', async () => {
+		mockFetch(() => ({ body: { id: 15404367, email: 'a@example.com' } }));
+
+		expect(await createUser(TOKEN, person, 1330)).toEqual({ id: 15404367 });
+	});
+
+	it('still reads the id from a data-wrapped response', async () => {
+		mockFetch(() => ({ body: { data: { id: 15404367 } } }));
+
+		expect(await createUser(TOKEN, person, 1330)).toEqual({ id: 15404367 });
+	});
+
+	it('names the shape it got without echoing contact details into Slack', async () => {
+		mockFetch(() => ({ body: { user: { id: 1, email: 'a@example.com' } } }));
+
+		await expect(createUser(TOKEN, person, 1330)).rejects.toThrow(/response keys: user/);
+		await expect(createUser(TOKEN, person, 1330)).rejects.not.toThrow(/example\.com/);
 	});
 });
 

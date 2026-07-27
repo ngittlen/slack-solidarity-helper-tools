@@ -275,6 +275,16 @@ real attendees as cancelled.
   `422 {"errors":["Agent must exist"]}`. It records who filed the RSVP; Solidarity
   sets it to the attendee on its own web-form signups, and a Mobilize signup is
   the same self-service act, so the sync sends the attendee's id.
+- **`/v1/users` does not use the `data` envelope for a single user.** `GET
+  /v1/users/:id` and `POST /v1/users` return the user *bare*, while `GET
+  /v1/event_rsvps/:id` and every list endpoint wrap in `data`. Reading only
+  `data.id` on a create threw "returned no id" for profiles Solidarity had
+  actually created — the person existed, their RSVP did not.
+- **Unknown query parameters are silently ignored, not rejected.** `?tags=`,
+  `?created_after=`, `?_sort=` all return the full unfiltered list with an
+  unchanged `total_count`. This is the same failure mode as the `?phone=` trap:
+  a filter that appears to work is the default state. Verify any new parameter
+  changes `meta.total_count` before trusting it.
 - A lookup returning **more than one** person resolves to no match. Picking the
   first would file an RSVP against the wrong human.
 
