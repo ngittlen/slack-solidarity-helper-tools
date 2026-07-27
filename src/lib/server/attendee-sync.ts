@@ -79,8 +79,9 @@ class TursoAttendeeLedger implements AttendeeLedger {
 export interface AttendeeSyncOptions {
 	apply?: boolean;
 	/**
-	 * Only sync sessions starting within this many hours. Pass 0 for every
-	 * upcoming session.
+	 * Only sync sessions starting within this many hours. OMIT it for every
+	 * upcoming session — 0 is a real window of zero hours, not "no limit", and
+	 * would match nothing.
 	 *
 	 * This bounds the run: every session in scope costs at least one Mobilize
 	 * dashboard request, and that request can't be skipped by the ledger (we

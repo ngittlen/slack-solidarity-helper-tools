@@ -47,9 +47,25 @@ jobs:
           APP_URL: https://slack-solidarity-helper-tools.fly.dev
           INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
           DRY_RUN: ${{ inputs.dry_run }}
-          # The nightly cron omits the window; the half-hourly one uses 4.5h.
-          WINDOW: ${{ inputs.window_hours != '' && inputs.window_hours || (github.event.schedule == '40 7 * * *' && '' || '4.5') }}
+          # Passed through raw and decided in the shell below. Do NOT fold this
+          # into a `${{ cond && 'a' || 'b' }}` expression: that idiom collapses
+          # to 'b' whenever 'a' is falsy, and '' is falsy — so every branch that
+          # wants "no window" silently produced 4.5 instead, including the
+          # nightly pass that exists precisely to run windowless.
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          WINDOW_INPUT: ${{ inputs.window_hours }}
         run: |
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            # Manual run: honour the input exactly, blank included.
+            WINDOW="${WINDOW_INPUT}"
+          elif [ "${SCHEDULE}" = "40 7 * * *" ]; then
+            WINDOW=""
+          else
+            WINDOW="4.5"
+          fi
+          echo "window=${WINDOW:-<none: all upcoming>}"
+
           QUERY="key=${INTERNAL_CRON_SECRET}"
           [ "${DRY_RUN}" = "true" ] && QUERY="${QUERY}&dry=1"
           [ -n "${WINDOW}" ] && QUERY="${QUERY}&window=${WINDOW}"
