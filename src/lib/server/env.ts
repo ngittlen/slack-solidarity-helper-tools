@@ -55,6 +55,41 @@ export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
 
 export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
 
+// Nightly Solidarity -> Mobilize event sync.
+//
+// Mobilize has no public write API, so MOBILIZE_COOKIE is a borrowed browser
+// session (`sessionid=…; csrftoken=…`, copied from a logged-in dashboard
+// request). It expires — Django's default is two weeks — and CANNOT be renewed
+// programmatically, because Mobilize logs in by emailed code or Google OAuth
+// with no password endpoint. When it lapses the sync posts a Slack alert asking
+// for a fresh value; update it with `fly secrets set MOBILIZE_COOKIE=...`.
+export const MOBILIZE_COOKIE = get('MOBILIZE_COOKIE');
+// Optional: derived from csrftoken= inside MOBILIZE_COOKIE when unset.
+export const MOBILIZE_CSRF_TOKEN = get('MOBILIZE_CSRF_TOKEN');
+export const MOBILIZE_ORG_SLUG = get('MOBILIZE_ORG_SLUG') || 'abdulforsenate';
+// Numeric org id for the public read API (Abdul for U.S. Senate).
+export const MOBILIZE_ORG_ID = parseInt(get('MOBILIZE_ORG_ID') || '44679', 10);
+// Blast-radius guard: if one night's plan wants more new events than this, the
+// sync creates nothing and alerts instead. A flood means dedup or the source
+// data broke, and these events are publicly visible once created.
+export const MOBILIZE_SYNC_MAX_CREATES = parseInt(get('MOBILIZE_SYNC_MAX_CREATES') || '25', 10);
+
+// Attendee sync (Mobilize signups -> Solidarity RSVPs).
+// Last-resort chapter for a new profile when the person's zip isn't in the
+// derived zip->chapter map and the event isn't chapter-scoped. Leave unset to
+// have such people reported instead of filed under a guess.
+export const SOLIDARITY_DEFAULT_CHAPTER_ID = parseInt(
+	get('SOLIDARITY_DEFAULT_CHAPTER_ID') || '0',
+	10,
+);
+// Guardrail: a run creating more than this many NEW Solidarity profiles stops.
+// A spike almost always means matching is failing, and the damage — duplicate
+// person records in the CRM — is tedious to undo.
+export const ATTENDEE_SYNC_MAX_NEW_PROFILES = parseInt(
+	get('ATTENDEE_SYNC_MAX_NEW_PROFILES') || '50',
+	10,
+);
+
 // Shared secret for internal cron-triggered endpoints (e.g. nightly snapshot).
 // Callers pass it as ?key=<value>.
 export const INTERNAL_CRON_SECRET = get('INTERNAL_CRON_SECRET');

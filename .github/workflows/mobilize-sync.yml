@@ -1,0 +1,52 @@
+name: Nightly Mobilize event sync
+
+# Mirrors upcoming in-person Solidarity events into Mobilize: creates ones that
+# are new, and pushes edits (title, times, description, image) to ones already
+# mirrored.
+#
+# 06:20 UTC = 02:20 EDT / 01:20 EST — after the day's events have been created
+# in Solidarity and well before volunteers are browsing. Two staggered attempts
+# because GitHub cron is best-effort and delays of hours are routine (see
+# door-knock-snapshot.yml). Re-running is harmless: a Turso ledger records every
+# event created, so a second run updates instead of duplicating.
+#
+# Requires MOBILIZE_COOKIE on the Fly app — a borrowed browser session that
+# expires roughly every two weeks and cannot be renewed programmatically
+# (Mobilize logs in by emailed code or Google OAuth). When it lapses this run
+# goes red and the app posts a Slack alert.
+on:
+  schedule:
+    - cron: '20 6 * * *'
+    - cron: '20 8 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Plan only — report what would change without writing'
+        type: boolean
+        default: false
+      max_creates:
+        description: 'Raise the create guardrail (default 25) for a deliberate bulk run'
+        type: string
+        default: ''
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Mobilize sync
+        env:
+          APP_URL: https://slack-solidarity-helper-tools.fly.dev
+          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MAX_CREATES: ${{ inputs.max_creates }}
+        run: |
+          QUERY="key=${INTERNAL_CRON_SECRET}"
+          [ "${DRY_RUN}" = "true" ] && QUERY="${QUERY}&dry=1"
+          [ -n "${MAX_CREATES}" ] && QUERY="${QUERY}&maxCreates=${MAX_CREATES}"
+
+          # No --retry: the sync writes, and the endpoint answers 503 for the two
+          # states a retry cannot fix (expired session, aborted on the guardrail).
+          # Its own ledger makes a manual re-run safe.
+          curl --fail-with-body -sS -X POST \
+            --max-time 900 \
+            "${APP_URL}/api/internal/mobilize-sync?${QUERY}"

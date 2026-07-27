@@ -1,0 +1,264 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { normalizeParticipation, PARTICIPATION_STATUS } from './attendees.js';
+import {
+	buildZipChapterMap,
+	findExistingUser,
+	normalizeEmail,
+	normalizePhone,
+	resolveChapterId,
+} from './people.js';
+import { attendingFor } from './rsvp.js';
+
+const TOKEN = 'test-token';
+
+function mockFetch(handler: (url: string) => { ok?: boolean; body: unknown }) {
+	const spy = vi.fn(async (url: string | URL) => {
+		const { ok = true, body } = handler(String(url));
+		return {
+			ok,
+			status: ok ? 200 : 500,
+			json: async () => body,
+			text: async () => JSON.stringify(body),
+			headers: new Headers(),
+		} as unknown as Response;
+	});
+	vi.stubGlobal('fetch', spy);
+	return spy;
+}
+
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
+
+describe('normalizePhone', () => {
+	it('promotes a bare 10-digit US number to the stored form', () => {
+		// Mobilize hands us "6169539282"; Solidarity stores "16169539282".
+		expect(normalizePhone('6169539282')).toBe('16169539282');
+	});
+
+	it('accepts an already-prefixed number and strips punctuation', () => {
+		expect(normalizePhone('+1 (616) 953-9282')).toBe('16169539282');
+		expect(normalizePhone('16169539282')).toBe('16169539282');
+	});
+
+	it('refuses anything not safely matchable', () => {
+		expect(normalizePhone('12345')).toBeNull();
+		expect(normalizePhone('')).toBeNull();
+		expect(normalizePhone(null)).toBeNull();
+	});
+});
+
+describe('normalizeEmail', () => {
+	it('lowercases and trims', () => {
+		expect(normalizeEmail('  Kathryn@Example.COM ')).toBe('kathryn@example.com');
+	});
+
+	it('rejects non-addresses', () => {
+		expect(normalizeEmail('not-an-email')).toBeNull();
+		expect(normalizeEmail(null)).toBeNull();
+	});
+});
+
+describe('findExistingUser', () => {
+	const person = {
+		firstName: 'A',
+		lastName: 'B',
+		email: 'a@example.com',
+		phone: '6169539282',
+		zipcode: '49504',
+	};
+
+	it('uses phone_number, never phone, when falling back to phone lookup', async () => {
+		// Regression guard. Solidarity ACCEPTS ?phone= and silently ignores it,
+		// returning an unfiltered user list — matching on that would attach
+		// signups to arbitrary strangers.
+		const spy = mockFetch((url) =>
+			url.includes('email=') ? { body: { data: [] } } : { body: { data: [{ id: 42 }] } },
+		);
+
+		const result = await findExistingUser(TOKEN, person);
+
+		expect(result).toEqual({ user: { id: 42 }, method: 'phone' });
+		const phoneCall = spy.mock.calls.map((c) => String(c[0])).find((u) => u.includes('phone'));
+		expect(phoneCall).toContain('phone_number=');
+		expect(phoneCall).not.toMatch(/[?&]phone=/);
+	});
+
+	it('prefers an email match and does not fall through to phone', async () => {
+		const spy = mockFetch(() => ({ body: { data: [{ id: 7 }] } }));
+
+		const result = await findExistingUser(TOKEN, person);
+
+		expect(result).toEqual({ user: { id: 7 }, method: 'email' });
+		expect(spy.mock.calls).toHaveLength(1);
+		expect(String(spy.mock.calls[0]![0])).toContain('email=');
+	});
+
+	it('sends the normalized phone, not what Mobilize gave us', async () => {
+		const spy = mockFetch((url) =>
+			url.includes('email=') ? { body: { data: [] } } : { body: { data: [] } },
+		);
+
+		await findExistingUser(TOKEN, person);
+
+		const phoneCall = spy.mock.calls.map((c) => String(c[0])).find((u) => u.includes('phone_number'));
+		expect(phoneCall).toContain('phone_number=16169539282');
+	});
+
+	it('refuses to match when an identifier hits more than one person', async () => {
+		// Ambiguity must not resolve to "the first one" — that files someone
+		// else's RSVP against a real member.
+		mockFetch(() => ({ body: { data: [{ id: 1 }, { id: 2 }] } }));
+
+		expect(await findExistingUser(TOKEN, person)).toBeNull();
+	});
+
+	it('skips lookups entirely when there is nothing to match on', async () => {
+		const spy = mockFetch(() => ({ body: { data: [] } }));
+
+		const result = await findExistingUser(TOKEN, {
+			firstName: 'A',
+			lastName: 'B',
+			email: null,
+			phone: null,
+			zipcode: null,
+		});
+
+		expect(result).toBeNull();
+		expect(spy).not.toHaveBeenCalled();
+	});
+});
+
+describe('buildZipChapterMap', () => {
+	it('picks the chapter most existing members in that zip belong to', () => {
+		const map = buildZipChapterMap([
+			{ address: { zip_code: '48104' }, chapter_ids: [1305] },
+			{ address: { zip_code: '48104' }, chapter_ids: [1305] },
+			{ address: { zip_code: '48104' }, chapter_ids: [1322] },
+			{ address: { zip_code: '49504' }, chapter_ids: [1315] },
+		]);
+		expect(map.get('48104')).toEqual({ chapterId: 1305, memberCount: 2 });
+		expect(map.get('49504')).toEqual({ chapterId: 1315, memberCount: 1 });
+	});
+
+	it('ignores members with no zip', () => {
+		const map = buildZipChapterMap([
+			{ address: null, chapter_ids: [1305] },
+			{ address: { zip_code: null }, chapter_ids: [1305] },
+		]);
+		expect(map.size).toBe(0);
+	});
+
+	it('counts a member in every chapter they belong to', () => {
+		const map = buildZipChapterMap([{ address: { zip_code: '48104' }, chapter_ids: [1, 2] }]);
+		// Tie broken deterministically by lower chapter id.
+		expect(map.get('48104')?.chapterId).toBe(1);
+	});
+});
+
+describe('resolveChapterId', () => {
+	const resolver = {
+		byZip: (zip: string | null) => (zip === '48104' ? 1305 : null),
+		eventChapterId: 1330,
+		defaultChapterId: 999,
+	};
+
+	it('prefers the zip match', () => {
+		expect(resolveChapterId(resolver, '48104')).toBe(1305);
+	});
+
+	it('falls back to the chapter that owns the event', () => {
+		expect(resolveChapterId(resolver, '99999')).toBe(1330);
+		expect(resolveChapterId(resolver, null)).toBe(1330);
+	});
+
+	it('falls back to the default when the event has no chapter', () => {
+		expect(resolveChapterId({ ...resolver, eventChapterId: null }, null)).toBe(999);
+	});
+
+	it('returns null rather than inventing a chapter', () => {
+		expect(
+			resolveChapterId({ ...resolver, eventChapterId: null, defaultChapterId: null }, null),
+		).toBeNull();
+	});
+});
+
+describe('attendingFor', () => {
+	it('maps registered to yes and cancelled to no', () => {
+		expect(attendingFor('REGISTERED')).toBe('yes');
+		expect(attendingFor('CANCELLED')).toBe('no');
+	});
+
+	it('refuses to guess an unrecognized status', () => {
+		expect(attendingFor('UNKNOWN')).toBeNull();
+	});
+});
+
+describe('normalizeParticipation', () => {
+	const row = {
+		person: { id: 1, first_name: 'Person', email: 'p@example.com', zipcode: '49504' },
+		participation_data: {
+			id: 52583461,
+			timeslot_id: 6157028,
+			status: PARTICIPATION_STATUS.REGISTERED,
+			first_name: 'Kathryn',
+			last_name: 'Agar',
+			email: 'k@example.com',
+			phone: '6169539282',
+			zipcode: '49504',
+			created_at: '2026-07-23T01:33:21.380178Z',
+			volunteer_check_in: null,
+		},
+	};
+
+	it('extracts the signup with its Mobilize ids', () => {
+		expect(normalizeParticipation(row)).toMatchObject({
+			id: 52583461,
+			timeslotId: 6157028,
+			status: 'REGISTERED',
+			email: 'k@example.com',
+			phone: '6169539282',
+			zipcode: '49504',
+			attended: null,
+		});
+	});
+
+	it('maps status 2 to cancelled', () => {
+		const cancelled = {
+			...row,
+			participation_data: { ...row.participation_data, status: PARTICIPATION_STATUS.CANCELLED },
+		};
+		expect(normalizeParticipation(cancelled)?.status).toBe('CANCELLED');
+	});
+
+	it('reports an unmapped status rather than assuming registered', () => {
+		const odd = { ...row, participation_data: { ...row.participation_data, status: 7 } };
+		expect(normalizeParticipation(odd)).toMatchObject({ status: 'UNKNOWN', rawStatus: 7 });
+	});
+
+	it('treats a check-in as attendance, and its absence as unknown', () => {
+		const checkedIn = {
+			...row,
+			participation_data: { ...row.participation_data, volunteer_check_in: '2026-08-01T20:05:00Z' },
+		};
+		expect(normalizeParticipation(checkedIn)?.attended).toBe(true);
+		// Not false — Mobilize simply hasn't recorded an outcome.
+		expect(normalizeParticipation(row)?.attended).toBeNull();
+	});
+
+	it('falls back to the linked person record for missing detail', () => {
+		const sparse = {
+			person: { first_name: 'Fallback', email: 'fallback@example.com' },
+			participation_data: { id: 1, timeslot_id: 2, status: 1 },
+		};
+		expect(normalizeParticipation(sparse)).toMatchObject({
+			firstName: 'Fallback',
+			email: 'fallback@example.com',
+		});
+	});
+
+	it('drops rows with no usable ids', () => {
+		expect(normalizeParticipation({ participation_data: { status: 1 } })).toBeNull();
+	});
+});

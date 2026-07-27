@@ -1,0 +1,67 @@
+name: Mobilize attendee sync
+
+# Mirrors Mobilize signups back into Solidarity as event RSVPs, creating a
+# Solidarity profile for anyone who doesn't have one, so organizers only have to
+# look in one place.
+#
+# TIMING: the ask was "4 hours before, and again 30 minutes before" each event.
+# GitHub cron cannot do that — it is best-effort and this repo already documents
+# delays of hours (door-knock-snapshot.yml: a 02:00 schedule firing at 05:55).
+# So instead of firing at fixed offsets, this runs every 30 minutes and syncs
+# every event starting within the next 4.5 hours. That covers both marks, and a
+# skipped or delayed run costs nothing because the next one still refreshes the
+# event well before doors open.
+#
+# The nightly pass (no window) gives events further out a rolling picture in
+# Solidarity, rather than their signups only landing 4.5h before doors.
+#
+# Both passes also look BACK 48 hours: check-ins are recorded during and after an
+# event, so a forward-only scope would never sync who actually showed up.
+#
+# Cost note: every session in scope costs at least one Mobilize dashboard request
+# and the ledger can't skip it (we must fetch to learn whether anything changed).
+# The 4.5h window is ~0-30 sessions; windowless is ~176. That bound matters —
+# this runs against a borrowed browser session behind Cloudflare, and losing it
+# breaks both syncs.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+    - cron: '40 7 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would change without writing'
+        type: boolean
+        default: false
+      window_hours:
+        description: 'Only sync events starting within N hours (blank = all upcoming)'
+        type: string
+        default: ''
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger attendee sync
+        env:
+          APP_URL: https://slack-solidarity-helper-tools.fly.dev
+          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          # The nightly cron omits the window; the half-hourly one uses 4.5h.
+          WINDOW: ${{ inputs.window_hours != '' && inputs.window_hours || (github.event.schedule == '40 7 * * *' && '' || '4.5') }}
+        run: |
+          QUERY="key=${INTERNAL_CRON_SECRET}"
+          [ "${DRY_RUN}" = "true" ] && QUERY="${QUERY}&dry=1"
+          [ -n "${WINDOW}" ] && QUERY="${QUERY}&window=${WINDOW}"
+
+          # Solidarity's 60-req/30s limit paces this, so the windowless nightly
+          # pass gets far longer. Only new or changed signups cost API calls —
+          # ledgered ones are skipped — so the first full run is the slow one.
+          if [ -n "${WINDOW}" ]; then MAX_TIME=900; else MAX_TIME=3000; fi
+
+          # No --retry: this writes to a CRM, and the two states a retry cannot
+          # fix (expired session, guardrail abort) answer 503. The ledger makes a
+          # deliberate re-run safe.
+          curl --fail-with-body -sS -X POST \
+            --max-time "${MAX_TIME}" \
+            "${APP_URL}/api/internal/attendee-sync?${QUERY}"

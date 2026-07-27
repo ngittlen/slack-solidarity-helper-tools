@@ -1,0 +1,29 @@
+// The SvelteKit tsconfig only includes src/, test/ and tests/, so nothing in
+// mobilize-migrator/ was ever type-checked. These scripts run outside the Vite
+// bundle via tsx, which strips types without checking them — meaning type errors
+// here surface only in an editor, or not at all.
+//
+// Checked by `npm run check:migrator` (and included in `npm run check`).
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"lib": ["ES2023", "DOM"],
+		"types": ["node"],
+		"strict": true,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true
+	},
+	// These app modules are shared with the CLI by relative import. All three are
+	// deliberately free of $env/$lib imports so both entry points can use them.
+	"include": [
+		"mobilize-migrator/**/*.ts",
+		"src/lib/server/solidarity-paginate.ts",
+		"src/lib/server/mobilize-ledger.ts",
+		"src/lib/server/schema.ts"
+	]
+}

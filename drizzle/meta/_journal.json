@@ -120,6 +120,20 @@
       "when": 1785044984506,
       "tag": "0016_strong_baron_zemo",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1785119184236,
+      "tag": "0017_rare_shockwave",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1785121369518,
+      "tag": "0018_faulty_black_crow",
+      "breakpoints": true
     }
   ]
 }

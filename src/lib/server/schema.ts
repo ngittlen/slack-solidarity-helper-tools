@@ -292,3 +292,82 @@ export type NewDoorKnockCanvasArchiveRow = typeof doorKnockCanvasArchive.$inferI
 
 export type DoorKnockRefreshRow = typeof doorKnockRefresh.$inferSelect;
 export type NewDoorKnockRefreshRow = typeof doorKnockRefresh.$inferInsert;
+
+// Ledger for the nightly Solidarity -> Mobilize event sync. Mobilize has no
+// public write API and no way to tag an event with its Solidarity origin, so
+// this mapping is the only reliable record of what we created — without it a
+// re-run would publish duplicate events volunteers could sign up for.
+export const mobilizeSyncedEvents = sqliteTable('mobilize_synced_events', {
+	// `solidarity:<eventId>:<location>` — one Solidarity event can span several
+	// locations and therefore several Mobilize events.
+	key: text('key').primaryKey(),
+	mobilizeEventId: integer('mobilize_event_id').notNull(),
+	title: text('title').notNull(),
+	createdAt: text('created_at').notNull(),
+	lastSyncedAt: text('last_synced_at'),
+});
+
+// Solidarity image URL -> the copy re-hosted in Mobilize's bucket. Keyed by
+// source so an image shared across events uploads once.
+export const mobilizeSyncedImages = sqliteTable('mobilize_synced_images', {
+	sourceUrl: text('source_url').primaryKey(),
+	mobilizeUrl: text('mobilize_url').notNull(),
+	uploadedAt: text('uploaded_at').notNull(),
+});
+
+export type MobilizeSyncedEventRow = typeof mobilizeSyncedEvents.$inferSelect;
+export type NewMobilizeSyncedEventRow = typeof mobilizeSyncedEvents.$inferInsert;
+
+export type MobilizeSyncedImageRow = typeof mobilizeSyncedImages.$inferSelect;
+export type NewMobilizeSyncedImageRow = typeof mobilizeSyncedImages.$inferInsert;
+
+// --- Mobilize -> Solidarity attendee sync -------------------------------------
+
+// Maps a Mobilize timeslot to the Solidarity event session it came from.
+// Written during the event sync (reconcileTimeslots already pairs them), so the
+// attendee sync can resolve a signup to a session without re-planning.
+export const mobilizeSyncedTimeslots = sqliteTable('mobilize_synced_timeslots', {
+	mobilizeTimeslotId: integer('mobilize_timeslot_id').primaryKey(),
+	mobilizeEventId: integer('mobilize_event_id').notNull(),
+	// NOTE: Solidarity's own event id. Its API confusingly calls this
+	// `mobilize_event_id` — "mobilize_event" is Solidarity's internal name for
+	// its event entity and has nothing to do with mobilize.us.
+	solidarityEventId: integer('solidarity_event_id').notNull(),
+	solidaritySessionId: integer('solidarity_session_id').notNull(),
+	updatedAt: text('updated_at').notNull(),
+});
+
+// One row per Mobilize signup we've mirrored. `mobilizeModifiedDate` lets a run
+// skip rows that haven't changed; `status` records what we last wrote so a
+// cancellation is only pushed once.
+export const mobilizeSyncedRsvps = sqliteTable('mobilize_synced_rsvps', {
+	mobilizeAttendanceId: integer('mobilize_attendance_id').primaryKey(),
+	solidarityRsvpId: integer('solidarity_rsvp_id'),
+	solidarityUserId: integer('solidarity_user_id').notNull(),
+	solidaritySessionId: integer('solidarity_session_id').notNull(),
+	status: text('status').notNull(),
+	attended: integer('attended', { mode: 'boolean' }).notNull().default(false),
+	mobilizeModifiedDate: integer('mobilize_modified_date').notNull().default(0),
+	syncedAt: text('synced_at').notNull(),
+});
+
+// zip -> chapter, derived from where existing members actually belong.
+// Solidarity chapters carry no geographic data, so this is rebuilt nightly from
+// the membership base rather than fetched.
+export const zipChapterMap = sqliteTable('zip_chapter_map', {
+	zipCode: text('zip_code').primaryKey(),
+	chapterId: integer('chapter_id').notNull(),
+	// How many members in this zip belong to that chapter — a low count means a
+	// weak guess, useful when auditing where the sync put people.
+	memberCount: integer('member_count').notNull().default(0),
+	updatedAt: text('updated_at').notNull(),
+});
+
+export type MobilizeSyncedTimeslotRow = typeof mobilizeSyncedTimeslots.$inferSelect;
+export type NewMobilizeSyncedTimeslotRow = typeof mobilizeSyncedTimeslots.$inferInsert;
+
+export type MobilizeSyncedRsvpRow = typeof mobilizeSyncedRsvps.$inferSelect;
+export type NewMobilizeSyncedRsvpRow = typeof mobilizeSyncedRsvps.$inferInsert;
+
+export type ZipChapterRow = typeof zipChapterMap.$inferSelect;
+export type NewZipChapterRow = typeof zipChapterMap.$inferInsert;

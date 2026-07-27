@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-check --tsconfig ./tsconfig.json && npm run check:migrator",
+    "check:migrator": "tsc -p tsconfig.migrator.json",
     "prepare": "git config core.hooksPath .githooks || true",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"

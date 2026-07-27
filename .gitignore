@@ -13,3 +13,9 @@ build/
 CLAUDE.md
 specs/
 tasks/
+
+# Local-only working files: captured API requests (which carry live session
+# cookies and, in the case of the RSVP capture, real attendees' contact
+# details), plus generated run artifacts. Anything that must not leave this
+# machine goes here rather than being listed individually.
+private/

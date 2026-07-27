@@ -1,0 +1,78 @@
+// Turso-backed ledger for the Mobilize event sync.
+//
+// Deliberately free of $env and $lib imports — only drizzle and schema.js — so
+// the CLI (mobilize-migrator/migrate.ts, which runs outside the Vite bundle via
+// tsx) can share it with the SvelteKit endpoint. There is exactly one record of
+// what has been created, which is the whole point: a second file-based ledger
+// used to live alongside this one and drifted the moment the server ran.
+
+import { eq } from 'drizzle-orm';
+import type { LibSQLDatabase } from 'drizzle-orm/libsql';
+
+import type {
+	Ledger,
+	LedgerRecord,
+	TimeslotPairing,
+} from '../../../mobilize-migrator/lib/sync.js';
+import { mobilizeSyncedEvents, mobilizeSyncedImages, mobilizeSyncedTimeslots } from './schema.js';
+
+export type LedgerDb = LibSQLDatabase<Record<string, unknown>>;
+
+export class TursoLedger implements Ledger {
+	constructor(private readonly db: LedgerDb) {}
+
+	async all(): Promise<LedgerRecord[]> {
+		return this.db
+			.select({
+				key: mobilizeSyncedEvents.key,
+				mobilizeEventId: mobilizeSyncedEvents.mobilizeEventId,
+				title: mobilizeSyncedEvents.title,
+			})
+			.from(mobilizeSyncedEvents);
+	}
+
+	async record(entry: LedgerRecord): Promise<void> {
+		const now = new Date().toISOString();
+		await this.db
+			.insert(mobilizeSyncedEvents)
+			.values({ ...entry, createdAt: now, lastSyncedAt: now })
+			.onConflictDoUpdate({
+				target: mobilizeSyncedEvents.key,
+				set: { mobilizeEventId: entry.mobilizeEventId, title: entry.title, lastSyncedAt: now },
+			});
+	}
+
+	async imageFor(sourceUrl: string): Promise<string | null> {
+		const rows = await this.db
+			.select({ mobilizeUrl: mobilizeSyncedImages.mobilizeUrl })
+			.from(mobilizeSyncedImages)
+			.where(eq(mobilizeSyncedImages.sourceUrl, sourceUrl));
+		return rows[0]?.mobilizeUrl ?? null;
+	}
+
+	async recordImage(sourceUrl: string, mobilizeUrl: string): Promise<void> {
+		await this.db
+			.insert(mobilizeSyncedImages)
+			.values({ sourceUrl, mobilizeUrl, uploadedAt: new Date().toISOString() })
+			.onConflictDoNothing();
+	}
+
+	/** Consumed by the attendee sync to file a signup against the right session. */
+	async recordTimeslots(pairings: TimeslotPairing[]): Promise<void> {
+		if (pairings.length === 0) return;
+		const now = new Date().toISOString();
+		for (const pairing of pairings) {
+			await this.db
+				.insert(mobilizeSyncedTimeslots)
+				.values({ ...pairing, updatedAt: now })
+				.onConflictDoUpdate({
+					target: mobilizeSyncedTimeslots.mobilizeTimeslotId,
+					set: {
+						solidarityEventId: pairing.solidarityEventId,
+						solidaritySessionId: pairing.solidaritySessionId,
+						updatedAt: now,
+					},
+				});
+		}
+	}
+}
