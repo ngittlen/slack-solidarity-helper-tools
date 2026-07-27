@@ -8,6 +8,13 @@ primary_region = 'ord'
 
 [build]
 
+[env]
+  # adapter-node defaults HOST to 0.0.0.0, which binds IPv4 only. fly-proxy
+  # reaches machines over the private IPv6 network, so the health check on
+  # internal_port could never connect. '::' binds the dual-stack wildcard,
+  # accepting both IPv6 and IPv4-mapped connections.
+  HOST = '::'
+
 [deploy]
   release_command = 'node bin/migrate.js'
 
