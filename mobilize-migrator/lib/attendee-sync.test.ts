@@ -48,8 +48,9 @@ function mockApis(options: {
 	userFound?: boolean;
 	tooMany?: boolean;
 }) {
-	const spy = vi.fn(async (url: string | URL) => {
+	const spy = vi.fn(async (url: string | URL, init?: RequestInit) => {
 		const href = String(url);
+		const writing = init?.method === 'POST' || init?.method === 'PUT';
 		let body: unknown = {};
 		if (href.includes('mobilize.us')) {
 			body = {
@@ -59,6 +60,9 @@ function mockApis(options: {
 					too_many_participations: options.tooMany ?? false,
 				},
 			};
+		} else if (writing) {
+			// Solidarity returns the created row; the sync reads its id.
+			body = { data: { id: 999 } };
 		} else if (href.includes('/v1/event_rsvps')) {
 			body = { data: [] };
 		} else if (href.includes('/v1/users')) {
@@ -201,6 +205,28 @@ describe('runAttendeeSync change detection', () => {
 
 		expect(report.unchanged).toBe(0);
 		expect(report.rsvpsUpdated).toBe(1);
+	});
+});
+
+describe('runAttendeeSync rsvp payload', () => {
+	it('files the RSVP against a real agent', async () => {
+		// Regression: `agent_user_id: null` is rejected with
+		// 422 {"errors":["Agent must exist"]}, so every create failed. A Mobilize
+		// signup is self-service, so the agent is the attendee — the same thing
+		// Solidarity records for its own web-form signups.
+		const spy = mockApis({ participations: [participation()], userFound: true });
+
+		await run(ledgerWith(), true);
+
+		const create = spy.mock.calls.find(
+			([url, init]) =>
+				String(url).includes('/v1/event_rsvps') &&
+				(init as RequestInit | undefined)?.method === 'POST',
+		);
+		expect(create).toBeDefined();
+		const body = JSON.parse(String((create![1] as RequestInit).body));
+		expect(body.agent_user_id).toBe(999);
+		expect(body.user_id).toBe(999);
 	});
 });
 

@@ -101,6 +101,7 @@
 				channels={data.slackChannels.items}
 				trackingChannelId={data.settings.slackTrackingChannelId}
 				growthReportChannelId={data.settings.slackGrowthReportChannelId}
+				mobilizeSyncChannelId={data.settings.slackMobilizeSyncChannelId}
 				rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
 				countdownLabel={data.settings.countdownLabel}
 				countdownEndAt={data.settings.countdownEndAt}

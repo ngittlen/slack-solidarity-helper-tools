@@ -28,21 +28,22 @@ export const slack = new Proxy({} as WebClient, {
  * an expired Mobilize cookie reaches a human.
  */
 /**
- * An alert bound to the growth-report channel, resolved the same way the weekly
- * report resolves it: the DB override the settings UI writes, falling back to
- * the env var. Reading it per request means changing the channel in /settings
- * moves these alerts too, rather than leaving them pointed at a stale id.
+ * An alert bound to the Mobilize-sync channel: the /settings override when one
+ * is set, otherwise the growth-report channel (DB override, then env), which is
+ * where these alerts went before the override existed. Reading it per request
+ * means changing the channel in /settings moves these alerts too, rather than
+ * leaving them pointed at a stale id.
  *
  * A settings read failure falls back rather than throwing — a DB hiccup must not
  * silence the alert that says the Mobilize session expired.
  */
-export async function alertForGrowthChannel(
+export async function alertForMobilizeSync(
 	tag: string,
 	db: ReturnType<typeof drizzle>,
 ): Promise<(text: string) => Promise<void>> {
 	let channelId = SLACK_GROWTH_REPORT_CHANNEL_ID;
 	try {
-		channelId = (await loadSettings(db)).slackGrowthReportChannelId || channelId;
+		channelId = (await loadSettings(db)).slackMobilizeSyncChannelId || channelId;
 	} catch (err) {
 		console.error(
 			`[${tag}] could not read settings for the alert channel; using env default:`,

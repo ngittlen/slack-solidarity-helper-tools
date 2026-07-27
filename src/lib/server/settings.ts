@@ -78,6 +78,11 @@ export interface Settings {
 	welcomeDisabledChannelIds: Set<string>;
 	slackTrackingChannelId: string;
 	slackGrowthReportChannelId: string;
+	/** Where the nightly Mobilize/attendee sync posts its alerts. Effective
+	 *  value: the DB override when set, otherwise the resolved growth-report
+	 *  channel — the channel these alerts used before the override existed.
+	 *  DB-only override; it has no env var of its own. */
+	slackMobilizeSyncChannelId: string;
 	slackGrowthReportRankingAlpha: number | undefined;
 	/** Header countdown. DB-only, no env fallback; '' means "not configured". */
 	countdownLabel: string;
@@ -103,6 +108,7 @@ export interface Editor {
 export type AppConfigPatch = Partial<{
 	slackTrackingChannelId: string;
 	slackGrowthReportChannelId: string;
+	slackMobilizeSyncChannelId: string;
 	slackGrowthReportRankingAlpha: number;
 	countdownLabel: string;
 	countdownEndAt: string;
@@ -165,6 +171,12 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		cfg?.slackTrackingChannelId ?? SLACK_TRACKING_CHANNEL_ID;
 	const slackGrowthReportChannelId =
 		cfg?.slackGrowthReportChannelId ?? SLACK_GROWTH_REPORT_CHANNEL_ID;
+	// No env var of its own: an unset override keeps the sync alerts wherever
+	// the growth report goes, which is exactly where they went before this
+	// field existed. Resolving here means callers read one field and never have
+	// to re-implement the chain.
+	const slackMobilizeSyncChannelId =
+		cfg?.slackMobilizeSyncChannelId ?? slackGrowthReportChannelId;
 	const slackGrowthReportRankingAlpha =
 		cfg?.slackGrowthReportRankingAlpha ?? SLACK_GROWTH_REPORT_RANKING_ALPHA;
 	const countdownLabel = cfg?.countdownLabel ?? '';
@@ -185,6 +197,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		welcomeDisabledChannelIds,
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
+		slackMobilizeSyncChannelId,
 		slackGrowthReportRankingAlpha,
 		countdownLabel,
 		countdownEndAt,
@@ -533,6 +546,7 @@ export async function deleteExcludedChapter(
 const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'slackTrackingChannelId',
 	'slackGrowthReportChannelId',
+	'slackMobilizeSyncChannelId',
 	'slackGrowthReportRankingAlpha',
 	'countdownLabel',
 	'countdownEndAt',

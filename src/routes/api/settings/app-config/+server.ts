@@ -27,6 +27,7 @@ import {
 interface AppConfigBody {
 	slackTrackingChannelId?: unknown;
 	slackGrowthReportChannelId?: unknown;
+	slackMobilizeSyncChannelId?: unknown;
 	slackGrowthReportRankingAlpha?: unknown;
 	countdownLabel?: unknown;
 	countdownEndAt?: unknown;
@@ -56,7 +57,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	const patch: AppConfigPatch = {};
 
-	for (const key of ['slackTrackingChannelId', 'slackGrowthReportChannelId'] as const) {
+	for (const key of [
+		'slackTrackingChannelId',
+		'slackGrowthReportChannelId',
+		'slackMobilizeSyncChannelId',
+	] as const) {
 		const value = body[key];
 		if (value === undefined) continue;
 		if (typeof value !== 'string' || value.trim() === '') {

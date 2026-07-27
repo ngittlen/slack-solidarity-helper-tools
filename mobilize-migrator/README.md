@@ -214,9 +214,10 @@ password endpoint — so **it cannot be renewed programmatically**. Expect to
 re-paste it roughly every two weeks (Django's default session age).
 
 On expiry the endpoint returns 503, the workflow run goes red, and the app posts
-a Slack alert with the fix to the growth-report channel — the DB override set in
-/settings if there is one, otherwise `SLACK_GROWTH_REPORT_CHANNEL_ID`, resolved
-the same way the weekly report resolves it. Only `sessionid` and
+a Slack alert with the fix to the Mobilize sync channel — the one picked in
+/settings if there is one, otherwise wherever the growth report goes (its own
+/settings override, else `SLACK_GROWTH_REPORT_CHANNEL_ID`). There is no env var
+for the sync channel itself. Only `sessionid` and
 `csrftoken` are needed — the Cloudflare `__cf_bm` cookie in a captured header is
 not, which is what makes a stored secret viable at all.
 
@@ -270,6 +271,10 @@ real attendees as cancelled.
   a Solidarity event. Nothing to do with mobilize.us.
 - **`skip_email_confirmation: true`** on every RSVP write, or Solidarity emails a
   confirmation to everyone the sync touches.
+- **`agent_user_id` is required on an RSVP create.** Sending `null` fails with
+  `422 {"errors":["Agent must exist"]}`. It records who filed the RSVP; Solidarity
+  sets it to the attendee on its own web-form signups, and a Mobilize signup is
+  the same self-service act, so the sync sends the attendee's id.
 - A lookup returning **more than one** person resolves to no match. Picking the
   first would file an RSVP against the wrong human.
 

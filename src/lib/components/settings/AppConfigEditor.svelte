@@ -30,6 +30,9 @@
 		/** Effective values from loadSettings ('' / undefined when unset). */
 		trackingChannelId: string;
 		growthReportChannelId: string;
+		/** Effective Mobilize-sync alert channel — the growth-report channel
+		 *  when no override is set. */
+		mobilizeSyncChannelId: string;
 		rankingAlpha: number | undefined;
 		/** Header countdown config ('' when unset). */
 		countdownLabel: string;
@@ -50,6 +53,7 @@
 		channels,
 		trackingChannelId,
 		growthReportChannelId,
+		mobilizeSyncChannelId,
 		rankingAlpha,
 		countdownLabel,
 		countdownEndAt,
@@ -97,6 +101,12 @@
 	});
 	let growthReport = $state<ChannelField>({
 		value: growthReportChannelId,
+		status: 'idle',
+		error: null,
+		lastFailedId: null,
+	});
+	let mobilizeSync = $state<ChannelField>({
+		value: mobilizeSyncChannelId,
 		status: 'idle',
 		error: null,
 		lastFailedId: null,
@@ -301,6 +311,29 @@
 			showSublabel={true}
 		/>
 		<p class="app-config-note">Where the Monday chapter-growth leaderboard is posted.</p>
+	</SettingsRow>
+
+	<SettingsRow
+		label="Mobilize sync channel"
+		status={mobilizeSync.status}
+		error={mobilizeSync.error}
+		onRetry={mobilizeSync.lastFailedId
+			? () =>
+					void saveChannel(mobilizeSync, 'slackMobilizeSyncChannelId', mobilizeSync.lastFailedId!)
+			: undefined}
+	>
+		<AutocompletePicker
+			items={channelItems}
+			value={mobilizeSync.value || null}
+			onSelect={(id) => void saveChannel(mobilizeSync, 'slackMobilizeSyncChannelId', id)}
+			placeholder="Pick a channel…"
+			showSublabel={true}
+		/>
+		<p class="app-config-note">
+			Where the nightly Solidarity → Mobilize event sync and attendee sync post their alerts —
+			including the one that says the Mobilize session cookie has expired. Defaults to the weekly
+			growth report channel until you pick one here.
+		</p>
 	</SettingsRow>
 
 	<SettingsRow

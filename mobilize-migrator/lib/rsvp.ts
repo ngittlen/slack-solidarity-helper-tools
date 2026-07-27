@@ -77,6 +77,12 @@ export async function listSessionRsvps(token: string, sessionId: number): Promis
  * `skip_email_confirmation` is not optional in practice: without it Solidarity
  * emails a confirmation to every person the sync touches, which on a backfill
  * means thousands of unexpected emails about events they already signed up for.
+ *
+ * `agent_user_id` is required — a null one is rejected with
+ * `422 {"errors":["Agent must exist"]}`. It records *who* filed the RSVP, and
+ * Solidarity's own self-signups (`source: web_form`) set it to the attendee.
+ * A Mobilize signup is the same thing: the person registered themselves, so the
+ * agent is them, not an organizer.
  */
 export async function createRsvp(
 	token: string,
@@ -95,7 +101,7 @@ export async function createRsvp(
 				user_id: target.userId,
 				is_attending: isAttending,
 				is_confirmed: isConfirmed,
-				agent_user_id: null,
+				agent_user_id: target.userId,
 				source: 'mobilize',
 				source_system: 'mobilize',
 				skip_email_confirmation: true,

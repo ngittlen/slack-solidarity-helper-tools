@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `slack_mobilize_sync_channel_id` text;

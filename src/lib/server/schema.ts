@@ -223,6 +223,10 @@ export const appConfig = sqliteTable(
 		slackTrackingChannelId: text('slack_tracking_channel_id'),
 		slackGrowthReportChannelId: text('slack_growth_report_channel_id'),
 		slackGrowthReportRankingAlpha: real('slack_growth_report_ranking_alpha'),
+		// Where the nightly Mobilize/attendee sync posts its alerts. NULL means
+		// "wherever the growth report goes" — the fallback these alerts had
+		// before this column existed. No env var of its own.
+		slackMobilizeSyncChannelId: text('slack_mobilize_sync_channel_id'),
 		// Header countdown (label + ISO end datetime). DB-only, no env fallback;
 		// '' means "not configured" (the set-only save contract reserves NULL for
 		// "use the fallback", so clearing writes '' rather than NULL).

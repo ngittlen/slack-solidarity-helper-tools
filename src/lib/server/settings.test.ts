@@ -155,6 +155,8 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			welcomeDisabledChannelIds: new Set(),
 			slackTrackingChannelId: '',
 			slackGrowthReportChannelId: '',
+			// Falls back to the growth-report channel, which is itself empty here.
+			slackMobilizeSyncChannelId: '',
 			slackGrowthReportRankingAlpha: undefined,
 			countdownLabel: '',
 			countdownEndAt: '',
@@ -303,6 +305,47 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		expect(result.slackGrowthReportRankingAlpha).toBe(0.5);
 	});
 
+	it('slackMobilizeSyncChannelId falls back to the resolved growth-report channel', async () => {
+		// NULL column, NULL growth column: both fall through to the env growth id
+		// — where the sync alerts posted before the override existed.
+		const db = makeDb();
+		pushAllEmpty(db);
+		expect((await loadSettings(db as never)).slackMobilizeSyncChannelId).toBe('C_ENV_GROWTH');
+
+		// NULL column, growth overridden in the DB: follows the growth override,
+		// not the env var it shadows.
+		const db2 = makeDb();
+		for (let i = 0; i < 5; i++) db2._pushSelect([]);
+		db2._pushSelect([
+			{
+				id: 1,
+				slackGrowthReportChannelId: 'C_DB_GROWTH',
+				slackMobilizeSyncChannelId: null,
+				lastEditedBy: 'U_X',
+				lastEditedByName: 'X',
+				lastEditedAt: '2026-07-27T00:00:00.000Z',
+			},
+		]);
+		expect((await loadSettings(db2 as never)).slackMobilizeSyncChannelId).toBe('C_DB_GROWTH');
+
+		// Own override set: wins over the growth channel, which stays put.
+		const db3 = makeDb();
+		for (let i = 0; i < 5; i++) db3._pushSelect([]);
+		db3._pushSelect([
+			{
+				id: 1,
+				slackGrowthReportChannelId: 'C_DB_GROWTH',
+				slackMobilizeSyncChannelId: 'C_DB_MOBILIZE',
+				lastEditedBy: 'U_X',
+				lastEditedByName: 'X',
+				lastEditedAt: '2026-07-27T00:00:00.000Z',
+			},
+		]);
+		const result3 = await loadSettings(db3 as never);
+		expect(result3.slackMobilizeSyncChannelId).toBe('C_DB_MOBILIZE');
+		expect(result3.slackGrowthReportChannelId).toBe('C_DB_GROWTH');
+	});
+
 	it('bundle has exactly the documented keys', async () => {
 		const db = makeDb();
 		pushAllEmpty(db);
@@ -316,6 +359,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'welcomeDisabledChannelIds',
 				'slackGrowthReportChannelId',
 				'slackGrowthReportRankingAlpha',
+				'slackMobilizeSyncChannelId',
 				'slackTrackingChannelId',
 				'countdownLabel',
 				'countdownEndAt',

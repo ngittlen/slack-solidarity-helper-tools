@@ -77,20 +77,32 @@ describe('POST /api/settings/app-config', () => {
 		);
 	});
 
-	it('saves both channels in one patch, validating each', async () => {
+	it('saves every channel in one patch, validating each', async () => {
 		const res = await POST(
 			makeEvent(authed, {
 				slackTrackingChannelId: 'C1',
 				slackGrowthReportChannelId: 'C2',
+				slackMobilizeSyncChannelId: 'C3',
 			}) as never,
 		);
 		expect(res.status).toBe(200);
-		expect(mockValidateChannel).toHaveBeenCalledTimes(2);
+		expect(mockValidateChannel).toHaveBeenCalledTimes(3);
 		expect(mockSaveAppConfig).toHaveBeenCalledWith(
 			expect.anything(),
-			{ slackTrackingChannelId: 'C1', slackGrowthReportChannelId: 'C2' },
+			{
+				slackTrackingChannelId: 'C1',
+				slackGrowthReportChannelId: 'C2',
+				slackMobilizeSyncChannelId: 'C3',
+			},
 			expect.anything(),
 		);
+	});
+
+	it('validates the Mobilize sync channel like the others', async () => {
+		mockValidateChannel.mockResolvedValue({ ok: false, error: 'nope', transient: false });
+		const res = await POST(makeEvent(authed, { slackMobilizeSyncChannelId: 'C_BAD' }) as never);
+		expect(res.status).toBe(400);
+		expect(mockSaveAppConfig).not.toHaveBeenCalled();
 	});
 
 	it('400 for an unknown channel id; 503 when the list is transiently down', async () => {

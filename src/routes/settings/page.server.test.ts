@@ -45,6 +45,7 @@ const settingsFixture = {
 	reportExcludedChapterIds: new Set<number>(),
 	slackTrackingChannelId: 'C_TRACK',
 	slackGrowthReportChannelId: 'C_GROWTH',
+	slackMobilizeSyncChannelId: 'C_GROWTH',
 	slackGrowthReportRankingAlpha: 0.5,
 	welcomeDisabledChannelIds: new Set<string>(),
 	countdownLabel: '',
