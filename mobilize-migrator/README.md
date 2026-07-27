@@ -214,7 +214,9 @@ password endpoint — so **it cannot be renewed programmatically**. Expect to
 re-paste it roughly every two weeks (Django's default session age).
 
 On expiry the endpoint returns 503, the workflow run goes red, and the app posts
-a Slack alert to `SLACK_TRACKING_CHANNEL_ID` with the fix. Only `sessionid` and
+a Slack alert with the fix to the growth-report channel — the DB override set in
+/settings if there is one, otherwise `SLACK_GROWTH_REPORT_CHANNEL_ID`, resolved
+the same way the weekly report resolves it. Only `sessionid` and
 `csrftoken` are needed — the Cloudflare `__cf_bm` cookie in a captured header is
 not, which is what makes a stored secret viable at all.
 

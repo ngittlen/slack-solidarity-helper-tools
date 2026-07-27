@@ -1,5 +1,8 @@
 import { WebClient } from '@slack/web-api';
-import { SLACK_BOT_TOKEN } from './env.js';
+import type { drizzle } from 'drizzle-orm/libsql';
+
+import { SLACK_BOT_TOKEN, SLACK_GROWTH_REPORT_CHANNEL_ID } from './env.js';
+import { loadSettings } from './settings.js';
 
 let _slack: WebClient | null = null;
 
@@ -24,6 +27,31 @@ export const slack = new Proxy({} as WebClient, {
  * sync that otherwise succeeded into a failed run, and the alert is the only way
  * an expired Mobilize cookie reaches a human.
  */
+/**
+ * An alert bound to the growth-report channel, resolved the same way the weekly
+ * report resolves it: the DB override the settings UI writes, falling back to
+ * the env var. Reading it per request means changing the channel in /settings
+ * moves these alerts too, rather than leaving them pointed at a stale id.
+ *
+ * A settings read failure falls back rather than throwing — a DB hiccup must not
+ * silence the alert that says the Mobilize session expired.
+ */
+export async function alertForGrowthChannel(
+	tag: string,
+	db: ReturnType<typeof drizzle>,
+): Promise<(text: string) => Promise<void>> {
+	let channelId = SLACK_GROWTH_REPORT_CHANNEL_ID;
+	try {
+		channelId = (await loadSettings(db)).slackGrowthReportChannelId || channelId;
+	} catch (err) {
+		console.error(
+			`[${tag}] could not read settings for the alert channel; using env default:`,
+			err instanceof Error ? err.message : err,
+		);
+	}
+	return alertFor(tag, channelId);
+}
+
 export function alertFor(tag: string, channelId: string): (text: string) => Promise<void> {
 	return async (text: string) => {
 		if (!channelId) return;

@@ -2,11 +2,10 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { runMobilizeSync } from '$lib/server/mobilize-sync.js';
-import { alertFor } from '$lib/server/slack.js';
+import { alertForGrowthChannel } from '$lib/server/slack.js';
 import {
 	INTERNAL_CRON_SECRET,
 	MOBILIZE_COOKIE,
-	SLACK_TRACKING_CHANNEL_ID,
 	SOLIDARITY_API_TOKEN,
 } from '$lib/server/env.js';
 
@@ -20,8 +19,6 @@ import {
 // update rather than duplicate. Safe to fire several times a night, which
 // matters because GitHub cron is best-effort (see door-knock-snapshot.yml).
 
-const alert = alertFor('mobilize-sync', SLACK_TRACKING_CHANNEL_ID);
-
 export const POST: RequestHandler = async ({ url }) => {
 	if (!INTERNAL_CRON_SECRET) {
 		console.error('[mobilize-sync] INTERNAL_CRON_SECRET is not set');
@@ -30,6 +27,9 @@ export const POST: RequestHandler = async ({ url }) => {
 	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
+
+	// Bound after auth so an unauthenticated request can never trigger a post.
+	const alert = await alertForGrowthChannel('mobilize-sync', db);
 	if (!SOLIDARITY_API_TOKEN) {
 		return json({ error: 'SOLIDARITY_API_TOKEN is not set' }, { status: 500 });
 	}
