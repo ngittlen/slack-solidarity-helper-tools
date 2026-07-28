@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches ARG NODE_VERSION in the Dockerfile, so CI runs what deploys run.
+          node-version: '22.21.1'
+          cache: 'npm'
+
+      # `npm ci` on Linux matches how package-lock.json is expected to be
+      # generated (see .githooks/pre-commit) and fails loudly if it has drifted
+      # out of sync with package.json.
+      - name: Install
+        id: install
+        run: npm ci
+
+      # No explicit `svelte-kit sync` step: the `prepare` script runs it, and npm
+      # runs `prepare` automatically after `npm ci`. That generates
+      # .svelte-kit/tsconfig.json (which tsconfig.json extends) plus the ambient
+      # and $types declarations, none of which are committed.
+
+      # Each check is gated on the install rather than on the previous check, so
+      # one push reports every problem instead of only the first. Nothing runs if
+      # the install itself failed, which would just produce four confusing errors.
+      - name: Prettier
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npx prettier --check .
+
+      - name: ESLint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npx eslint .
+
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run check
+
+      - name: Tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm test
