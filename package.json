@@ -14,7 +14,7 @@
 		"format": "prettier --write .",
 		"check": "svelte-check --tsconfig ./tsconfig.json && npm run check:migrator",
 		"check:migrator": "tsc -p tsconfig.migrator.json",
-		"prepare": "git config core.hooksPath .githooks || true",
+		"prepare": "git config core.hooksPath .githooks || true && svelte-kit sync",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate"
 	},
