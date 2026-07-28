@@ -33,6 +33,11 @@
 		/** Effective Mobilize-sync alert channel — the growth-report channel
 		 *  when no override is set. */
 		mobilizeSyncChannelId: string;
+		/** Contact published on events the sync creates in Mobilize ('' when
+		 *  neither /settings nor the MOBILIZE_CONTACT_* env vars set it). */
+		mobilizeContactName: string;
+		mobilizeContactEmail: string;
+		mobilizeContactPhone: string;
 		rankingAlpha: number | undefined;
 		/** Header countdown config ('' when unset). */
 		countdownLabel: string;
@@ -54,6 +59,9 @@
 		trackingChannelId,
 		growthReportChannelId,
 		mobilizeSyncChannelId,
+		mobilizeContactName,
+		mobilizeContactEmail,
+		mobilizeContactPhone,
 		rankingAlpha,
 		countdownLabel,
 		countdownEndAt,
@@ -139,6 +147,30 @@
 		parse: (raw) => parseFloat(raw),
 		save: (value) => postAppConfig({ slackGrowthReportRankingAlpha: value }),
 	});
+
+	// --- Mobilize event contact — debounced autosave. The v1 API requires a
+	// contact on every event create and update, and Solidarity events carry no
+	// contact data of their own, so without one here the sync cannot write at all.
+
+	const contactNameSave = createFieldAutosave<string>({
+		initial: mobilizeContactName,
+		save: (value) => postAppConfig({ mobilizeContactName: value }),
+	});
+	const contactEmailSave = createFieldAutosave<string>({
+		initial: mobilizeContactEmail,
+		save: (value) => postAppConfig({ mobilizeContactEmail: value }),
+	});
+	const contactPhoneSave = createFieldAutosave<string>({
+		initial: mobilizeContactPhone,
+		save: (value) => postAppConfig({ mobilizeContactPhone: value }),
+	});
+
+	const contactSaves = $derived([contactNameSave, contactEmailSave, contactPhoneSave]);
+	const contactStatus = $derived(
+		contactSaves.find((f) => f.status !== 'idle')?.status ?? 'idle',
+	);
+	const contactError = $derived(contactSaves.find((f) => f.error)?.error ?? null);
+	const contactRetry = $derived(contactSaves.find((f) => f.status === 'error')?.retry);
 
 	// --- Header countdown — debounced autosave like the alpha slider. The
 	// datetime-local input speaks local time; the API stores canonical ISO, so
@@ -331,8 +363,54 @@
 		/>
 		<p class="app-config-note">
 			Where the nightly Solidarity → Mobilize event sync and attendee sync post their alerts —
-			including the one that says the Mobilize session cookie has expired. Defaults to the weekly
-			growth report channel until you pick one here.
+			including the one that says Mobilize rejected the API key. Defaults to the weekly growth
+			report channel until you pick one here.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		label="Mobilize event contact"
+		status={contactStatus}
+		error={contactError}
+		onRetry={contactRetry}
+	>
+		<div class="countdown-fields">
+			<label class="countdown-field">
+				<span class="countdown-field-label">Name</span>
+				<input
+					type="text"
+					maxlength="200"
+					placeholder="e.g. Field Team"
+					value={contactNameSave.value}
+					oninput={contactNameSave.oninput}
+				/>
+			</label>
+			<label class="countdown-field">
+				<span class="countdown-field-label">Email</span>
+				<input
+					type="email"
+					maxlength="200"
+					placeholder="e.g. events@example.org"
+					value={contactEmailSave.value}
+					oninput={contactEmailSave.oninput}
+				/>
+			</label>
+			<label class="countdown-field">
+				<span class="countdown-field-label">Phone</span>
+				<input
+					type="tel"
+					maxlength="200"
+					placeholder="optional"
+					value={contactPhoneSave.value}
+					oninput={contactPhoneSave.oninput}
+				/>
+			</label>
+		</div>
+		<p class="app-config-note">
+			The contact listed on events the sync creates in Mobilize. Mobilize requires one on every
+			event, and Solidarity events don't carry contact details, so <strong>the event sync cannot
+			run without an email here</strong> (or in <code>MOBILIZE_CONTACT_EMAIL</code>). Clearing a
+			field falls back to its <code>MOBILIZE_CONTACT_*</code> environment variable.
 		</p>
 	</SettingsRow>
 

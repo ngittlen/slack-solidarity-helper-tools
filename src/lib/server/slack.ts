@@ -25,7 +25,7 @@ export const slack = new Proxy({} as WebClient, {
  *
  * Used by the cron-triggered internal endpoints: a Slack outage must not turn a
  * sync that otherwise succeeded into a failed run, and the alert is the only way
- * an expired Mobilize cookie reaches a human.
+ * a rejected Mobilize API key reaches a human.
  */
 /**
  * An alert bound to the Mobilize-sync channel: the /settings override when one
@@ -35,7 +35,7 @@ export const slack = new Proxy({} as WebClient, {
  * leaving them pointed at a stale id.
  *
  * A settings read failure falls back rather than throwing — a DB hiccup must not
- * silence the alert that says the Mobilize session expired.
+ * silence the alert that says Mobilize rejected the API key.
  */
 export async function alertForMobilizeSync(
 	tag: string,

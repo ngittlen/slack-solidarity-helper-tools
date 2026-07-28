@@ -13,6 +13,9 @@ vi.mock('./env.js', () => ({
 	SLACK_TRACKING_CHANNEL_ID: 'C_ENV_TRACK',
 	SLACK_GROWTH_REPORT_CHANNEL_ID: 'C_ENV_GROWTH',
 	SLACK_GROWTH_REPORT_RANKING_ALPHA: 0.5,
+	MOBILIZE_CONTACT_NAME: 'Env Field Team',
+	MOBILIZE_CONTACT_EMAIL: 'env-events@example.org',
+	MOBILIZE_CONTACT_PHONE: '',
 }));
 
 import { DEFAULT_TICKER_COLUMNS_PER_SECOND } from '../ticker-speed.js';
@@ -138,6 +141,9 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			SLACK_TRACKING_CHANNEL_ID: '',
 			SLACK_GROWTH_REPORT_CHANNEL_ID: '',
 			SLACK_GROWTH_REPORT_RANKING_ALPHA: undefined,
+			MOBILIZE_CONTACT_NAME: '',
+			MOBILIZE_CONTACT_EMAIL: '',
+			MOBILIZE_CONTACT_PHONE: '',
 		}));
 		vi.resetModules();
 		const { loadSettings: loadFresh } = await import('./settings.js');
@@ -157,6 +163,9 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			slackGrowthReportChannelId: '',
 			// Falls back to the growth-report channel, which is itself empty here.
 			slackMobilizeSyncChannelId: '',
+			mobilizeContactName: '',
+			mobilizeContactEmail: '',
+			mobilizeContactPhone: '',
 			slackGrowthReportRankingAlpha: undefined,
 			countdownLabel: '',
 			countdownEndAt: '',
@@ -346,6 +355,53 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		expect(result3.slackGrowthReportChannelId).toBe('C_DB_GROWTH');
 	});
 
+	it('the Mobilize contact falls back per field, not all-or-nothing', async () => {
+		// The event sync cannot write without a contact email, so a half-filled
+		// row must still resolve the other fields from env rather than blanking
+		// them.
+		const db = makeDb();
+		pushAllEmpty(db);
+		const fromEnv = await loadSettings(db as never);
+		expect(fromEnv.mobilizeContactName).toBe('Env Field Team');
+		expect(fromEnv.mobilizeContactEmail).toBe('env-events@example.org');
+		expect(fromEnv.mobilizeContactPhone).toBe('');
+
+		const db2 = makeDb();
+		for (let i = 0; i < 5; i++) db2._pushSelect([]);
+		db2._pushSelect([
+			{
+				id: 1,
+				mobilizeContactEmail: 'db-events@example.org',
+				mobilizeContactName: null,
+				mobilizeContactPhone: null,
+				lastEditedBy: 'U_X',
+				lastEditedByName: 'X',
+				lastEditedAt: '2026-07-27T00:00:00.000Z',
+			},
+		]);
+		const mixed = await loadSettings(db2 as never);
+		expect(mixed.mobilizeContactEmail).toBe('db-events@example.org');
+		expect(mixed.mobilizeContactName).toBe('Env Field Team');
+	});
+
+	it("an empty-string contact override means 'unset', not 'fall back to env'", async () => {
+		// Clearing the field on /settings writes '' (the set-only contract
+		// reserves NULL for "keep"), and that has to stick — otherwise the env
+		// value silently comes back and the admin can never remove it.
+		const db = makeDb();
+		for (let i = 0; i < 5; i++) db._pushSelect([]);
+		db._pushSelect([
+			{
+				id: 1,
+				mobilizeContactName: '',
+				lastEditedBy: 'U_X',
+				lastEditedByName: 'X',
+				lastEditedAt: '2026-07-27T00:00:00.000Z',
+			},
+		]);
+		expect((await loadSettings(db as never)).mobilizeContactName).toBe('');
+	});
+
 	it('bundle has exactly the documented keys', async () => {
 		const db = makeDb();
 		pushAllEmpty(db);
@@ -361,6 +417,9 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'slackGrowthReportRankingAlpha',
 				'slackMobilizeSyncChannelId',
 				'slackTrackingChannelId',
+				'mobilizeContactName',
+				'mobilizeContactEmail',
+				'mobilizeContactPhone',
 				'countdownLabel',
 				'countdownEndAt',
 				'welcomeDmMessage',

@@ -26,7 +26,7 @@ import {
 } from '../../../mobilize-migrator/lib/attendee-sync.js';
 import { buildZipChapterMap } from '../../../mobilize-migrator/lib/people.js';
 import { fetchAllEvents } from '../../../mobilize-migrator/lib/solidarity.js';
-import { loadMobilizeSession } from './mobilize-session.js';
+import { loadMobilizeApi } from './mobilize-api.js';
 import {
 	ATTENDEE_SYNC_MAX_NEW_PROFILES,
 	SOLIDARITY_DEFAULT_CHAPTER_ID,
@@ -52,6 +52,7 @@ class TursoAttendeeLedger implements AttendeeLedger {
 					solidaritySessionId: row.solidaritySessionId,
 					status: row.status,
 					attended: row.attended,
+					modifiedDate: row.mobilizeModifiedDate,
 				},
 			]),
 		);
@@ -59,9 +60,10 @@ class TursoAttendeeLedger implements AttendeeLedger {
 
 	async recordRsvp(record: RsvpRecord): Promise<void> {
 		const now = new Date().toISOString();
+		const { modifiedDate, ...rest } = record;
 		await this.db
 			.insert(mobilizeSyncedRsvps)
-			.values({ ...record, syncedAt: now })
+			.values({ ...rest, mobilizeModifiedDate: modifiedDate, syncedAt: now })
 			.onConflictDoUpdate({
 				target: mobilizeSyncedRsvps.mobilizeAttendanceId,
 				set: {
@@ -70,6 +72,7 @@ class TursoAttendeeLedger implements AttendeeLedger {
 					solidaritySessionId: record.solidaritySessionId,
 					status: record.status,
 					attended: record.attended,
+					mobilizeModifiedDate: modifiedDate,
 					syncedAt: now,
 				},
 			});
@@ -83,11 +86,11 @@ export interface AttendeeSyncOptions {
 	 * upcoming session — 0 is a real window of zero hours, not "no limit", and
 	 * would match nothing.
 	 *
-	 * This bounds the run: every session in scope costs at least one Mobilize
-	 * dashboard request, and that request can't be skipped by the ledger (we
-	 * have to fetch to learn whether anything changed). Windowless is 176
-	 * sessions today — ~8,400 requests/day at this cadence, against a borrowed
-	 * browser session behind Cloudflare. 24 hours is 29.
+	 * This bounds the run, though far less sharply than it used to: signups are
+	 * fetched one request per Mobilize EVENT rather than one per shift, and an
+	 * event usually carries several shifts. A windowless pass is tens of requests
+	 * against a 15/s budget, so the window is now about keeping the Solidarity
+	 * write side small rather than about surviving the Mobilize read side.
 	 */
 	windowHours?: number;
 	/**
@@ -168,7 +171,7 @@ export async function runSolidarityAttendeeSync(
 	options: AttendeeSyncOptions = {},
 ): Promise<AttendeeSyncResult> {
 	const apply = options.apply ?? true;
-	const session = loadMobilizeSession('the attendee sync');
+	const api = loadMobilizeApi('the attendee sync');
 	const windowHours = options.windowHours ?? null;
 	const lookbackHours = options.lookbackHours ?? 48;
 
@@ -206,6 +209,7 @@ export async function runSolidarityAttendeeSync(
 		if (upperBound !== null && meta.startsAt > upperBound) continue;
 		links.push({
 			mobilizeTimeslotId: pairing.mobilizeTimeslotId,
+			mobilizeEventId: pairing.mobilizeEventId,
 			solidarityEventId: pairing.solidarityEventId,
 			solidaritySessionId: pairing.solidaritySessionId,
 			eventChapterId: meta.chapterId,
@@ -219,7 +223,7 @@ export async function runSolidarityAttendeeSync(
 	const report = await runAttendeeSync(
 		links,
 		{
-			session,
+			api,
 			solidarityToken: SOLIDARITY_API_TOKEN,
 			apply,
 			maxNewProfiles: options.maxNewProfiles ?? ATTENDEE_SYNC_MAX_NEW_PROFILES,

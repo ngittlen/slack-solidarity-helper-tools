@@ -24,13 +24,12 @@ import { TursoLedger } from '../src/lib/server/mobilize-ledger.js';
 import { findDuplicate } from './lib/dedupe.js';
 import { env, requireEnv } from './lib/env.js';
 import { fetchPageDescriptions } from './lib/pages.js';
-import { loadSession } from './lib/session.js';
+import { loadApiConfig } from './lib/mobilize.js';
 import { fetchAllEvents } from './lib/solidarity.js';
 import { runSync } from './lib/sync.js';
-import { CAMPAIGN_TIMEZONE } from './lib/time.js';
+import { CAMPAIGN_TIMEZONE } from './lib/payload.js';
 import { planMigration } from './lib/transform.js';
 
-const MOBILIZE_ORG_ID = 44679; // Abdul for U.S. Senate
 const here = dirname(fileURLToPath(import.meta.url));
 // Run artifact, not source: rewritten every run, so it lives in gitignored private/.
 const PRIVATE_DIR = resolve(here, '../private');
@@ -46,7 +45,14 @@ const limitArg = args.indexOf('--limit');
 const createLimit = limitArg >= 0 ? Number(args[limitArg + 1]) : undefined;
 
 // Fail fast on missing credentials rather than after a long read phase.
-const session = loadSession();
+const api = loadApiConfig();
+// The v1 API requires a contact on every create and update. The server reads
+// this from /settings; the CLI has no db, so it is env-only here.
+const contact = {
+	name: env('MOBILIZE_CONTACT_NAME'),
+	emailAddress: requireEnv('MOBILIZE_CONTACT_EMAIL', 'set it in .env.local'),
+	phoneNumber: env('MOBILIZE_CONTACT_PHONE'),
+};
 // The same ledger the server writes, so the two can never disagree about what
 // has already been created.
 const ledger = new TursoLedger(
@@ -74,8 +80,8 @@ console.log(
 const report = await runSync(
 	planned,
 	{
-		session,
-		mobilizeOrgId: MOBILIZE_ORG_ID,
+		api,
+		contact,
 		// The CLI is interactive, so the runaway guard is loose here; --limit is
 		// the knob you actually reach for.
 		maxCreatesPerRun: Number.MAX_SAFE_INTEGER,
@@ -120,8 +126,11 @@ writeJson(PLAN_PATH, {
 console.log(`\nFull plan written to ${PLAN_PATH}`);
 
 if (report.abortedReason) console.error(`\nABORTED: ${report.abortedReason}`);
-if (report.sessionExpired) {
-	console.error('\nMobilize session expired — refresh MOBILIZE_COOKIE and re-run; progress is saved.');
+if (report.authFailed) {
+	console.error(
+		'\nMobilize rejected the API key — check MOBILIZE_API_KEY and that it has write access, ' +
+			'then re-run; progress is saved.',
+	);
 }
 
 console.log(

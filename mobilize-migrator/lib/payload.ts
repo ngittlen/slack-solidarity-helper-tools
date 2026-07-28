@@ -1,43 +1,55 @@
-// Builds the create-event body for Mobilize's private dashboard API.
+// Builds the create/update body for the Mobilize v1 events API.
 //
-// The field set and defaults are lifted verbatim from a real create request
-// captured off the dashboard (private/event-create-request.json) — the endpoint is
-// undocumented and rejects partial bodies, so we send the whole shape and only
-// vary the fields that describe the event.
+// The v1 body is much narrower than the private dashboard one this replaced.
+// Fields with no API equivalent are simply not set, and synced events get
+// Mobilize's defaults for them: VAN activist-code sync, check-in, post-signup
+// asks, day-before confirmation, and contact-host. See mobilize-migrator/README.md.
 
 /**
- * Numeric event_type codes. Undocumented, and unreadable from the API (GET and
- * OPTIONS both 405, and the JS bundle is Cloudflare-blocked), so these were
- * confirmed empirically: create a throwaway event far in the future with a
- * candidate code, read the string name back off the public API, delete it.
+ * The timezone Mobilize displays every synced event in.
  *
- * Neighbours found the same way, in case another is ever needed:
- * 18 OFFICE_OPENING, 19 BARNSTORM, 20 SOLIDARITY_EVENT, 22 SIGNATURE_GATHERING,
- * 23 CARPOOL.
+ * Michigan is `America/Detroit`, but Mobilize validates this field against a
+ * fixed choice list that rejects it ("not a valid choice"), so we send
+ * `America/New_York` — same offsets, same DST rules.
+ */
+export const CAMPAIGN_TIMEZONE = 'America/New_York';
+
+/**
+ * Event types, as the v1 string enum. The campaign only uses these two; the
+ * full list is in the API docs.
  */
 export const EVENT_TYPE = {
-	COMMUNITY: 5,
-	COMMUNITY_CANVASS: 21,
+	COMMUNITY: 'COMMUNITY',
+	COMMUNITY_CANVASS: 'COMMUNITY_CANVASS',
 } as const;
 
-export const VISIBILITY_PUBLIC = 1;
+export type EventTypeName = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
 
 export interface Timeslot {
-	/** Local wall time, no offset: "2026-08-31T09:00" */
-	startsAtNaive: string;
-	endsAtNaive: string;
+	/** Present only when updating an existing shift. */
+	id?: number;
+	/** Unix seconds. */
+	startDate: number;
+	endDate: number;
 	maxAttendees: number | null;
 }
 
-export interface EventInput {
+/**
+ * Required by the API on both create and update. Resolved from the settings
+ * page with an env-var fallback — Solidarity events carry no contact data.
+ */
+export interface EventContact {
 	name: string;
+	emailAddress: string;
+	phoneNumber: string;
+}
+
+export interface EventInput {
+	title: string;
 	description: string;
-	/**
-	 * Must already live in Mobilize's uploads bucket — foreign URLs are rejected
-	 * with `400 Invalid URL.` See lib/image.ts.
-	 */
+	/** Must be a Mobilize-hosted URL from POST /v1/images. See lib/image.ts. */
 	imageUrl?: string;
-	eventType: number;
+	eventType: EventTypeName;
 	timezone: string;
 	locationName: string;
 	addressLine1: string;
@@ -45,112 +57,49 @@ export interface EventInput {
 	state: string;
 	zipcode: string;
 	country: string;
-	lat: number | null;
-	lon: number | null;
+	/**
+	 * The Solidarity event's hide-address-until-RSVP flag. v1 has no field for
+	 * location privacy — the "This event's address is private" string in the docs
+	 * is what Mobilize RETURNS for a redacted event, not an input — so the street
+	 * line is simply omitted. City, region and postal code still go, which gives a
+	 * usable map pin without publishing the venue's address.
+	 */
 	locationIsPrivate: boolean;
+	contact: EventContact;
 	timeslots: Timeslot[];
 }
 
-/**
- * The campaign's VAN activist-code sync, copied from the captured request so
- * migrated events tag signups the same way dashboard-created ones do.
- */
-export const VAN_ACTIVIST_CODE_ID = 5451761;
+function buildContact(contact: EventContact): Record<string, string> {
+	const out: Record<string, string> = {};
+	if (contact.name) out.name = contact.name;
+	if (contact.emailAddress) out.email_address = contact.emailAddress;
+	if (contact.phoneNumber) out.phone_number = contact.phoneNumber;
+	return out;
+}
 
 export function buildEventPayload(input: EventInput): Record<string, unknown> {
 	return {
-		name: input.name,
-		van_name: '',
+		title: input.title,
 		description: input.description,
-		image_url: input.imageUrl ?? '',
-		pro_tips: '',
-		location_name: input.locationName,
-		address_line1: input.addressLine1,
-		address_line2: '',
-		city: input.city,
-		state: input.state,
-		zipcode: input.zipcode,
-		contact_name: '',
-		contact_number: '',
-		accessibility_notes: '',
-		private_details: null,
-		virtual_join_url: null,
-		advocacy_campaign_id: null,
-		check_in_enabled: true,
-		country: input.country,
-		custom_event_type_name: null,
-		day_before_confirmation_message: null,
-		fundraiser_config_id: null,
-		group_signup_size_limit: null,
-		lat: input.lat,
-		lon: input.lon,
-		owning_org_van_location_id: null,
-		participant_goal: null,
-		rendered_private_details: null,
-		shift_closed_message: null,
-		shift_followup_message: null,
-		tags: null,
-		virtual_action_button_text: null,
-		virtual_action_url: null,
-		zoom_meeting_id: null,
-		accessibility_features: [],
-		custom_signup_fields: [],
-		event_suggestions: [],
-		disable_participant_count: false,
-		disable_participant_goal: false,
-		group_signup_enabled: false,
-		select_all_timeslots_enabled: false,
-		self_check_in_enabled: false,
-		is_statewide: false,
-		location_is_private: input.locationIsPrivate,
-		accessibility_status: 3,
-		chat_enabled: false,
-		contact_host_enabled: true,
-		day_before_confirmation_is_enabled: true,
-		event_type: input.eventType,
-		group_should_include_all_events_by_hosts_by_default: false,
-		is_virtual: false,
-		post_signup_asks: [1, 3, 4, 2],
-		primary_locale: 'en',
-		registration_mode: 1,
-		reply_to_email: '',
-		shift_followup_email_enabled: true,
 		timezone: input.timezone,
-		virtual_action_disable_advance_signups: false,
-		visibility: VISIBILITY_PUBLIC,
-		volunteer_check_in_is_enabled: false,
-		zoom_meeting_type: null,
-		is_virtual_flexible: false,
-		group_suggested_events: [],
-		owning_groups: [],
-		co_host_ids: [],
+		event_type: input.eventType,
+		visibility: 'PUBLIC',
+		contact: buildContact(input.contact),
+		location: {
+			venue: input.locationName,
+			// Always exactly two lines, per the API docs.
+			address_lines: [input.locationIsPrivate ? '' : input.addressLine1, ''],
+			locality: input.city,
+			region: input.state,
+			postal_code: input.zipcode,
+			country: input.country,
+		},
+		...(input.imageUrl ? { featured_image_url: input.imageUrl } : {}),
 		timeslots: input.timeslots.map((slot) => ({
-			starts_at_naive: slot.startsAtNaive,
-			ends_at_naive: slot.endsAtNaive,
-			max_attendees: slot.maxAttendees,
-			private_details: null,
-			virtual_join_url: null,
-			zoom_meeting_id: null,
-			zoom_meeting_type: null,
-			waitlist_enabled: false,
-			waitlist_auto_advance_enabled: false,
-			close_registration_before_start_threshold: null,
-			close_registration_before_start_unit: null,
+			...(slot.id ? { id: slot.id } : {}),
+			start_date: slot.startDate,
+			end_date: slot.endDate,
+			...(slot.maxAttendees !== null ? { max_attendees: slot.maxAttendees } : {}),
 		})),
-		van_event_config: {
-			van_event_type_id: null,
-			van_role_id: null,
-			van_host_role_id: null,
-			van_registered_status_id: null,
-			van_cancelled_status_id: null,
-			van_confirmed_status_id: null,
-			van_waitlisted_status_id: null,
-			van_source_code: null,
-			van_source_code_id: null,
-		},
-		van_event_activist_code_config: {
-			sync_as_activist_code: true,
-			van_activist_code_id: VAN_ACTIVIST_CODE_ID,
-		},
 	};
 }

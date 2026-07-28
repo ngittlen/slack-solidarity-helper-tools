@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { findDuplicate, normalizeTitle, titleSimilarity } from './dedupe.js';
-import type { PublicEvent } from './mobilize.js';
+import type { MobilizeEvent } from './mobilize.js';
 import { classifyEventType, planMigration } from './transform.js';
 import type { SolidarityEvent } from './solidarity.js';
 import { EVENT_TYPE } from './payload.js';
-import { toNaiveLocal } from './time.js';
 
 const NOW = Date.parse('2026-07-26T00:00:00Z');
 
@@ -54,20 +53,18 @@ function event(overrides: Partial<SolidarityEvent> = {}): SolidarityEvent {
 	};
 }
 
-describe('toNaiveLocal', () => {
-	it('renders the same instant identically regardless of the offset Solidarity used', () => {
-		// Solidarity returned this one session both ways across two calls.
-		expect(toNaiveLocal('2026-07-30T20:00:00.000-04:00')).toBe('2026-07-30T20:00');
-		expect(toNaiveLocal('2026-07-30T18:00:00.000-06:00')).toBe('2026-07-30T20:00');
-		expect(toNaiveLocal('2026-07-31T00:00:00.000Z')).toBe('2026-07-30T20:00');
-	});
-
-	it('handles a standard-time date (EST, not EDT)', () => {
-		expect(toNaiveLocal('2026-12-14T14:00:00.000Z')).toBe('2026-12-14T09:00');
-	});
-
-	it('renders local midnight as 00, never 24', () => {
-		expect(toNaiveLocal('2026-07-30T04:00:00.000Z')).toBe('2026-07-30T00:00');
+describe('timeslot instants', () => {
+	it('resolves the same instant identically regardless of the offset Solidarity used', () => {
+		// Solidarity returned this one session both ways across two calls. Unix
+		// timestamps make the inconsistent offset a non-issue: only the instant
+		// matters, and all three of these are the same instant.
+		const at = (start: string) =>
+			planMigration(
+				[event({ event_sessions: [session({ start_time: start, end_time: start })] })],
+				NOW,
+			).planned[0].timeslots[0].startDate;
+		expect(at('2026-07-30T20:00:00.000-04:00')).toBe(at('2026-07-30T18:00:00.000-06:00'));
+		expect(at('2026-07-30T20:00:00.000-04:00')).toBe(at('2026-07-31T00:00:00.000Z'));
 	});
 });
 
@@ -136,10 +133,10 @@ describe('planMigration', () => {
 		expect(planned).toHaveLength(1);
 		expect(planned[0].timeslots).toHaveLength(3);
 		// Sorted chronologically.
-		expect(planned[0].timeslots.map((t) => t.startsAtNaive)).toEqual([
-			'2026-07-28T17:30',
-			'2026-07-29T15:00',
-			'2026-07-31T17:30',
+		expect(planned[0].timeslots.map((t) => t.startDate)).toEqual([
+			Date.parse('2026-07-28T21:30:00Z') / 1000,
+			Date.parse('2026-07-29T19:00:00Z') / 1000,
+			Date.parse('2026-07-31T21:30:00Z') / 1000,
 		]);
 	});
 
@@ -199,8 +196,6 @@ describe('planMigration', () => {
 			city: 'Flint',
 			state: 'MI',
 			locationName: 'Office Inside Insight',
-			lat: 42.9837207,
-			lon: -83.6748673,
 		});
 	});
 
@@ -242,7 +237,7 @@ describe('planMigration', () => {
 describe('duplicate detection', () => {
 	const planned = planMigration([event()], NOW).planned[0];
 
-	function mobilizeEvent(overrides: Partial<PublicEvent> = {}): PublicEvent {
+	function mobilizeEvent(overrides: Partial<MobilizeEvent> = {}): MobilizeEvent {
 		return {
 			id: 999,
 			title: 'Ann Arbor Canvass',

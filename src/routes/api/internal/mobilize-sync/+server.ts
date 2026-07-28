@@ -5,7 +5,7 @@ import { runMobilizeSync } from '$lib/server/mobilize-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
 import {
 	INTERNAL_CRON_SECRET,
-	MOBILIZE_COOKIE,
+	MOBILIZE_API_KEY,
 	SOLIDARITY_API_TOKEN,
 } from '$lib/server/env.js';
 
@@ -33,11 +33,11 @@ export const POST: RequestHandler = async ({ url }) => {
 	if (!SOLIDARITY_API_TOKEN) {
 		return json({ error: 'SOLIDARITY_API_TOKEN is not set' }, { status: 500 });
 	}
-	if (!MOBILIZE_COOKIE) {
+	if (!MOBILIZE_API_KEY) {
 		await alert(
-			':warning: Mobilize sync is not configured — MOBILIZE_COOKIE is unset, so no events are being mirrored.',
+			':warning: Mobilize sync is not configured — MOBILIZE_API_KEY is unset, so no events are being mirrored.',
 		);
-		return json({ error: 'MOBILIZE_COOKIE is not set' }, { status: 500 });
+		return json({ error: 'MOBILIZE_API_KEY is not set' }, { status: 500 });
 	}
 
 	const dryRun = url.searchParams.get('dry') === '1';
@@ -52,13 +52,13 @@ export const POST: RequestHandler = async ({ url }) => {
 				`existing ${result.skippedExisting}, no-address ${result.skippedNoAddress}, failed ${result.failed}`,
 		);
 
-		// The borrowed session is the one failure that always needs a human.
-		if (result.sessionExpired) {
+		// A rejected key is the one failure that always needs a human.
+		if (result.authFailed) {
 			await alert(
-				':rotating_light: *Mobilize sync stopped — session expired.*\n' +
-					'New events are no longer being mirrored from Solidarity. To fix: log in to the Mobilize ' +
-					'dashboard, copy the `Cookie` header from any request (DevTools → Network), then run ' +
-					'`fly secrets set MOBILIZE_COOKIE=\'<cookie>\'`.',
+				':rotating_light: *Mobilize sync stopped — Mobilize rejected the API key.*\n' +
+					'New events are no longer being mirrored from Solidarity. Check that `MOBILIZE_API_KEY` ' +
+					'is set on the Fly app and still has write access, then run ' +
+					'`fly secrets set MOBILIZE_API_KEY=\'<key>\'`.',
 			);
 		} else if (result.abortedReason) {
 			await alert(
@@ -84,7 +84,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		}
 
 		// Surface a stopped sync as a non-200 so the workflow run goes red too.
-		const status = result.sessionExpired || result.abortedReason ? 503 : 200;
+		const status = result.authFailed || result.abortedReason ? 503 : 200;
 		return json(result, { status });
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

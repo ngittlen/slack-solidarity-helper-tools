@@ -5,7 +5,7 @@ import { runSolidarityAttendeeSync } from '$lib/server/attendee-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
 import {
 	INTERNAL_CRON_SECRET,
-	MOBILIZE_COOKIE,
+	MOBILIZE_API_KEY,
 	SOLIDARITY_API_TOKEN,
 } from '$lib/server/env.js';
 
@@ -38,9 +38,9 @@ export const POST: RequestHandler = async ({ url }) => {
 	if (!SOLIDARITY_API_TOKEN) {
 		return json({ error: 'SOLIDARITY_API_TOKEN is not set' }, { status: 500 });
 	}
-	if (!MOBILIZE_COOKIE) {
-		await alert(':warning: Attendee sync is not configured — MOBILIZE_COOKIE is unset.');
-		return json({ error: 'MOBILIZE_COOKIE is not set' }, { status: 500 });
+	if (!MOBILIZE_API_KEY) {
+		await alert(':warning: Attendee sync is not configured — MOBILIZE_API_KEY is unset.');
+		return json({ error: 'MOBILIZE_API_KEY is not set' }, { status: 500 });
 	}
 
 	const dryRun = url.searchParams.get('dry') === '1';
@@ -69,18 +69,20 @@ export const POST: RequestHandler = async ({ url }) => {
 		// and these logs go to Fly and Slack.
 		console.log(
 			`[attendee-sync]${dryRun ? ' (dry)' : ''} window=${result.windowHours ?? 'all'} ` +
-				`lookback=${result.lookbackHours}h timeslots ${result.timeslots}, signups ${result.participations}: ` +
+				`lookback=${result.lookbackHours}h events ${result.events}, timeslots ${result.timeslots}, ` +
+				`signups ${result.participations}: ` +
 				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated}, profiles +${result.profilesCreated}, ` +
 				`matched ${result.matchedByEmail}e/${result.matchedByPhone}p, unchanged ${result.unchanged}, ` +
 				`no-contact ${result.skippedNoContact}, unknown-status ${result.skippedUnknownStatus}, ` +
 				`failed ${result.failed}`,
 		);
 
-		if (result.sessionExpired) {
+		if (result.authFailed) {
 			await alert(
-				':rotating_light: *Attendee sync stopped — Mobilize session expired.*\n' +
-					'Signups are no longer reaching Solidarity. Log in to the Mobilize dashboard, copy the ' +
-					'`Cookie` header from any request, then run `fly secrets set MOBILIZE_COOKIE=\'<cookie>\'`.',
+				':rotating_light: *Attendee sync stopped — Mobilize rejected the API key.*\n' +
+					'Signups are no longer reaching Solidarity. Check that `MOBILIZE_API_KEY` is set on the ' +
+					'Fly app and still has write access, then run ' +
+					"`fly secrets set MOBILIZE_API_KEY='<key>'`.",
 			);
 		} else if (result.abortedReason) {
 			await alert(`:warning: *Attendee sync aborted.* ${result.abortedReason}`);
@@ -92,13 +94,6 @@ export const POST: RequestHandler = async ({ url }) => {
 			);
 		}
 
-		if (result.truncatedTimeslots > 0) {
-			await alert(
-				`:warning: Attendee sync: Mobilize refused to fully list signups for ` +
-					`${result.truncatedTimeslots} shift(s), so those attendee lists in Solidarity are ` +
-					'incomplete. Check those events directly in Mobilize.',
-			);
-		}
 		if (result.skippedUnknownStatus > 0) {
 			await alert(
 				`:grey_question: Attendee sync saw ${result.skippedUnknownStatus} signup(s) with an ` +
@@ -113,7 +108,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			);
 		}
 
-		const status = result.sessionExpired || result.abortedReason ? 503 : 200;
+		const status = result.authFailed || result.abortedReason ? 503 : 200;
 		return json(result, { status });
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

@@ -11,7 +11,7 @@
 // confusing double-listed event that volunteers can sign up for, while a false
 // duplicate just means one event needs creating by hand.
 
-import type { PublicEvent } from './mobilize.js';
+import type { MobilizeEvent } from './mobilize.js';
 import type { PlannedEvent } from './transform.js';
 
 const STOPWORDS = new Set([
@@ -74,7 +74,7 @@ function citiesAgree(plannedCity: string, candidateCity: string): boolean {
 
 export function findDuplicate(
 	planned: PlannedEvent,
-	existing: PublicEvent[],
+	existing: MobilizeEvent[],
 ): DuplicateMatch | null {
 	const plannedNorm = normalizeTitle(planned.title);
 	const plannedCity = normalizeTitle(planned.city);

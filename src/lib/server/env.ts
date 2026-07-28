@@ -55,20 +55,23 @@ export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
 
 export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
 
-// Nightly Solidarity -> Mobilize event sync.
+// Mobilize v1 API credentials, shared by both syncs (events out, attendees back).
 //
-// Mobilize has no public write API, so MOBILIZE_COOKIE is a borrowed browser
-// session (`sessionid=…; csrftoken=…`, copied from a logged-in dashboard
-// request). It expires — Django's default is two weeks — and CANNOT be renewed
-// programmatically, because Mobilize logs in by emailed code or Google OAuth
-// with no password endpoint. When it lapses the sync posts a Slack alert asking
-// for a fresh value; update it with `fly secrets set MOBILIZE_COOKIE=...`.
-export const MOBILIZE_COOKIE = get('MOBILIZE_COOKIE');
-// Optional: derived from csrftoken= inside MOBILIZE_COOKIE when unset.
-export const MOBILIZE_CSRF_TOKEN = get('MOBILIZE_CSRF_TOKEN');
-export const MOBILIZE_ORG_SLUG = get('MOBILIZE_ORG_SLUG') || 'abdulforsenate';
-// Numeric org id for the public read API (Abdul for U.S. Senate).
-export const MOBILIZE_ORG_ID = parseInt(get('MOBILIZE_ORG_ID') || '44679', 10);
+// The key must have write ("restricted") access granted by Mobilize — creating
+// events and uploading images both need it. Unlike the browser session this
+// replaced, it does not expire on its own; a 403 means it was revoked, mistyped,
+// or never had that grant. Set it with `fly secrets set MOBILIZE_API_KEY=...`.
+export const MOBILIZE_API_KEY = get('MOBILIZE_API_KEY');
+// No default: syncing into the wrong organization publishes events under
+// someone else's name, so an unset value has to stop the run rather than guess.
+export const MOBILIZE_ORG_ID = parseInt(get('MOBILIZE_ORG_ID'), 10);
+
+// Contact shown on synced events. Required by the API on every create and
+// update, and Solidarity events carry no contact data of their own, so this is
+// the fallback under the /settings value.
+export const MOBILIZE_CONTACT_NAME = get('MOBILIZE_CONTACT_NAME');
+export const MOBILIZE_CONTACT_EMAIL = get('MOBILIZE_CONTACT_EMAIL');
+export const MOBILIZE_CONTACT_PHONE = get('MOBILIZE_CONTACT_PHONE');
 // Blast-radius guard: if one night's plan wants more new events than this, the
 // sync creates nothing and alerts instead. A flood means dedup or the source
 // data broke, and these events are publicly visible once created.

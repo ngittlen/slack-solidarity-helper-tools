@@ -17,40 +17,45 @@ implementation now.
 The CLI and the endpoint share the **same Turso ledger**, so they can never
 disagree about what has already been created — running one after the other is
 safe. The CLI therefore needs `TURSO_DATABASE_URL` (and `TURSO_AUTH_TOKEN`) in
-`.env.local` alongside the Mobilize cookie. Prefer the endpoint for scheduled
-work; the CLI is for dry runs and inspection.
+`.env.local` alongside the Mobilize credentials. Prefer the endpoint for
+scheduled work; the CLI is for dry runs and inspection.
 
 Dry run is the default deliberately: created events are publicly visible and there
 is no bulk undo.
 
 ## Credentials
 
-Both go in `.env.local`:
+All in `.env.local` for the CLI, and Fly secrets for the app:
 
 | Variable | Purpose |
 | --- | --- |
-| `SOLIDARITY_API_TOKEN` | Already used elsewhere in this repo; read side. |
-| `MOBILIZE_COOKIE` | The `Cookie` header from a logged-in mobilize.us dashboard request. Required — there is no fallback. |
-| `MOBILIZE_CSRF_TOKEN` | Optional — derived from `csrftoken=` inside the cookie if omitted. |
+| `SOLIDARITY_API_TOKEN` | Already used elsewhere in this repo; the Solidarity read/write side. |
+| `MOBILIZE_API_KEY` | Organization API key, sent as `Authorization: Bearer …`. Required — there is no fallback. |
+| `MOBILIZE_ORG_ID` | Numeric organization id. Required, deliberately with no default: a wrong value publishes events under someone else's name. |
+| `MOBILIZE_CONTACT_EMAIL` | Contact on created events. The app prefers the value set on `/settings`; this is the fallback, and the only source for the CLI. |
+| `MOBILIZE_CONTACT_NAME` / `_PHONE` | Optional, same resolution. |
 
-Only `sessionid` and `csrftoken` are actually needed, so the minimal value is:
+Everything runs against the documented v1 API
+([mobilizeamerica/api](https://github.com/mobilizeamerica/api)) at
+`https://api.mobilize.us/v1`.
 
-```
-MOBILIZE_COOKIE='sessionid=…; csrftoken=…'
-```
+**The key needs write access.** Create, update and delete event, and
+`POST /v1/images`, are *restricted* endpoints — Mobilize grants them per
+organization on request, and simply holding a key is not enough. Everything the
+API answers 403 for looks the same from here, so `authFailed` means "rejected or
+not permitted", not "expired": there is nothing to refresh. Check the key, then
+check the grant.
 
-Mobilize has **no public write API**. Event creation goes through the same private
-`/_/api/organization/<slug>/events/` endpoint the dashboard's create form posts to,
-which means borrowing a logged-in browser session. That session is short-lived: when
-a run starts failing with 403, open the dashboard, copy a fresh `Cookie` header from
-DevTools → Network, and re-run. Progress is saved, so a re-run resumes rather than
-duplicating.
+> Historical note: before the campaign had a key, both syncs drove Mobilize's
+> private dashboard endpoints with a borrowed `sessionid`/`csrftoken` browser
+> session that expired every couple of weeks. That is all gone. If you find a
+> reference to `MOBILIZE_COOKIE` anywhere, it is stale.
 
-> The captured dashboard requests this was reverse-engineered from live in
-> **`private/`**, which is gitignored wholesale. They carry live session cookies,
-> and `event-rsvps.json` also holds real attendees' names, emails, phone numbers
-> and zip codes. Put anything else that must not leave the machine there too —
-> generated run artifacts already go there.
+> The captured dashboard requests this was originally reverse-engineered from
+> live in **`private/`**, which is gitignored wholesale, and
+> `event-rsvps.json` holds real attendees' names, emails, phone numbers and zip
+> codes. Put anything else that must not leave the machine there too — generated
+> run artifacts already go there.
 
 ## How it maps
 
@@ -60,13 +65,14 @@ timeslots. So sessions are grouped by location, and one Solidarity event can bec
 several Mobilize events — "Operation Get Out the Vote" (Flint, Grand Rapids, Detroit,
 Oakland, Ann Arbor) becomes five.
 
-**Times.** Solidarity returns absolute instants but renders them with an
-*inconsistent* UTC offset — the same session came back as both `...T18:00:00-06:00`
-and `...T20:00:00-04:00` across two calls. Never read the wall time off the string.
-`lib/time.ts` parses to an instant and re-renders it in `America/New_York`. (Michigan
-is `America/Detroit`, but Mobilize validates `timezone` against a fixed list that
-rejects it; the offsets and DST rules are identical.) Verified against the public
-event page, which shows "Thursday, July 30th at 8:00 pm" for the `-04:00` rendering.
+**Times.** Timeslots are unix timestamps, which makes this mostly a non-issue:
+Solidarity returns absolute instants but renders them with an *inconsistent* UTC
+offset — the same session came back as both `...T18:00:00-06:00` and
+`...T20:00:00-04:00` across two calls — and only the instant matters. Never read
+the wall time off the string. The event's `timezone` field is
+`America/New_York` (`lib/payload.ts`); Michigan is `America/Detroit`, but Mobilize
+validates `timezone` against a fixed list that rejects it, and the offsets and
+DST rules are identical.
 
 **Addresses.** Most sessions leave Solidarity's structured `location_data`
 components blank and carry only a Google-formatted `location_address` string plus
@@ -90,27 +96,10 @@ flattened text with its single newlines promoted to real paragraph breaks.
 Events already in Mobilize get this applied by the sync's update pass, which
 re-sends the event via PUT whenever the rendered description differs.
 
-**Images.** Mobilize will not accept a foreign `image_url` — the bytes have to be
-re-hosted in its own bucket first:
-
-| URL | Result |
-| --- | --- |
-| `s3.amazonaws.com/solidarity.tech/…` | `400 Invalid URL.` |
-| same, query string removed | `400 Invalid URL.` |
-| `mobilizeamerica.imgix.net/…` (Mobilize's own CDN) | `400 Invalid URL.` |
-| `mobilize-uploads-prod.s3.…amazonaws.com/…` | **accepted** |
-
-`lib/image.ts` reproduces the three-step dashboard flow:
-
-1. `GET /_/api/s3/publicimage/?file_name=…&file_mimetype=…&resource=event` →
-   `{"data":{"url":"https://mobilize-uploads-prod.s3.us-east-2.amazonaws.com/uploads/event/<slug>_<timestamp>.<ext>?X-Amz-Signature=…"}}`.
-   A **GET with query parameters**, not a POST body; Mobilize holds the AWS
-   credentials and appends the timestamp itself.
-2. `PUT` the bytes to that signed URL with `x-amz-acl: public-read` and the right
-   `Content-Type`. (The browser also sends a CORS preflight `OPTIONS` here — that's
-   automatic in the browser and unnecessary from Node.)
-3. Set `image_url` to the **same URL with its query string stripped**, then PUT the
-   event.
+**Images.** `featured_image_url` must be a URL Mobilize hosts, so the bytes are
+re-uploaded rather than linked. `lib/image.ts` downloads from Solidarity and
+`POST`s to `/v1/images` as `multipart/form-data` (fields `file` and
+`file_name`); the response carries the hosted URL.
 
 The sync does this as part of creating an event, and backfills it on the update
 pass for any event that still has no image. Uploads are recorded in
@@ -118,23 +107,48 @@ pass for any event that still has no image. Uploads are recorded in
 uploaded once and reused — 53 events were covered by 38 distinct uploads. Events
 that already have an image are left alone.
 
-**Event types.** The private API takes numeric codes. They aren't documented and
-aren't readable (GET/OPTIONS both 405, Cloudflare blocks the JS bundle), so they were
-confirmed empirically: create a throwaway event far in the future with a candidate
-code, read the type name back off the *public* API, then delete it.
-
-```
-5 COMMUNITY   18 OFFICE_OPENING   19 BARNSTORM   20 SOLIDARITY_EVENT
-21 COMMUNITY_CANVASS   22 SIGNATURE_GATHERING   23 CARPOOL
-```
-
-Only `COMMUNITY` and `COMMUNITY_CANVASS` are used. Solidarity has no structured
+**Event types.** Plain strings from the v1 enum. Only `COMMUNITY` and
+`COMMUNITY_CANVASS` are used. Solidarity has no structured
 "is this a canvass" flag, so classification is by title/description keyword
 (`canvass`, `knock`, `door`, …). The dry run prints the choice per event.
 
+**Private addresses.** A Solidarity event with `hide_address_until_rsvp` syncs
+with its venue, city, region and postal code but **no street line**. City plus
+zip still give a usable pin without publishing the address. A private event with
+no postal code is skipped instead, since `postal_code` is the one required
+location field and there would be nothing left to place it by.
+
+Two dead ends, both checked against the live API rather than assumed:
+
+- The `"This event's address is private. Sign up for more details"` string in the
+  docs is what Mobilize's serializer *returns* for an event whose address is
+  private. Writing it would just store that sentence as the venue name and
+  street.
+- `address_visibility` exists on the Event *response* and looks like the control,
+  but it is **silently ignored on create** — send `PRIVATE`, read back `PUBLIC`.
+  It is documented under the response schema only, and it behaves that way.
+
 **Skipped.** Virtual events (they need a join URL the list payload doesn't expose),
-co-hosted mirrors of another org's event, past sessions, and anything without a
-usable street address.
+co-hosted mirrors of another org's event, past sessions, anything without a
+usable street address, and private-address events with no postal code.
+
+### What the v1 API cannot set
+
+The private dashboard payload this replaced carried about ninety fields. The
+documented API accepts a much smaller set, and synced events now get Mobilize's
+defaults for the rest. Deliberately accepted, not worked around:
+
+| Dropped | Consequence |
+| --- | --- |
+| `van_event_activist_code_config` (activist code `5451761`) | **Synced events no longer tag their signups with the campaign's VAN activist code.** The most consequential of these. |
+| `location_is_private` | Handled by withholding the street line instead — see above. |
+| `check_in_enabled`, `volunteer_check_in_is_enabled` | Mobilize defaults apply. |
+| `post_signup_asks`, `day_before_confirmation_is_enabled`, `shift_followup_email_enabled` | Mobilize defaults apply. |
+| `contact_host_enabled`, `chat_enabled` | Mobilize defaults apply. |
+| `lat` / `lon` | Mobilize geocodes from the address instead. |
+
+Events created before this migration keep whatever the dashboard API set on
+them; the update pass does not clear these fields, it just stops setting them.
 
 ## Not creating duplicates
 
@@ -175,12 +189,11 @@ Same dual-use trick as `src/lib/server/solidarity-paginate.ts`.
 ### Rollout
 
 1. `npm run db:migrate` — creates the ledger tables.
-2. `fly secrets set MOBILIZE_COOKIE='sessionid=…; csrftoken=…'`
-3. Verify without writing: `POST /api/internal/mobilize-sync?key=…&dry=1`, or run
+2. `fly secrets set MOBILIZE_API_KEY='…' MOBILIZE_ORG_ID='…'`
+3. Set the event contact on `/settings` (or `fly secrets set
+   MOBILIZE_CONTACT_EMAIL='…'`). The sync refuses to run without one.
+4. Verify without writing: `POST /api/internal/mobilize-sync?key=…&dry=1`, or run
    the workflow manually with **dry run** ticked.
-
-*(The initial backfill of 88 events and its one-time JSON→Turso seed are done;
-those files have been removed. The ledger now lives only in Turso.)*
 
 ### What it does each night
 
@@ -188,16 +201,19 @@ Full sync: creates events new to Solidarity, and pushes edits — title, times,
 description, image — onto ones already mirrored. Events created by hand in
 Mobilize are matched by the duplicate heuristic and left alone.
 
-Two behaviours worth knowing:
+Two behaviors worth knowing:
 
 - **Manual edits in Mobilize get overwritten.** If an organizer fixes a
   description there, the next run replaces it with Solidarity's. Solidarity is
   the source of truth by design; edit it there.
-- **Shifts are never deleted.** Mobilize destroys a timeslot — and its signups —
-  if it's absent from a PUT. So live shifts with no Solidarity counterpart
-  (cancelled sessions, past shifts) are re-sent untouched rather than dropped. A
+- **Upcoming shifts are never deleted.** Mobilize destroys an upcoming timeslot —
+  and its signups — if it's absent from a PUT. So live shifts with no Solidarity
+  counterpart (cancelled sessions) are re-sent untouched rather than dropped. A
   cancelled session therefore needs removing by hand. Leaving a stale shift is
-  strictly better than deleting one people signed up for.
+  strictly better than deleting one people signed up for. *Past* shifts are the
+  exception: the endpoint does not modify them at all, so they are left out of
+  the payload entirely — which is safe precisely because it cannot delete them
+  either.
 
 ### The guardrail
 
@@ -208,22 +224,23 @@ Clear it deliberately with `?maxCreates=N` or the workflow input.
 
 ### When it breaks
 
-`MOBILIZE_COOKIE` is a borrowed browser session. Mobilize has no public write API
-and no machine credentials — login is by emailed code or Google OAuth, with no
-password endpoint — so **it cannot be renewed programmatically**. Expect to
-re-paste it roughly every two weeks (Django's default session age).
-
-On expiry the endpoint returns 503, the workflow run goes red, and the app posts
-a Slack alert with the fix to the Mobilize sync channel — the one picked in
+A 403 sets `authFailed`, the endpoint returns 503, the workflow run goes red, and
+the app posts a Slack alert to the Mobilize sync channel — the one picked in
 /settings if there is one, otherwise wherever the growth report goes (its own
 /settings override, else `SLACK_GROWTH_REPORT_CHANNEL_ID`). There is no env var
-for the sync channel itself. Only `sessionid` and
-`csrftoken` are needed — the Cloudflare `__cf_bm` cookie in a captured header is
-not, which is what makes a stored secret viable at all.
+for the sync channel itself.
 
-If this fragility becomes a problem, the durable fix is asking Mobilize for
-partner API access, which would replace the whole borrowed-session layer with a
-real token.
+A 403 means one of:
+
+- `MOBILIZE_API_KEY` is unset, mistyped, or was revoked.
+- The key is valid but the organization's **write grant** was never issued or was
+  withdrawn. Create/update/delete event and `POST /v1/images` are restricted
+  endpoints; email support@mobilize.us. Reads keep working in this case, so the
+  attendee sync can be healthy while the event sync is not.
+- `MOBILIZE_ORG_ID` points at an organization this key has no access to.
+
+A run that stops partway is safe to re-run: the Turso ledger records everything
+already created, so progress resumes rather than duplicating.
 
 ## Attendee sync (Mobilize → Solidarity)
 
@@ -232,33 +249,58 @@ event session, so organizers only check one place.
 
 ```bash
 # Inspect the match rate on a real shift before trusting it with the CRM
-npx tsx mobilize-migrator/attendee-sync.ts --timeslot 6157028 --session 80929 --event 27463
+npx tsx mobilize-migrator/attendee-sync.ts \
+  --mobilize-event 812345 --timeslot 6157028 --session 80929 --event 27463
 ```
 
 Scheduled via `.github/workflows/attendee-sync.yml` →
 `POST /api/internal/attendee-sync` (`?dry=1`, `?window=<hours>`, `?maxProfiles=N`).
 
-**Where the data comes from.** The campaign has no Mobilize API key, so the
-documented `/v1/organizations/{id}/attendances` endpoint is unavailable. Instead
-`lib/attendees.ts` reads the dashboard's own per-timeslot route with the borrowed
-session — `GET /dashboard/<org>/timeslot/<id>/?page=N` with
-`Accept: application/json`, 25 rows a page under `data.participations`.
+**Where the data comes from.** `GET /v1/organizations/{orgId}/events/{eventId}/attendances`,
+one request per Mobilize **event** — it returns every shift on that event at once,
+so `lib/attendee-sync.ts` groups its timeslot links by event and fans the results
+back out by `timeslot.id`. Signups for shifts outside the requested window come
+back too and are dropped.
 
-**Status codes are numeric and undocumented.** Decoded by cross-checking a real
-shift against its own `participant_count`: 81 signups split 77 registered / 4
-cancelled, and the rows split exactly 77 × `status: 1` and 4 × `status: 2`. So
-**1 = REGISTERED, 2 = CANCELLED**. `CONFIRMED` has its own counter but was zero
-everywhere observed, so its value is still unknown — anything unrecognized is
-skipped and alerted rather than guessed, because mapping it wrong would mark
-real attendees as cancelled.
+**Statuses are documented strings**, not the numeric codes the dashboard scrape
+had to reverse-engineer, and `CONFIRMED` — which was never observable before —
+now maps cleanly. `attended` is a real tri-state boolean rather than something
+inferred from the presence of a check-in timestamp, so "did not attend" and "not
+recorded yet" are finally distinguishable. Anything unrecognized is still skipped
+and alerted rather than guessed.
 
 | Mobilize | Solidarity |
 | --- | --- |
-| `status: 1` (registered) | RSVP `is_attending: "yes"` |
-| `status: 2` (cancelled) | existing RSVP set to `"no"` — never deleted |
-| `volunteer_check_in` set | plus an `event_attendances` record |
+| `REGISTERED` / `CONFIRMED` | RSVP `is_attending: "yes"` |
+| `CANCELLED` | existing RSVP set to `"no"` — never deleted |
+| `attended: true` | plus an `event_attendances` record |
 
-### Traps, all verified against the live API
+### Event API traps, verified against the live API
+
+- **Create nests the event one level deeper than everything else.** `POST
+  /events` answers `{"data":{"event":{…,"id":…}}}`, while `GET /events/:id` and
+  the list endpoint return the event flat under `data`. Reading `data.id` on a
+  create yields `undefined` and fails every single create. There's a regression
+  test in `lib/mobilize.test.ts`.
+- **The create response already carries the new timeslot ids**, so pairing them
+  for the attendee sync needs no read-back.
+- **An existing timeslot re-sent WITHOUT its id fails the whole PUT** with
+  `400 ["Timeslot with start and end time already exists"]`. It is not silently
+  duplicated and not silently ignored — the update simply does not happen. This
+  is exactly what `reconcileTimeslots` is for: it matches live shifts to planned
+  ones by start time and re-attaches their ids. Fail-safe rather than
+  fail-destructive, but it means the id matching is load-bearing on every update,
+  not an optimization.
+- **Validation failures come back as HTTP 200** with `{"data":null,"error":{…}}`,
+  not as a 4xx — so `res.ok` alone is not success. The client checks `body.error`
+  too. Example: `Cannot create timeslots more than 5 years in the future`.
+- **Writes are rate-limited at 5/s** and answer 429; the client retries with
+  backoff, honouring `Retry-After`. Anything hitting the API outside the client
+  needs to do the same, or a delete will silently not happen.
+- **`lat`/`lon` are not inputs.** Mobilize geocodes from the address and returns
+  `location.location.{latitude,longitude}`.
+
+### Attendee-sync traps, all verified against the live API
 
 - **`?phone=` is silently ignored** by `/v1/users` — it returns an *unfiltered*
   list, so matching on it attaches signups to arbitrary strangers. The real
@@ -324,31 +366,13 @@ Both passes also look **back 48 hours** (`?lookback=`). Check-ins are recorded
 during and after an event, so a forward-only scope would never sync who actually
 showed up.
 
-**Why the window is bounded.** Every session in scope costs at least one Mobilize
-dashboard request, and the ledger cannot skip it — we have to fetch to learn
-whether anything changed. Measured on the current calendar:
-
-| Scope | Sessions | Requests/run | Per day at `*/30` |
-| --- | --- | --- | --- |
-| 4.5h window | 0–30 | ≤30 | ~1,400 |
-| windowless | 176 | 176 | ~8,400 |
-
-That traffic goes through a borrowed browser session behind the same Cloudflare
-that rate-limits (error 1015) on bursts, and losing the session breaks the event
-sync too. Hence a bounded window frequently, windowless once a night.
-
-Solidarity's own 60-requests/30s limit sets the pacing (600ms between people).
-Ledgered signups make no API calls at all, so the first full run is by far the
-slowest.
-
-The zip → chapter map rebuilds whenever it is more than a day old rather than on
-its own schedule, so neither cron entry is special-cased.
-
 ## Tests
 
 ```bash
 npx vitest run mobilize-migrator
 ```
 
-Covers the two places a bug writes bad data: time conversion (including the
-inconsistent-offset case and EST/EDT) and duplicate detection.
+Covers the places a bug writes bad data: timeslot reconciliation (including that
+a past orphan is dropped while an upcoming one is preserved), duplicate
+detection, attendance normalization, and the per-event grouping that keeps
+out-of-window signups from being filed.

@@ -10,10 +10,11 @@ name: Nightly Mobilize event sync
 # door-knock-snapshot.yml). Re-running is harmless: a Turso ledger records every
 # event created, so a second run updates instead of duplicating.
 #
-# Requires MOBILIZE_COOKIE on the Fly app — a borrowed browser session that
-# expires roughly every two weeks and cannot be renewed programmatically
-# (Mobilize logs in by emailed code or Google OAuth). When it lapses this run
-# goes red and the app posts a Slack alert.
+# Requires MOBILIZE_API_KEY and MOBILIZE_ORG_ID on the Fly app, plus an event
+# contact (set on /settings, or MOBILIZE_CONTACT_EMAIL). The key must have write
+# access — creating events and uploading images are "restricted" endpoints
+# Mobilize grants per organization. If it is rejected this run goes red and the
+# app posts a Slack alert.
 on:
   schedule:
     - cron: '20 6 * * *'

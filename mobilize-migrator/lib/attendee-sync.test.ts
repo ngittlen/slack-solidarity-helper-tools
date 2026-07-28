@@ -6,60 +6,46 @@ import {
 	type RsvpRecord,
 	type TimeslotLink,
 } from './attendee-sync.js';
-import { PARTICIPATION_STATUS } from './attendees.js';
-import type { MobilizeSession } from './session.js';
+import type { MobilizeApiConfig, MobilizeAttendance } from './mobilize.js';
 
-const SESSION: MobilizeSession = {
-	orgSlug: 'testorg',
-	cookie: 'sessionid=abc; csrftoken=def',
-	csrfToken: 'def',
-	userAgent: 'test',
-};
+const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 44679 };
 
 const LINK: TimeslotLink = {
 	mobilizeTimeslotId: 6157028,
+	mobilizeEventId: 812345,
 	solidarityEventId: 27463,
 	solidaritySessionId: 80929,
 	eventChapterId: 1330,
 	startsAt: Date.now() + 3600_000,
 };
 
-function participation(overrides: Record<string, unknown> = {}) {
+function attendance(overrides: Partial<MobilizeAttendance> = {}): MobilizeAttendance {
 	return {
-		person: {},
-		participation_data: {
-			id: 1,
-			timeslot_id: LINK.mobilizeTimeslotId,
-			status: PARTICIPATION_STATUS.REGISTERED,
-			first_name: 'A',
-			last_name: 'B',
-			email: 'a@example.com',
-			phone: '6165551234',
-			zipcode: '49504',
-			volunteer_check_in: null,
-			...overrides,
+		id: 1,
+		status: 'REGISTERED',
+		attended: null,
+		modified_date: 1785000000,
+		event: { id: LINK.mobilizeEventId },
+		timeslot: { id: LINK.mobilizeTimeslotId },
+		person: {
+			given_name: 'A',
+			family_name: 'B',
+			email_addresses: [{ primary: true, address: 'a@example.com' }],
+			phone_numbers: [{ primary: true, number: '6165551234' }],
+			postal_addresses: [{ primary: true, postal_code: '49504' }],
 		},
+		...overrides,
 	};
 }
 
-/** Routes by URL: Mobilize dashboard, Solidarity RSVP list, Solidarity user search. */
-function mockApis(options: {
-	participations: ReturnType<typeof participation>[];
-	userFound?: boolean;
-	tooMany?: boolean;
-}) {
+/** Routes by URL: Mobilize v1 API, Solidarity RSVP list, Solidarity user search. */
+function mockApis(options: { attendances: MobilizeAttendance[]; userFound?: boolean }) {
 	const spy = vi.fn(async (url: string | URL, init?: RequestInit) => {
 		const href = String(url);
 		const writing = init?.method === 'POST' || init?.method === 'PUT';
 		let body: unknown = {};
-		if (href.includes('mobilize.us')) {
-			body = {
-				data: {
-					participations: options.participations,
-					paging_info: { page: 1, per_page: 25, num_pages: 1, count: options.participations.length },
-					too_many_participations: options.tooMany ?? false,
-				},
-			};
+		if (href.includes('api.mobilize.us')) {
+			body = { data: options.attendances, next: null };
 		} else if (writing) {
 			// Solidarity returns the created row; the sync reads its id.
 			body = { data: { id: 999 } };
@@ -92,10 +78,10 @@ function ledgerWith(records: RsvpRecord[] = []): AttendeeLedger {
 	};
 }
 
-function run(ledger: AttendeeLedger, apply = false) {
+function run(ledger: AttendeeLedger, apply = false, links: TimeslotLink[] = [LINK]) {
 	return runAttendeeSync(
-		[LINK],
-		{ session: SESSION, solidarityToken: 't', apply, maxNewProfiles: 1000, pauseMs: 0 },
+		links,
+		{ api: API, solidarityToken: 't', apply, maxNewProfiles: 1000, pauseMs: 0 },
 		ledger,
 		new Map(),
 		1330,
@@ -111,7 +97,7 @@ describe('runAttendeeSync dry-run accounting', () => {
 		// Regression: the dry run used to `continue` after counting the profile,
 		// so it reported far fewer RSVPs than the real run would write — and that
 		// number is what a human uses to decide whether to proceed.
-		mockApis({ participations: [participation()], userFound: false });
+		mockApis({ attendances: [attendance()], userFound: false });
 
 		const report = await run(ledgerWith());
 
@@ -121,11 +107,11 @@ describe('runAttendeeSync dry-run accounting', () => {
 
 	it('reconciles: every signup is matched, created, or explicitly skipped', async () => {
 		mockApis({
-			participations: [
-				participation({ id: 1 }),
-				participation({ id: 2 }),
-				participation({ id: 3, email: null, phone: null }),
-				participation({ id: 4, status: 99 }),
+			attendances: [
+				attendance({ id: 1 }),
+				attendance({ id: 2 }),
+				attendance({ id: 3, person: { given_name: 'No', family_name: 'Contact' } }),
+				attendance({ id: 4, status: 'SOMETHING_NEW' }),
 			],
 			userFound: false,
 		});
@@ -143,11 +129,40 @@ describe('runAttendeeSync dry-run accounting', () => {
 	});
 
 	it('does not double-count a profile in apply mode', async () => {
-		mockApis({ participations: [participation()], userFound: false });
+		mockApis({ attendances: [attendance()], userFound: false });
 
 		const report = await run(ledgerWith(), true);
 
 		expect(report.profilesCreated).toBe(1);
+	});
+});
+
+describe('runAttendeeSync event grouping', () => {
+	it('reads each event once, however many of its shifts are in scope', async () => {
+		// The whole point of moving off the per-timeslot dashboard route: an event
+		// with several shifts used to cost one request per shift.
+		const second: TimeslotLink = { ...LINK, mobilizeTimeslotId: 6157029, solidaritySessionId: 80930 };
+		const spy = mockApis({ attendances: [attendance()], userFound: true });
+
+		const report = await run(ledgerWith(), false, [LINK, second]);
+
+		const mobilizeCalls = spy.mock.calls.filter(([url]) => String(url).includes('api.mobilize.us'));
+		expect(mobilizeCalls).toHaveLength(1);
+		expect(report.events).toBe(1);
+		expect(report.timeslots).toBe(2);
+	});
+
+	it('drops signups for shifts outside the requested window', async () => {
+		// One request returns every shift on the event, including ones the caller's
+		// window excluded. Those must not be filed.
+		mockApis({
+			attendances: [attendance({ id: 1 }), attendance({ id: 2, timeslot: { id: 999999 } })],
+			userFound: true,
+		});
+
+		const report = await run(ledgerWith());
+
+		expect(report.participations).toBe(1);
 	});
 });
 
@@ -159,10 +174,11 @@ describe('runAttendeeSync change detection', () => {
 		solidaritySessionId: LINK.solidaritySessionId,
 		status: 'REGISTERED',
 		attended: false,
+		modifiedDate: 1785000000,
 	};
 
 	it('skips a signup that has not changed', async () => {
-		mockApis({ participations: [participation()], userFound: true });
+		mockApis({ attendances: [attendance()], userFound: true });
 
 		const report = await run(ledgerWith([prior]));
 
@@ -170,14 +186,19 @@ describe('runAttendeeSync change detection', () => {
 		expect(report.rsvpsCreated).toBe(0);
 	});
 
+	it('reprocesses a row Mobilize has touched since we last mirrored it', async () => {
+		mockApis({ attendances: [attendance({ modified_date: 1785009999 })], userFound: true });
+
+		const report = await run(ledgerWith([prior]));
+
+		expect(report.unchanged).toBe(0);
+	});
+
 	it('skips a previously-recorded attendance instead of reprocessing it forever', async () => {
 		// Regression: the skip checked only `!participation.attended`, so everyone
 		// who showed up was re-matched on every run while the event stayed inside
 		// the lookback window.
-		mockApis({
-			participations: [participation({ volunteer_check_in: '2026-08-01T20:05:00Z' })],
-			userFound: true,
-		});
+		mockApis({ attendances: [attendance({ attended: true })], userFound: true });
 
 		const report = await run(ledgerWith([{ ...prior, attended: true }]));
 
@@ -185,10 +206,7 @@ describe('runAttendeeSync change detection', () => {
 	});
 
 	it('still processes a newly-recorded attendance', async () => {
-		mockApis({
-			participations: [participation({ volunteer_check_in: '2026-08-01T20:05:00Z' })],
-			userFound: true,
-		});
+		mockApis({ attendances: [attendance({ attended: true })], userFound: true });
 
 		const report = await run(ledgerWith([prior]));
 
@@ -196,10 +214,7 @@ describe('runAttendeeSync change detection', () => {
 	});
 
 	it('processes a cancellation of an existing RSVP', async () => {
-		mockApis({
-			participations: [participation({ status: PARTICIPATION_STATUS.CANCELLED })],
-			userFound: true,
-		});
+		mockApis({ attendances: [attendance({ status: 'CANCELLED' })], userFound: true });
 
 		const report = await run(ledgerWith([prior]));
 
@@ -214,7 +229,7 @@ describe('runAttendeeSync rsvp payload', () => {
 		// 422 {"errors":["Agent must exist"]}, so every create failed. A Mobilize
 		// signup is self-service, so the agent is the attendee — the same thing
 		// Solidarity records for its own web-form signups.
-		const spy = mockApis({ participations: [participation()], userFound: true });
+		const spy = mockApis({ attendances: [attendance()], userFound: true });
 
 		await run(ledgerWith(), true);
 
@@ -227,18 +242,5 @@ describe('runAttendeeSync rsvp payload', () => {
 		const body = JSON.parse(String((create![1] as RequestInit).body));
 		expect(body.agent_user_id).toBe(999);
 		expect(body.user_id).toBe(999);
-	});
-});
-
-describe('runAttendeeSync truncation', () => {
-	it('reports a signup list Mobilize refused to fully enumerate', async () => {
-		// Silently dropping attendees is worst on the busiest events, which is
-		// exactly where an accurate list matters.
-		mockApis({ participations: [participation()], userFound: true, tooMany: true });
-
-		const report = await run(ledgerWith());
-
-		expect(report.truncatedTimeslots).toBe(1);
-		expect(report.errors.join(' ')).toMatch(/incomplete/);
 	});
 });

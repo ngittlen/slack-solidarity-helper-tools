@@ -8,15 +8,19 @@
 import { copyImageToMobilize } from './image.js';
 import {
 	createEvent,
-	getPublicEvent,
-	listUpcomingPublicEvents,
+	getOrgEvent,
+	listUpcomingOrgEvents,
 	MobilizeError,
 	updateEvent,
-	type PublicEvent,
+	type MobilizeApiConfig,
+	type MobilizeEvent,
 } from './mobilize.js';
-import { buildEventPayload } from './payload.js';
-import type { MobilizeSession } from './session.js';
-import { CAMPAIGN_TIMEZONE, toNaiveLocal } from './time.js';
+import {
+	buildEventPayload,
+	CAMPAIGN_TIMEZONE,
+	type EventContact,
+	type Timeslot,
+} from './payload.js';
 import type { PlannedEvent } from './transform.js';
 
 /** Timeslots are matched between systems by start time, within this slack. */
@@ -44,8 +48,9 @@ export interface Ledger {
 }
 
 export interface SyncConfig {
-	session: MobilizeSession;
-	mobilizeOrgId: number;
+	api: MobilizeApiConfig;
+	/** Required by the v1 API on every create and update. */
+	contact: EventContact;
 	/** Refuse to create more than this in one unattended run. */
 	maxCreatesPerRun: number;
 	/**
@@ -70,7 +75,8 @@ export interface SyncReport {
 	failed: number;
 	/** Set when the run refused to act because the plan was suspiciously large. */
 	abortedReason?: string;
-	sessionExpired: boolean;
+	/** Mobilize answered 403 — the API key is rejected or lacks write access. */
+	authFailed: boolean;
 	createdTitles: string[];
 	updatedTitles: string[];
 	/** Per-event reasons for the skips, so a dry run can be reviewed by eye. */
@@ -80,8 +86,9 @@ export interface SyncReport {
 
 export interface PutTimeslot {
 	id?: number;
-	startsAtNaive: string;
-	endsAtNaive: string;
+	/** Unix seconds. */
+	startDate: number;
+	endDate: number;
 	maxAttendees: number | null;
 }
 
@@ -108,15 +115,23 @@ export interface TimeslotPlan {
 /**
  * Build the timeslot array for a PUT.
  *
- * Mobilize matches timeslots by id: a slot sent without one is created, and a
- * slot that is simply absent is destroyed *along with its signups*. So existing
- * shifts are matched to the plan by start time and re-sent with their ids, new
- * Solidarity sessions are sent without an id, and — importantly — live shifts
- * with no counterpart (a cancelled session, or a past shift the planner already
- * filtered out) are re-sent untouched rather than dropped. Deleting a shift
- * volunteers have signed up for is far worse than leaving a stale one behind.
+ * Mobilize matches timeslots by id: a slot sent without one is created, and an
+ * UPCOMING slot that is simply absent is destroyed *along with its signups*. So
+ * existing shifts are matched to the plan by start time and re-sent with their
+ * ids, new Solidarity sessions are sent without an id, and upcoming shifts with
+ * no counterpart (a cancelled session, say) are re-sent untouched rather than
+ * dropped. Deleting a shift volunteers have signed up for is far worse than
+ * leaving a stale one behind.
+ *
+ * Past shifts are the exception: the v1 endpoint does not modify them at all,
+ * so re-sending them is at best noise and at worst rejected. They are left out
+ * entirely, and `now` is a parameter so tests can pin the boundary.
  */
-export function reconcileTimeslots(plan: PlannedEvent, live: PublicEvent): TimeslotPlan {
+export function reconcileTimeslots(
+	plan: PlannedEvent,
+	live: MobilizeEvent,
+	now = Date.now(),
+): TimeslotPlan {
 	const liveSlots = [...live.timeslots].sort((a, b) => a.start_date - b.start_date);
 	const consumed = new Set<number>();
 	const timeslots: PutTimeslot[] = [];
@@ -152,12 +167,15 @@ export function reconcileTimeslots(plan: PlannedEvent, live: PublicEvent): Times
 		}
 	});
 
-	const orphans = liveSlots.filter((slot) => !consumed.has(slot.id));
+	// Only upcoming orphans need preserving; past ones are immune to the PUT.
+	const orphans = liveSlots.filter(
+		(slot) => !consumed.has(slot.id) && slot.end_date * 1000 > now,
+	);
 	for (const orphan of orphans) {
 		timeslots.push({
 			id: orphan.id,
-			startsAtNaive: toNaiveLocal(new Date(orphan.start_date * 1000).toISOString()),
-			endsAtNaive: toNaiveLocal(new Date(orphan.end_date * 1000).toISOString()),
+			startDate: orphan.start_date,
+			endDate: orphan.end_date,
 			maxAttendees: null,
 		});
 	}
@@ -168,7 +186,7 @@ export function reconcileTimeslots(plan: PlannedEvent, live: PublicEvent): Times
 /** Fields worth a PUT. Location is compared loosely — Mobilize normalizes it. */
 export function describeChanges(
 	plan: PlannedEvent,
-	live: PublicEvent & { description?: string; featured_image_url?: string | null },
+	live: MobilizeEvent,
 	wantsImage: boolean,
 	timeslotsChanged: boolean,
 ): string[] {
@@ -187,9 +205,15 @@ export function describeChanges(
  * because the CLI scripts need the identical mapping — four near-copies of this
  * block had already drifted apart once.
  */
-export function payloadForPlan(plan: PlannedEvent, imageUrl?: string) {
+export function payloadForPlan(
+	plan: PlannedEvent,
+	contact: EventContact,
+	imageUrl?: string,
+	/** Overridden on update, where reconcileTimeslots owns timeslot identity. */
+	timeslots: Timeslot[] = plan.timeslots,
+) {
 	return buildEventPayload({
-		name: plan.title,
+		title: plan.title,
 		description: plan.description,
 		imageUrl,
 		eventType: plan.eventType,
@@ -200,10 +224,9 @@ export function payloadForPlan(plan: PlannedEvent, imageUrl?: string) {
 		state: plan.state,
 		zipcode: plan.zipcode,
 		country: plan.country,
-		lat: plan.lat,
-		lon: plan.lon,
 		locationIsPrivate: plan.locationIsPrivate,
-		timeslots: plan.timeslots,
+		contact,
+		timeslots,
 	});
 }
 
@@ -217,7 +240,7 @@ export async function runSync(
 	planned: PlannedEvent[],
 	config: SyncConfig,
 	ledger: Ledger,
-	findDuplicate: (plan: PlannedEvent, existing: PublicEvent[]) => unknown,
+	findDuplicate: (plan: PlannedEvent, existing: MobilizeEvent[]) => unknown,
 ): Promise<SyncReport> {
 	const log = config.log ?? (() => {});
 	const pause = () => new Promise((r) => setTimeout(r, config.pauseMs ?? 1000));
@@ -228,14 +251,14 @@ export async function runSync(
 		unchanged: 0,
 		skippedExisting: 0,
 		failed: 0,
-		sessionExpired: false,
+		authFailed: false,
 		createdTitles: [],
 		updatedTitles: [],
 		skippedDetails: [],
 		errors: [],
 	};
 
-	const existing = await listUpcomingPublicEvents(config.mobilizeOrgId);
+	const existing = await listUpcomingOrgEvents(config.api);
 	const known = new Map((await ledger.all()).map((entry) => [entry.key, entry]));
 
 	const toCreate: PlannedEvent[] = [];
@@ -282,7 +305,7 @@ export async function runSync(
 		const cached = await ledger.imageFor(plan.sourceImageUrl);
 		if (cached) return cached;
 		if (!config.apply) return undefined;
-		const uploaded = await copyImageToMobilize(plan.sourceImageUrl, plan.title, config.session);
+		const uploaded = await copyImageToMobilize(plan.sourceImageUrl, plan.title, config.api);
 		await ledger.recordImage(plan.sourceImageUrl, uploaded.publicUrl);
 		return uploaded.publicUrl;
 	};
@@ -296,23 +319,27 @@ export async function runSync(
 		}
 		try {
 			const imageUrl = await resolveImage(plan);
-			const { id } = await createEvent(payloadForPlan(plan, imageUrl), config.session);
+			const { id, event } = await createEvent(
+				config.api,
+				payloadForPlan(plan, config.contact, imageUrl),
+			);
 			await ledger.record({ key: plan.key, mobilizeEventId: id, title: plan.title });
 			report.created++;
 			report.createdTitles.push(plan.title);
 			log(`created #${id} "${plan.title}"`);
 
-			// Read back for the timeslot ids, which only exist post-create. Without
-			// this the attendee sync couldn't file signups against a brand-new
-			// event until the following night's pass.
+			// Pair the timeslot ids, which only exist post-create — without this the
+			// attendee sync couldn't file signups against a brand-new event until
+			// the following night's pass. The create response already carries them,
+			// so this normally costs no extra request.
 			if (ledger.recordTimeslots) {
-				const created = await getPublicEvent(id);
+				const created = event ?? (await getOrgEvent(config.api, id));
 				if (created) await ledger.recordTimeslots(reconcileTimeslots(plan, created).pairings);
 			}
 		} catch (err) {
 			if (err instanceof MobilizeError && err.status === 403) {
-				report.sessionExpired = true;
-				report.errors.push('Mobilize session expired (403) — refresh MOBILIZE_COOKIE');
+				report.authFailed = true;
+				report.errors.push('Mobilize rejected the API key (403) — check MOBILIZE_API_KEY');
 				return report;
 			}
 			report.failed++;
@@ -327,7 +354,7 @@ export async function runSync(
 			// doesn't cover (all timeslots already past, or not publicly listed).
 			const live =
 				existingById.get(record.mobilizeEventId) ??
-				(await getPublicEvent(record.mobilizeEventId));
+				(await getOrgEvent(config.api, record.mobilizeEventId));
 			if (!live) {
 				// Deleted in Mobilize, or no longer public. Not ours to resurrect.
 				report.unchanged++;
@@ -354,31 +381,18 @@ export async function runSync(
 			}
 
 			const imageUrl = live.featured_image_url ? undefined : await resolveImage(plan);
-			const payload = payloadForPlan(plan, imageUrl);
-			payload.timeslots = slotPlan.timeslots.map((slot) => ({
-				...(slot.id ? { id: slot.id } : {}),
-				starts_at_naive: slot.startsAtNaive,
-				ends_at_naive: slot.endsAtNaive,
-				max_attendees: slot.maxAttendees,
-				private_details: null,
-				virtual_join_url: null,
-				zoom_meeting_id: null,
-				zoom_meeting_type: null,
-				waitlist_enabled: false,
-				waitlist_auto_advance_enabled: false,
-				close_registration_before_start_threshold: null,
-				close_registration_before_start_unit: null,
-			}));
+			// reconcileTimeslots owns timeslot identity, so its list — ids and all —
+			// replaces the one payloadForPlan derived from the plan alone.
+			const payload = payloadForPlan(plan, config.contact, imageUrl, slotPlan.timeslots);
 
-			// Timeslot ids are already embedded above by reconcileTimeslots.
-			await updateEvent(record.mobilizeEventId, payload, config.session);
+			await updateEvent(config.api, record.mobilizeEventId, payload);
 			report.updated++;
 			report.updatedTitles.push(`${plan.title} (${changes.join(', ')})`);
 			log(`updated #${record.mobilizeEventId} "${plan.title}" — ${changes.join(', ')}`);
 		} catch (err) {
 			if (err instanceof MobilizeError && err.status === 403) {
-				report.sessionExpired = true;
-				report.errors.push('Mobilize session expired (403) — refresh MOBILIZE_COOKIE');
+				report.authFailed = true;
+				report.errors.push('Mobilize rejected the API key (403) — check MOBILIZE_API_KEY');
 				return report;
 			}
 			report.failed++;

@@ -8,8 +8,8 @@
 // and Slack, so nothing here logs contact details — only counts and Solidarity
 // user ids.
 
-import { fetchTimeslotParticipations, type MobilizeParticipation } from './attendees.js';
-import { MobilizeError } from './mobilize.js';
+import { fetchEventParticipations, type MobilizeParticipation } from './attendees.js';
+import { MobilizeError, type MobilizeApiConfig } from './mobilize.js';
 import {
 	createUser,
 	findExistingUser,
@@ -24,11 +24,12 @@ import {
 	listSessionRsvps,
 	updateRsvp,
 } from './rsvp.js';
-import type { MobilizeSession } from './session.js';
 
 /** One Mobilize timeslot paired with the Solidarity session it mirrors. */
 export interface TimeslotLink {
 	mobilizeTimeslotId: number;
+	/** Signups are fetched per event, so links are grouped by this. */
+	mobilizeEventId: number;
 	solidarityEventId: number;
 	solidaritySessionId: number;
 	/** Chapter that owns the event, used as the fallback for new profiles. */
@@ -44,6 +45,8 @@ export interface RsvpRecord {
 	solidaritySessionId: number;
 	status: string;
 	attended: boolean;
+	/** Mobilize's modified_date for the row we last mirrored. */
+	modifiedDate: number;
 }
 
 export interface AttendeeLedger {
@@ -52,7 +55,7 @@ export interface AttendeeLedger {
 }
 
 export interface AttendeeSyncConfig {
-	session: MobilizeSession;
+	api: MobilizeApiConfig;
 	solidarityToken: string;
 	apply: boolean;
 	/** Refuse to create more than this many new profiles in one run. */
@@ -62,6 +65,8 @@ export interface AttendeeSyncConfig {
 }
 
 export interface AttendeeSyncReport {
+	/** Mobilize events read — one request each, covering all their shifts. */
+	events: number;
 	timeslots: number;
 	participations: number;
 	rsvpsCreated: number;
@@ -75,16 +80,16 @@ export interface AttendeeSyncReport {
 	skippedNoContact: number;
 	/** Mobilize status we don't have a mapping for. */
 	skippedUnknownStatus: number;
-	/** Shifts whose signup list Mobilize refused to fully enumerate. */
-	truncatedTimeslots: number;
 	abortedReason?: string;
-	sessionExpired: boolean;
+	/** Mobilize answered 403 — the API key is rejected or lacks access. */
+	authFailed: boolean;
 	failed: number;
 	errors: string[];
 }
 
 function emptyReport(): AttendeeSyncReport {
 	return {
+		events: 0,
 		timeslots: 0,
 		participations: 0,
 		rsvpsCreated: 0,
@@ -96,8 +101,7 @@ function emptyReport(): AttendeeSyncReport {
 		unchanged: 0,
 		skippedNoContact: 0,
 		skippedUnknownStatus: 0,
-		truncatedTimeslots: 0,
-		sessionExpired: false,
+		authFailed: false,
 		failed: 0,
 		errors: [],
 	};
@@ -124,34 +128,31 @@ export async function runAttendeeSync(
 	const report = emptyReport();
 	const known = await ledger.rsvpsByAttendanceId();
 
+	// One request per event covers every shift on it, so group the links first.
+	// Signups for timeslots outside the caller's window come back too and are
+	// dropped — the link map is what decides which shifts are in scope.
+	const linksByTimeslot = new Map(links.map((link) => [link.mobilizeTimeslotId, link]));
+	const eventIds = [...new Set(links.map((link) => link.mobilizeEventId))];
+	report.timeslots = linksByTimeslot.size;
+
 	// Collect first so the new-profile guardrail can be evaluated before any write.
 	const pending: { link: TimeslotLink; participation: MobilizeParticipation }[] = [];
-	for (const link of links) {
+	for (const eventId of eventIds) {
 		try {
-			const { participations, truncated } = await fetchTimeslotParticipations(
-				link.mobilizeTimeslotId,
-				config.session,
-			);
-			report.timeslots++;
-			if (truncated) {
-				report.truncatedTimeslots++;
-				report.errors.push(
-					`timeslot ${link.mobilizeTimeslotId}: Mobilize reported too many participations — the signup list is incomplete`,
-				);
-			}
+			const participations = await fetchEventParticipations(eventId, config.api);
+			report.events++;
 			for (const participation of participations) {
-				pending.push({ link, participation });
+				const link = linksByTimeslot.get(participation.timeslotId);
+				if (link) pending.push({ link, participation });
 			}
 		} catch (err) {
 			if (err instanceof MobilizeError && err.status === 403) {
-				report.sessionExpired = true;
-				report.errors.push('Mobilize session expired (403) — refresh MOBILIZE_COOKIE');
+				report.authFailed = true;
+				report.errors.push('Mobilize rejected the API key (403) — check MOBILIZE_API_KEY');
 				return report;
 			}
 			report.failed++;
-			report.errors.push(
-				`timeslot ${link.mobilizeTimeslotId}: ${err instanceof Error ? err.message : err}`,
-			);
+			report.errors.push(`event ${eventId}: ${err instanceof Error ? err.message : err}`);
 		}
 		await pause();
 	}
@@ -190,13 +191,17 @@ export async function runAttendeeSync(
 
 		const priorRecord = known.get(participation.id);
 		// Already mirrored and nothing changed — the common case on re-runs.
-		// Attendance is compared too: checking only `!participation.attended`
-		// meant everyone who showed up was re-matched and re-checked on every
-		// run for as long as the event stayed inside the lookback window.
+		//
+		// modified_date is checked as well as status and attendance, so an edit
+		// that changes neither (someone corrects their email in Mobilize) is still
+		// picked up. Ledger rows written before that column existed carry 0, so
+		// they fail this check and are reprocessed exactly once; that pass stores
+		// the real modified_date and they settle from then on.
 		if (
 			priorRecord &&
 			priorRecord.status === participation.status &&
-			priorRecord.attended === Boolean(participation.attended)
+			priorRecord.attended === Boolean(participation.attended) &&
+			priorRecord.modifiedDate >= participation.modifiedDate
 		) {
 			report.unchanged++;
 			continue;
@@ -309,11 +314,12 @@ export async function runAttendeeSync(
 				solidaritySessionId: link.solidaritySessionId,
 				status: participation.status,
 				attended: Boolean(participation.attended),
+				modifiedDate: participation.modifiedDate,
 			});
 		} catch (err) {
 			if (err instanceof MobilizeError && err.status === 403) {
-				report.sessionExpired = true;
-				report.errors.push('Mobilize session expired (403) — refresh MOBILIZE_COOKIE');
+				report.authFailed = true;
+				report.errors.push('Mobilize rejected the API key (403) — check MOBILIZE_API_KEY');
 				return report;
 			}
 			report.failed++;

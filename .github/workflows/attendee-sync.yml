@@ -18,11 +18,10 @@ name: Mobilize attendee sync
 # Both passes also look BACK 48 hours: check-ins are recorded during and after an
 # event, so a forward-only scope would never sync who actually showed up.
 #
-# Cost note: every session in scope costs at least one Mobilize dashboard request
-# and the ledger can't skip it (we must fetch to learn whether anything changed).
-# The 4.5h window is ~0-30 sessions; windowless is ~176. That bound matters —
-# this runs against a borrowed browser session behind Cloudflare, and losing it
-# breaks both syncs.
+# Cost note: signups are read one request per Mobilize EVENT (which returns all
+# of that event's shifts at once), against a documented 15 req/s budget — so even
+# a windowless pass is tens of requests. The window now mostly bounds the
+# Solidarity write side, which is the slower and riskier half.
 on:
   schedule:
     - cron: '*/30 * * * *'

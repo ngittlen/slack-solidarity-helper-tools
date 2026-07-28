@@ -28,6 +28,9 @@ interface AppConfigBody {
 	slackTrackingChannelId?: unknown;
 	slackGrowthReportChannelId?: unknown;
 	slackMobilizeSyncChannelId?: unknown;
+	mobilizeContactName?: unknown;
+	mobilizeContactEmail?: unknown;
+	mobilizeContactPhone?: unknown;
 	slackGrowthReportRankingAlpha?: unknown;
 	countdownLabel?: unknown;
 	countdownEndAt?: unknown;
@@ -36,6 +39,11 @@ interface AppConfigBody {
 }
 
 const COUNTDOWN_LABEL_MAX_LENGTH = 80;
+const CONTACT_FIELD_MAX_LENGTH = 200;
+// Deliberately permissive: this is an organizer typing their own campaign
+// address, and a rejected-but-valid address is worse than one Mobilize itself
+// will reject on the next sync with a clear error.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Slack renders a section block's text up to 3000 chars; keep the stored
 // template within that so a saved message can never be rejected at send time.
 const WELCOME_DM_MAX_LENGTH = 3000;
@@ -72,6 +80,24 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			return json({ error: result.error }, { status: result.transient ? 503 : 400 });
 		}
 		patch[key] = value;
+	}
+
+	// Contact fields use '' as the explicit "not configured" value, same as the
+	// countdown, so clearing one falls back to its MOBILIZE_CONTACT_* env var.
+	for (const key of ['mobilizeContactName', 'mobilizeContactEmail', 'mobilizeContactPhone'] as const) {
+		const value = body[key];
+		if (value === undefined) continue;
+		if (typeof value !== 'string' || value.trim().length > CONTACT_FIELD_MAX_LENGTH) {
+			return json(
+				{ error: `${key} must be a string of at most ${CONTACT_FIELD_MAX_LENGTH} characters` },
+				{ status: 400 },
+			);
+		}
+		const trimmed = value.trim();
+		if (key === 'mobilizeContactEmail' && trimmed !== '' && !EMAIL_PATTERN.test(trimmed)) {
+			return json({ error: 'mobilizeContactEmail must be an email address' }, { status: 400 });
+		}
+		patch[key] = trimmed;
 	}
 
 	if (body.slackGrowthReportRankingAlpha !== undefined) {

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { normalizeParticipation, PARTICIPATION_STATUS } from './attendees.js';
 import {
 	buildZipChapterMap,
 	createUser,
@@ -218,80 +217,14 @@ describe('resolveChapterId', () => {
 });
 
 describe('attendingFor', () => {
-	it('maps registered to yes and cancelled to no', () => {
+	it('maps registered and confirmed to yes, cancelled to no', () => {
 		expect(attendingFor('REGISTERED')).toBe('yes');
+		// CONFIRMED is a reconfirmed registration — the same intent, firmer.
+		expect(attendingFor('CONFIRMED')).toBe('yes');
 		expect(attendingFor('CANCELLED')).toBe('no');
 	});
 
 	it('refuses to guess an unrecognized status', () => {
 		expect(attendingFor('UNKNOWN')).toBeNull();
-	});
-});
-
-describe('normalizeParticipation', () => {
-	const row = {
-		person: { id: 1, first_name: 'Person', email: 'p@example.com', zipcode: '49504' },
-		participation_data: {
-			id: 52583461,
-			timeslot_id: 6157028,
-			status: PARTICIPATION_STATUS.REGISTERED,
-			first_name: 'Kathryn',
-			last_name: 'Agar',
-			email: 'k@example.com',
-			phone: '6169539282',
-			zipcode: '49504',
-			created_at: '2026-07-23T01:33:21.380178Z',
-			volunteer_check_in: null,
-		},
-	};
-
-	it('extracts the signup with its Mobilize ids', () => {
-		expect(normalizeParticipation(row)).toMatchObject({
-			id: 52583461,
-			timeslotId: 6157028,
-			status: 'REGISTERED',
-			email: 'k@example.com',
-			phone: '6169539282',
-			zipcode: '49504',
-			attended: null,
-		});
-	});
-
-	it('maps status 2 to cancelled', () => {
-		const cancelled = {
-			...row,
-			participation_data: { ...row.participation_data, status: PARTICIPATION_STATUS.CANCELLED },
-		};
-		expect(normalizeParticipation(cancelled)?.status).toBe('CANCELLED');
-	});
-
-	it('reports an unmapped status rather than assuming registered', () => {
-		const odd = { ...row, participation_data: { ...row.participation_data, status: 7 } };
-		expect(normalizeParticipation(odd)).toMatchObject({ status: 'UNKNOWN', rawStatus: 7 });
-	});
-
-	it('treats a check-in as attendance, and its absence as unknown', () => {
-		const checkedIn = {
-			...row,
-			participation_data: { ...row.participation_data, volunteer_check_in: '2026-08-01T20:05:00Z' },
-		};
-		expect(normalizeParticipation(checkedIn)?.attended).toBe(true);
-		// Not false — Mobilize simply hasn't recorded an outcome.
-		expect(normalizeParticipation(row)?.attended).toBeNull();
-	});
-
-	it('falls back to the linked person record for missing detail', () => {
-		const sparse = {
-			person: { first_name: 'Fallback', email: 'fallback@example.com' },
-			participation_data: { id: 1, timeslot_id: 2, status: 1 },
-		};
-		expect(normalizeParticipation(sparse)).toMatchObject({
-			firstName: 'Fallback',
-			email: 'fallback@example.com',
-		});
-	});
-
-	it('drops rows with no usable ids', () => {
-		expect(normalizeParticipation({ participation_data: { status: 1 } })).toBeNull();
 	});
 });

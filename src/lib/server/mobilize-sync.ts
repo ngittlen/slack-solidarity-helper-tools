@@ -1,32 +1,28 @@
 // Nightly Solidarity -> Mobilize event sync, server side.
 //
 // The algorithm lives in mobilize-migrator/lib/* so the same code backs both the
-// CLI scripts and this endpoint. This module supplies the two things that differ
-// on the server: credentials from $env, and a Turso-backed ledger instead of a
-// JSON file.
+// CLI scripts and this endpoint. This module supplies the three things that
+// differ on the server: credentials from $env, the event contact from
+// /settings, and a Turso-backed ledger instead of a JSON file.
 //
-// Auth caveat worth remembering: Mobilize has no public write API and no
-// machine credentials — MOBILIZE_COOKIE is a borrowed browser session. Mobilize
-// logs in by emailed code or Google OAuth, so it cannot be refreshed
-// programmatically. When it expires the sync reports sessionExpired and posts a
-// Slack alert asking someone to paste a fresh cookie.
+// Auth: MOBILIZE_API_KEY must have write ("restricted") access — creating
+// events and uploading images both require it. A 403 means the key is rejected
+// or lost that grant, and the sync reports authFailed and posts a Slack alert.
 
-import type { LibSQLDatabase } from 'drizzle-orm/libsql';
+import type { drizzle } from 'drizzle-orm/libsql';
 
 import { findDuplicate } from '../../../mobilize-migrator/lib/dedupe.js';
 import { fetchPageDescriptions } from '../../../mobilize-migrator/lib/pages.js';
-import { loadMobilizeSession } from './mobilize-session.js';
+import { loadMobilizeApi } from './mobilize-api.js';
 import { TursoLedger } from './mobilize-ledger.js';
 import { fetchAllEvents } from '../../../mobilize-migrator/lib/solidarity.js';
 import { runSync, type SyncReport } from '../../../mobilize-migrator/lib/sync.js';
 import { planMigration } from '../../../mobilize-migrator/lib/transform.js';
-import {
-	MOBILIZE_ORG_ID,
-	MOBILIZE_SYNC_MAX_CREATES,
-	SOLIDARITY_API_TOKEN,
-} from './env.js';
+import { loadSettings } from './settings.js';
+import { MOBILIZE_SYNC_MAX_CREATES, SOLIDARITY_API_TOKEN } from './env.js';
 
-type Db = LibSQLDatabase<Record<string, unknown>>;
+// The full drizzle type rather than LibSQLDatabase: loadSettings needs $client.
+type Db = ReturnType<typeof drizzle>;
 
 export interface MobilizeSyncOptions {
 	/** When false, plan and report without writing anything. */
@@ -45,21 +41,35 @@ export async function runMobilizeSync(
 	options: MobilizeSyncOptions = {},
 ): Promise<MobilizeSyncResult> {
 	const apply = options.apply ?? true;
-	const session = loadMobilizeSession('the Mobilize sync');
+	const api = loadMobilizeApi('the Mobilize sync');
 
 	// Both reads are independent; the pages call is what recovers the formatted
 	// descriptions the events endpoint flattens.
-	const [events, pageDescriptions] = await Promise.all([
+	const [events, pageDescriptions, settings] = await Promise.all([
 		fetchAllEvents(SOLIDARITY_API_TOKEN),
 		fetchPageDescriptions(SOLIDARITY_API_TOKEN),
+		loadSettings(db),
 	]);
 	const { planned, skipped } = planMigration(events, Date.now(), pageDescriptions);
+
+	// The v1 API rejects a create or update with no contact, so stop here with a
+	// message naming the fix rather than letting every event fail one by one.
+	const contact = {
+		name: settings.mobilizeContactName,
+		emailAddress: settings.mobilizeContactEmail,
+		phoneNumber: settings.mobilizeContactPhone,
+	};
+	if (!contact.emailAddress) {
+		throw new Error(
+			'No Mobilize event contact configured — set one on /settings, or MOBILIZE_CONTACT_EMAIL',
+		);
+	}
 
 	const report = await runSync(
 		planned,
 		{
-			session,
-			mobilizeOrgId: MOBILIZE_ORG_ID,
+			api,
+			contact,
 			maxCreatesPerRun: options.maxCreates ?? MOBILIZE_SYNC_MAX_CREATES,
 			apply,
 			log: (message) => console.log(`[mobilize-sync] ${message}`),

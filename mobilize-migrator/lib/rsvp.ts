@@ -41,7 +41,10 @@ export interface ExistingRsvp {
  */
 export function attendingFor(status: ParticipationStatus): AttendingValue | null {
 	switch (status) {
+		// CONFIRMED means the person reconfirmed a registration — the same intent
+		// as REGISTERED, a firmer yes rather than a different one.
 		case 'REGISTERED':
+		case 'CONFIRMED':
 			return 'yes';
 		case 'CANCELLED':
 			return 'no';

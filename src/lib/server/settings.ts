@@ -25,6 +25,9 @@ import {
 	SLACK_TRACKING_CHANNEL_ID,
 	SLACK_GROWTH_REPORT_CHANNEL_ID,
 	SLACK_GROWTH_REPORT_RANKING_ALPHA,
+	MOBILIZE_CONTACT_NAME,
+	MOBILIZE_CONTACT_EMAIL,
+	MOBILIZE_CONTACT_PHONE,
 } from './env.js';
 import { clampTickerColumnsPerSecond } from '../ticker-speed.js';
 
@@ -83,6 +86,13 @@ export interface Settings {
 	 *  channel — the channel these alerts used before the override existed.
 	 *  DB-only override; it has no env var of its own. */
 	slackMobilizeSyncChannelId: string;
+	/** Contact published on events the sync creates in Mobilize. The v1 API
+	 *  requires one on every create and update, and Solidarity events carry no
+	 *  contact data, so this is the only source. DB override, falling back to
+	 *  MOBILIZE_CONTACT_NAME / _EMAIL / _PHONE. */
+	mobilizeContactName: string;
+	mobilizeContactEmail: string;
+	mobilizeContactPhone: string;
 	slackGrowthReportRankingAlpha: number | undefined;
 	/** Header countdown. DB-only, no env fallback; '' means "not configured". */
 	countdownLabel: string;
@@ -109,6 +119,9 @@ export type AppConfigPatch = Partial<{
 	slackTrackingChannelId: string;
 	slackGrowthReportChannelId: string;
 	slackMobilizeSyncChannelId: string;
+	mobilizeContactName: string;
+	mobilizeContactEmail: string;
+	mobilizeContactPhone: string;
 	slackGrowthReportRankingAlpha: number;
 	countdownLabel: string;
 	countdownEndAt: string;
@@ -177,6 +190,9 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	// to re-implement the chain.
 	const slackMobilizeSyncChannelId =
 		cfg?.slackMobilizeSyncChannelId ?? slackGrowthReportChannelId;
+	const mobilizeContactName = cfg?.mobilizeContactName ?? MOBILIZE_CONTACT_NAME;
+	const mobilizeContactEmail = cfg?.mobilizeContactEmail ?? MOBILIZE_CONTACT_EMAIL;
+	const mobilizeContactPhone = cfg?.mobilizeContactPhone ?? MOBILIZE_CONTACT_PHONE;
 	const slackGrowthReportRankingAlpha =
 		cfg?.slackGrowthReportRankingAlpha ?? SLACK_GROWTH_REPORT_RANKING_ALPHA;
 	const countdownLabel = cfg?.countdownLabel ?? '';
@@ -198,6 +214,9 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
 		slackMobilizeSyncChannelId,
+		mobilizeContactName,
+		mobilizeContactEmail,
+		mobilizeContactPhone,
 		slackGrowthReportRankingAlpha,
 		countdownLabel,
 		countdownEndAt,
@@ -547,6 +566,9 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'slackTrackingChannelId',
 	'slackGrowthReportChannelId',
 	'slackMobilizeSyncChannelId',
+	'mobilizeContactName',
+	'mobilizeContactEmail',
+	'mobilizeContactPhone',
 	'slackGrowthReportRankingAlpha',
 	'countdownLabel',
 	'countdownEndAt',

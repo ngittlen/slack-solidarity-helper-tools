@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { PublicEvent } from './mobilize.js';
+import type { MobilizeApiConfig, MobilizeEvent } from './mobilize.js';
 import { describeChanges, reconcileTimeslots, runSync, type Ledger } from './sync.js';
-import type { MobilizeSession } from './session.js';
+import type { EventContact } from './payload.js';
 import type { PlannedEvent } from './transform.js';
 
 const HOUR = 3600_000;
 const START = Date.parse('2026-08-01T22:00:00Z'); // 18:00 America/New_York
+// Pinned so the past/upcoming split in reconcileTimeslots doesn't depend on the
+// wall clock the suite happens to run at.
+const NOW = START - 7 * 24 * HOUR;
 
 function plan(overrides: Partial<PlannedEvent> = {}): PlannedEvent {
 	const starts = [START];
@@ -16,20 +19,17 @@ function plan(overrides: Partial<PlannedEvent> = {}): PlannedEvent {
 		solidaritySessionIds: [10],
 		title: 'Detroit Canvass',
 		description: 'Knock doors',
-		eventType: 21,
-		eventTypeName: 'COMMUNITY_CANVASS',
+		eventType: 'COMMUNITY_CANVASS',
 		locationName: 'Field Office',
 		addressLine1: '2857 East Grand Boulevard',
 		city: 'Detroit',
 		state: 'MI',
 		zipcode: '48202',
 		country: 'US',
-		lat: 42.37,
-		lon: -83.06,
 		locationIsPrivate: false,
-		timeslots: starts.map(() => ({
-			startsAtNaive: '2026-08-01T18:00',
-			endsAtNaive: '2026-08-01T20:00',
+		timeslots: starts.map((s) => ({
+			startDate: Math.floor(s / 1000),
+			endDate: Math.floor((s + 2 * HOUR) / 1000),
 			maxAttendees: null,
 		})),
 		startInstants: starts,
@@ -42,8 +42,8 @@ function plan(overrides: Partial<PlannedEvent> = {}): PlannedEvent {
 
 function live(
 	slots: { id: number; start: number; end?: number }[],
-	overrides: Partial<PublicEvent & { description?: string; featured_image_url?: string | null }> = {},
-): PublicEvent & { description?: string; featured_image_url?: string | null } {
+	overrides: Partial<MobilizeEvent> = {},
+): MobilizeEvent {
 	return {
 		id: 900,
 		title: 'Detroit Canvass',
@@ -61,9 +61,14 @@ function live(
 
 describe('reconcileTimeslots', () => {
 	it('reuses the existing id when the shift is unchanged', () => {
-		const result = reconcileTimeslots(plan(), live([{ id: 5001, start: START }]));
+		const result = reconcileTimeslots(plan(), live([{ id: 5001, start: START }]), NOW);
 		expect(result.timeslots).toEqual([
-			{ id: 5001, startsAtNaive: '2026-08-01T18:00', endsAtNaive: '2026-08-01T20:00', maxAttendees: null },
+			{
+				id: 5001,
+				startDate: Math.floor(START / 1000),
+				endDate: Math.floor((START + 2 * HOUR) / 1000),
+				maxAttendees: null,
+			},
 		]);
 		expect(result.changed).toBe(false);
 		expect(result.orphanCount).toBe(0);
@@ -72,40 +77,65 @@ describe('reconcileTimeslots', () => {
 	it('sends a genuinely new session without an id so Mobilize creates it', () => {
 		const twoSlots = plan({
 			timeslots: [
-				{ startsAtNaive: '2026-08-01T18:00', endsAtNaive: '2026-08-01T20:00', maxAttendees: null },
-				{ startsAtNaive: '2026-08-02T18:00', endsAtNaive: '2026-08-02T20:00', maxAttendees: null },
+				{
+					startDate: Math.floor(START / 1000),
+					endDate: Math.floor((START + 2 * HOUR) / 1000),
+					maxAttendees: null,
+				},
+				{
+					startDate: Math.floor((START + 24 * HOUR) / 1000),
+					endDate: Math.floor((START + 26 * HOUR) / 1000),
+					maxAttendees: null,
+				},
 			],
 			startInstants: [START, START + 24 * HOUR],
 			endInstants: [START + 2 * HOUR, START + 26 * HOUR],
 		});
-		const result = reconcileTimeslots(twoSlots, live([{ id: 5001, start: START }]));
+		const result = reconcileTimeslots(twoSlots, live([{ id: 5001, start: START }]), NOW);
 		expect(result.timeslots[0].id).toBe(5001);
 		expect(result.timeslots[1].id).toBeUndefined();
 		expect(result.changed).toBe(true);
 	});
 
-	it('KEEPS a live shift that has no counterpart, rather than deleting its signups', () => {
-		// A past shift the planner filtered out, or a session cancelled in
-		// Solidarity. Omitting it from the PUT would destroy it and its RSVPs.
+	it('KEEPS an upcoming shift that has no counterpart, rather than deleting its signups', () => {
+		// A session cancelled in Solidarity. Omitting it from the PUT would
+		// destroy the shift and its RSVPs.
 		const result = reconcileTimeslots(
 			plan(),
 			live([
 				{ id: 5001, start: START },
-				{ id: 4000, start: START - 72 * HOUR },
+				{ id: 4000, start: START + 72 * HOUR },
 			]),
+			NOW,
 		);
 		expect(result.timeslots.map((s) => s.id)).toEqual([5001, 4000]);
 		expect(result.orphanCount).toBe(1);
 	});
 
+	it('drops a PAST orphan instead of re-sending it', () => {
+		// The v1 endpoint does not modify past timeslots, so sending them is at
+		// best noise. Omitting them is safe precisely because it cannot delete
+		// them either.
+		const result = reconcileTimeslots(
+			plan(),
+			live([
+				{ id: 5001, start: START },
+				{ id: 4000, start: NOW - 72 * HOUR },
+			]),
+			NOW,
+		);
+		expect(result.timeslots.map((s) => s.id)).toEqual([5001]);
+		expect(result.orphanCount).toBe(0);
+	});
+
 	it('matches within a minute of tolerance', () => {
-		const result = reconcileTimeslots(plan(), live([{ id: 5001, start: START + 30_000 }]));
+		const result = reconcileTimeslots(plan(), live([{ id: 5001, start: START + 30_000 }]), NOW);
 		expect(result.timeslots[0].id).toBe(5001);
 		expect(result.changed).toBe(false);
 	});
 
 	it('treats a moved start time as a new shift, keeping the old one', () => {
-		const result = reconcileTimeslots(plan(), live([{ id: 5001, start: START + 3 * HOUR }]));
+		const result = reconcileTimeslots(plan(), live([{ id: 5001, start: START + 3 * HOUR }]), NOW);
 		expect(result.timeslots[0].id).toBeUndefined();
 		expect(result.timeslots[1].id).toBe(5001);
 		expect(result.changed).toBe(true);
@@ -115,6 +145,7 @@ describe('reconcileTimeslots', () => {
 		const result = reconcileTimeslots(
 			plan(),
 			live([{ id: 5001, start: START, end: START + 5 * HOUR }]),
+			NOW,
 		);
 		expect(result.timeslots[0].id).toBe(5001);
 		expect(result.changed).toBe(true);
@@ -123,13 +154,21 @@ describe('reconcileTimeslots', () => {
 	it('does not reuse one live shift for two planned shifts', () => {
 		const duplicate = plan({
 			timeslots: [
-				{ startsAtNaive: '2026-08-01T18:00', endsAtNaive: '2026-08-01T20:00', maxAttendees: null },
-				{ startsAtNaive: '2026-08-01T18:00', endsAtNaive: '2026-08-01T20:00', maxAttendees: null },
+				{
+					startDate: Math.floor(START / 1000),
+					endDate: Math.floor((START + 2 * HOUR) / 1000),
+					maxAttendees: null,
+				},
+				{
+					startDate: Math.floor(START / 1000),
+					endDate: Math.floor((START + 2 * HOUR) / 1000),
+					maxAttendees: null,
+				},
 			],
 			startInstants: [START, START],
 			endInstants: [START + 2 * HOUR, START + 2 * HOUR],
 		});
-		const result = reconcileTimeslots(duplicate, live([{ id: 5001, start: START }]));
+		const result = reconcileTimeslots(duplicate, live([{ id: 5001, start: START }]), NOW);
 		expect(result.timeslots[0].id).toBe(5001);
 		expect(result.timeslots[1].id).toBeUndefined();
 	});
@@ -180,11 +219,11 @@ describe('runSync dry run', () => {
 		vi.unstubAllGlobals();
 	});
 
-	const SESSION: MobilizeSession = {
-		orgSlug: 'testorg',
-		cookie: 'sessionid=a; csrftoken=b',
-		csrfToken: 'b',
-		userAgent: 'test',
+	const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 1 };
+	const CONTACT: EventContact = {
+		name: 'Field Team',
+		emailAddress: 'field@example.org',
+		phoneNumber: '',
 	};
 
 	/** Records every ledger write so the test can assert there were none. */
@@ -214,23 +253,25 @@ describe('runSync dry run', () => {
 		// Regression: recordTimeslots sat outside the apply branch, so a dry run
 		// persisted pairings — on the server, straight into production Turso.
 		const planned = plan();
+		// The client reads the body with text() and parses it itself, so the stub
+		// has to return a real JSON string rather than a json() shortcut.
+		const body = JSON.stringify({
+			data: [
+				{
+					id: 900,
+					title: planned.title,
+					event_type: 'COMMUNITY_CANVASS',
+					description: 'different, so an update is warranted',
+					timeslots: [{ id: 5001, start_date: Math.floor(START / 1000), end_date: 0 }],
+					location: { locality: 'Detroit' },
+				},
+			],
+			next: null,
+		});
 		vi.stubGlobal('fetch', async () => ({
 			ok: true,
 			status: 200,
-			json: async () => ({
-				data: [
-					{
-						id: 900,
-						title: planned.title,
-						event_type: 'COMMUNITY_CANVASS',
-						description: 'different, so an update is warranted',
-						timeslots: [{ id: 5001, start_date: Math.floor(START / 1000), end_date: 0 }],
-						location: { locality: 'Detroit' },
-					},
-				],
-				next: null,
-			}),
-			text: async () => '',
+			text: async () => body,
 			headers: new Headers(),
 		}));
 
@@ -241,8 +282,8 @@ describe('runSync dry run', () => {
 		const report = await runSync(
 			[planned],
 			{
-				session: SESSION,
-				mobilizeOrgId: 1,
+				api: API,
+				contact: CONTACT,
 				maxCreatesPerRun: 100,
 				apply: false,
 				pauseMs: 0,

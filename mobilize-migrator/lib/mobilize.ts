@@ -1,18 +1,36 @@
-// Client for Mobilize's private dashboard API — the same endpoint the event
-// create form posts to. There is no public write API, so this is the only way
-// to create events programmatically.
+// Client for the Mobilize v1 API (https://github.com/mobilizeamerica/api).
 //
-// Read-back goes through the PUBLIC api.mobilize.us instead: the dashboard API
-// answers 405 to GET, so the public feed is our only view of what exists.
+// Everything the integration needs — reading events, creating and updating
+// them, uploading images, and listing signups — is one documented API behind a
+// single organization API key. Create/update/delete and image upload are
+// "restricted" endpoints: holding a key is not enough, the organization must
+// have been granted write access. A 403 means the key is wrong or that grant is
+// missing, and no amount of retrying will fix it.
+//
+// Every response is enveloped as {data, error, count, next, previous}; list
+// endpoints are followed through `next` rather than by counting pages.
 
-import { loadSession, type MobilizeSession } from './session.js';
+import { env, requireEnv } from './env.js';
 
-const PRIVATE_BASE = 'https://www.mobilize.us/_/api/organization';
-const PUBLIC_BASE = 'https://api.mobilize.us/v1';
+const BASE = 'https://api.mobilize.us/v1';
 
-export interface MobilizeErrorBody {
-	error?: { detail?: string; message?: string } | null;
-	data?: unknown;
+/** Credentials for every call. The CLI builds this from .env.local, the server
+ *  from $env — see src/lib/server/mobilize-api.ts. */
+export interface MobilizeApiConfig {
+	apiKey: string;
+	orgId: number;
+}
+
+export function loadApiConfig(): MobilizeApiConfig {
+	const apiKey = requireEnv('MOBILIZE_API_KEY', 'set it in .env.local');
+	const rawOrgId = env('MOBILIZE_ORG_ID');
+	const orgId = parseInt(rawOrgId, 10);
+	if (!Number.isFinite(orgId) || orgId <= 0) {
+		// No default: syncing into the wrong organization publishes events under
+		// someone else's name, which is not something to fail quietly.
+		throw new Error(`MOBILIZE_ORG_ID must be a positive integer, got "${rawOrgId}"`);
+	}
+	return { apiKey, orgId };
 }
 
 export class MobilizeError extends Error {
@@ -26,169 +44,291 @@ export class MobilizeError extends Error {
 	}
 }
 
-function dashboardHeaders(session: MobilizeSession, referer: string): Record<string, string> {
-	return {
-		Accept: 'application/json',
-		'Content-Type': 'application/json',
-		'X-CSRFToken': session.csrfToken,
-		Cookie: session.cookie,
-		Referer: referer,
-		Origin: 'https://www.mobilize.us',
-		'User-Agent': session.userAgent,
-	};
+interface Envelope<T> {
+	data?: T;
+	error?: unknown;
+	next?: string | null;
+	count?: number;
 }
 
-/**
- * POST a fully-formed event payload. Returns the created event's id.
- *
- * A 403 here almost always means the borrowed session expired — see
- * lib/session.ts for how to refresh it.
- */
-export async function createEvent(
-	payload: Record<string, unknown>,
-	session = loadSession(),
-): Promise<{ id: number; raw: unknown }> {
-	const res = await fetch(`${PRIVATE_BASE}/${session.orgSlug}/events/`, {
-		method: 'POST',
-		headers: dashboardHeaders(
-			session,
-			`https://www.mobilize.us/dashboard/${session.orgSlug}/event/create/`,
-		),
-		body: JSON.stringify(payload),
-	});
+/** Documented limits are 15 req/s read and 5 req/s write, answered with 429. */
+const MAX_ATTEMPTS = 6;
+const BACKOFF_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function request(
+	config: MobilizeApiConfig,
+	url: string,
+	init: RequestInit = {},
+): Promise<Response> {
+	const headers = new Headers(init.headers);
+	headers.set('Authorization', `Bearer ${config.apiKey}`);
+	headers.set('Accept', 'application/json');
+
+	for (let attempt = 0; ; attempt++) {
+		const res = await fetch(url, { ...init, headers });
+		if (res.status !== 429 || attempt >= MAX_ATTEMPTS - 1) return res;
+		// Mobilize sends Retry-After on some 429s; prefer it over guessing.
+		const retryAfter = Number(res.headers.get('retry-after'));
+		await sleep(
+			Number.isFinite(retryAfter) && retryAfter > 0
+				? retryAfter * 1000
+				: BACKOFF_MS * (attempt + 1),
+		);
+	}
+}
+
+function describeFailure(status: number, url: string): string {
+	const path = url.replace(BASE, '');
+	if (status === 403) {
+		return `${path} returned 403 — MOBILIZE_API_KEY is rejected, or lacks the write access these endpoints require`;
+	}
+	return `${path} returned ${status}`;
+}
+
+/** One JSON call. Throws MobilizeError on any non-2xx or an `error` in the body. */
+async function callJson<T>(
+	config: MobilizeApiConfig,
+	url: string,
+	init: RequestInit = {},
+): Promise<Envelope<T>> {
+	const res = await request(config, url, init);
 	const text = await res.text();
 	if (!res.ok) {
+		throw new MobilizeError(describeFailure(res.status, url), res.status, text.slice(0, 500));
+	}
+	// 204s and the odd empty write response are legitimate.
+	if (!text.trim()) return {};
+
+	let body: Envelope<T>;
+	try {
+		body = JSON.parse(text) as Envelope<T>;
+	} catch {
+		throw new MobilizeError(`${url} returned non-JSON`, res.status, text.slice(0, 300));
+	}
+	if (body.error) {
 		throw new MobilizeError(
-			`create returned ${res.status}${res.status === 403 ? ' (session likely expired)' : ''}`,
+			`${url.replace(BASE, '')}: ${JSON.stringify(body.error).slice(0, 300)}`,
 			res.status,
-			text,
+			text.slice(0, 500),
 		);
 	}
-	// The endpoint answers {"data":{"event_id":123}}; accept `id` too in case
-	// that shape ever changes back.
-	const body = JSON.parse(text) as { data?: { event_id?: number; id?: number } };
-	const id = body.data?.event_id ?? body.data?.id;
-	if (typeof id !== 'number') {
-		throw new MobilizeError('create succeeded but no event id in response', res.status, text);
-	}
-	return { id, raw: body.data };
+	return body;
 }
 
-/**
- * Stamp existing timeslot ids onto a payload's slots, positionally.
- *
- * Only safe when the caller knows the two lists line up — for anything
- * non-trivial (shifts added, removed or moved) use reconcileTimeslots in
- * sync.ts, which matches by start time and preserves orphans.
- */
-export function withTimeslotIds(
-	payload: Record<string, unknown>,
-	timeslotIds: number[],
-): Record<string, unknown> {
-	const timeslots = (payload.timeslots as Record<string, unknown>[]).map((slot, index) => {
-		const timeslotId = timeslotIds[index];
-		return timeslotId ? { ...slot, id: timeslotId } : slot;
-	});
-	return { ...payload, timeslots };
-}
-
-/**
- * Update an existing event. PUT replaces the whole record, and its timeslots are
- * matched by id — a slot sent WITHOUT an id is created, and one that is simply
- * absent is destroyed along with its signups. PATCH answers 200 {"ok":true} but
- * does not persist, so PUT is the only real update path.
- *
- * The caller owns timeslot identity: every slot in `payload.timeslots` that
- * should update an existing shift must already carry its `id` (see
- * `withTimeslotIds` or `reconcileTimeslots`). This used to take a separate
- * `timeslotIds` array, which meant two different calling conventions for the
- * same function and one silent way to duplicate every shift on an event.
- */
-export async function updateEvent(
-	id: number,
-	payload: Record<string, unknown>,
-	session = loadSession(),
-): Promise<void> {
-	const res = await fetch(`${PRIVATE_BASE}/${session.orgSlug}/events/${id}/`, {
-		method: 'PUT',
-		headers: dashboardHeaders(
-			session,
-			`https://www.mobilize.us/dashboard/${session.orgSlug}/event/${id}/edit/`,
-		),
-		body: JSON.stringify(payload),
-	});
-	if (!res.ok) {
-		throw new MobilizeError(
-			`update ${id} returned ${res.status}${res.status === 403 ? ' (session likely expired)' : ''}`,
-			res.status,
-			await res.text(),
-		);
-	}
-}
-
-/** Delete an event by id. Used to clean up the type-probe throwaways. */
-export async function deleteEvent(id: number, session = loadSession()): Promise<void> {
-	const res = await fetch(`${PRIVATE_BASE}/${session.orgSlug}/events/${id}/`, {
-		method: 'DELETE',
-		headers: dashboardHeaders(
-			session,
-			`https://www.mobilize.us/dashboard/${session.orgSlug}/event/${id}/edit/`,
-		),
-	});
-	if (!res.ok && res.status !== 404) {
-		throw new MobilizeError(`delete ${id} returned ${res.status}`, res.status, await res.text());
-	}
-}
-
-export interface PublicEvent {
-	id: number;
-	title: string;
-	event_type: string;
-	browser_url?: string;
-	visibility?: string;
-	// Present on the list endpoint too, which is what lets the sync diff every
-	// event from one bulk read instead of a fetch per event.
-	description?: string;
-	featured_image_url?: string | null;
-	timeslots: { id: number; start_date: number; end_date: number }[];
-	location: {
-		venue?: string | null;
-		locality?: string | null;
-		region?: string | null;
-		address_lines?: string[] | null;
-	} | null;
-}
-
-/** Public read API. Rate limits aggressively, so retry on 429. */
-async function publicGet(url: string): Promise<Response> {
-	for (let attempt = 0; attempt < 8; attempt++) {
-		const res = await fetch(url, { headers: { 'User-Agent': 'solidarity-migrator' } });
-		if (res.status !== 429) return res;
-		await new Promise((r) => setTimeout(r, 15_000));
-	}
-	throw new Error(`public API still rate-limited: ${url}`);
-}
-
-/** Every upcoming public event for the org — the duplicate-detection corpus. */
-export async function listUpcomingPublicEvents(orgId: number): Promise<PublicEvent[]> {
-	const all: PublicEvent[] = [];
-	let url: string | null =
-		`${PUBLIC_BASE}/organizations/${orgId}/events?per_page=100&timeslot_start=gte_now`;
+/** Follow `next` to the end of a list endpoint. */
+async function collect<T>(config: MobilizeApiConfig, firstUrl: string): Promise<T[]> {
+	const all: T[] = [];
+	let url: string | null = firstUrl;
 	while (url) {
-		const res: Response = await publicGet(url);
-		if (!res.ok) throw new Error(`public events returned ${res.status}: ${await res.text()}`);
-		const body = (await res.json()) as { data?: PublicEvent[]; next?: string | null };
+		const body: Envelope<T[]> = await callJson<T[]>(config, url);
 		all.push(...(body.data ?? []));
 		url = body.next ?? null;
 	}
 	return all;
 }
 
-/** Read one event from the public API (used to confirm what a numeric code means). */
-export async function getPublicEvent(id: number): Promise<PublicEvent | null> {
-	const res = await publicGet(`${PUBLIC_BASE}/events/${id}`);
-	if (res.status === 404) return null;
-	if (!res.ok) throw new Error(`public event ${id} returned ${res.status}`);
-	const body = (await res.json()) as { data?: PublicEvent };
-	return body.data ?? null;
+function jsonBody(payload: unknown): RequestInit {
+	return {
+		body: JSON.stringify(payload),
+		headers: { 'Content-Type': 'application/json' },
+	};
+}
+
+// --- Events -------------------------------------------------------------------
+
+export interface MobilizeEvent {
+	id: number;
+	title: string;
+	event_type: string;
+	browser_url?: string;
+	visibility?: string;
+	description?: string;
+	featured_image_url?: string | null;
+	instructions?: string | null;
+	accessibility_status?: string | null;
+	/** Only returned to authenticated callers, which we now always are. */
+	contact?: {
+		name?: string | null;
+		email_address?: string | null;
+		phone_number?: string | null;
+	} | null;
+	timeslots: { id: number; start_date: number; end_date: number }[];
+	location: {
+		venue?: string | null;
+		locality?: string | null;
+		region?: string | null;
+		postal_code?: string | null;
+		address_lines?: string[] | null;
+	} | null;
+}
+
+/** Every upcoming event for the org — the duplicate-detection corpus, and the
+ *  source the update pass diffs against so it needs no per-event read. */
+export async function listUpcomingOrgEvents(config: MobilizeApiConfig): Promise<MobilizeEvent[]> {
+	return collect<MobilizeEvent>(
+		config,
+		`${BASE}/organizations/${config.orgId}/events?per_page=100&timeslot_start=gte_now`,
+	);
+}
+
+/** Read one event. Used for events the bulk list doesn't cover — all timeslots
+ *  already past, or not publicly listed — and to pick up timeslot ids after a
+ *  create. */
+export async function getOrgEvent(
+	config: MobilizeApiConfig,
+	id: number,
+): Promise<MobilizeEvent | null> {
+	try {
+		const body = await callJson<MobilizeEvent>(
+			config,
+			`${BASE}/organizations/${config.orgId}/events/${id}`,
+		);
+		return body.data ?? null;
+	} catch (err) {
+		if (err instanceof MobilizeError && err.status === 404) return null;
+		throw err;
+	}
+}
+
+/**
+ * Create an event. Returns its id and the created event itself.
+ *
+ * Envelope trap, verified against the live API: create answers
+ * `{"data":{"event":{…}}}` — one level deeper than every other endpoint, which
+ * return the event flat under `data`. Reading `data.id` here yields undefined
+ * and fails every create. The flat shape is accepted as a fallback in case that
+ * inconsistency is ever tidied up.
+ *
+ * The returned event already carries its timeslots WITH their new ids, so
+ * callers don't need a read-back to pair them.
+ */
+export async function createEvent(
+	config: MobilizeApiConfig,
+	payload: Record<string, unknown>,
+): Promise<{ id: number; event: MobilizeEvent | null }> {
+	const body = await callJson<{ event?: MobilizeEvent } & Partial<MobilizeEvent>>(
+		config,
+		`${BASE}/organizations/${config.orgId}/events`,
+		{ method: 'POST', ...jsonBody(payload) },
+	);
+	const event = (body.data?.event ?? body.data) as MobilizeEvent | undefined;
+	const id = event?.id;
+	if (typeof id !== 'number') {
+		throw new MobilizeError(
+			'create succeeded but no event id in response',
+			200,
+			JSON.stringify(body).slice(0, 300),
+		);
+	}
+	return { id, event: event ?? null };
+}
+
+/**
+ * Replace an event.
+ *
+ * Timeslot identity is the caller's job: an upcoming slot sent WITHOUT an id is
+ * created, and an upcoming slot that is simply absent is deleted along with its
+ * signups. Past timeslots are not touched by this endpoint at all, so they must
+ * not be sent — see reconcileTimeslots in sync.ts.
+ *
+ * Notifications are suppressed: this runs nightly and re-pushes the same events,
+ * so leaving them on would mail every attendee whenever a description changed.
+ */
+export async function updateEvent(
+	config: MobilizeApiConfig,
+	id: number,
+	payload: Record<string, unknown>,
+): Promise<void> {
+	await callJson(
+		config,
+		`${BASE}/organizations/${config.orgId}/events/${id}?send_update_notifications=false`,
+		{ method: 'PUT', ...jsonBody(payload) },
+	);
+}
+
+export async function deleteEvent(config: MobilizeApiConfig, id: number): Promise<void> {
+	try {
+		await callJson(config, `${BASE}/organizations/${config.orgId}/events/${id}`, {
+			method: 'DELETE',
+		});
+	} catch (err) {
+		// Already gone is the desired end state.
+		if (err instanceof MobilizeError && err.status === 404) return;
+		throw err;
+	}
+}
+
+// --- Images -------------------------------------------------------------------
+
+/**
+ * Upload image bytes and return the Mobilize-hosted URL for `featured_image_url`.
+ *
+ * Multipart, not JSON — and deliberately no Content-Type header, so fetch sets
+ * the multipart boundary itself.
+ */
+export async function uploadImage(
+	config: MobilizeApiConfig,
+	bytes: ArrayBuffer,
+	filename: string,
+	contentType: string,
+): Promise<string> {
+	const form = new FormData();
+	form.append('file', new Blob([bytes], { type: contentType }), filename);
+	form.append('file_name', filename);
+
+	const body = await callJson<{ url?: string }>(config, `${BASE}/images`, {
+		method: 'POST',
+		body: form,
+	});
+	// Verified against the live endpoint: {"data":{"url":"https://…"}}. Read it
+	// directly rather than hunting for a URL-shaped string — if this shape ever
+	// changes, failing here is far better than silently putting some other URL
+	// on a public event.
+	const url = body.data?.url;
+	if (typeof url !== 'string' || !url) {
+		throw new MobilizeError(
+			'image upload succeeded but no data.url in response',
+			200,
+			JSON.stringify(body).slice(0, 300),
+		);
+	}
+	return url;
+}
+
+// --- Attendances --------------------------------------------------------------
+
+export interface MobilizeAttendance {
+	id: number;
+	person?: {
+		id?: number;
+		user_id?: number;
+		given_name?: string | null;
+		family_name?: string | null;
+		email_addresses?: { primary?: boolean; address?: string | null }[] | null;
+		phone_numbers?: { primary?: boolean; number?: string | null }[] | null;
+		postal_addresses?: { primary?: boolean; postal_code?: string | null }[] | null;
+	} | null;
+	event?: { id: number } | null;
+	timeslot?: { id: number; start_date?: number; end_date?: number } | null;
+	/** REGISTERED | CANCELLED | CONFIRMED */
+	status: string;
+	/** null when Mobilize has not recorded an outcome yet. */
+	attended?: boolean | null;
+	created_date?: number;
+	modified_date?: number;
+}
+
+/** Every signup on one event, across all its timeslots. */
+export async function listEventAttendances(
+	config: MobilizeApiConfig,
+	eventId: number,
+): Promise<MobilizeAttendance[]> {
+	return collect<MobilizeAttendance>(
+		config,
+		`${BASE}/organizations/${config.orgId}/events/${eventId}/attendances?per_page=100`,
+	);
 }

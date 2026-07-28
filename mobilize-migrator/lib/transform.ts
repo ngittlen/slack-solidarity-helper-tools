@@ -7,13 +7,8 @@
 
 import { parseAddress } from './address.js';
 import { htmlToMarkdown, plainTextToMarkdown } from './html-to-markdown.js';
-import { EVENT_TYPE } from './payload.js';
-import {
-	parseCoordinates,
-	type SolidarityEvent,
-	type SolidaritySession,
-} from './solidarity.js';
-import { CAMPAIGN_TIMEZONE, toNaiveLocal } from './time.js';
+import { EVENT_TYPE, type EventTypeName } from './payload.js';
+import { type SolidarityEvent, type SolidaritySession } from './solidarity.js';
 
 export interface PlannedEvent {
 	/** Stable key for the ledger: one Solidarity event + one location. */
@@ -22,19 +17,18 @@ export interface PlannedEvent {
 	solidaritySessionIds: number[];
 	title: string;
 	description: string;
-	eventType: number;
-	eventTypeName: string;
+	eventType: EventTypeName;
 	locationName: string;
 	addressLine1: string;
 	city: string;
 	state: string;
 	zipcode: string;
 	country: string;
-	lat: number | null;
-	lon: number | null;
+	/** Street address is withheld from the payload when this is set. */
 	locationIsPrivate: boolean;
-	timeslots: { startsAtNaive: string; endsAtNaive: string; maxAttendees: number | null }[];
-	/** Absolute instants, kept for duplicate detection and timeslot matching. */
+	/** Unix seconds, which is what the v1 API takes. */
+	timeslots: { startDate: number; endDate: number; maxAttendees: number | null }[];
+	/** Absolute instants in ms, kept for duplicate detection and timeslot matching. */
 	startInstants: number[];
 	endInstants: number[];
 	sourceUrl: string | null;
@@ -55,14 +49,10 @@ export interface SkippedEvent {
  */
 const CANVASS_PATTERN = /\b(canvass|canvas|knock|door|lit\s*drop|turf)\b/i;
 
-export function classifyEventType(title: string, description: string): number {
+export function classifyEventType(title: string, description: string): EventTypeName {
 	return CANVASS_PATTERN.test(`${title} ${description}`)
 		? EVENT_TYPE.COMMUNITY_CANVASS
 		: EVENT_TYPE.COMMUNITY;
-}
-
-export function eventTypeName(code: number): string {
-	return code === EVENT_TYPE.COMMUNITY_CANVASS ? 'COMMUNITY_CANVASS' : 'COMMUNITY';
 }
 
 /** Groups sessions that share a venue. Falls back to the venue name when there
@@ -210,8 +200,20 @@ export function planMigration(
 						? `${event.title} — ${city}`
 						: event.title;
 
+			// postal_code is the one required field in the v1 location object, and
+			// for a private event it is all that places the pin — there is no street
+			// line to fall back on. Better skipped and added by hand than published
+			// with no location at all.
+			if (event.hide_address_until_rsvp && !resolved.zipcode) {
+				skipped.push({
+					solidarityEventId: event.id,
+					title: `${event.title}${key ? ` @ ${key}` : ''}`,
+					reason: 'address is hidden until RSVP but the session has no postal code',
+				});
+				continue;
+			}
+
 			const eventType = classifyEventType(`${title} ${event.title}`, description);
-			const coords = parseCoordinates(withAddress.location_data);
 			const ordered = [...sessions].sort(
 				(a, b) => Date.parse(a.start_time) - Date.parse(b.start_time),
 			);
@@ -223,19 +225,16 @@ export function planMigration(
 				title: title.trim(),
 				description,
 				eventType,
-				eventTypeName: eventTypeName(eventType),
 				locationName: withAddress.location_name?.trim() || venueExtra || city,
 				addressLine1,
 				city,
 				state: resolved.state,
 				zipcode: resolved.zipcode,
 				country: resolved.country,
-				lat: coords?.lat ?? null,
-				lon: coords?.lon ?? null,
 				locationIsPrivate: event.hide_address_until_rsvp,
 				timeslots: ordered.map((s) => ({
-					startsAtNaive: toNaiveLocal(s.start_time, CAMPAIGN_TIMEZONE),
-					endsAtNaive: toNaiveLocal(s.end_time, CAMPAIGN_TIMEZONE),
+					startDate: Math.floor(Date.parse(s.start_time) / 1000),
+					endDate: Math.floor(Date.parse(s.end_time) / 1000),
 					maxAttendees: capacity(s),
 				})),
 				startInstants: ordered.map((s) => Date.parse(s.start_time)),
