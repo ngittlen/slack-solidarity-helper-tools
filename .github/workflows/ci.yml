@@ -6,10 +6,13 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A newer push to the same branch makes an in-flight run obsolete.
+# A newer push to the same branch makes an in-flight run obsolete — except on
+# main, where a run may be mid-deploy. Cancelling between the release_command
+# (which runs migrations) and the machine rollout would leave the app half
+# updated, so main runs are always allowed to finish.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   check:
@@ -53,3 +56,32 @@ jobs:
       - name: Tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm test
+
+  deploy:
+    # Gated on every check above. `needs` also means a failed or cancelled check
+    # job skips the deploy rather than racing it.
+    needs: check
+    # Merging a PR into main produces a push to main, which is what this matches.
+    # PR runs never reach here, so nothing deploys from an unmerged branch.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    # Serialize releases: two merges in quick succession queue rather than deploy
+    # on top of each other. Deliberately NOT cancel-in-progress — an interrupted
+    # deploy is worse than a delayed one when release_command runs migrations.
+    concurrency:
+      group: fly-deploy
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # fly.toml's release_command (`node bin/migrate.js`) runs before the new
+      # machines take traffic. A failing migration aborts the release, so a bad
+      # schema change stops the deploy instead of half-applying it.
+      - name: Deploy to Fly
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
