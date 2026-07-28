@@ -7,6 +7,6 @@ export const load: LayoutServerLoad = ({ locals }) => {
 	}
 	return {
 		userName: locals.session.slackUserName,
-		isAdmin: locals.session.isAdmin
+		isAdmin: locals.session.isAdmin,
 	};
 };

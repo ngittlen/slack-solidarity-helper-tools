@@ -103,8 +103,6 @@ export async function setUserCustomProperty(
 		{ retriesUsed: 0 },
 	);
 	if (!response.ok) {
-		throw new Error(
-			`Solidarity user update returned ${response.status}: ${await response.text()}`,
-		);
+		throw new Error(`Solidarity user update returned ${response.status}: ${await response.text()}`);
 	}
 }

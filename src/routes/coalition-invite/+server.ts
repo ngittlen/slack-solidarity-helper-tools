@@ -32,9 +32,7 @@ export const GET: RequestHandler = async ({ url }) => {
 		console.error('[coalition-invite] settings load failed:', errMessage(err));
 		return json({ error: 'Settings are temporarily unavailable. Retry shortly.' }, { status: 503 });
 	}
-	const channelId = coalitionChannelMap.find(
-		(e) => e.group.toLowerCase() === coalition,
-	)?.channelId;
+	const channelId = coalitionChannelMap.find((e) => e.group.toLowerCase() === coalition)?.channelId;
 	if (!channelId) {
 		return json({ error: `Unknown coalition: ${coalition}` }, { status: 400 });
 	}
@@ -60,7 +58,9 @@ export const GET: RequestHandler = async ({ url }) => {
 	// Invite the user to the coalition channel
 	try {
 		await slack.conversations.invite({ channel: channelId, users: slackUserId });
-		console.log(`[coalition-invite] invited ${email} (${slackUserId}) to ${coalition} (${channelId})`);
+		console.log(
+			`[coalition-invite] invited ${email} (${slackUserId}) to ${coalition} (${channelId})`,
+		);
 	} catch (err) {
 		const msg = errMessage(err);
 		if (msg.includes('already_in_channel')) {

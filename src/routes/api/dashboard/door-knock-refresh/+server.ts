@@ -27,9 +27,7 @@ export const POST: RequestHandler = async ({ locals }) => {
 		return json({ status: 'unconfigured' });
 	}
 
-	const outcome = await refreshDoorKnockIfStale(db, () =>
-		runDoorKnockSnapshot(db, config.deps),
-	);
+	const outcome = await refreshDoorKnockIfStale(db, () => runDoorKnockSnapshot(db, config.deps));
 	// A failed refresh still returns 200: the page has valid (if older) data to
 	// show, and the client's job is the same either way — stop the spinner and
 	// reload whatever the server now has.

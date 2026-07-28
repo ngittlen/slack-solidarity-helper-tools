@@ -47,8 +47,7 @@ export interface DoorsLeaderboard {
 }
 
 export type DoorsLeaderboardResult =
-	| { ok: true; leaderboard: DoorsLeaderboard }
-	| { ok: false; error: string };
+	{ ok: true; leaderboard: DoorsLeaderboard } | { ok: false; error: string };
 
 export interface DoorsLeaderboardPair {
 	lastWeek: DoorsLeaderboardResult;

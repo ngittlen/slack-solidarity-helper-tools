@@ -32,12 +32,7 @@
 		welcomeDisabledChannelIds: string[];
 	}
 
-	let {
-		chapters,
-		channels,
-		entries: initialEntries,
-		welcomeDisabledChannelIds,
-	}: Props = $props();
+	let { chapters, channels, entries: initialEntries, welcomeDisabledChannelIds }: Props = $props();
 
 	// Local mirror of chapter_channel_map, updated optimistically per op and
 	// reverted if the save fails. Only the id pair matters client-side.
@@ -309,10 +304,10 @@
 		{:else}
 			<SettingsRow
 				label="Slack channels for {selectedChapterIds.length === 1
-					? chapters.find((c) => c.id === selectedChapterIds[0])?.name ?? 'selected chapter'
+					? (chapters.find((c) => c.id === selectedChapterIds[0])?.name ?? 'selected chapter')
 					: `${selectedChapterIds.length} selected chapters`}"
-				status={status}
-				error={error}
+				{status}
+				{error}
 				onRetry={failedOps.length > 0 ? retry : undefined}
 			>
 				<MultiSelectAutocomplete
@@ -326,19 +321,18 @@
 						isChecked: (id) => !welcomeDisabled.has(id),
 						onToggle: (id, checked) =>
 							void runOp({ action: 'welcome', channelId: id, show: checked }),
-						label: (label) =>
-							`Post the bot’s welcome message in ${label} when someone joins`,
+						label: (label) => `Post the bot’s welcome message in ${label} when someone joins`,
 					}}
 				/>
 				<p class="channel-note">
-					The checkbox on each chip controls whether the bot posts its “everybody welcome”
-					message in that channel when it adds a new member. This is per channel — it applies
-					however the person’s chapters map there.
+					The checkbox on each chip controls whether the bot posts its “everybody welcome” message
+					in that channel when it adds a new member. This is per channel — it applies however the
+					person’s chapters map there.
 				</p>
 				{#if selectedChapterIds.length > 1}
 					<p class="channel-note">
-						Showing only channels shared by all {selectedChapterIds.length} selected chapters.
-						Adding or removing a channel applies to every selected chapter.
+						Showing only channels shared by all {selectedChapterIds.length} selected chapters. Adding
+						or removing a channel applies to every selected chapter.
 					</p>
 				{/if}
 			</SettingsRow>
@@ -347,7 +341,7 @@
 </div>
 
 <div class="chapter-move-row">
-	<ChapterMoveButton channels={channels} />
+	<ChapterMoveButton {channels} />
 	<span class="chapter-move-hint">
 		Preview and invite existing Slack members into their chapters’ channels.
 	</span>

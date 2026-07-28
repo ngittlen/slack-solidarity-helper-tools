@@ -27,10 +27,7 @@ describe('buildOverviewFrame', () => {
 	});
 
 	it('zero-fills across a date gap', () => {
-		const days: DaySignups[] = [
-			day('2026-05-01', 3, []),
-			day('2026-05-04', 5, []),
-		];
+		const days: DaySignups[] = [day('2026-05-01', 3, []), day('2026-05-04', 5, [])];
 		const frame = buildOverviewFrame(days, 'Slack');
 		expect(frame.dates).toEqual(['2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04']);
 		expect(frame.bands).toHaveLength(1);
@@ -193,7 +190,14 @@ describe('buildDetailFrame', () => {
 			chapterName: `C${i + 1}`,
 			// Make the top N have high counts (101..110), and the merged ones
 			// have lower counts in non-sorted order so we can verify ordering.
-			count: i < DASHBOARD_TOP_N ? 100 + i : (i === DASHBOARD_TOP_N ? 3 : (i === DASHBOARD_TOP_N + 1 ? 7 : 1)),
+			count:
+				i < DASHBOARD_TOP_N
+					? 100 + i
+					: i === DASHBOARD_TOP_N
+						? 3
+						: i === DASHBOARD_TOP_N + 1
+							? 7
+							: 1,
 		}));
 		const days: DaySignups[] = [day('2026-05-01', 0, chapters)];
 		const frame = buildDetailFrame(days);

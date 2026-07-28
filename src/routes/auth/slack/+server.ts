@@ -29,4 +29,4 @@ export const GET: RequestHandler = async ({ cookies }) => {
 	});
 
 	redirect(302, `https://slack.com/oauth/v2/authorize?${params}`);
-}
+};

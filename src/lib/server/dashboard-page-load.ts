@@ -9,9 +9,7 @@ import {
 import { db } from './db.js';
 import { loadSettings } from './settings.js';
 
-export type SourceResult =
-	| { ok: true; days: DaySignups[] }
-	| { ok: false; error: string };
+export type SourceResult = { ok: true; days: DaySignups[] } | { ok: false; error: string };
 
 export interface DashboardPageData {
 	days: DashboardDaysPreset;
@@ -30,10 +28,7 @@ interface DashboardLoadEvent {
 
 const GENERIC_LOAD_ERROR = 'Failed to load signups. Please try again.';
 
-function settledResult(
-	label: string,
-	settled: PromiseSettledResult<DaySignups[]>,
-): SourceResult {
+function settledResult(label: string, settled: PromiseSettledResult<DaySignups[]>): SourceResult {
 	if (settled.status === 'fulfilled') return { ok: true, days: settled.value };
 	const err = settled.reason;
 	console.error(`[dashboard] ${label} load failed:`, err instanceof Error ? err.message : err);
@@ -41,9 +36,7 @@ function settledResult(
 }
 
 // Shared load body for `/`, `/dashboard/solidarity`, and `/dashboard/slack`.
-export async function loadDashboardPageData(
-	event: DashboardLoadEvent,
-): Promise<DashboardPageData> {
+export async function loadDashboardPageData(event: DashboardLoadEvent): Promise<DashboardPageData> {
 	// The +layout.server.ts guard runs concurrently with page loads (SvelteKit
 	// does not order them), so it can't protect this pipeline — check the
 	// session here before doing any DB or Slack work.

@@ -64,11 +64,7 @@ export function firstChannelByChapter(
 export function computeWindow(now: Date): { start: Date; end: Date } {
 	const day = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
 	const daysBackToMonday = day === 0 ? 6 : day - 1;
-	const todayMidnightMs = Date.UTC(
-		now.getUTCFullYear(),
-		now.getUTCMonth(),
-		now.getUTCDate()
-	);
+	const todayMidnightMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
 	const endMs = todayMidnightMs - daysBackToMonday * 24 * 60 * 60 * 1000;
 	const end = new Date(endMs);
 	const start = new Date(endMs - WINDOW_DAYS * 24 * 60 * 60 * 1000);
@@ -92,9 +88,10 @@ function chapterMention(c: ChapterGrowth): string {
 
 function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): KnownBlock[] {
 	const winner = top[0]!;
-	const winnerSummary = winner.existing > 0
-		? `Grew their Slack chapter by *${roundPct(winner.pct)}%* with *${winner.newJoins} new* member${winner.newJoins === 1 ? '' : 's'} this week.`
-		: `Welcomed *${winner.newJoins}* new Slack member${winner.newJoins === 1 ? '' : 's'} — and they're brand new on Slack!`;
+	const winnerSummary =
+		winner.existing > 0
+			? `Grew their Slack chapter by *${roundPct(winner.pct)}%* with *${winner.newJoins} new* member${winner.newJoins === 1 ? '' : 's'} this week.`
+			: `Welcomed *${winner.newJoins}* new Slack member${winner.newJoins === 1 ? '' : 's'} — and they're brand new on Slack!`;
 
 	const blocks: KnownBlock[] = [
 		{ type: 'header', text: { type: 'plain_text', text: '📈 Weekly Growth Report', emoji: true } },
@@ -121,9 +118,10 @@ function buildBlocks(top: ChapterGrowth[], windowStart: Date, windowEnd: Date): 
 	if (top.length > 1) {
 		const lines = top.slice(1).map((r, i) => {
 			const place = i + 2;
-			const detail = r.existing > 0
-				? `+${r.newJoins} (${roundPct(r.pct)}% growth)`
-				: `+${r.newJoins} (brand new on Slack)`;
+			const detail =
+				r.existing > 0
+					? `+${r.newJoins} (${roundPct(r.pct)}% growth)`
+					: `+${r.newJoins} (brand new on Slack)`;
 			return `*${place}.* ${chapterMention(r)} — ${detail}`;
 		});
 		blocks.push({
@@ -148,8 +146,7 @@ export interface WeeklyLeaderboard {
 
 /** A leaderboard load that either succeeded or failed with a user-facing message. */
 export type LeaderboardResult =
-	| { ok: true; leaderboard: WeeklyLeaderboard }
-	| { ok: false; error: string };
+	{ ok: true; leaderboard: WeeklyLeaderboard } | { ok: false; error: string };
 
 /** The two leaderboard views the dashboard renders behind a tab toggle:
  * `saved` is the last cron snapshot, `live` is the in-progress week. */
@@ -272,10 +269,7 @@ export function clearChannelCountCache(): void {
  * Returns null when the channel reports no `num_members` or the lookup fails
  * (the caller then falls back to the snapshot / slack_joins counts).
  */
-async function getChannelMemberCount(
-	slack: WebClient,
-	channelId: string,
-): Promise<number | null> {
+async function getChannelMemberCount(slack: WebClient, channelId: string): Promise<number | null> {
 	const now = Date.now();
 	const cached = channelCountCache.get(channelId);
 	if (cached && now - cached.fetchedAt < CHANNEL_COUNT_TTL_MS) {
@@ -396,8 +390,7 @@ export async function computeLiveLeaderboardSinceSnapshot(
 	const leaderboard: ChapterGrowth[] = await Promise.all(
 		candidates.map(async (c) => {
 			const snap = snapshotByChapter.get(c.chapterId);
-			const chapterName =
-				snap?.chapterName ?? names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
+			const chapterName = snap?.chapterName ?? names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
 			const slackChannelId = chapterChannelIds?.get(c.chapterId) ?? snap?.slackChannelId ?? null;
 
 			// Baseline chapter size. Prefer the *current* Slack channel count
@@ -595,7 +588,7 @@ export async function runWeeklyGrowthReport(
 	const leaderboard: Array<ChapterGrowth & { numMembers: number | null }> = enriched.map((c) => {
 		const chapterName = c.slackChannelName
 			? `#${c.slackChannelName}`
-			: names.get(c.chapterId) ?? `Chapter #${c.chapterId}`;
+			: (names.get(c.chapterId) ?? `Chapter #${c.chapterId}`);
 		const pct = c.existing > 0 ? (c.newJoins / c.existing) * 100 : 0;
 		return {
 			chapterId: c.chapterId,

@@ -1,5 +1,9 @@
 <script lang="ts">
-	import type { LeaderboardPair, WeeklyLeaderboard, ChapterGrowth } from '$lib/server/weekly-growth-report';
+	import type {
+		LeaderboardPair,
+		WeeklyLeaderboard,
+		ChapterGrowth,
+	} from '$lib/server/weekly-growth-report';
 	import LeaderboardCard, { type LeaderboardTab } from './LeaderboardCard.svelte';
 
 	type Props = { leaderboard: LeaderboardPair };

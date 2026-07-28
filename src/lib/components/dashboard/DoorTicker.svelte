@@ -81,8 +81,8 @@
 				<!-- No separators between count, unit and region: colour does that
 				     job, and a punctuation glyph would just eat LED columns. -->
 				<span class="cell__doors"
-					><span class="cell__count">{entry.doors.toLocaleString('en-US')}</span
-					><span class="cell__unit">doors</span
+					><span class="cell__count">{entry.doors.toLocaleString('en-US')}</span><span
+						class="cell__unit">doors</span
 					>{#if entry.chapter}<span class="cell__region">{entry.chapter}</span>{/if}</span
 				>
 			</div>
@@ -102,9 +102,7 @@
 	<ol class="ticker__sr" aria-label="Most doors knocked today">
 		{#each entries as entry (entry.canvasser)}
 			<li>
-				{entry.canvasser}: {entry.doors} doors knocked{entry.chapter
-					? ` in ${entry.chapter}`
-					: ''}
+				{entry.canvasser}: {entry.doors} doors knocked{entry.chapter ? ` in ${entry.chapter}` : ''}
 			</li>
 		{/each}
 	</ol>
@@ -130,13 +128,7 @@
 		inset: 0;
 		pointer-events: none;
 		z-index: 2;
-		background: linear-gradient(
-			90deg,
-			#07070a 0%,
-			transparent 6%,
-			transparent 94%,
-			#07070a 100%
-		);
+		background: linear-gradient(90deg, #07070a 0%, transparent 6%, transparent 94%, #07070a 100%);
 	}
 
 	/* Static caption line, the way a real board holds a fixed label above the

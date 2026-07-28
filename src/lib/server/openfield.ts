@@ -159,9 +159,7 @@ export function createOpenfieldClient(
 		},
 
 		async fetchToday(conversationId: number): Promise<OpenfieldLeaderboardRow[]> {
-			const res = await authed(() =>
-				get(`/endpoint/${conversationId}/today/?search=&order=asc`),
-			);
+			const res = await authed(() => get(`/endpoint/${conversationId}/today/?search=&order=asc`));
 			if (res.status !== 200) {
 				throw new Error(`openfield: /endpoint/${conversationId}/today/ returned ${res.status}`);
 			}

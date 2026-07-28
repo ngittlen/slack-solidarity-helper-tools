@@ -38,8 +38,5 @@ export function clampTickerColumnsPerSecond(value: number | null | undefined): n
 	if (typeof value !== 'number' || !Number.isFinite(value)) {
 		return DEFAULT_TICKER_COLUMNS_PER_SECOND;
 	}
-	return Math.min(
-		MAX_TICKER_COLUMNS_PER_SECOND,
-		Math.max(MIN_TICKER_COLUMNS_PER_SECOND, value),
-	);
+	return Math.min(MAX_TICKER_COLUMNS_PER_SECOND, Math.max(MIN_TICKER_COLUMNS_PER_SECOND, value));
 }

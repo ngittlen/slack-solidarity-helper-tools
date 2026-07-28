@@ -383,7 +383,9 @@ describe('US4: failure handling and stale-serve', () => {
 		const stale = await getSlackChannels(slack);
 		expect(stale.stale).toBe(true);
 		expect(stale.items[0]?.id).toBe('C1');
-		expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/^\[autocomplete] channels refetch failed/));
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringMatching(/^\[autocomplete] channels refetch failed/),
+		);
 
 		// The entry was NOT updated, so the next call retries the upstream and
 		// — when it succeeds — replaces the cache (FR-010a final clause).

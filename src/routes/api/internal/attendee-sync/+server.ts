@@ -3,11 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { runSolidarityAttendeeSync } from '$lib/server/attendee-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
-import {
-	INTERNAL_CRON_SECRET,
-	MOBILIZE_API_KEY,
-	SOLIDARITY_API_TOKEN,
-} from '$lib/server/env.js';
+import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 
 // Mirrors Mobilize signups into Solidarity as event RSVPs, so organizers only
 // have to look in one place. Auth via ?key=<INTERNAL_CRON_SECRET>.
@@ -104,7 +100,10 @@ export const POST: RequestHandler = async ({ url }) => {
 		if (result.failed > 0) {
 			await alert(
 				`:warning: Attendee sync had ${result.failed} failure(s):\n` +
-					result.errors.slice(0, 5).map((e) => `• ${e}`).join('\n'),
+					result.errors
+						.slice(0, 5)
+						.map((e) => `• ${e}`)
+						.join('\n'),
 			);
 		}
 

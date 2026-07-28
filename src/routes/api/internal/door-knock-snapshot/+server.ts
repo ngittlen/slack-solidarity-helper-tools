@@ -5,10 +5,7 @@ import { slack } from '$lib/server/slack.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { runDoorKnockSnapshot, UNMAPPED_CHAPTER } from '$lib/server/door-knock-snapshot.js';
 import { doorKnockSnapshotDeps } from '$lib/server/door-knock-env.js';
-import {
-	beginDoorKnockRefresh,
-	endDoorKnockRefresh,
-} from '$lib/server/door-knock-refresh.js';
+import { beginDoorKnockRefresh, endDoorKnockRefresh } from '$lib/server/door-knock-refresh.js';
 import { INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 
 // Internal endpoint called by a scheduler near the end of the canvassing day

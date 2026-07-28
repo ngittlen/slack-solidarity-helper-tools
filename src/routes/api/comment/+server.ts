@@ -23,10 +23,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	await db
 		.update(requests)
-		.set({ comment: trimmedComment, lastEditedById: locals.session.slackUserId, lastEditedByName: editorName })
+		.set({
+			comment: trimmedComment,
+			lastEditedById: locals.session.slackUserId,
+			lastEditedByName: editorName,
+		})
 		.where(eq(requests.id, id));
 
 	notifyComment(id, trimmedComment, editorName);
 
 	return json({ success: true });
-}
+};

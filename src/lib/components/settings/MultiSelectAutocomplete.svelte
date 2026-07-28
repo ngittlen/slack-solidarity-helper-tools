@@ -101,12 +101,7 @@
 	}
 </script>
 
-<Combobox.Root
-	type="multiple"
-	value={stringValues}
-	onValueChange={handleValueChange}
-	disabled={disabled}
->
+<Combobox.Root type="multiple" value={stringValues} onValueChange={handleValueChange} {disabled}>
 	<div class="mpicker-row" class:mpicker-disabled={disabled}>
 		{#each selectedChips as chip (chip.id)}
 			<span class="mpicker-chip" class:mpicker-chip-locked={chip.locked}>
@@ -115,7 +110,7 @@
 						type="checkbox"
 						class="mpicker-chip-checkbox"
 						checked={chipCheckbox.isChecked(chip.id)}
-						disabled={disabled}
+						{disabled}
 						title={chipCheckbox.label(chip.label)}
 						aria-label={chipCheckbox.label(chip.label)}
 						onchange={(e) => chipCheckbox.onToggle(chip.id, e.currentTarget.checked)}

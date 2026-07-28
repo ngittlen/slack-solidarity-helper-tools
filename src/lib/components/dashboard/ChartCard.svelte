@@ -42,9 +42,7 @@
 
 	let isRetrying = $state(false);
 
-	const headingId = $derived(
-		'chart-card-' + title.toLowerCase().replace(/[^a-z0-9]+/g, '-')
-	);
+	const headingId = $derived('chart-card-' + title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
 
 	const displayState = $derived<CardState>(isRetrying ? { kind: 'loading' } : cardState);
 
@@ -145,8 +143,8 @@
 			class:chart-card__legend-note--hidden={mode === 'overview'}
 			aria-hidden={mode === 'overview'}
 		>
-			Members in multiple chapters are counted in each band but only once in the daily total
-			(shown as the dark marker on each bar).
+			Members in multiple chapters are counted in each band but only once in the daily total (shown
+			as the dark marker on each bar).
 		</p>
 	{/if}
 </section>

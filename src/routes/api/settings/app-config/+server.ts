@@ -6,10 +6,7 @@ import { saveAppConfig, type AppConfigPatch, type Editor } from '$lib/server/set
 import { validateSlackChannel } from '$lib/server/settings-validation.js';
 import { getSlackChannels } from '$lib/server/autocomplete-sources.js';
 import { extractChannelNames } from '$lib/welcome-dm.js';
-import {
-	MAX_TICKER_COLUMNS_PER_SECOND,
-	MIN_TICKER_COLUMNS_PER_SECOND,
-} from '$lib/ticker-speed.js';
+import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '$lib/ticker-speed.js';
 
 // App-config writes for the settings page. The body is a patch: only the keys
 // present are validated and written (saveAppConfig's set-only contract keeps
@@ -84,7 +81,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	// Contact fields use '' as the explicit "not configured" value, same as the
 	// countdown, so clearing one falls back to its MOBILIZE_CONTACT_* env var.
-	for (const key of ['mobilizeContactName', 'mobilizeContactEmail', 'mobilizeContactPhone'] as const) {
+	for (const key of [
+		'mobilizeContactName',
+		'mobilizeContactEmail',
+		'mobilizeContactPhone',
+	] as const) {
 		const value = body[key];
 		if (value === undefined) continue;
 		if (typeof value !== 'string' || value.trim().length > CONTACT_FIELD_MAX_LENGTH) {
@@ -136,7 +137,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const label = body.countdownLabel;
 		if (typeof label !== 'string' || label.trim().length > COUNTDOWN_LABEL_MAX_LENGTH) {
 			return json(
-				{ error: `countdownLabel must be a string of at most ${COUNTDOWN_LABEL_MAX_LENGTH} characters` },
+				{
+					error: `countdownLabel must be a string of at most ${COUNTDOWN_LABEL_MAX_LENGTH} characters`,
+				},
 				{ status: 400 },
 			);
 		}
@@ -166,7 +169,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const message = body.welcomeDmMessage;
 		if (typeof message !== 'string' || message.length > WELCOME_DM_MAX_LENGTH) {
 			return json(
-				{ error: `welcomeDmMessage must be a string of at most ${WELCOME_DM_MAX_LENGTH} characters` },
+				{
+					error: `welcomeDmMessage must be a string of at most ${WELCOME_DM_MAX_LENGTH} characters`,
+				},
 				{ status: 400 },
 			);
 		}

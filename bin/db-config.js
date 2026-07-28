@@ -5,7 +5,9 @@
 
 const url = process.env.TURSO_DATABASE_URL;
 if (!url) {
-	throw new Error('TURSO_DATABASE_URL is not set. For drizzle-kit, did you forget --env-file=.env.local?');
+	throw new Error(
+		'TURSO_DATABASE_URL is not set. For drizzle-kit, did you forget --env-file=.env.local?',
+	);
 }
 
 const authToken = process.env.TURSO_AUTH_TOKEN;

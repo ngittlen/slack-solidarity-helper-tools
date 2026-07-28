@@ -5,9 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // pulls rows from a queue and whose `insert`/`delete` chains record what they
 // were called with into capturable arrays.
 vi.mock('./env.js', () => ({
-	SOLIDARITY_CHAPTER_CHANNEL_MAP: [
-		{ chapterId: 1, channelId: 'C_ENV_CHAP', name: 'Env Chapter' },
-	],
+	SOLIDARITY_CHAPTER_CHANNEL_MAP: [{ chapterId: 1, channelId: 'C_ENV_CHAP', name: 'Env Chapter' }],
 	SLACK_ALLOWED_USER_IDS: new Set(['U_ENV_ALICE']),
 	REPORT_EXCLUDED_CHAPTER_IDS: new Set([99]),
 	SLACK_TRACKING_CHANNEL_ID: 'C_ENV_TRACK',
@@ -635,11 +633,7 @@ describe('settings setters — Story 3', () => {
 		const db = makeDb();
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 
-		await saveAllowedUser(
-			db as never,
-			{ slackUserId: 'U_BOB', displayName: 'Bob' },
-			editor,
-		);
+		await saveAllowedUser(db as never, { slackUserId: 'U_BOB', displayName: 'Bob' }, editor);
 
 		const [captured] = db._capturedInserts();
 		expect(captured!.table).toBe(allowedSlackUsers);
@@ -677,11 +671,7 @@ describe('settings setters — Story 3', () => {
 		const db = makeDb();
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 
-		await saveExcludedChapter(
-			db as never,
-			{ chapterId: 99, reason: 'internal-only' },
-			editor,
-		);
+		await saveExcludedChapter(db as never, { chapterId: 99, reason: 'internal-only' }, editor);
 
 		const [captured] = db._capturedInserts();
 		expect((captured!.values as { reason: string }).reason).toBe('internal-only');
@@ -869,9 +859,7 @@ describe('settings setters — Story 3', () => {
 		db._pushSelect([]);
 
 		const result = await loadSettings(db as never);
-		expect(result.chapterChannelMap).toEqual([
-			{ chapterId: 11, channelId: 'C_NEW', name: 'New' },
-		]);
+		expect(result.chapterChannelMap).toEqual([{ chapterId: 11, channelId: 'C_NEW', name: 'New' }]);
 	});
 });
 

@@ -37,7 +37,9 @@ describe('GET /coalition-invite', () => {
 	});
 
 	it('returns 401 when secret is wrong', async () => {
-		const res = await GET(makeEvent({ secret: 'wrong', email: 'a@b.com', coalition: 'labor' }) as never);
+		const res = await GET(
+			makeEvent({ secret: 'wrong', email: 'a@b.com', coalition: 'labor' }) as never,
+		);
 		expect(res.status).toBe(401);
 		expect(await res.json()).toEqual({ error: 'Unauthorized' });
 		expect(mockLookupByEmail).not.toHaveBeenCalled();

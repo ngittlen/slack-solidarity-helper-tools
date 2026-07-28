@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createFieldAutosave } from './use-field-autosave.svelte.js';
 
 /** A controllable promise for `save`/`validate` mocks. */
-function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+function deferred<T>(): {
+	promise: Promise<T>;
+	resolve: (v: T) => void;
+	reject: (e: unknown) => void;
+} {
 	let resolve!: (v: T) => void;
 	let reject!: (e: unknown) => void;
 	const promise = new Promise<T>((res, rej) => {
@@ -54,7 +58,6 @@ describe('debounce', () => {
 		expect(save).toHaveBeenCalledWith('ab');
 	});
 });
-
 
 describe('FR-015a single-flight serialization', () => {
 	it('holds new input while a save is in flight and fires one trailing save with the latest value after the in-flight resolves', async () => {
@@ -146,7 +149,10 @@ describe('save rejection', () => {
 
 describe('retry()', () => {
 	it('re-fires save with the buffered value and transitions through saving', async () => {
-		const saveErr = vi.fn().mockRejectedValueOnce(new Error('flaky')).mockResolvedValueOnce(undefined);
+		const saveErr = vi
+			.fn()
+			.mockRejectedValueOnce(new Error('flaky'))
+			.mockResolvedValueOnce(undefined);
 		const f = createFieldAutosave<string>({ initial: '', save: saveErr });
 
 		f.oninput(inputEvent('x'));
@@ -233,7 +239,7 @@ describe('flush()', () => {
 		expect(save).toHaveBeenCalledTimes(1);
 		expect(save).toHaveBeenCalledWith('hello');
 	});
-    
+
 	it('from saving-with-dirty: also dispatches the buffered trailing save', async () => {
 		vi.useRealTimers();
 		const first = deferred<void>();

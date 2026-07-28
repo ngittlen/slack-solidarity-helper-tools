@@ -123,7 +123,8 @@ async function main() {
 
 	do {
 		const page = await bot.users.list({ limit: 200, cursor });
-		const nextCursor = (page.response_metadata as { next_cursor?: string } | undefined)?.next_cursor;
+		const nextCursor = (page.response_metadata as { next_cursor?: string } | undefined)
+			?.next_cursor;
 		cursor = nextCursor || undefined;
 
 		const members = (page.members ?? []) as Array<{
@@ -143,8 +144,7 @@ async function main() {
 
 			const info = await bot.users.info({ user: member.id });
 			const fullUser = info.user as
-				| (SlackUserDates & { id: string; profile?: { email?: string } })
-				| undefined;
+				(SlackUserDates & { id: string; profile?: { email?: string } }) | undefined;
 
 			if (!printedSampleUser && fullUser && !member.is_bot) {
 				console.log('--- sample users.info payload (first non-bot) ---');

@@ -34,8 +34,7 @@ const canvasWatcher =
 				db,
 				findCanvasFileId: async () =>
 					(await findCodesCanvasFile(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID)).fileId,
-				fetchCanvasHtml: () =>
-					fetchConversationCodesCanvas(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID),
+				fetchCanvasHtml: () => fetchConversationCodesCanvas(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID),
 				openfield: createOpenfieldClient({
 					baseUrl: OPENFIELD_BASE_URL,
 					username: OPENFIELD_USERNAME,
@@ -153,7 +152,9 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 	const info = await slack.users.info({ user: user.id });
 	const email = (info.user as { profile?: { email?: string } } | undefined)?.profile?.email;
 	if (!email) {
-		console.log(`[slack-events] team_join for ${user.id} — no email returned by users.info, skipping`);
+		console.log(
+			`[slack-events] team_join for ${user.id} — no email returned by users.info, skipping`,
+		);
 		return;
 	}
 
@@ -173,9 +174,7 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		await loadSettingsWithRetry();
 	const channelIds = [
 		...new Set(
-			chapterChannelMap
-				.filter((e) => chapterIds.includes(e.chapterId))
-				.map((e) => e.channelId),
+			chapterChannelMap.filter((e) => chapterIds.includes(e.chapterId)).map((e) => e.channelId),
 		),
 	];
 
@@ -209,9 +208,10 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 	}
 }
 
-function resolveChapterIds(
-	solidarityUser: { chapter_id?: number | null; chapter_ids?: number[] },
-): number[] {
+function resolveChapterIds(solidarityUser: {
+	chapter_id?: number | null;
+	chapter_ids?: number[];
+}): number[] {
 	if (solidarityUser.chapter_ids?.length) return solidarityUser.chapter_ids;
 	if (solidarityUser.chapter_id != null) return [solidarityUser.chapter_id];
 	return [];

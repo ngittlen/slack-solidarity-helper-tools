@@ -185,7 +185,9 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 	});
 
 	it('returns 500 with the error message when the snapshot throws', async () => {
-		mockRunSnapshot.mockRejectedValueOnce(new Error('no conversation codes parsed from the canvas'));
+		mockRunSnapshot.mockRejectedValueOnce(
+			new Error('no conversation codes parsed from the canvas'),
+		);
 		const res = await POST(makeReq('?key=test-cron-secret') as never);
 		expect(res.status).toBe(500);
 		expect(await res.json()).toEqual({ error: 'no conversation codes parsed from the canvas' });

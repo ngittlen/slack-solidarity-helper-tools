@@ -134,7 +134,8 @@ function bucketByChapter(
 		.map(([chapterId, count]) => ({
 			date: dateStr,
 			chapterId,
-			chapterName: chapterId === NULL_CHAPTER_SENTINEL ? null : chapterNames.get(chapterId) ?? null,
+			chapterName:
+				chapterId === NULL_CHAPTER_SENTINEL ? null : (chapterNames.get(chapterId) ?? null),
 			count,
 		}));
 	// Distinct-user count for the day — emitted only when at least one user

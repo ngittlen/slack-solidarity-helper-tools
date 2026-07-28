@@ -168,9 +168,7 @@ export function reconcileTimeslots(
 	});
 
 	// Only upcoming orphans need preserving; past ones are immune to the PUT.
-	const orphans = liveSlots.filter(
-		(slot) => !consumed.has(slot.id) && slot.end_date * 1000 > now,
-	);
+	const orphans = liveSlots.filter((slot) => !consumed.has(slot.id) && slot.end_date * 1000 > now);
 	for (const orphan of orphans) {
 		timeslots.push({
 			id: orphan.id,
@@ -274,9 +272,11 @@ export async function runSync(
 		if (record) {
 			toSync.push({ plan, record });
 		} else {
-			const duplicate = findDuplicate(plan, existing) as
-				| { mobilizeEventId: number; mobilizeTitle: string; reason: string }
-				| null;
+			const duplicate = findDuplicate(plan, existing) as {
+				mobilizeEventId: number;
+				mobilizeTitle: string;
+				reason: string;
+			} | null;
 			if (duplicate) {
 				// Created by hand in Mobilize; we don't own it, so leave it alone.
 				report.skippedExisting++;

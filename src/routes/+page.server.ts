@@ -112,10 +112,7 @@ export const load: PageServerLoad = async (event) => {
 	let doorKnockRefreshDue = false;
 	if (isDoorKnockConfigured()) {
 		try {
-			doorKnockRefreshDue = needsDoorKnockRefresh(
-				await readDoorKnockRefreshStatus(db),
-				Date.now(),
-			);
+			doorKnockRefreshDue = needsDoorKnockRefresh(await readDoorKnockRefreshStatus(db), Date.now());
 		} catch (err) {
 			console.error(
 				'[dashboard] door-knock refresh status read failed:',

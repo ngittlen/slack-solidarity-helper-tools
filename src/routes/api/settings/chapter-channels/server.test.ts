@@ -115,7 +115,11 @@ describe('POST /api/settings/chapter-channels', () => {
 	});
 
 	it('add: 400 when the channel id is not a valid choice, nothing written', async () => {
-		mockValidateChannel.mockResolvedValue({ ok: false, error: 'Not a valid Slack channel choice.', transient: false });
+		mockValidateChannel.mockResolvedValue({
+			ok: false,
+			error: 'Not a valid Slack channel choice.',
+			transient: false,
+		});
 		const res = await POST(
 			makeEvent(authed, { action: 'add', chapterIds: [1], channelId: 'C_BAD' }) as never,
 		);

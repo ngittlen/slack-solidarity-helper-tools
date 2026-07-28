@@ -127,7 +127,10 @@ describe('fetchConversationCodesCanvas', () => {
 				});
 			}
 			if (url.includes('files.info?file=F_OTHER') || url.includes('file=F_OTHER')) {
-				return jsonRes({ ok: true, file: { title: 'Using Openfield', url_private: 'https://dl/other' } });
+				return jsonRes({
+					ok: true,
+					file: { title: 'Using Openfield', url_private: 'https://dl/other' },
+				});
 			}
 			if (url.includes('file=F_CODES')) {
 				return jsonRes({
@@ -157,7 +160,10 @@ describe('fetchConversationCodesCanvas', () => {
 				});
 			}
 			if (url.includes('file=F_CODES')) {
-				return jsonRes({ ok: true, file: { title: 'Conversation Codes', url_private: 'https://dl/codes' } });
+				return jsonRes({
+					ok: true,
+					file: { title: 'Conversation Codes', url_private: 'https://dl/codes' },
+				});
 			}
 			if (url === 'https://dl/codes') {
 				return { ok: true, text: async () => CANVAS_FIXTURE, json: async () => ({}) };

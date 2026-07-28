@@ -34,7 +34,7 @@
 	<AlertDialog.Root bind:open>
 		<AlertDialog.Trigger
 			class="delete-confirm-trigger"
-			disabled={disabled}
+			{disabled}
 			onclick={() => {
 				error = null;
 			}}

@@ -60,9 +60,7 @@ async function resolveOwnChannelIds(
 		if (chapterIds.length === 0) return [];
 		return [
 			...new Set(
-				chapterChannelMap
-					.filter((e) => chapterIds.includes(e.chapterId))
-					.map((e) => e.channelId),
+				chapterChannelMap.filter((e) => chapterIds.includes(e.chapterId)).map((e) => e.channelId),
 			),
 		];
 	} catch {

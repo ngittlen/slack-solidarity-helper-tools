@@ -39,7 +39,10 @@ export class TursoStore {
 			}
 			return JSON.parse(row.data) as SessionData;
 		} catch (err) {
-			console.warn('[session] failed to load session — treating as no session:', err instanceof Error ? err.message : err);
+			console.warn(
+				'[session] failed to load session — treating as no session:',
+				err instanceof Error ? err.message : err,
+			);
 			return null;
 		}
 	}

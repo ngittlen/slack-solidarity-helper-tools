@@ -5,7 +5,7 @@ const mockLoadSettings = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({
 	sessionStore: { set: mockSessionSet },
-	db: {}
+	db: {},
 }));
 
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
@@ -172,14 +172,17 @@ describe('GET /auth/slack/callback', () => {
 	});
 
 	it('rejects with 400 on OAuth state mismatch (preserved behavior)', async () => {
-		await expect(
-			GET(makeEvent({ state: 'A', cookieState: 'B' }) as never),
-		).rejects.toMatchObject({ status: 400 });
+		await expect(GET(makeEvent({ state: 'A', cookieState: 'B' }) as never)).rejects.toMatchObject({
+			status: 400,
+		});
 		expect(mockSessionSet).not.toHaveBeenCalled();
 	});
 
 	it('rejects with 502 when Slack token exchange fails (preserved behavior)', async () => {
-		vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonRes({ ok: false, error: 'invalid_code' })));
+		vi.stubGlobal(
+			'fetch',
+			vi.fn().mockResolvedValueOnce(jsonRes({ ok: false, error: 'invalid_code' })),
+		);
 
 		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 502 });
 		expect(mockSessionSet).not.toHaveBeenCalled();

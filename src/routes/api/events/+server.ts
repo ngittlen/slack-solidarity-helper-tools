@@ -20,7 +20,10 @@ export const GET: RequestHandler = ({ locals }) => {
 					controller.enqueue(`data: ${data}\n\n`);
 				} catch (err) {
 					// Controller already closed (e.g. client disconnected mid-broadcast)
-					console.error('[events] enqueue failed, unsubscribing:', err instanceof Error ? err.message : err);
+					console.error(
+						'[events] enqueue failed, unsubscribing:',
+						err instanceof Error ? err.message : err,
+					);
 					clearInterval(keepAlive);
 					unsubscribe?.();
 				}

@@ -15,8 +15,7 @@ import { createOpenfieldClient } from './openfield.js';
 import type { DoorKnockSnapshotDeps } from './door-knock-snapshot.js';
 
 export type DoorKnockDepsResult =
-	| { ok: true; deps: DoorKnockSnapshotDeps }
-	| { ok: false; error: string };
+	{ ok: true; deps: DoorKnockSnapshotDeps } | { ok: false; error: string };
 
 /** True when every env var the snapshot needs is set. Callers that must not
  *  surface an error (the dashboard) use this to stay silent when the Openfield
@@ -35,8 +34,7 @@ export function doorKnockSnapshotDeps(): DoorKnockDepsResult {
 	return {
 		ok: true,
 		deps: {
-			fetchCanvasHtml: () =>
-				fetchConversationCodesCanvas(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID),
+			fetchCanvasHtml: () => fetchConversationCodesCanvas(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID),
 			openfield: createOpenfieldClient({
 				baseUrl: OPENFIELD_BASE_URL,
 				username: OPENFIELD_USERNAME,

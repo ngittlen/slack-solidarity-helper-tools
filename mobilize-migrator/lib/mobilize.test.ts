@@ -63,7 +63,11 @@ describe('createEvent envelope', () => {
 		// failures like a timeslot more than five years out.
 		stubResponse(200, {
 			data: null,
-			error: { timeslots: [{ non_field_errors: ['Cannot create timeslots more than 5 years in the future'] }] },
+			error: {
+				timeslots: [
+					{ non_field_errors: ['Cannot create timeslots more than 5 years in the future'] },
+				],
+			},
 		});
 		await expect(createEvent(API, {})).rejects.toThrow(/5 years/);
 	});

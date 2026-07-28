@@ -32,9 +32,7 @@
 	let tab = $state<LeaderboardTab>('thisWeek');
 	const active = $derived(tab === 'lastWeek' ? lastWeek : thisWeek);
 
-	const headingId = $derived(
-		'leaderboard-' + title.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-	);
+	const headingId = $derived('leaderboard-' + title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
 
 	function fmtDate(iso: string): string {
 		return iso.slice(0, 10);

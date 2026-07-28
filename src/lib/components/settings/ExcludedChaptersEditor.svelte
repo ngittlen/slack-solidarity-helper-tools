@@ -106,15 +106,14 @@
 
 <div class="excluded-chapters-editor">
 	<p class="excluded-chapters-intro">
-		Excluded chapters are left out of the <strong>weekly growth report</strong> posted to Slack
-		and the <strong>dashboard signup charts</strong> — use this for test or internal-only
-		chapters. Exclusion doesn’t affect anything else: new members of these chapters are still
-		invited to their mapped channels.
+		Excluded chapters are left out of the <strong>weekly growth report</strong> posted to Slack and
+		the <strong>dashboard signup charts</strong> — use this for test or internal-only chapters. Exclusion
+		doesn’t affect anything else: new members of these chapters are still invited to their mapped channels.
 	</p>
 	<SettingsRow
 		label="Excluded from reports"
-		status={status}
-		error={error}
+		{status}
+		{error}
 		onRetry={lastFailedOp ? retry : undefined}
 	>
 		<MultiSelectAutocomplete

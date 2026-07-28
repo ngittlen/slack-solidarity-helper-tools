@@ -6,10 +6,7 @@ import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import { loadSettings, type Settings } from '$lib/server/settings.js';
-import {
-	loadDoorKnockTicker,
-	type TickerEntry,
-} from '$lib/server/door-knock-ticker.js';
+import { loadDoorKnockTicker, type TickerEntry } from '$lib/server/door-knock-ticker.js';
 import {
 	computeWeeklyLeaderboard,
 	computeLiveLeaderboardSinceSnapshot,
@@ -92,15 +89,21 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// All six sources run in parallel via Promise.allSettled so any one
 	// rejection degrades just its source rather than blowing up the page —
 	// except loadSettings, which is page-fatal (see below).
-	const [settingsResult, channelsResult, usersResult, chaptersResult, propertiesResult, listsResult] =
-		await Promise.allSettled([
-			loadSettings(db),
-			getSlackChannels(slack, { force }),
-			getSlackUsers(slack, { force }),
-			getSolidarityChapters(SOLIDARITY_API_TOKEN, { force }),
-			getSolidarityCustomProperties(SOLIDARITY_API_TOKEN, { force }),
-			getSolidarityUserLists(SOLIDARITY_API_TOKEN, { force }),
-		]);
+	const [
+		settingsResult,
+		channelsResult,
+		usersResult,
+		chaptersResult,
+		propertiesResult,
+		listsResult,
+	] = await Promise.allSettled([
+		loadSettings(db),
+		getSlackChannels(slack, { force }),
+		getSlackUsers(slack, { force }),
+		getSolidarityChapters(SOLIDARITY_API_TOKEN, { force }),
+		getSolidarityCustomProperties(SOLIDARITY_API_TOKEN, { force }),
+		getSolidarityUserLists(SOLIDARITY_API_TOKEN, { force }),
+	]);
 
 	if (settingsResult.status === 'rejected') {
 		console.error('[settings] loadSettings failed', settingsResult.reason);
@@ -108,23 +111,19 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	}
 
 	const errors: SettingsPageData['errors'] = {};
-	const slackChannels =
-		channelsResult.status === 'fulfilled' ? channelsResult.value : null;
+	const slackChannels = channelsResult.status === 'fulfilled' ? channelsResult.value : null;
 	if (channelsResult.status === 'rejected') {
 		errors.slackChannels = errMessage(channelsResult.reason);
 	}
-	const slackUsers =
-		usersResult.status === 'fulfilled' ? usersResult.value : null;
+	const slackUsers = usersResult.status === 'fulfilled' ? usersResult.value : null;
 	if (usersResult.status === 'rejected') {
 		errors.slackUsers = errMessage(usersResult.reason);
 	}
-	const solidarityChapters =
-		chaptersResult.status === 'fulfilled' ? chaptersResult.value : null;
+	const solidarityChapters = chaptersResult.status === 'fulfilled' ? chaptersResult.value : null;
 	if (chaptersResult.status === 'rejected') {
 		errors.solidarityChapters = errMessage(chaptersResult.reason);
 	}
-	const customProperties =
-		propertiesResult.status === 'fulfilled' ? propertiesResult.value : null;
+	const customProperties = propertiesResult.status === 'fulfilled' ? propertiesResult.value : null;
 	if (propertiesResult.status === 'rejected') {
 		errors.customProperties = errMessage(propertiesResult.reason);
 	}

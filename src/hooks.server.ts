@@ -10,7 +10,9 @@ export async function init() {
 	// The endpoint itself also requires dev mode, but refuse to boot at all if
 	// the var leaks into a production environment (e.g. a copied .env).
 	if (!dev && (env as Record<string, string | undefined>)['DEV_SLACK_USER_ID']) {
-		console.error('DEV_SLACK_USER_ID must not be set in production — it enables the dev-login auth bypass.');
+		console.error(
+			'DEV_SLACK_USER_ID must not be set in production — it enables the dev-login auth bypass.',
+		);
 		process.exit(1);
 	}
 }

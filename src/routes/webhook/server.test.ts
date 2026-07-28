@@ -105,7 +105,12 @@ describe('GET /webhook', () => {
 
 	it('trims whitespace from email, name, and phone', async () => {
 		const res = await GET(
-			makeEvent({ secret: 'secret123', email: '  a@b.com  ', name: ' Alice ', phone: ' 555 ' }) as never,
+			makeEvent({
+				secret: 'secret123',
+				email: '  a@b.com  ',
+				name: ' Alice ',
+				phone: ' 555 ',
+			}) as never,
 		);
 		expect(res.status).toBe(200);
 		const json = await res.json();
@@ -159,9 +164,7 @@ describe('GET /webhook', () => {
 		// assertions below would catch.)
 		mockSelectLimit.mockResolvedValueOnce([{ id: 7 }]);
 
-		await GET(
-			makeEvent({ secret: 'secret123', email: 'a@b.com', phone: '555' }) as never,
-		);
+		await GET(makeEvent({ secret: 'secret123', email: 'a@b.com', phone: '555' }) as never);
 
 		expect(mockSelect).toHaveBeenCalledTimes(1);
 		expect(mockUpdate).toHaveBeenCalledTimes(1);
@@ -170,12 +173,10 @@ describe('GET /webhook', () => {
 
 	it('falls back to phone match when email does not match an existing row', async () => {
 		mockSelectLimit
-			.mockResolvedValueOnce([])           // email: no match
+			.mockResolvedValueOnce([]) // email: no match
 			.mockResolvedValueOnce([{ id: 99 }]); // phone: match
 
-		await GET(
-			makeEvent({ secret: 'secret123', email: 'new@b.com', phone: '555' }) as never,
-		);
+		await GET(makeEvent({ secret: 'secret123', email: 'new@b.com', phone: '555' }) as never);
 
 		expect(mockSelect).toHaveBeenCalledTimes(2);
 		expect(mockUpdate).toHaveBeenCalledTimes(1);
@@ -185,9 +186,7 @@ describe('GET /webhook', () => {
 	it('inserts when neither email nor phone matches', async () => {
 		mockSelectLimit.mockResolvedValue([]);
 
-		await GET(
-			makeEvent({ secret: 'secret123', email: 'new@b.com', phone: '555' }) as never,
-		);
+		await GET(makeEvent({ secret: 'secret123', email: 'new@b.com', phone: '555' }) as never);
 
 		expect(mockSelect).toHaveBeenCalledTimes(2);
 		expect(mockInsert).toHaveBeenCalledTimes(1);
@@ -207,7 +206,7 @@ describe('GET /webhook', () => {
 		// SELECT misses, INSERT conflicts (empty returning), re-SELECT finds the
 		// row the concurrent request created.
 		mockSelectLimit
-			.mockResolvedValueOnce([])           // initial email lookup: no match
+			.mockResolvedValueOnce([]) // initial email lookup: no match
 			.mockResolvedValueOnce([{ id: 42 }]); // re-read after conflict
 		mockInsertReturning.mockResolvedValue([]);
 

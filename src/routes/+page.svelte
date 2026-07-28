@@ -129,7 +129,6 @@
 		<RangePresetPicker current={data.days} />
 	</div>
 
-
 	{#if showDoorKnock}
 		<div class="door-knock-row">
 			<ChartCard

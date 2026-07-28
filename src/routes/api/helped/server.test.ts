@@ -49,7 +49,9 @@ describe('POST /api/helped', () => {
 	});
 
 	it('returns 403 when session lacks isAdmin field (FR-008 defensive default)', async () => {
-		const res = await POST(makeEvent(legacySession, { id: 1, status: 'verified_in_slack' }) as never);
+		const res = await POST(
+			makeEvent(legacySession, { id: 1, status: 'verified_in_slack' }) as never,
+		);
 		expect(res.status).toBe(403);
 		expect(await res.json()).toEqual({ error: 'unauthorized' });
 		expect(mockUpdate).not.toHaveBeenCalled();
@@ -77,9 +79,7 @@ describe('POST /api/helped', () => {
 		const res = await POST(makeEvent(authed, { id: 3, status: 'verified_in_slack' }) as never);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ success: true });
-		expect(mockSet).toHaveBeenCalledWith(
-			expect.objectContaining({ status: 'verified_in_slack' }),
-		);
+		expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'verified_in_slack' }));
 	});
 
 	it('saves the editor name alongside the status', async () => {

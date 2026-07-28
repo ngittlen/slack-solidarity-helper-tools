@@ -10,13 +10,7 @@
 		children: Snippet;
 	}
 
-	let {
-		label,
-		status = 'idle',
-		error = null,
-		onRetry,
-		children,
-	}: Props = $props();
+	let { label, status = 'idle', error = null, onRetry, children }: Props = $props();
 
 	// Plain-text status labels so screen readers announce save state via the
 	// aria-live region without needing icon-only fallbacks. The visible UI is

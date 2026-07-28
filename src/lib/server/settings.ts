@@ -180,16 +180,14 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	);
 
 	const cfg = appConfigRows[0];
-	const slackTrackingChannelId =
-		cfg?.slackTrackingChannelId ?? SLACK_TRACKING_CHANNEL_ID;
+	const slackTrackingChannelId = cfg?.slackTrackingChannelId ?? SLACK_TRACKING_CHANNEL_ID;
 	const slackGrowthReportChannelId =
 		cfg?.slackGrowthReportChannelId ?? SLACK_GROWTH_REPORT_CHANNEL_ID;
 	// No env var of its own: an unset override keeps the sync alerts wherever
 	// the growth report goes, which is exactly where they went before this
 	// field existed. Resolving here means callers read one field and never have
 	// to re-implement the chain.
-	const slackMobilizeSyncChannelId =
-		cfg?.slackMobilizeSyncChannelId ?? slackGrowthReportChannelId;
+	const slackMobilizeSyncChannelId = cfg?.slackMobilizeSyncChannelId ?? slackGrowthReportChannelId;
 	const mobilizeContactName = cfg?.mobilizeContactName ?? MOBILIZE_CONTACT_NAME;
 	const mobilizeContactEmail = cfg?.mobilizeContactEmail ?? MOBILIZE_CONTACT_EMAIL;
 	const mobilizeContactPhone = cfg?.mobilizeContactPhone ?? MOBILIZE_CONTACT_PHONE;
@@ -201,9 +199,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	// DB-only with a code default rather than an env fallback — it's a display
 	// preference, not deployment config. Clamped on read so a hand-edited row
 	// can't hand the board an unusable rate.
-	const doorTickerColumnsPerSecond = clampTickerColumnsPerSecond(
-		cfg?.doorTickerColumnsPerSecond,
-	);
+	const doorTickerColumnsPerSecond = clampTickerColumnsPerSecond(cfg?.doorTickerColumnsPerSecond);
 
 	return {
 		chapterChannelMap: chapterChannelMapField,
@@ -548,9 +544,7 @@ export async function deleteExcludedChapter(
 	chapterId: number,
 	editor: Editor,
 ): Promise<void> {
-	await db
-		.delete(reportExcludedChapters)
-		.where(eq(reportExcludedChapters.chapterId, chapterId));
+	await db.delete(reportExcludedChapters).where(eq(reportExcludedChapters.chapterId, chapterId));
 	console.log(
 		`[settings] deleted report_excluded_chapters chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
 	);
@@ -612,13 +606,8 @@ export async function saveAppConfig(
 		lastEditedAt,
 	};
 
-	await db
-		.insert(appConfig)
-		.values(values)
-		.onConflictDoUpdate({ target: appConfig.id, set });
+	await db.insert(appConfig).values(values).onConflictDoUpdate({ target: appConfig.id, set });
 
 	const keysSummary = Object.keys(definedFields).join(',');
-	console.log(
-		`[settings] saved app_config patch=${keysSummary} by ${editor.id} (${editor.name})`,
-	);
+	console.log(`[settings] saved app_config patch=${keysSummary} by ${editor.id} (${editor.name})`);
 }

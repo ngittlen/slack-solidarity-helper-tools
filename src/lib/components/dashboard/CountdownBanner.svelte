@@ -36,7 +36,8 @@
 		class:expired={parts.expired}
 		role="timer"
 		aria-live="off"
-		aria-label="{label || 'Countdown'}: {parts.days} days {parts.hours} hours {parts.minutes} minutes {parts.seconds} seconds remaining"
+		aria-label="{label ||
+			'Countdown'}: {parts.days} days {parts.hours} hours {parts.minutes} minutes {parts.seconds} seconds remaining"
 	>
 		{#if label}
 			<span class="countdown__label">{label}</span>

@@ -79,4 +79,4 @@ export const GET: RequestHandler = async ({ locals }) => {
 	const total_pending = pending.filter((r) => r.status !== 'verified_in_slack').length;
 
 	return json({ pending, total_requested: rows.length, total_pending });
-}
+};

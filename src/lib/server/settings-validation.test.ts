@@ -209,13 +209,22 @@ describe('US4: validators fail closed when the autocomplete source is unavailabl
 		// Bizarre inputs — non-Error rejection, undefined, even a throwing
 		// thenable — must all be swallowed into a structured failure result.
 		getChannels.mockRejectedValueOnce('plain string rejection');
-		await expect(validateSlackChannel(slack, 'X')).resolves.toMatchObject({ ok: false, transient: true });
+		await expect(validateSlackChannel(slack, 'X')).resolves.toMatchObject({
+			ok: false,
+			transient: true,
+		});
 
 		getUsers.mockRejectedValueOnce(undefined);
-		await expect(validateSlackUser(slack, 'X')).resolves.toMatchObject({ ok: false, transient: true });
+		await expect(validateSlackUser(slack, 'X')).resolves.toMatchObject({
+			ok: false,
+			transient: true,
+		});
 
 		getChapters.mockRejectedValueOnce(new TypeError('boom'));
-		await expect(validateSolidarityChapter('token', 0)).resolves.toMatchObject({ ok: false, transient: true });
+		await expect(validateSolidarityChapter('token', 0)).resolves.toMatchObject({
+			ok: false,
+			transient: true,
+		});
 	});
 
 	it('a routine validation rejection produces no error-level log (FR-021, SC-007)', async () => {

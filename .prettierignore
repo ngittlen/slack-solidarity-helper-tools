@@ -1,0 +1,16 @@
+# Build output and generated code
+build/
+dist/
+.svelte-kit/
+node_modules/
+
+# Drizzle-generated migrations and snapshots
+drizzle/
+
+# Local-only working files (see .gitignore)
+private/
+junk/
+
+# Lockfiles and local database artifacts
+package-lock.json
+*.db

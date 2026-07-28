@@ -1,12 +1,7 @@
 <script lang="ts">
 	import { BarChart, Bars } from 'layerchart';
 	import { CHART_BAND_COLORS } from '$lib/styles/chart-colors';
-	import {
-		formatDateTick,
-		thinDateTicks,
-		type ChartBand,
-		type ChartFrame,
-	} from './chart-data.js';
+	import { formatDateTick, thinDateTicks, type ChartBand, type ChartFrame } from './chart-data.js';
 
 	type Props = {
 		variant: 'overview' | 'detail';
@@ -38,8 +33,8 @@
 			key: band.key,
 			label: band.label,
 			value: (d: Row) => (d[band.key] as number | undefined) ?? 0,
-			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length]
-		}))
+			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length],
+		})),
 	);
 
 	// Built from legendBands (always the per-chapter bands) rather than `series`
@@ -49,16 +44,12 @@
 		legendBands.map((band, i) => ({
 			key: band.key,
 			label: band.label,
-			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length]
-		}))
+			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length],
+		})),
 	);
 </script>
 
-<div
-	class="signup-chart"
-	role="img"
-	aria-label={accessibleName}
->
+<div class="signup-chart" role="img" aria-label={accessibleName}>
 	{#if frame.bands.length === 0 || frame.dates.length === 0}
 		<p class="signup-chart__empty">No data</p>
 	{:else}
@@ -81,7 +72,15 @@
 					},
 				}}
 			>
-				{#snippet marks({ context }: { context: { series: { visibleSeries: Array<{ key: string }> }; xScale: (v: unknown) => number; yScale: (v: unknown) => number } })}
+				{#snippet marks({
+					context,
+				}: {
+					context: {
+						series: { visibleSeries: Array<{ key: string }> };
+						xScale: (v: unknown) => number;
+						yScale: (v: unknown) => number;
+					};
+				})}
 					{#each context.series.visibleSeries as s (s.key)}
 						<Bars seriesKey={s.key} radius={3} />
 					{/each}
@@ -92,7 +91,7 @@
 								(context.xScale as unknown as { bandwidth?: () => number }).bandwidth?.() ?? 8}
 							{@const y = context.yScale(frame.dailyTotals[i] ?? 0)}
 							<line
-								x1={x1}
+								{x1}
 								x2={x1 + bw}
 								y1={y}
 								y2={y}
@@ -114,10 +113,7 @@
 		>
 			{#each legendItems as s (s.key)}
 				<li class="signup-chart__legend-item">
-					<span
-						class="signup-chart__swatch"
-						style:background-color={s.color}
-						aria-hidden="true"
+					<span class="signup-chart__swatch" style:background-color={s.color} aria-hidden="true"
 					></span>
 					<span class="signup-chart__legend-label">{s.label}</span>
 				</li>

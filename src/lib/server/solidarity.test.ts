@@ -140,9 +140,9 @@ describe('setUserCustomProperty', () => {
 			.mockResolvedValueOnce(rateLimited('0'))
 			.mockResolvedValueOnce(rateLimited('0'));
 
-		await expect(
-			setUserCustomProperty('token', 42, 'in_coalition_x', 'true'),
-		).rejects.toThrow(/retry budget exhausted/);
+		await expect(setUserCustomProperty('token', 42, 'in_coalition_x', 'true')).rejects.toThrow(
+			/retry budget exhausted/,
+		);
 		expect(fetchMock).toHaveBeenCalledTimes(6);
 	});
 });

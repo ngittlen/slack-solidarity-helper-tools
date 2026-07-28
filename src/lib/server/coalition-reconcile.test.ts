@@ -140,9 +140,7 @@ describe('computeCoalitionDiff', () => {
 		});
 
 		expect(membersMock).toHaveBeenCalledTimes(2);
-		expect(membersMock).toHaveBeenLastCalledWith(
-			expect.objectContaining({ cursor: 'page2' }),
-		);
+		expect(membersMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'page2' }));
 		// Both pages' members were seen: alice consistent, bob marked.
 		expect(diff.consistentCount).toBe(1);
 		expect(diff.toMark).toHaveLength(1);

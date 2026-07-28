@@ -66,7 +66,10 @@ function makeSignedRequest(body: string, opts: { secret?: string; ageSeconds?: n
 }
 
 function teamJoinPayload(userId = 'U_NEW') {
-	return JSON.stringify({ type: 'event_callback', event: { type: 'team_join', user: { id: userId } } });
+	return JSON.stringify({
+		type: 'event_callback',
+		event: { type: 'team_join', user: { id: userId } },
+	});
 }
 
 // The DM is the last Slack call the handler makes — waiting on it confirms the

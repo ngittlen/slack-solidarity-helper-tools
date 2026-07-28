@@ -47,11 +47,7 @@ describe('computeWindow', () => {
 	it('rolls forward to the next Monday once the next Monday actually arrives', () => {
 		// Monday 00:01 UTC of the *following* Monday is past the window's end,
 		// so the window slides forward by exactly one week.
-		expectWindow(
-			'2026-05-18T00:01:00Z',
-			'2026-05-18T00:00:00.000Z',
-			'2026-05-11T00:00:00.000Z'
-		);
+		expectWindow('2026-05-18T00:01:00Z', '2026-05-18T00:00:00.000Z', '2026-05-11T00:00:00.000Z');
 	});
 });
 
@@ -129,9 +125,7 @@ describe('computeWeeklyLeaderboard', () => {
 	it('prefers a fresh chapter channel mapping over the snapshotted one', async () => {
 		const db = makeDb({
 			windows: [{ windowEnd: 'w', windowStart: 's', totalNewJoins: 0 }],
-			rows: [
-				{ chapterId: 1, chapterName: 'a', slackChannelId: 'C_OLD', newJoins: 1, existing: 5 },
-			],
+			rows: [{ chapterId: 1, chapterName: 'a', slackChannelId: 'C_OLD', newJoins: 1, existing: 5 }],
 		});
 		const result = await computeWeeklyLeaderboard(db, {
 			chapterChannelIds: new Map([[1, 'C_NEW']]),
@@ -174,9 +168,10 @@ describe('computeLiveLeaderboardSinceSnapshot', () => {
 		// the new-joins count. Skip the snapshot-rows entry when there's no
 		// window so the queue stays aligned with the actual call sequence.
 		const countRows = [{ cnt: opts.totalNewJoins ?? 0 }] satisfies CountRow[];
-		const selectQueue: unknown[][] = (opts.windows?.length ?? 0) > 0
-			? [opts.windows ?? [], opts.snapshotRows ?? [], opts.nameRows ?? [], countRows]
-			: [opts.windows ?? [], opts.nameRows ?? [], countRows];
+		const selectQueue: unknown[][] =
+			(opts.windows?.length ?? 0) > 0
+				? [opts.windows ?? [], opts.snapshotRows ?? [], opts.nameRows ?? [], countRows]
+				: [opts.windows ?? [], opts.nameRows ?? [], countRows];
 		// `db.all()` is only the json_each aggregation now — the count moved to
 		// the query builder.
 		const allQueue: unknown[][] = [opts.aggRows ?? []];

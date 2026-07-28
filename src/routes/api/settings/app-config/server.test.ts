@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
-import {
-	MAX_TICKER_COLUMNS_PER_SECOND,
-	MIN_TICKER_COLUMNS_PER_SECOND,
-} from '$lib/ticker-speed.js';
+import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '$lib/ticker-speed.js';
 
 const mockSaveAppConfig = vi.hoisted(() => vi.fn());
 const mockValidateChannel = vi.hoisted(() => vi.fn());
@@ -46,9 +43,7 @@ describe('POST /api/settings/app-config', () => {
 	});
 
 	it('returns 401 when not authenticated', async () => {
-		const res = await POST(
-			makeEvent(unauthed, { slackTrackingChannelId: 'C1' }) as never,
-		);
+		const res = await POST(makeEvent(unauthed, { slackTrackingChannelId: 'C1' }) as never);
 		expect(res.status).toBe(401);
 		expect(mockSaveAppConfig).not.toHaveBeenCalled();
 	});
@@ -126,9 +121,7 @@ describe('POST /api/settings/app-config', () => {
 
 	it('saves an alpha in [0, 1] inclusive, including the endpoints', async () => {
 		for (const alpha of [0, 0.5, 1]) {
-			const res = await POST(
-				makeEvent(authed, { slackGrowthReportRankingAlpha: alpha }) as never,
-			);
+			const res = await POST(makeEvent(authed, { slackGrowthReportRankingAlpha: alpha }) as never);
 			expect(res.status).toBe(200);
 		}
 		expect(mockSaveAppConfig).toHaveBeenCalledTimes(3);
@@ -141,9 +134,7 @@ describe('POST /api/settings/app-config', () => {
 
 	it('400 for an out-of-range or non-numeric alpha', async () => {
 		for (const bad of [-0.1, 1.1, NaN, Infinity, '0.5']) {
-			const res = await POST(
-				makeEvent(authed, { slackGrowthReportRankingAlpha: bad }) as never,
-			);
+			const res = await POST(makeEvent(authed, { slackGrowthReportRankingAlpha: bad }) as never);
 			expect(res.status).toBe(400);
 		}
 		expect(mockSaveAppConfig).not.toHaveBeenCalled();
@@ -210,9 +201,7 @@ describe('POST /api/settings/app-config', () => {
 	});
 
 	it('normalizes countdownEndAt to canonical ISO', async () => {
-		const res = await POST(
-			makeEvent(authed, { countdownEndAt: '2026-08-15T12:00:00Z' }) as never,
-		);
+		const res = await POST(makeEvent(authed, { countdownEndAt: '2026-08-15T12:00:00Z' }) as never);
 		expect(res.status).toBe(200);
 		expect(mockSaveAppConfig).toHaveBeenCalledWith(
 			expect.anything(),

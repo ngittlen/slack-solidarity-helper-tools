@@ -5,7 +5,12 @@ function makeDb() {
 	const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
 	const values = vi.fn(() => ({ onConflictDoUpdate }));
 	const insert = vi.fn(() => ({ values }));
-	return { db: { insert } as unknown as Parameters<typeof runSolidaritySnapshot>[0], insert, values, onConflictDoUpdate };
+	return {
+		db: { insert } as unknown as Parameters<typeof runSolidaritySnapshot>[0],
+		insert,
+		values,
+		onConflictDoUpdate,
+	};
 }
 
 const chaptersResponse = {
@@ -69,17 +74,15 @@ describe('runSolidaritySnapshot', () => {
 		const before = '2026-04-14T23:59:59Z';
 		const after = '2026-04-16T00:00:01Z';
 
-		fetchMock
-			.mockResolvedValueOnce(chaptersResponse)
-			.mockResolvedValueOnce(
-				pageResponse([
-					{ chapter_id: 100, chapter_ids: [], created_at: inRange },
-					{ chapter_id: null, chapter_ids: [100, 200], created_at: inRange },
-					{ chapter_id: null, chapter_ids: [], created_at: inRange },
-					{ chapter_id: 100, chapter_ids: [], created_at: before },
-					{ chapter_id: 200, chapter_ids: [], created_at: after },
-				]),
-			);
+		fetchMock.mockResolvedValueOnce(chaptersResponse).mockResolvedValueOnce(
+			pageResponse([
+				{ chapter_id: 100, chapter_ids: [], created_at: inRange },
+				{ chapter_id: null, chapter_ids: [100, 200], created_at: inRange },
+				{ chapter_id: null, chapter_ids: [], created_at: inRange },
+				{ chapter_id: 100, chapter_ids: [], created_at: before },
+				{ chapter_id: 200, chapter_ids: [], created_at: after },
+			]),
+		);
 
 		const { db, values } = makeDb();
 		const result = await runSolidaritySnapshot(db, 'token', { date: target });
@@ -120,7 +123,12 @@ describe('runSolidaritySnapshot', () => {
 		// First row is the distinct-total sentinel (-2), value = distinct user
 		// count. All 110 users are in chapter 100 only, so chapter 100's count
 		// matches.
-		expect(result.rows[0]).toEqual({ date: '2026-04-15', chapterId: -2, chapterName: null, count: 110 });
+		expect(result.rows[0]).toEqual({
+			date: '2026-04-15',
+			chapterId: -2,
+			chapterName: null,
+			count: 110,
+		});
 		expect(result.rows[1]?.chapterId).toBe(100);
 		expect(result.rows[1]?.count).toBe(110);
 	});
@@ -181,15 +189,13 @@ describe('runSolidaritySnapshot', () => {
 	});
 
 	it('omits the distinct-total sentinel when no users land in range', async () => {
-		fetchMock
-			.mockResolvedValueOnce(chaptersResponse)
-			.mockResolvedValueOnce(
-				pageResponse([
-					// Updated_at puts these into the result, but created_at is outside
-					// the target date so they get filtered out below.
-					{ chapter_id: 100, chapter_ids: [], created_at: '2026-04-10T00:00:00Z' },
-				]),
-			);
+		fetchMock.mockResolvedValueOnce(chaptersResponse).mockResolvedValueOnce(
+			pageResponse([
+				// Updated_at puts these into the result, but created_at is outside
+				// the target date so they get filtered out below.
+				{ chapter_id: 100, chapter_ids: [], created_at: '2026-04-10T00:00:00Z' },
+			]),
+		);
 		const { db } = makeDb();
 		const result = await runSolidaritySnapshot(db, 'token', { date: '2026-04-15' });
 		expect(result.usersInRange).toBe(0);
@@ -197,15 +203,13 @@ describe('runSolidaritySnapshot', () => {
 	});
 
 	it('sentinel count is the distinct user total even when users span multiple chapters', async () => {
-		fetchMock
-			.mockResolvedValueOnce(chaptersResponse)
-			.mockResolvedValueOnce(
-				pageResponse([
-					// Two users, both in two chapters. Distinct = 2; sum-of-buckets = 4.
-					{ chapter_id: null, chapter_ids: [100, 200], created_at: '2026-04-15T01:00:00Z' },
-					{ chapter_id: null, chapter_ids: [100, 200], created_at: '2026-04-15T02:00:00Z' },
-				]),
-			);
+		fetchMock.mockResolvedValueOnce(chaptersResponse).mockResolvedValueOnce(
+			pageResponse([
+				// Two users, both in two chapters. Distinct = 2; sum-of-buckets = 4.
+				{ chapter_id: null, chapter_ids: [100, 200], created_at: '2026-04-15T01:00:00Z' },
+				{ chapter_id: null, chapter_ids: [100, 200], created_at: '2026-04-15T02:00:00Z' },
+			]),
+		);
 		const { db } = makeDb();
 		const result = await runSolidaritySnapshot(db, 'token', { date: '2026-04-15' });
 		const sentinel = result.rows.find((r) => r.chapterId === -2);

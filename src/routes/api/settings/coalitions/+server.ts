@@ -3,11 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
-import {
-	saveCoalitionEntry,
-	deleteCoalitionEntry,
-	type Editor,
-} from '$lib/server/settings.js';
+import { saveCoalitionEntry, deleteCoalitionEntry, type Editor } from '$lib/server/settings.js';
 import {
 	validateSlackChannel,
 	validateSolidarityCustomProperty,

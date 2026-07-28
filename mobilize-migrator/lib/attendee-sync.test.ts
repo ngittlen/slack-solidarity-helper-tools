@@ -141,7 +141,11 @@ describe('runAttendeeSync event grouping', () => {
 	it('reads each event once, however many of its shifts are in scope', async () => {
 		// The whole point of moving off the per-timeslot dashboard route: an event
 		// with several shifts used to cost one request per shift.
-		const second: TimeslotLink = { ...LINK, mobilizeTimeslotId: 6157029, solidaritySessionId: 80930 };
+		const second: TimeslotLink = {
+			...LINK,
+			mobilizeTimeslotId: 6157029,
+			solidaritySessionId: 80930,
+		};
 		const spy = mockApis({ attendances: [attendance()], userFound: true });
 
 		const report = await run(ledgerWith(), false, [LINK, second]);

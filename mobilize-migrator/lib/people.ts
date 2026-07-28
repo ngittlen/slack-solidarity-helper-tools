@@ -57,7 +57,11 @@ export function normalizeEmail(raw: string | null | undefined): string | null {
 	return trimmed && trimmed.includes('@') ? trimmed : null;
 }
 
-async function search(token: string, query: string, label: string): Promise<SolidarityPerson | null> {
+async function search(
+	token: string,
+	query: string,
+	label: string,
+): Promise<SolidarityPerson | null> {
 	const res = await fetchWithRetry(
 		`${API}/users?_limit=2&${query}`,
 		{ headers: { Authorization: `Bearer ${token}` } },
@@ -88,7 +92,11 @@ export async function findExistingUser(
 ): Promise<{ user: SolidarityPerson; method: 'email' | 'phone' } | null> {
 	const email = normalizeEmail(input.email);
 	if (email) {
-		const byEmail = await search(token, `email=${encodeURIComponent(email)}`, 'attendee email lookup');
+		const byEmail = await search(
+			token,
+			`email=${encodeURIComponent(email)}`,
+			'attendee email lookup',
+		);
 		if (byEmail) return { user: byEmail, method: 'email' };
 	}
 
@@ -153,7 +161,9 @@ export async function createUser(
 		{ retriesUsed: 0 },
 	);
 	if (!res.ok) {
-		throw new Error(`Solidarity user create returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
+		throw new Error(
+			`Solidarity user create returned ${res.status}: ${(await res.text()).slice(0, 200)}`,
+		);
 	}
 	// `/v1/users` breaks the envelope convention the rest of the API follows: a
 	// single user comes back BARE, while `/v1/event_rsvps/:id` and every list
@@ -183,9 +193,7 @@ export interface ChapterResolver {
 }
 
 export function resolveChapterId(resolver: ChapterResolver, zipcode: string | null): number | null {
-	return (
-		resolver.byZip(zipcode) ?? resolver.eventChapterId ?? resolver.defaultChapterId ?? null
-	);
+	return resolver.byZip(zipcode) ?? resolver.eventChapterId ?? resolver.defaultChapterId ?? null;
 }
 
 /**
@@ -211,7 +219,11 @@ export function buildZipChapterMap(
 	for (const [zip, perZip] of counts) {
 		let best: { chapterId: number; memberCount: number } | null = null;
 		for (const [chapterId, memberCount] of perZip) {
-			if (!best || memberCount > best.memberCount || (memberCount === best.memberCount && chapterId < best.chapterId)) {
+			if (
+				!best ||
+				memberCount > best.memberCount ||
+				(memberCount === best.memberCount && chapterId < best.chapterId)
+			) {
 				best = { chapterId, memberCount };
 			}
 		}

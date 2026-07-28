@@ -44,6 +44,8 @@ console.log(`  users in range:                     ${result.usersInRange}`);
 console.log(`  rows ${DRY_RUN ? 'computed' : 'upserted'}: ${result.rows.length}`);
 for (const row of result.rows) {
 	const label =
-		row.chapterId === -1 ? '(no chapter)' : row.chapterName ?? '(name not returned by /v1/chapters)';
+		row.chapterId === -1
+			? '(no chapter)'
+			: (row.chapterName ?? '(name not returned by /v1/chapters)');
 	console.log(`    chapter ${row.chapterId} ${label}: ${row.count}`);
 }

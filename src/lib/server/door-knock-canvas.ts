@@ -78,7 +78,6 @@ function isChapterHeading(line: string): boolean {
 	if (/[a-z]/.test(head) || !/[A-Z]/.test(head)) return false;
 	if (/\bCODES?\b/.test(head)) return false;
 	return !EXCLUDED_CONTEXT_RE.test(head);
-
 }
 
 function parseTableCodes(html: string, out: ConversationCode[]): void {

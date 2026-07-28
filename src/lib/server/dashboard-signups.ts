@@ -181,8 +181,7 @@ async function loadSlack(
 	// Excluded chapter IDs come from a trusted env var, so inlining as a comma
 	// list is safe (drizzle's `sql.raw` skips bind parameters). When empty, the
 	// fragments below collapse to `sql``.
-	const excludedList =
-		excluded.size > 0 ? sql.raw([...excluded].join(',')) : null;
+	const excludedList = excluded.size > 0 ? sql.raw([...excluded].join(',')) : null;
 	const chapterExclusion = excludedList
 		? sql`AND CAST(je.value AS INTEGER) NOT IN (${excludedList})`
 		: sql``;

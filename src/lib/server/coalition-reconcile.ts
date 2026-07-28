@@ -9,11 +9,7 @@
 
 import type { WebClient } from '@slack/web-api';
 import { getSlackUsers, type UserEntry } from './autocomplete-sources.js';
-import {
-	findUserByEmailStrict,
-	getUsersInList,
-	type SolidarityListUser,
-} from './solidarity.js';
+import { findUserByEmailStrict, getUsersInList, type SolidarityListUser } from './solidarity.js';
 
 /** One person in a reconciliation bucket, with whichever ids we resolved. */
 export interface ReconcilePerson {

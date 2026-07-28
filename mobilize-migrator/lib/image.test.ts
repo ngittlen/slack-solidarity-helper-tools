@@ -4,7 +4,8 @@ import { imageFilename } from './image.js';
 import { uploadImage, type MobilizeApiConfig } from './mobilize.js';
 
 const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 44679 };
-const HOSTED = 'https://mobilizeamerica.imgix.net/uploads/event/fist-image_20260727015915463491.png';
+const HOSTED =
+	'https://mobilizeamerica.imgix.net/uploads/event/fist-image_20260727015915463491.png';
 
 function stubResponse(body: unknown) {
 	vi.stubGlobal('fetch', async () => ({
@@ -21,7 +22,11 @@ afterEach(() => {
 
 describe('uploadImage', () => {
 	it('returns the hosted URL from data.url', async () => {
-		stubResponse({ data: { url: HOSTED }, error: null, metadata: { url_name: 'public_image_uploads' } });
+		stubResponse({
+			data: { url: HOSTED },
+			error: null,
+			metadata: { url_name: 'public_image_uploads' },
+		});
 		expect(await uploadImage(API, new ArrayBuffer(8), 'x.png', 'image/png')).toBe(HOSTED);
 	});
 

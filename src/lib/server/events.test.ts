@@ -10,9 +10,7 @@ describe('events', () => {
 		const send = vi.fn();
 		const unsub = subscribe(send);
 		notifyNewRequest(newEntry);
-		expect(send).toHaveBeenCalledWith(
-			JSON.stringify({ type: 'new-request', ...newEntry }),
-		);
+		expect(send).toHaveBeenCalledWith(JSON.stringify({ type: 'new-request', ...newEntry }));
 		unsub();
 	});
 

@@ -5,26 +5,26 @@
  */
 
 main {
-    max-width: 1200px;
-    margin: 32px auto;
-    padding: 0 24px;
+	max-width: 1200px;
+	margin: 32px auto;
+	padding: 0 24px;
 }
 
 /* Each section reads as a card: rounded border + padding, with breathing room
  * between cards — the editors are dense enough that heading margins alone
  * read as one continuous wall. */
 main section {
-    border: 1px solid var(--color-border, #ddd);
-    border-radius: var(--radius-lg, 10px);
-    padding: 20px 24px;
+	border: 1px solid var(--color-border, #ddd);
+	border-radius: var(--radius-lg, 10px);
+	padding: 20px 24px;
 }
 
 main section + section {
-    margin-top: 32px;
+	margin-top: 32px;
 }
 
 /* The section heading hugs the top of its card instead of floating on its
  * default browser margin. */
 main section > h2 {
-    margin-top: 0;
+	margin-top: 0;
 }

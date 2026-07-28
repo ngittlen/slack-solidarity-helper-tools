@@ -61,7 +61,12 @@ export const GET: RequestHandler = async ({ url }) => {
 			// loser re-reads the winner's row and takes the update path below.
 			const inserted = await db
 				.insert(requests)
-				.values({ email: trimmedEmail, name: trimmedName, phone: trimmedPhone, requestedAt: new Date().toISOString() })
+				.values({
+					email: trimmedEmail,
+					name: trimmedName,
+					phone: trimmedPhone,
+					requestedAt: new Date().toISOString(),
+				})
 				.onConflictDoNothing({ target: requests.email })
 				.returning({ id: requests.id });
 			if (inserted.length > 0) {
@@ -95,7 +100,10 @@ export const GET: RequestHandler = async ({ url }) => {
 	} catch (err) {
 		// The caller is a Solidarity automation that expects JSON — never let a
 		// DB failure surface as SvelteKit's HTML 500 page.
-		console.error(`[webhook] DB error for ${trimmedEmail ?? trimmedPhone}:`, err instanceof Error ? err.message : err);
+		console.error(
+			`[webhook] DB error for ${trimmedEmail ?? trimmedPhone}:`,
+			err instanceof Error ? err.message : err,
+		);
 		return json({ error: 'Database error' }, { status: 500 });
 	}
 
@@ -136,10 +144,13 @@ export const GET: RequestHandler = async ({ url }) => {
 			});
 			console.log(`[webhook] posted to channel for ${trimmedEmail ?? trimmedPhone}`);
 		} catch (err) {
-			console.error(`[webhook] failed to post for ${trimmedEmail ?? trimmedPhone}:`, err instanceof Error ? err.message : err);
+			console.error(
+				`[webhook] failed to post for ${trimmedEmail ?? trimmedPhone}:`,
+				err instanceof Error ? err.message : err,
+			);
 			return json({ error: 'Failed to post to Slack' }, { status: 502 });
 		}
 	}
 
 	return json({ success: true, email: trimmedEmail, phone: trimmedPhone });
-}
+};

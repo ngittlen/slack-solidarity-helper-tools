@@ -15,8 +15,24 @@ import type { MobilizeEvent } from './mobilize.js';
 import type { PlannedEvent } from './transform.js';
 
 const STOPWORDS = new Set([
-	'the', 'a', 'an', 'and', 'with', 'for', 'at', 'in', 'on', 'of', 'to', 'w',
-	'abdul', 'elsayed', 'el', 'sayed', 'dr', 'senate',
+	'the',
+	'a',
+	'an',
+	'and',
+	'with',
+	'for',
+	'at',
+	'in',
+	'on',
+	'of',
+	'to',
+	'w',
+	'abdul',
+	'elsayed',
+	'el',
+	'sayed',
+	'dr',
+	'senate',
 ]);
 
 export function normalizeTitle(title: string): string {

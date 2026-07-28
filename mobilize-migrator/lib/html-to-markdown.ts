@@ -20,33 +20,100 @@
 // in styled span and div noise), not arbitrary web HTML.
 
 const VOID_ELEMENTS = new Set([
-	'br', 'img', 'hr', 'input', 'meta', 'link', 'source', 'wbr', 'col', 'area',
+	'br',
+	'img',
+	'hr',
+	'input',
+	'meta',
+	'link',
+	'source',
+	'wbr',
+	'col',
+	'area',
 ]);
 
 /** Dropped entirely, content and all. */
 const DISCARDED = new Set(['script', 'style', 'iframe', 'form', 'input', 'nav', 'img']);
 
 const BLOCK_ELEMENTS = new Set([
-	'p', 'div', 'section', 'header', 'footer', 'main', 'article', 'figure',
-	'figcaption', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'table',
-	'thead', 'tbody', 'tfoot', 'tr', 'dl', 'dt', 'dd', 'blockquote', 'hr', 'pre',
+	'p',
+	'div',
+	'section',
+	'header',
+	'footer',
+	'main',
+	'article',
+	'figure',
+	'figcaption',
+	'h1',
+	'h2',
+	'h3',
+	'h4',
+	'h5',
+	'h6',
+	'ul',
+	'ol',
+	'li',
+	'table',
+	'thead',
+	'tbody',
+	'tfoot',
+	'tr',
+	'dl',
+	'dt',
+	'dd',
+	'blockquote',
+	'hr',
+	'pre',
 ]);
 
 const NAMED_ENTITIES: Record<string, string> = {
-	nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", ndash: '–',
-	mdash: '—', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”',
-	hellip: '…', bull: '•', middot: '·', times: '×', trade: '™', copy: '©',
-	reg: '®', deg: '°', eacute: 'é', egrave: 'è', uuml: 'ü', ouml: 'ö', auml: 'ä',
-	ccedil: 'ç', laquo: '«', raquo: '»', euro: '€', pound: '£', frac12: '½',
-	shy: '', zwnj: '', zwj: '', ensp: ' ', emsp: ' ', thinsp: ' ',
+	nbsp: ' ',
+	amp: '&',
+	lt: '<',
+	gt: '>',
+	quot: '"',
+	apos: "'",
+	ndash: '–',
+	mdash: '—',
+	lsquo: '‘',
+	rsquo: '’',
+	ldquo: '“',
+	rdquo: '”',
+	hellip: '…',
+	bull: '•',
+	middot: '·',
+	times: '×',
+	trade: '™',
+	copy: '©',
+	reg: '®',
+	deg: '°',
+	eacute: 'é',
+	egrave: 'è',
+	uuml: 'ü',
+	ouml: 'ö',
+	auml: 'ä',
+	ccedil: 'ç',
+	laquo: '«',
+	raquo: '»',
+	euro: '€',
+	pound: '£',
+	frac12: '½',
+	shy: '',
+	zwnj: '',
+	zwj: '',
+	ensp: ' ',
+	emsp: ' ',
+	thinsp: ' ',
 };
 
 export function decodeEntities(text: string): string {
 	return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g, (match, body: string) => {
 		if (body.startsWith('#')) {
-			const code = body[1] === 'x' || body[1] === 'X'
-				? parseInt(body.slice(2), 16)
-				: parseInt(body.slice(1), 10);
+			const code =
+				body[1] === 'x' || body[1] === 'X'
+					? parseInt(body.slice(2), 16)
+					: parseInt(body.slice(1), 10);
 			return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : match;
 		}
 		const named = NAMED_ENTITIES[body.toLowerCase()];
@@ -68,7 +135,9 @@ type Node = ElementNode | TextNode;
 
 function parseAttrs(raw: string): Record<string, string> {
 	const attrs: Record<string, string> = {};
-	for (const m of raw.matchAll(/([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+	for (const m of raw.matchAll(
+		/([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g,
+	)) {
 		// Attribute values are entity-encoded too — an href carrying
 		// `?a=1&amp;b=2` must become `?a=1&b=2` or the link breaks.
 		attrs[m[1].toLowerCase()] = decodeEntities(m[3] ?? m[4] ?? m[5] ?? '');
@@ -103,7 +172,12 @@ function parse(html: string): ElementNode {
 			continue;
 		}
 
-		const node: ElementNode = { type: 'element', name, attrs: parseAttrs(match[2] ?? ''), children: [] };
+		const node: ElementNode = {
+			type: 'element',
+			name,
+			attrs: parseAttrs(match[2] ?? ''),
+			children: [],
+		};
 		stack[stack.length - 1].children.push(node);
 		if (!VOID_ELEMENTS.has(name) && !selfClosing) stack.push(node);
 	}
@@ -180,7 +254,9 @@ function renderListItems(list: ElementNode, depth: number, ordered: boolean): st
 			(n): n is ElementNode => n.type === 'element' && (n.name === 'ul' || n.name === 'ol'),
 		);
 		const own = child.children.filter((n) => !nested.includes(n as ElementNode));
-		const text = renderInline(own).trim().replace(/\s*\n\s*/g, ' ');
+		const text = renderInline(own)
+			.trim()
+			.replace(/\s*\n\s*/g, ' ');
 		const marker = ordered ? `${index}.` : '-';
 		if (text) lines.push(`${'  '.repeat(depth)}${marker} ${text}`);
 		index++;
@@ -231,7 +307,9 @@ function renderBlocks(nodes: Node[]): string[] {
 			}
 			case 'tr': {
 				const cells = node.children
-					.filter((n): n is ElementNode => n.type === 'element' && (n.name === 'td' || n.name === 'th'))
+					.filter(
+						(n): n is ElementNode => n.type === 'element' && (n.name === 'td' || n.name === 'th'),
+					)
 					.map((cell) => renderInline(cell.children).trim())
 					.filter(Boolean);
 				if (cells.length > 0) blocks.push(cells.join(' | '));
@@ -264,7 +342,10 @@ export function htmlToMarkdown(html: string): string {
 				.trim(),
 		)
 		.filter(Boolean);
-	return blocks.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+	return blocks
+		.join('\n\n')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
 }
 
 /**

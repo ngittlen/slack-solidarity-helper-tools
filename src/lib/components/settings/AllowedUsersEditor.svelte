@@ -118,12 +118,7 @@
 </script>
 
 <div class="allowed-users-editor">
-	<SettingsRow
-		label="Admins"
-		status={status}
-		error={error}
-		onRetry={lastFailedOp ? retry : undefined}
-	>
+	<SettingsRow label="Admins" {status} {error} onRetry={lastFailedOp ? retry : undefined}>
 		<MultiSelectAutocomplete
 			items={userItems}
 			values={allowed}
@@ -136,9 +131,8 @@
 			lockedReason="You can’t remove yourself"
 		/>
 		<p class="allowed-users-note">
-			Admins can access /pending and /settings. Changes take effect at the person’s next
-			sign-in. The <code>SLACK_SUPERUSER_ID</code> user always has access, and you can’t remove
-			yourself.
+			Admins can access /pending and /settings. Changes take effect at the person’s next sign-in.
+			The <code>SLACK_SUPERUSER_ID</code> user always has access, and you can’t remove yourself.
 		</p>
 	</SettingsRow>
 </div>

@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-	DEFAULT_WELCOME_DM,
-	extractChannelNames,
-	renderWelcomeDm,
-} from './welcome-dm.js';
+import { DEFAULT_WELCOME_DM, extractChannelNames, renderWelcomeDm } from './welcome-dm.js';
 
 const NAME_TO_ID = new Map([
 	['general', 'C_GEN'],
@@ -12,10 +8,9 @@ const NAME_TO_ID = new Map([
 
 describe('extractChannelNames', () => {
 	it('pulls lowercased, deduped channel names from #tokens', () => {
-		expect(extractChannelNames('Say hi in #General and #announcements and #general again')).toEqual([
-			'general',
-			'announcements',
-		]);
+		expect(extractChannelNames('Say hi in #General and #announcements and #general again')).toEqual(
+			['general', 'announcements'],
+		);
 	});
 
 	it('ignores the # inside an existing <#C…> mention', () => {

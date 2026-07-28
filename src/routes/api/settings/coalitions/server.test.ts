@@ -64,7 +64,12 @@ describe('POST /api/settings/coalitions', () => {
 
 	it('upsert: validates property, channel, and list, then saves with the property display name', async () => {
 		const res = await POST(
-			makeEvent(authed, { action: 'upsert', group: 'labor', channelId: 'C1', userListId: 42 }) as never,
+			makeEvent(authed, {
+				action: 'upsert',
+				group: 'labor',
+				channelId: 'C1',
+				userListId: 42,
+			}) as never,
 		);
 		expect(res.status).toBe(200);
 

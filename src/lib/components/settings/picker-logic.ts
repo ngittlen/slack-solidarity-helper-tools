@@ -14,13 +14,11 @@ export function filterPickerItems<T extends string | number>(
 	return items.filter((i) => {
 		if (i.label.toLowerCase().includes(q)) return true;
 		return !!(i.sublabel && i.sublabel.toLowerCase().includes(q));
-
 	});
 }
 
 export type BlurReconcileResult<T extends string | number> =
-	| { accept: true; id: T }
-	| { accept: false };
+	{ accept: true; id: T } | { accept: false };
 
 /**
  * On blur, decide whether the current input text matches an item (accept it

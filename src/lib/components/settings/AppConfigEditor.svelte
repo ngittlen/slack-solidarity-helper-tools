@@ -166,9 +166,7 @@
 	});
 
 	const contactSaves = $derived([contactNameSave, contactEmailSave, contactPhoneSave]);
-	const contactStatus = $derived(
-		contactSaves.find((f) => f.status !== 'idle')?.status ?? 'idle',
-	);
+	const contactStatus = $derived(contactSaves.find((f) => f.status !== 'idle')?.status ?? 'idle');
 	const contactError = $derived(contactSaves.find((f) => f.error)?.error ?? null);
 	const contactRetry = $derived(contactSaves.find((f) => f.status === 'error')?.retry);
 
@@ -408,15 +406,19 @@
 		</div>
 		<p class="app-config-note">
 			The contact listed on events the sync creates in Mobilize. Mobilize requires one on every
-			event, and Solidarity events don't carry contact details, so <strong>the event sync cannot
-			run without an email here</strong> (or in <code>MOBILIZE_CONTACT_EMAIL</code>). Clearing a
-			field falls back to its <code>MOBILIZE_CONTACT_*</code> environment variable.
+			event, and Solidarity events don't carry contact details, so <strong
+				>the event sync cannot run without an email here</strong
+			>
+			(or in <code>MOBILIZE_CONTACT_EMAIL</code>). Clearing a field falls back to its
+			<code>MOBILIZE_CONTACT_*</code> environment variable.
 		</p>
 	</SettingsRow>
 
 	<SettingsRow
 		label="Header countdown"
-		status={countdownEndSave.status === 'idle' ? countdownLabelSave.status : countdownEndSave.status}
+		status={countdownEndSave.status === 'idle'
+			? countdownLabelSave.status
+			: countdownEndSave.status}
 		error={countdownEndSave.error ?? countdownLabelSave.error}
 		onRetry={countdownEndSave.status === 'error'
 			? countdownEndSave.retry
@@ -445,8 +447,8 @@
 			</label>
 		</div>
 		<p class="app-config-note">
-			Shown as a large days/hours/minutes/seconds countdown at the top of the dashboard, above
-			the Solidarity signups chart. Clear the date to hide it.
+			Shown as a large days/hours/minutes/seconds countdown at the top of the dashboard, above the
+			Solidarity signups chart. Clear the date to hide it.
 		</p>
 	</SettingsRow>
 
@@ -462,8 +464,7 @@
 			maxlength="3000"
 			placeholder={DEFAULT_WELCOME_DM}
 			value={welcomeDmSave.value}
-			oninput={welcomeDmSave.oninput}
-		></textarea>
+			oninput={welcomeDmSave.oninput}></textarea>
 		<p class="app-config-note">
 			The DM sent to each new member after they're added to their chapter channel(s). Use
 			<code>{'{{channels}}'}</code> where the list of channels they were added to should appear, and
@@ -550,8 +551,8 @@
 		<p class="app-config-note">
 			How fast the dashboard's doors-knocked ticker scrolls. The board moves one LED column per
 			step, so this is its speed in columns per second. Default {DEFAULT_TICKER_COLUMNS_PER_SECOND};
-			the {MAX_TICKER_COLUMNS_PER_SECOND} ceiling is one column per frame on a 60&nbsp;Hz screen,
-			the fastest a browser can actually draw without skipping columns.
+			the {MAX_TICKER_COLUMNS_PER_SECOND} ceiling is one column per frame on a 60&nbsp;Hz screen, the
+			fastest a browser can actually draw without skipping columns.
 		</p>
 		<p class="app-config-note" class:ticker-speed-warn={!at60.even && !at120.even}>
 			Each step is held {at60.label} frame{at60.frames === 1 ? '' : 's'} at 60&nbsp;Hz and {at120.label}
@@ -576,9 +577,7 @@
 				<DoorTicker entries={previewTicker} columnsPerSecond={tickerSpeedSave.value} />
 			</LedBoard>
 			{#if tickerEntries.length === 0}
-				<p class="app-config-note">
-					No doors recorded yet today — previewing with sample names.
-				</p>
+				<p class="app-config-note">No doors recorded yet today — previewing with sample names.</p>
 			{/if}
 		</div>
 	</SettingsRow>

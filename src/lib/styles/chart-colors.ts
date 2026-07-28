@@ -16,11 +16,11 @@ export const CHART_BAND_COLORS = [
 	'#4a5580',
 	'#8a94b8',
 	'#1e2d70',
-	'#d3951e'
+	'#d3951e',
 ] as const;
 
 /** Inline style string projecting the palette onto a wrapper as
  * `--chart-band-N` custom properties, so descendants can `var(--chart-band-1)`. */
-export const CHART_BAND_STYLE = CHART_BAND_COLORS.map(
-	(c, i) => `--chart-band-${i + 1}: ${c}`
-).join('; ');
+export const CHART_BAND_STYLE = CHART_BAND_COLORS.map((c, i) => `--chart-band-${i + 1}: ${c}`).join(
+	'; ',
+);

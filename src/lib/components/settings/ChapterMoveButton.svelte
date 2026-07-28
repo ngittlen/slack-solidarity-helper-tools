@@ -1,10 +1,7 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { errMessage } from '$lib/err-message.js';
-	import type {
-		ChapterMovePlan,
-		ChapterMoveTarget,
-	} from '$lib/server/chapter-reconcile';
+	import type { ChapterMovePlan, ChapterMoveTarget } from '$lib/server/chapter-reconcile';
 
 	interface ChannelOption {
 		id: string;
@@ -53,8 +50,7 @@
 		try {
 			const res = await fetch('/api/settings/chapter-channels/reconcile');
 			const body = (await res.json().catch(() => null)) as
-				| (ChapterMovePlan & { error?: string })
-				| null;
+				(ChapterMovePlan & { error?: string }) | null;
 			if (!res.ok || !body) {
 				throw new Error(body?.error ?? `Failed to load plan (HTTP ${res.status})`);
 			}
@@ -84,9 +80,10 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ targets }),
 			});
-			const body = (await res.json().catch(() => null)) as
-				| { results?: MoveResult[]; error?: string }
-				| null;
+			const body = (await res.json().catch(() => null)) as {
+				results?: MoveResult[];
+				error?: string;
+			} | null;
 			if (!res.ok || !body?.results) {
 				throw new Error(body?.error ?? `Move failed (HTTP ${res.status})`);
 			}
@@ -169,7 +166,8 @@
 					<Dialog.Close class="move-secondary">Cancel</Dialog.Close>
 					{#if totalToInvite > 0}
 						<button type="button" class="move-primary" onclick={() => void applyPlan(plan)}>
-							Move {totalToInvite} {totalToInvite === 1 ? 'person' : 'people'}
+							Move {totalToInvite}
+							{totalToInvite === 1 ? 'person' : 'people'}
 						</button>
 					{/if}
 				</div>
@@ -177,7 +175,8 @@
 				<div class="move-loading" role="status">
 					<span class="move-spinner" aria-hidden="true"></span>
 					<p class="move-status">
-						Inviting {phase.total} {phase.total === 1 ? 'person' : 'people'}…
+						Inviting {phase.total}
+						{phase.total === 1 ? 'person' : 'people'}…
 					</p>
 				</div>
 			{:else if phase.kind === 'done'}

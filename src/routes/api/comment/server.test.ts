@@ -78,16 +78,12 @@ describe('POST /api/comment', () => {
 		const res = await POST(makeEvent(authed, { id: 5, comment: 'called' }) as never);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ success: true });
-		expect(mockSet).toHaveBeenCalledWith(
-			expect.objectContaining({ comment: 'called' }),
-		);
+		expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ comment: 'called' }));
 	});
 
 	it('stores null when comment is blank whitespace', async () => {
 		await POST(makeEvent(authed, { id: 5, comment: '   ' }) as never);
-		expect(mockSet).toHaveBeenCalledWith(
-			expect.objectContaining({ comment: null }),
-		);
+		expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ comment: null }));
 	});
 
 	it('saves the editor name and id', async () => {

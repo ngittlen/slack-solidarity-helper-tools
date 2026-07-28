@@ -7,9 +7,13 @@ vi.mock('$lib/server/events', () => ({ subscribe: mockSubscribe }));
 
 // --- Helpers ---
 
-const authed = { locals: { session: { slackUserId: 'U123', slackUserName: 'Alice', isAdmin: true } } };
+const authed = {
+	locals: { session: { slackUserId: 'U123', slackUserName: 'Alice', isAdmin: true } },
+};
 const unauthed = { locals: { session: null } };
-const nonAdmin = { locals: { session: { slackUserId: 'U999', slackUserName: 'Bob', isAdmin: false } } };
+const nonAdmin = {
+	locals: { session: { slackUserId: 'U999', slackUserName: 'Bob', isAdmin: false } },
+};
 const legacySession = { locals: { session: { slackUserId: 'U999', slackUserName: 'Bob' } } };
 
 // --- Tests ---

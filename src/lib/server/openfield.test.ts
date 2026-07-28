@@ -5,8 +5,10 @@ import { createOpenfieldClient, type OpenfieldClient } from './openfield.js';
 // /codes/, JSON leaderboard at /endpoint/<id>/today. Sessions and CSRF are
 // modeled just enough to prove the client drives the real flow.
 const BASE = 'https://campaign.openfield.ai';
-const LOGIN_PAGE = '<form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="tok-login"></form>';
-const CODES_PAGE = '<form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="tok-codes"><input name="code" maxlength="6"/></form>';
+const LOGIN_PAGE =
+	'<form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="tok-login"></form>';
+const CODES_PAGE =
+	'<form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="tok-codes"><input name="code" maxlength="6"/></form>';
 
 interface FakeServer {
 	fetchFn: typeof fetch;
@@ -20,11 +22,7 @@ function makeServer(opts: { password?: string } = {}): FakeServer {
 	let validSession: string | null = null;
 	let loginPosts = 0;
 
-	function res(
-		status: number,
-		body: string,
-		headers: Array<[string, string]> = [],
-	): Response {
+	function res(status: number, body: string, headers: Array<[string, string]> = []): Response {
 		const h = new Headers();
 		for (const [k, v] of headers) h.append(k, v);
 		return {
@@ -111,10 +109,7 @@ function makeServer(opts: { password?: string } = {}): FakeServer {
 }
 
 function makeClient(server: FakeServer, password = 'pw'): OpenfieldClient {
-	return createOpenfieldClient(
-		{ baseUrl: BASE, username: 'bot', password },
-		server.fetchFn,
-	);
+	return createOpenfieldClient({ baseUrl: BASE, username: 'bot', password }, server.fetchFn);
 }
 
 describe('createOpenfieldClient', () => {
@@ -196,7 +191,10 @@ describe('createOpenfieldClient', () => {
 			}
 			return base(input, init);
 		}) as typeof fetch;
-		const client = createOpenfieldClient({ baseUrl: BASE, username: 'bot', password: 'pw' }, fetchFn);
+		const client = createOpenfieldClient(
+			{ baseUrl: BASE, username: 'bot', password: 'pw' },
+			fetchFn,
+		);
 		await expect(client.fetchToday(500)).rejects.toThrow(/non-JSON/);
 	});
 });

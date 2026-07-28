@@ -16,7 +16,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 
 	const { id, status } = (await request.json()) as { id?: unknown; status?: unknown };
-	if (typeof id !== 'number' || typeof status !== 'string' || !(VALID_STATUSES as ReadonlyArray<string>).includes(status)) {
+	if (
+		typeof id !== 'number' ||
+		typeof status !== 'string' ||
+		!(VALID_STATUSES as ReadonlyArray<string>).includes(status)
+	) {
 		error(400, 'Invalid request body');
 	}
 

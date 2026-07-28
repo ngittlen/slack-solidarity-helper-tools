@@ -1,12 +1,17 @@
 import js from '@eslint/js';
 import ts from 'typescript-eslint';
 import svelte from 'eslint-plugin-svelte';
+import prettier from 'eslint-config-prettier';
 import globals from 'globals';
 
 export default ts.config(
 	js.configs.recommended,
 	...ts.configs.recommended,
 	...svelte.configs.recommended,
+	// Turns off ESLint rules that overlap with Prettier. Must stay after the
+	// recommended configs so its disables win. Formatting is Prettier's job.
+	prettier,
+	...svelte.configs.prettier,
 	{
 		languageOptions: {
 			globals: { ...globals.node, ...globals.browser },
@@ -29,12 +34,6 @@ export default ts.config(
 		},
 	},
 	{
-		ignores: [
-			'build/',
-			'.svelte-kit/',
-			'dist/',
-			'drizzle/',
-			'node_modules/',
-		],
+		ignores: ['build/', '.svelte-kit/', 'dist/', 'drizzle/', 'node_modules/'],
 	},
 );

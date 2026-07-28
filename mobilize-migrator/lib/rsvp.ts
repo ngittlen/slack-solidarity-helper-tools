@@ -115,7 +115,9 @@ export async function createRsvp(
 		{ retriesUsed: 0 },
 	);
 	if (!res.ok) {
-		throw new Error(`Solidarity rsvp create returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
+		throw new Error(
+			`Solidarity rsvp create returned ${res.status}: ${(await res.text()).slice(0, 200)}`,
+		);
 	}
 	const body = (await res.json()) as { data?: { id?: number } };
 	const id = body.data?.id;
@@ -141,7 +143,9 @@ export async function updateRsvp(
 		{ retriesUsed: 0 },
 	);
 	if (!res.ok) {
-		throw new Error(`Solidarity rsvp update returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
+		throw new Error(
+			`Solidarity rsvp update returned ${res.status}: ${(await res.text()).slice(0, 200)}`,
+		);
 	}
 }
 

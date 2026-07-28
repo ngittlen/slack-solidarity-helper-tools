@@ -9,9 +9,13 @@ const mockUsersList = vi.hoisted(() => vi.fn());
 vi.mock('$lib/server/db', () => ({ db: { select: mockSelect } }));
 vi.mock('$lib/server/slack', () => ({ slack: { users: { list: mockUsersList } } }));
 
-const authed = { locals: { session: { slackUserId: 'U123', slackUserName: 'Alice', isAdmin: true } } };
+const authed = {
+	locals: { session: { slackUserId: 'U123', slackUserName: 'Alice', isAdmin: true } },
+};
 const unauthed = { locals: { session: null } };
-const nonAdmin = { locals: { session: { slackUserId: 'U999', slackUserName: 'Bob', isAdmin: false } } };
+const nonAdmin = {
+	locals: { session: { slackUserId: 'U999', slackUserName: 'Bob', isAdmin: false } },
+};
 const legacySession = { locals: { session: { slackUserId: 'U999', slackUserName: 'Bob' } } };
 
 function row(overrides: object = {}) {

@@ -109,4 +109,4 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		`[auth] login: ${identity.user.name} (${userId}) admin=${isAdmin}${isSuperuser ? ' (superuser)' : ''}`,
 	);
 	redirect(302, '/');
-}
+};

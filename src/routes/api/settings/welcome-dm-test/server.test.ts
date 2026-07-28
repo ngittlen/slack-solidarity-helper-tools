@@ -33,7 +33,8 @@ function lastBlocks(): Array<{
 	text?: { text: string };
 	elements?: Array<{ text: string }>;
 }> {
-	return (mockPostMessage.mock.calls.at(-1)![0] as { blocks: ReturnType<typeof lastBlocks> }).blocks;
+	return (mockPostMessage.mock.calls.at(-1)![0] as { blocks: ReturnType<typeof lastBlocks> })
+		.blocks;
 }
 
 /** The mrkdwn section block's text — where {{channels}} lands. */

@@ -7,7 +7,11 @@
 // documented values — no decoding numeric codes or inferring attendance from a
 // check-in timestamp, both of which the dashboard scrape this replaced had to do.
 
-import { listEventAttendances, type MobilizeApiConfig, type MobilizeAttendance } from './mobilize.js';
+import {
+	listEventAttendances,
+	type MobilizeApiConfig,
+	type MobilizeAttendance,
+} from './mobilize.js';
 
 /** Documented values. UNKNOWN covers anything Mobilize adds later — reported
  *  rather than guessed at, because mapping one wrong marks real attendees

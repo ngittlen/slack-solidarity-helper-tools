@@ -15,7 +15,7 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
 2. Slack sends a `team_join` event to `POST /api/slack/events`
 3. The server looks up the member's email in solidarity.tech to find their chapter(s)
 4. The bot invites them to the matching county channel(s) and sends them a DM:
-   > *"Welcome to the workspace! We've added you to your county chapter channel: #county-name"*
+   > _"Welcome to the workspace! We've added you to your county chapter channel: #county-name"_
 
 ### Volunteer invite queue
 
@@ -71,6 +71,7 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
 ### 2. Find your Slack user IDs
 
 For each person who should have access to `/pending`:
+
 - Open their profile in Slack → **...** menu → **Copy member ID**
 
 ### 3. Create a Turso database
@@ -95,8 +96,9 @@ To find a **chapter ID**: call `GET https://api.solidarity.tech/v1/chapters` wit
 To find a **Slack channel ID**: right-click the channel in Slack → **View channel details** → scroll to the bottom.
 
 The resulting map looks like:
+
 ```json
-{"123": "C012AB3CD", "456": "C987XY6Z"}
+{ "123": "C012AB3CD", "456": "C987XY6Z" }
 ```
 
 ### 5. Configure environment variables
@@ -180,10 +182,10 @@ Receives events from the Slack Events API. Verifies the request signature using 
 
 Handles two event types:
 
-| Event | Action |
-|---|---|
-| `url_verification` | Returns the Slack challenge token (required when first configuring the URL) |
-| `team_join` | Looks up the new member in solidarity.tech, invites them to their county channel(s), and sends a welcome DM |
+| Event              | Action                                                                                                      |
+| ------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `url_verification` | Returns the Slack challenge token (required when first configuring the URL)                                 |
+| `team_join`        | Looks up the new member in solidarity.tech, invites them to their county channel(s), and sends a welcome DM |
 
 The `team_join` handler does nothing if the member's email is not found in solidarity.tech, or if their chapter has no chapter↔channel mapping (configured on `/settings`, falling back to `SOLIDARITY_CHAPTER_CHANNEL_MAP`).
 
@@ -191,12 +193,12 @@ The `team_join` handler does nothing if the member's email is not found in solid
 
 Called by solidarity.tech when a volunteer needs help joining Slack. Stores the volunteer's details and posts to the tracking channel. Returns `401` if the secret is wrong.
 
-| Parameter | Required | Description |
-|---|---|---|
-| `secret` | Yes | Must match `WEBHOOK_SECRET` |
-| `email` | No* | Volunteer's email address |
-| `name` | No | Volunteer's full name |
-| `phone` | No* | Volunteer's phone number |
+| Parameter | Required | Description                 |
+| --------- | -------- | --------------------------- |
+| `secret`  | Yes      | Must match `WEBHOOK_SECRET` |
+| `email`   | No*      | Volunteer's email address   |
+| `name`    | No       | Volunteer's full name       |
+| `phone`   | No*      | Volunteer's phone number    |
 
 \* At least one of `email` or `phone` is required.
 
@@ -210,21 +212,21 @@ The underlying JSON is also available at `GET /api/pending`:
 
 ```json
 {
-  "pending": [
-    {
-      "id": 1,
-      "email": "volunteer@example.com",
-      "name": "Jane Smith",
-      "phone": "555-1234",
-      "comment": null,
-      "in_slack": false,
-      "status": "uncontacted",
-      "lastEditedById": null,
-      "lastEditedByName": null
-    }
-  ],
-  "total_requested": 5,
-  "total_pending": 4
+	"pending": [
+		{
+			"id": 1,
+			"email": "volunteer@example.com",
+			"name": "Jane Smith",
+			"phone": "555-1234",
+			"comment": null,
+			"in_slack": false,
+			"status": "uncontacted",
+			"lastEditedById": null,
+			"lastEditedByName": null
+		}
+	],
+	"total_requested": 5,
+	"total_pending": 4
 }
 ```
 
@@ -263,32 +265,32 @@ Signup-trend dashboard. The whole site (and any future route) is gated by a root
 
 The same data the dashboard pages render, as JSON. Requires an active session (no admin gate).
 
-| Parameter | Required | Description |
-|---|---|---|
-| `days` | No | Window size in days. Defaults to 90; clamped to 1..365. |
+| Parameter | Required | Description                                             |
+| --------- | -------- | ------------------------------------------------------- |
+| `days`    | No       | Window size in days. Defaults to 90; clamped to 1..365. |
 
 ```jsonc
 {
-  "solidarity": [
-    {
-      "date": "2026-05-09",
-      "total": 14,                    // sum of byChapter
-      "byChapter": [
-        { "chapterId": 123, "chapterName": "Washtenaw County", "count": 9 },
-        { "chapterId": null, "chapterName": null, "count": 5 }
-      ]
-    }
-  ],
-  "slack": [
-    {
-      "date": "2026-05-09",
-      "total": 11,                    // distinct users that day (not sum of byChapter)
-      "byChapter": [
-        { "chapterId": 123, "chapterName": "Washtenaw County", "count": 7 },
-        { "chapterId": 456, "chapterName": "Wayne County",     "count": 4 }
-      ]
-    }
-  ]
+	"solidarity": [
+		{
+			"date": "2026-05-09",
+			"total": 14, // sum of byChapter
+			"byChapter": [
+				{ "chapterId": 123, "chapterName": "Washtenaw County", "count": 9 },
+				{ "chapterId": null, "chapterName": null, "count": 5 },
+			],
+		},
+	],
+	"slack": [
+		{
+			"date": "2026-05-09",
+			"total": 11, // distinct users that day (not sum of byChapter)
+			"byChapter": [
+				{ "chapterId": 123, "chapterName": "Washtenaw County", "count": 7 },
+				{ "chapterId": 456, "chapterName": "Wayne County", "count": 4 },
+			],
+		},
+	],
 }
 ```
 
@@ -298,10 +300,10 @@ The same data the dashboard pages render, as JSON. Requires an active session (n
 
 Scheduler-only. Computes the per-chapter growth leaderboard for the previous 7 days and posts the top 5 to `SLACK_GROWTH_REPORT_CHANNEL_ID`. Auth via `?key=<INTERNAL_CRON_SECRET>`.
 
-| Parameter | Required | Description |
-|---|---|---|
-| `key` | Yes | Must match `INTERNAL_CRON_SECRET` |
-| `dry_run` | No | When `1`, returns the result without posting to Slack |
+| Parameter | Required | Description                                           |
+| --------- | -------- | ----------------------------------------------------- |
+| `key`     | Yes      | Must match `INTERNAL_CRON_SECRET`                     |
+| `dry_run` | No       | When `1`, returns the result without posting to Slack |
 
 Returns the full leaderboard (window, totals, top chapters, whether the message was posted). The ranking score is `newJoins / (existing + 1) ^ SLACK_GROWTH_REPORT_RANKING_ALPHA`. Chapters listed in `REPORT_EXCLUDED_CHAPTER_IDS` are skipped.
 
@@ -313,11 +315,11 @@ Scheduler-only. Writes today's per-chapter Solidarity signup counts into `solida
 
 Invites an existing Slack user to a coalition channel. Useful for solidarity.tech automations that route members to interest-based channels (labor, housing, etc.) after onboarding.
 
-| Parameter | Required | Description |
-|---|---|---|
-| `secret` | Yes | Must match `WEBHOOK_SECRET` |
-| `email` | Yes | Email of an existing Slack workspace member |
-| `coalition` | Yes | A coalition group name mapped on `/settings` (case-insensitive) |
+| Parameter   | Required | Description                                                     |
+| ----------- | -------- | --------------------------------------------------------------- |
+| `secret`    | Yes      | Must match `WEBHOOK_SECRET`                                     |
+| `email`     | Yes      | Email of an existing Slack workspace member                     |
+| `coalition` | Yes      | A coalition group name mapped on `/settings` (case-insensitive) |
 
 Returns `{ "success": true }` on a successful invite, `{ "success": true, "already_in_channel": true }` if the user was already in the channel, `404` if no Slack user matches the email, `400` for unknown coalitions or invalid input, and `502` if Slack rejects the invite.
 
@@ -325,11 +327,11 @@ Returns `{ "success": true }` on a successful invite, `{ "success": true, "alrea
 
 Server-Sent Events stream. Requires an active Slack OAuth session. Pushes three event types:
 
-| `type` | Payload | Meaning |
-|---|---|---|
+| `type`        | Payload                  | Meaning                            |
+| ------------- | ------------------------ | ---------------------------------- |
 | `new-request` | `id, email, name, phone` | A new volunteer record was created |
-| `status` | `id, status, editedBy` | A row's status changed |
-| `comment` | `id, comment, editedBy` | A row's comment changed |
+| `status`      | `id, status, editedBy`   | A row's status changed             |
+| `comment`     | `id, comment, editedBy`  | A row's comment changed            |
 
 ### `GET /auth/slack`
 
@@ -370,12 +372,14 @@ fly deploy
 ```
 
 Then point a scheduler at:
+
 - `POST https://your-app.fly.dev/api/internal/solidarity-snapshot?key=$INTERNAL_CRON_SECRET` — daily
 - `POST https://your-app.fly.dev/api/internal/weekly-growth-report?key=$INTERNAL_CRON_SECRET` — weekly
 
 `ORIGIN` is required by SvelteKit's adapter-node for CSRF protection — it must match the public URL of your app. Set it to the same value as `APP_URL`.
 
 Use the resulting URL as:
+
 - The webhook endpoint in solidarity.tech: `https://your-app.fly.dev/webhook?secret=...&email=...&name=...&phone=...`
 - The redirect URL in your Slack App: `https://your-app.fly.dev/auth/slack/callback`
 - The Events API Request URL in your Slack App: `https://your-app.fly.dev/api/slack/events`

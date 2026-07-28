@@ -27,20 +27,20 @@ is no bulk undo.
 
 All in `.env.local` for the CLI, and Fly secrets for the app:
 
-| Variable | Purpose |
-| --- | --- |
-| `SOLIDARITY_API_TOKEN` | Already used elsewhere in this repo; the Solidarity read/write side. |
-| `MOBILIZE_API_KEY` | Organization API key, sent as `Authorization: Bearer …`. Required — there is no fallback. |
-| `MOBILIZE_ORG_ID` | Numeric organization id. Required, deliberately with no default: a wrong value publishes events under someone else's name. |
-| `MOBILIZE_CONTACT_EMAIL` | Contact on created events. The app prefers the value set on `/settings`; this is the fallback, and the only source for the CLI. |
-| `MOBILIZE_CONTACT_NAME` / `_PHONE` | Optional, same resolution. |
+| Variable                           | Purpose                                                                                                                         |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `SOLIDARITY_API_TOKEN`             | Already used elsewhere in this repo; the Solidarity read/write side.                                                            |
+| `MOBILIZE_API_KEY`                 | Organization API key, sent as `Authorization: Bearer …`. Required — there is no fallback.                                       |
+| `MOBILIZE_ORG_ID`                  | Numeric organization id. Required, deliberately with no default: a wrong value publishes events under someone else's name.      |
+| `MOBILIZE_CONTACT_EMAIL`           | Contact on created events. The app prefers the value set on `/settings`; this is the fallback, and the only source for the CLI. |
+| `MOBILIZE_CONTACT_NAME` / `_PHONE` | Optional, same resolution.                                                                                                      |
 
 Everything runs against the documented v1 API
 ([mobilizeamerica/api](https://github.com/mobilizeamerica/api)) at
 `https://api.mobilize.us/v1`.
 
 **The key needs write access.** Create, update and delete event, and
-`POST /v1/images`, are *restricted* endpoints — Mobilize grants them per
+`POST /v1/images`, are _restricted_ endpoints — Mobilize grants them per
 organization on request, and simply holding a key is not enough. Everything the
 API answers 403 for looks the same from here, so `authFailed` means "rejected or
 not permitted", not "expired": there is nothing to refresh. Check the key, then
@@ -59,14 +59,14 @@ check the grant.
 
 ## How it maps
 
-**The shape mismatch.** A Solidarity event owns many *sessions*, and each session
-carries its own location and time. A Mobilize event has *one* address plus many
+**The shape mismatch.** A Solidarity event owns many _sessions_, and each session
+carries its own location and time. A Mobilize event has _one_ address plus many
 timeslots. So sessions are grouped by location, and one Solidarity event can become
 several Mobilize events — "Operation Get Out the Vote" (Flint, Grand Rapids, Detroit,
 Oakland, Ann Arbor) becomes five.
 
 **Times.** Timeslots are unix timestamps, which makes this mostly a non-issue:
-Solidarity returns absolute instants but renders them with an *inconsistent* UTC
+Solidarity returns absolute instants but renders them with an _inconsistent_ UTC
 offset — the same session came back as both `...T18:00:00-06:00` and
 `...T20:00:00-04:00` across two calls — and only the instant matters. Never read
 the wall time off the string. The event's `timezone` field is
@@ -77,10 +77,10 @@ DST rules are identical.
 **Addresses.** Most sessions leave Solidarity's structured `location_data`
 components blank and carry only a Google-formatted `location_address` string plus
 coordinates, so `lib/address.ts` parses that string. City-only addresses ("Ann Arbor,
-MI, USA") are *rejected* rather than migrated — Mobilize would drop a pin on the city
+MI, USA") are _rejected_ rather than migrated — Mobilize would drop a pin on the city
 centroid, which is worse than a missing event a human can add correctly.
 
-**Descriptions.** `/v1/events` returns a *flattened plain-text* description — the
+**Descriptions.** `/v1/events` returns a _flattened plain-text_ description — the
 bold, links and lists on the event page are stripped before we see them. The real
 content is on the linked ActionPage (`/v1/pages/{event_page_id}`) as HTML, so
 `lib/html-to-markdown.ts` converts that to Markdown, which is what Mobilize
@@ -121,10 +121,10 @@ location field and there would be nothing left to place it by.
 Two dead ends, both checked against the live API rather than assumed:
 
 - The `"This event's address is private. Sign up for more details"` string in the
-  docs is what Mobilize's serializer *returns* for an event whose address is
+  docs is what Mobilize's serializer _returns_ for an event whose address is
   private. Writing it would just store that sentence as the venue name and
   street.
-- `address_visibility` exists on the Event *response* and looks like the control,
+- `address_visibility` exists on the Event _response_ and looks like the control,
   but it is **silently ignored on create** — send `PRIVATE`, read back `PUBLIC`.
   It is documented under the response schema only, and it behaves that way.
 
@@ -138,14 +138,14 @@ The private dashboard payload this replaced carried about ninety fields. The
 documented API accepts a much smaller set, and synced events now get Mobilize's
 defaults for the rest. Deliberately accepted, not worked around:
 
-| Dropped | Consequence |
-| --- | --- |
-| `van_event_activist_code_config` (activist code `5451761`) | **Synced events no longer tag their signups with the campaign's VAN activist code.** The most consequential of these. |
-| `location_is_private` | Handled by withholding the street line instead — see above. |
-| `check_in_enabled`, `volunteer_check_in_is_enabled` | Mobilize defaults apply. |
-| `post_signup_asks`, `day_before_confirmation_is_enabled`, `shift_followup_email_enabled` | Mobilize defaults apply. |
-| `contact_host_enabled`, `chat_enabled` | Mobilize defaults apply. |
-| `lat` / `lon` | Mobilize geocodes from the address instead. |
+| Dropped                                                                                  | Consequence                                                                                                           |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `van_event_activist_code_config` (activist code `5451761`)                               | **Synced events no longer tag their signups with the campaign's VAN activist code.** The most consequential of these. |
+| `location_is_private`                                                                    | Handled by withholding the street line instead — see above.                                                           |
+| `check_in_enabled`, `volunteer_check_in_is_enabled`                                      | Mobilize defaults apply.                                                                                              |
+| `post_signup_asks`, `day_before_confirmation_is_enabled`, `shift_followup_email_enabled` | Mobilize defaults apply.                                                                                              |
+| `contact_host_enabled`, `chat_enabled`                                                   | Mobilize defaults apply.                                                                                              |
+| `lat` / `lon`                                                                            | Mobilize geocodes from the address instead.                                                                           |
 
 Events created before this migration keep whatever the dashboard API set on
 them; the update pass does not clear these fields, it just stops setting them.
@@ -155,13 +155,13 @@ them; the update pass does not clear these fields, it just stops setting them.
 Two independent mechanisms:
 
 1. **The `mobilize_synced_events` ledger** — a row for every event the sync
-   created, keyed by Solidarity event + location, written after *each* success.
+   created, keyed by Solidarity event + location, written after _each_ success.
    A crash or expired session mid-run never causes a repeat.
 2. **Heuristic matching** against Mobilize's public feed, for events created by hand.
 
-Titles are not stable across the two systems — Solidarity's *"Marquette County Abdul
-El-Sayed Canvass Launch & Debate Watch Party!"* is Mobilize's *"Abdul El-Sayed Canvass
-Launch & Debate Watch Party in Negaunee!"* — so matching is: identical normalized
+Titles are not stable across the two systems — Solidarity's _"Marquette County Abdul
+El-Sayed Canvass Launch & Debate Watch Party!"_ is Mobilize's _"Abdul El-Sayed Canvass
+Launch & Debate Watch Party in Negaunee!"_ — so matching is: identical normalized
 title, **or** a shared start time (±1h) plus agreeing cities plus title-token overlap.
 
 The city guard matters more than the title score. The campaign runs the same
@@ -191,7 +191,7 @@ Same dual-use trick as `src/lib/server/solidarity-paginate.ts`.
 1. `npm run db:migrate` — creates the ledger tables.
 2. `fly secrets set MOBILIZE_API_KEY='…' MOBILIZE_ORG_ID='…'`
 3. Set the event contact on `/settings` (or `fly secrets set
-   MOBILIZE_CONTACT_EMAIL='…'`). The sync refuses to run without one.
+MOBILIZE_CONTACT_EMAIL='…'`). The sync refuses to run without one.
 4. Verify without writing: `POST /api/internal/mobilize-sync?key=…&dry=1`, or run
    the workflow manually with **dry run** ticked.
 
@@ -210,7 +210,7 @@ Two behaviors worth knowing:
   and its signups — if it's absent from a PUT. So live shifts with no Solidarity
   counterpart (cancelled sessions) are re-sent untouched rather than dropped. A
   cancelled session therefore needs removing by hand. Leaving a stale shift is
-  strictly better than deleting one people signed up for. *Past* shifts are the
+  strictly better than deleting one people signed up for. _Past_ shifts are the
   exception: the endpoint does not modify them at all, so they are left out of
   the payload entirely — which is safe precisely because it cannot delete them
   either.
@@ -269,16 +269,16 @@ inferred from the presence of a check-in timestamp, so "did not attend" and "not
 recorded yet" are finally distinguishable. Anything unrecognized is still skipped
 and alerted rather than guessed.
 
-| Mobilize | Solidarity |
-| --- | --- |
-| `REGISTERED` / `CONFIRMED` | RSVP `is_attending: "yes"` |
-| `CANCELLED` | existing RSVP set to `"no"` — never deleted |
-| `attended: true` | plus an `event_attendances` record |
+| Mobilize                   | Solidarity                                  |
+| -------------------------- | ------------------------------------------- |
+| `REGISTERED` / `CONFIRMED` | RSVP `is_attending: "yes"`                  |
+| `CANCELLED`                | existing RSVP set to `"no"` — never deleted |
+| `attended: true`           | plus an `event_attendances` record          |
 
 ### Event API traps, verified against the live API
 
 - **Create nests the event one level deeper than everything else.** `POST
-  /events` answers `{"data":{"event":{…,"id":…}}}`, while `GET /events/:id` and
+/events` answers `{"data":{"event":{…,"id":…}}}`, while `GET /events/:id` and
   the list endpoint return the event flat under `data`. Reading `data.id` on a
   create yields `undefined` and fails every single create. There's a regression
   test in `lib/mobilize.test.ts`.
@@ -302,13 +302,13 @@ and alerted rather than guessed.
 
 ### Attendee-sync traps, all verified against the live API
 
-- **`?phone=` is silently ignored** by `/v1/users` — it returns an *unfiltered*
+- **`?phone=` is silently ignored** by `/v1/users` — it returns an _unfiltered_
   list, so matching on it attaches signups to arbitrary strangers. The real
   parameter is **`phone_number`**. There is a regression test asserting the
   query string; don't "simplify" it.
 - **Paths use underscores**: `/v1/event_rsvps`, `/v1/event_attendances`. The
   hyphenated forms in the docs URLs 404.
-- **`event_id` here means a *Solidarity* event.** Solidarity calls its own event
+- **`event_id` here means a _Solidarity_ event.** Solidarity calls its own event
   entity a "mobilize_event" — its sessions carry `mobilize_event_id` pointing at
   a Solidarity event. Nothing to do with mobilize.us.
 - **`skip_email_confirmation: true`** on every RSVP write, or Solidarity emails a
@@ -318,8 +318,8 @@ and alerted rather than guessed.
   sets it to the attendee on its own web-form signups, and a Mobilize signup is
   the same self-service act, so the sync sends the attendee's id.
 - **`/v1/users` does not use the `data` envelope for a single user.** `GET
-  /v1/users/:id` and `POST /v1/users` return the user *bare*, while `GET
-  /v1/event_rsvps/:id` and every list endpoint wrap in `data`. Reading only
+/v1/users/:id` and `POST /v1/users` return the user _bare_, while `GET
+/v1/event_rsvps/:id` and every list endpoint wrap in `data`. Reading only
   `data.id` on a create threw "returned no id" for profiles Solidarity had
   actually created — the person existed, their RSVP did not.
 - **Unknown query parameters are silently ignored, not rejected.** `?tags=`,
@@ -349,7 +349,7 @@ remedy).
 Expect a real match rate well under 100%: on a sampled shift, 26 of 81 signups
 already existed, and spot-checking 10 of the other 55 confirmed all were
 genuinely absent. Mobilize reaches people the CRM hasn't seen — that's the point
-of the sync — so judge a run by *change* in the rate, not its absolute value.
+of the sync — so judge a run by _change_ in the rate, not its absolute value.
 
 ### Cadence
 
@@ -359,7 +359,7 @@ landing 4.5h before doors.
 
 The ask was "4 hours before, and again 30 minutes before". GitHub cron cannot hit
 fixed offsets — it is best-effort and this repo documents delays of hours
-(`door-knock-snapshot.yml`). A look-ahead *window* covers both marks and
+(`door-knock-snapshot.yml`). A look-ahead _window_ covers both marks and
 tolerates a skipped run, because the next one still refreshes the event in time.
 
 Both passes also look **back 48 hours** (`?lookback=`). Check-ins are recorded

@@ -182,7 +182,7 @@ describe('computeDoorsLeaderboardPair', () => {
 		});
 	});
 
-	it("lastWeek ranks against the week before it and thisWeek against lastWeek", async () => {
+	it('lastWeek ranks against the week before it and thisWeek against lastWeek', async () => {
 		const { db } = makeDb([
 			{ date: '2026-07-01', chapterName: 'Kent', doors: 80, contacts: 0 }, // week before
 			{ date: '2026-07-08', chapterName: 'Kent', doors: 120, contacts: 0 }, // last week

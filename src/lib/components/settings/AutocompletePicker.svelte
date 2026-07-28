@@ -75,7 +75,7 @@
 	type="single"
 	value={value === null ? '' : String(value)}
 	onValueChange={handleValueChange}
-	disabled={disabled}
+	{disabled}
 >
 	<div class="picker-row">
 		<Combobox.Input
@@ -84,7 +84,7 @@
 				inputText = (e.currentTarget as HTMLInputElement).value;
 			}}
 			onblur={handleBlur}
-			placeholder={placeholder}
+			{placeholder}
 			class="picker-input"
 			bind:ref={inputEl}
 		/>

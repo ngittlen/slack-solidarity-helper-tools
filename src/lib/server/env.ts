@@ -11,7 +11,10 @@ export const SLACK_CLIENT_ID = get('SLACK_CLIENT_ID');
 export const SLACK_CLIENT_SECRET = get('SLACK_CLIENT_SECRET');
 export const SLACK_SIGNING_SECRET = get('SLACK_SIGNING_SECRET');
 export const SLACK_ALLOWED_USER_IDS = new Set(
-	get('SLACK_ALLOWED_USER_IDS').split(',').map((id) => id.trim()).filter(Boolean),
+	get('SLACK_ALLOWED_USER_IDS')
+		.split(',')
+		.map((id) => id.trim())
+		.filter(Boolean),
 );
 // Slack user id that is ALWAYS granted admin, regardless of the DB-backed
 // allowed_slack_users list (or its SLACK_ALLOWED_USER_IDS fallback) — even
@@ -153,6 +156,8 @@ export function validateEnv(): void {
 		process.exit(1);
 	}
 	if (!SOLIDARITY_API_TOKEN) {
-		console.warn('[env] SOLIDARITY_API_TOKEN is not set — the team_join welcome flow will be disabled (every lookup returns null).');
+		console.warn(
+			'[env] SOLIDARITY_API_TOKEN is not set — the team_join welcome flow will be disabled (every lookup returns null).',
+		);
 	}
 }

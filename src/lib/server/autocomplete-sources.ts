@@ -199,76 +199,91 @@ export function getSlackChannels(
 	slack: WebClient,
 	opts: AutocompleteOptions = {},
 ): Promise<AutocompleteResult<ChannelEntry>> {
-	return getCached(channelsEntry, 'channels', slack, async () => {
-		const items: ChannelEntry[] = [];
-		let cursor: string | undefined;
-		do {
-			const page = await slack.conversations.list({
-				types: 'public_channel,private_channel',
-				exclude_archived: true,
-				limit: 1000,
-				cursor,
-			});
-			for (const ch of page.channels ?? []) {
-				if (ch.id && ch.name) {
-					items.push({ id: ch.id, name: ch.name, isPrivate: ch.is_private === true });
+	return getCached(
+		channelsEntry,
+		'channels',
+		slack,
+		async () => {
+			const items: ChannelEntry[] = [];
+			let cursor: string | undefined;
+			do {
+				const page = await slack.conversations.list({
+					types: 'public_channel,private_channel',
+					exclude_archived: true,
+					limit: 1000,
+					cursor,
+				});
+				for (const ch of page.channels ?? []) {
+					if (ch.id && ch.name) {
+						items.push({ id: ch.id, name: ch.name, isPrivate: ch.is_private === true });
+					}
 				}
-			}
-			cursor = page.response_metadata?.next_cursor || undefined;
-		} while (cursor);
-		items.sort(byName);
-		return items;
-	}, opts);
+				cursor = page.response_metadata?.next_cursor || undefined;
+			} while (cursor);
+			items.sort(byName);
+			return items;
+		},
+		opts,
+	);
 }
 
 export function getSlackUsers(
 	slack: WebClient,
 	opts: AutocompleteOptions = {},
 ): Promise<AutocompleteResult<UserEntry>> {
-	return getCached(usersEntry, 'users', slack, async () => {
-		const items: UserEntry[] = [];
-		let cursor: string | undefined;
-		do {
-			const page = await slack.users.list({ limit: 1000, cursor });
-			for (const m of page.members ?? []) {
-				if (m.is_bot || m.deleted) continue;
-				if (!m.id) continue;
-				const profile = m.profile;
-				const display =
-					profile?.display_name?.trim() ||
-					profile?.real_name?.trim() ||
-					m.name?.trim() ||
-					m.id;
-				items.push({
-					id: m.id,
-					name: display,
-					realName: profile?.real_name ?? '',
-					email: profile?.email ?? '',
-				});
-			}
-			cursor = page.response_metadata?.next_cursor || undefined;
-		} while (cursor);
-		items.sort(byName);
-		return items;
-	}, opts);
+	return getCached(
+		usersEntry,
+		'users',
+		slack,
+		async () => {
+			const items: UserEntry[] = [];
+			let cursor: string | undefined;
+			do {
+				const page = await slack.users.list({ limit: 1000, cursor });
+				for (const m of page.members ?? []) {
+					if (m.is_bot || m.deleted) continue;
+					if (!m.id) continue;
+					const profile = m.profile;
+					const display =
+						profile?.display_name?.trim() || profile?.real_name?.trim() || m.name?.trim() || m.id;
+					items.push({
+						id: m.id,
+						name: display,
+						realName: profile?.real_name ?? '',
+						email: profile?.email ?? '',
+					});
+				}
+				cursor = page.response_metadata?.next_cursor || undefined;
+			} while (cursor);
+			items.sort(byName);
+			return items;
+		},
+		opts,
+	);
 }
 
 export function getSolidarityChapters(
 	token: string,
 	opts: AutocompleteOptions = {},
 ): Promise<AutocompleteResult<SolidarityChapterEntry>> {
-	return getCached(chaptersEntry, 'chapters', token, async () => {
-		const raw = await fetchPaginated<{ id: number; name: string }>(
-			token,
-			'/v1/chapters',
-			'/v1/chapters',
-			'',
-			'autocomplete',
-		);
-		const items: SolidarityChapterEntry[] = raw.map((c) => ({ id: c.id, name: c.name }));
-		items.sort(byName);
-		return items;
-	}, opts);
+	return getCached(
+		chaptersEntry,
+		'chapters',
+		token,
+		async () => {
+			const raw = await fetchPaginated<{ id: number; name: string }>(
+				token,
+				'/v1/chapters',
+				'/v1/chapters',
+				'',
+				'autocomplete',
+			);
+			const items: SolidarityChapterEntry[] = raw.map((c) => ({ id: c.id, name: c.name }));
+			items.sort(byName);
+			return items;
+		},
+		opts,
+	);
 }
 
 // Real response shape (verified against the live API 2026-07-05): the
@@ -287,44 +302,57 @@ export function getSolidarityCustomProperties(
 	token: string,
 	opts: AutocompleteOptions = {},
 ): Promise<AutocompleteResult<CustomPropertyEntry>> {
-	return getCached(customPropertiesEntry, 'custom-properties', token, async () => {
-		const raw = await fetchPaginated<RawCustomProperty>(
-			token,
-			'/v1/custom_user_properties',
-			'/v1/custom_user_properties',
-			'',
-			'autocomplete',
-		);
-		const items: CustomPropertyEntry[] = raw
-			.map((p) => ({ ...p, resolvedKey: p.key ?? p.internal_name }))
-			.filter((p): p is RawCustomProperty & { resolvedKey: string } =>
-				typeof p.resolvedKey === 'string' && p.resolvedKey !== '',
-			)
-			.map((p) => ({
-				internalName: p.resolvedKey,
-				name: p.label ?? p.name ?? p.resolvedKey,
-			}));
-		items.sort(byName);
-		return items;
-	}, opts);
+	return getCached(
+		customPropertiesEntry,
+		'custom-properties',
+		token,
+		async () => {
+			const raw = await fetchPaginated<RawCustomProperty>(
+				token,
+				'/v1/custom_user_properties',
+				'/v1/custom_user_properties',
+				'',
+				'autocomplete',
+			);
+			const items: CustomPropertyEntry[] = raw
+				.map((p) => ({ ...p, resolvedKey: p.key ?? p.internal_name }))
+				.filter(
+					(p): p is RawCustomProperty & { resolvedKey: string } =>
+						typeof p.resolvedKey === 'string' && p.resolvedKey !== '',
+				)
+				.map((p) => ({
+					internalName: p.resolvedKey,
+					name: p.label ?? p.name ?? p.resolvedKey,
+				}));
+			items.sort(byName);
+			return items;
+		},
+		opts,
+	);
 }
 
 export function getSolidarityUserLists(
 	token: string,
 	opts: AutocompleteOptions = {},
 ): Promise<AutocompleteResult<UserListEntry>> {
-	return getCached(userListsEntry, 'user-lists', token, async () => {
-		const raw = await fetchPaginated<{ id: number; name?: string }>(
-			token,
-			'/v1/user_lists',
-			'/v1/user_lists',
-			'',
-			'autocomplete',
-		);
-		const items: UserListEntry[] = raw
-			.filter((l) => typeof l.id === 'number')
-			.map((l) => ({ id: l.id, name: l.name ?? `List ${l.id}` }));
-		items.sort(byName);
-		return items;
-	}, opts);
+	return getCached(
+		userListsEntry,
+		'user-lists',
+		token,
+		async () => {
+			const raw = await fetchPaginated<{ id: number; name?: string }>(
+				token,
+				'/v1/user_lists',
+				'/v1/user_lists',
+				'',
+				'autocomplete',
+			);
+			const items: UserListEntry[] = raw
+				.filter((l) => typeof l.id === 'number')
+				.map((l) => ({ id: l.id, name: l.name ?? `List ${l.id}` }));
+			items.sort(byName);
+			return items;
+		},
+		opts,
+	);
 }

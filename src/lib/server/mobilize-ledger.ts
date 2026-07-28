@@ -9,11 +9,7 @@
 import { eq } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 
-import type {
-	Ledger,
-	LedgerRecord,
-	TimeslotPairing,
-} from '../../../mobilize-migrator/lib/sync.js';
+import type { Ledger, LedgerRecord, TimeslotPairing } from '../../../mobilize-migrator/lib/sync.js';
 import { mobilizeSyncedEvents, mobilizeSyncedImages, mobilizeSyncedTimeslots } from './schema.js';
 
 export type LedgerDb = LibSQLDatabase<Record<string, unknown>>;

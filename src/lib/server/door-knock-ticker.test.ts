@@ -25,9 +25,7 @@ beforeEach(async () => {
 afterEach(() => client.close());
 
 async function seed(
-	rows: Array<
-		[date: string, code: string, canvasser: string, attempts: number, chapter?: string]
-	>,
+	rows: Array<[date: string, code: string, canvasser: string, attempts: number, chapter?: string]>,
 ): Promise<void> {
 	for (const [date, code, canvasser, attempts, chapter] of rows) {
 		await client.execute({
@@ -142,9 +140,7 @@ describe('loadDoorKnockTicker', () => {
 		]);
 
 		const { entries } = await loadDoorKnockTicker(db);
-		expect(entries).toEqual([
-			{ canvasser: 'Maria T.', doors: 102, chapter: 'Wayne', rank: 1 },
-		]);
+		expect(entries).toEqual([{ canvasser: 'Maria T.', doors: 102, chapter: 'Wayne', rank: 1 }]);
 	});
 
 	it('breaks a chapter tie alphabetically so the region does not flip', async () => {

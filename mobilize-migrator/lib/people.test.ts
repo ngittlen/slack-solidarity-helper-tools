@@ -102,7 +102,9 @@ describe('findExistingUser', () => {
 
 		await findExistingUser(TOKEN, person);
 
-		const phoneCall = spy.mock.calls.map((c) => String(c[0])).find((u) => u.includes('phone_number'));
+		const phoneCall = spy.mock.calls
+			.map((c) => String(c[0]))
+			.find((u) => u.includes('phone_number'));
 		expect(phoneCall).toContain('phone_number=16169539282');
 	});
 

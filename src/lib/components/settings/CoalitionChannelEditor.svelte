@@ -235,8 +235,8 @@
 		<h3>Add a coalition</h3>
 		{#if availablePropertyItems.length === 0}
 			<p class="coalition-empty">
-				Every Solidarity custom property is already mapped. Create a new property in Solidarity
-				for the coalition first, then refresh lists.
+				Every Solidarity custom property is already mapped. Create a new property in Solidarity for
+				the coalition first, then refresh lists.
 			</p>
 		{:else}
 			<div class="coalition-controls">

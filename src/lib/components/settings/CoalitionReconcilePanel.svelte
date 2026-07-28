@@ -145,9 +145,7 @@
 			{diff.consistentCount} in sync{diff.noEmailCount > 0
 				? ` · ${diff.noEmailCount} channel member${diff.noEmailCount === 1 ? '' : 's'} without a Slack email`
 				: ''}
-			<button type="button" class="reconcile-refresh" onclick={() => void load()}>
-				Re-run
-			</button>
+			<button type="button" class="reconcile-refresh" onclick={() => void load()}> Re-run </button>
 		</p>
 		{#if applySummary}
 			<p class="reconcile-apply-summary" aria-live="polite">{applySummary}</p>

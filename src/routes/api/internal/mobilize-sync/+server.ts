@@ -3,11 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { runMobilizeSync } from '$lib/server/mobilize-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
-import {
-	INTERNAL_CRON_SECRET,
-	MOBILIZE_API_KEY,
-	SOLIDARITY_API_TOKEN,
-} from '$lib/server/env.js';
+import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 
 // Internal endpoint called nightly by GitHub Actions to mirror upcoming
 // Solidarity events into Mobilize. Auth via ?key=<INTERNAL_CRON_SECRET>.
@@ -58,7 +54,7 @@ export const POST: RequestHandler = async ({ url }) => {
 				':rotating_light: *Mobilize sync stopped — Mobilize rejected the API key.*\n' +
 					'New events are no longer being mirrored from Solidarity. Check that `MOBILIZE_API_KEY` ' +
 					'is set on the Fly app and still has write access, then run ' +
-					'`fly secrets set MOBILIZE_API_KEY=\'<key>\'`.',
+					"`fly secrets set MOBILIZE_API_KEY='<key>'`.",
 			);
 		} else if (result.abortedReason) {
 			await alert(
@@ -79,7 +75,10 @@ export const POST: RequestHandler = async ({ url }) => {
 		if (result.failed > 0) {
 			await alert(
 				`:warning: Mobilize sync had ${result.failed} failure(s):\n` +
-					result.errors.slice(0, 5).map((e) => `• ${e}`).join('\n'),
+					result.errors
+						.slice(0, 5)
+						.map((e) => `• ${e}`)
+						.join('\n'),
 			);
 		}
 

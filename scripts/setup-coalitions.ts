@@ -135,7 +135,13 @@ function getProperties(): Promise<RawProperty[]> {
 }
 
 function getUserLists(): Promise<RawUserList[]> {
-	return fetchPaginated<RawUserList>(TOKEN, '/v1/user_lists', '/v1/user_lists', '', 'setup-coalitions');
+	return fetchPaginated<RawUserList>(
+		TOKEN,
+		'/v1/user_lists',
+		'/v1/user_lists',
+		'',
+		'setup-coalitions',
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +160,9 @@ async function inspect(): Promise<void> {
 
 	console.log('\n=== User lists ===');
 	for (const l of lists) {
-		console.log(`  id=${l.id}  scope=${l.scope_type ?? '?'}/${l.scope_id ?? '?'}  name="${l.name ?? '?'}"`);
+		console.log(
+			`  id=${l.id}  scope=${l.scope_type ?? '?'}/${l.scope_id ?? '?'}  name="${l.name ?? '?'}"`,
+		);
 		if (l.parameters !== undefined) {
 			console.log(`    parameters: ${JSON.stringify(l.parameters)}`);
 		}
@@ -185,9 +193,7 @@ function coalitionListParameters(propertyKey: string): unknown {
 async function create(): Promise<void> {
 	const names = positionals();
 	if (names.length === 0) {
-		console.error(
-			'Usage: setup-coalitions.ts create [--apply] [--scope-id <n>] "<Coalition>" ...',
-		);
+		console.error('Usage: setup-coalitions.ts create [--apply] [--scope-id <n>] "<Coalition>" ...');
 		process.exit(1);
 	}
 
@@ -196,7 +202,9 @@ async function create(): Promise<void> {
 	// Coalition properties and lists are org-wide. Default to the Organization
 	// scope the existing lists live in.
 	const scopeIdFlag = flagValue('--scope-id');
-	const orgList = lists.find((l) => l.scope_type === 'Organization' && typeof l.scope_id === 'number');
+	const orgList = lists.find(
+		(l) => l.scope_type === 'Organization' && typeof l.scope_id === 'number',
+	);
 	const scopeId = scopeIdFlag !== undefined ? parseInt(scopeIdFlag, 10) : orgList?.scope_id;
 	if (!Number.isFinite(scopeId)) {
 		console.error(
@@ -243,7 +251,9 @@ async function create(): Promise<void> {
 				const refreshed = await getProperties();
 				property = refreshed.find((p) => propertyLabel(p).toLowerCase() === name.toLowerCase());
 				if (!property?.key) {
-					console.error('  ✗ created the property but could not find it on refetch — inspect manually.');
+					console.error(
+						'  ✗ created the property but could not find it on refetch — inspect manually.',
+					);
 					process.exitCode = 1;
 					summary.push({ name, key: null, listId: null });
 					continue;
@@ -293,7 +303,9 @@ async function create(): Promise<void> {
 
 	console.log('\n=== Summary ===');
 	for (const s of summary) {
-		console.log(`  ${s.name}: property key=${s.key ?? '(pending)'}  list id=${s.listId ?? '(pending)'}`);
+		console.log(
+			`  ${s.name}: property key=${s.key ?? '(pending)'}  list id=${s.listId ?? '(pending)'}`,
+		);
 	}
 	console.log(
 		APPLY

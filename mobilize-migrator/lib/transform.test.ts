@@ -145,7 +145,11 @@ describe('planMigration', () => {
 			[
 				event({
 					event_sessions: [
-						session({ id: 1, start_time: '2026-07-01T20:00:00Z', end_time: '2026-07-01T22:00:00Z' }),
+						session({
+							id: 1,
+							start_time: '2026-07-01T20:00:00Z',
+							end_time: '2026-07-01T22:00:00Z',
+						}),
 						session({ id: 2 }),
 					],
 				}),

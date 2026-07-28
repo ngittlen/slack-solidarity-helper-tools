@@ -24,30 +24,18 @@ export interface ValidationFailure {
 	transient: boolean;
 }
 
-export type ChannelValidationResult =
-	| { ok: true; name: string }
-	| ValidationFailure;
+export type ChannelValidationResult = { ok: true; name: string } | ValidationFailure;
 
-export type UserValidationResult =
-	| { ok: true; displayName: string }
-	| ValidationFailure;
+export type UserValidationResult = { ok: true; displayName: string } | ValidationFailure;
 
-export type ChapterValidationResult =
-	| { ok: true; name: string }
-	| ValidationFailure;
+export type ChapterValidationResult = { ok: true; name: string } | ValidationFailure;
 
-export type CustomPropertyValidationResult =
-	| { ok: true; name: string }
-	| ValidationFailure;
+export type CustomPropertyValidationResult = { ok: true; name: string } | ValidationFailure;
 
-export type UserListValidationResult =
-	| { ok: true; name: string }
-	| ValidationFailure;
+export type UserListValidationResult = { ok: true; name: string } | ValidationFailure;
 
-const TRANSIENT_CHANNEL =
-	'Slack channel list is temporarily unavailable. Try again in a moment.';
-const TRANSIENT_USER =
-	'Slack user list is temporarily unavailable. Try again in a moment.';
+const TRANSIENT_CHANNEL = 'Slack channel list is temporarily unavailable. Try again in a moment.';
+const TRANSIENT_USER = 'Slack user list is temporarily unavailable. Try again in a moment.';
 const TRANSIENT_CHAPTER =
 	'Solidarity chapter list is temporarily unavailable. Try again in a moment.';
 

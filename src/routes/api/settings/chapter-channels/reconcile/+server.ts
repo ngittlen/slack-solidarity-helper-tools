@@ -143,8 +143,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				// and reports the rest in a per-user `errors` array on the error
 				// payload. Someone who joined between plan and apply
 				// (already_in_channel) is a success, not a failure.
-				const data = (err as { data?: { errors?: { user?: string; error?: string }[] } })
-					.data;
+				const data = (err as { data?: { errors?: { user?: string; error?: string }[] } }).data;
 				const perUser = new Map(
 					(data?.errors ?? []).map((e) => [e.user ?? '', e.error ?? 'unknown_error']),
 				);

@@ -9,11 +9,7 @@
 // be eyeballed on real signups before anything is written to the CRM, since a
 // low match rate means the sync would fill Solidarity with duplicate people.
 
-import {
-	runAttendeeSync,
-	type AttendeeLedger,
-	type RsvpRecord,
-} from './lib/attendee-sync.js';
+import { runAttendeeSync, type AttendeeLedger, type RsvpRecord } from './lib/attendee-sync.js';
 import { requireEnv } from './lib/env.js';
 import { loadApiConfig } from './lib/mobilize.js';
 
@@ -37,7 +33,9 @@ if (
 	!Number.isFinite(sessionId) ||
 	!Number.isFinite(eventId)
 ) {
-	console.error('usage: attendee-sync.ts --mobilize-event <mobilize.us event id> --timeslot <mobilize.us timeslot id> --session <solidarity session id> --event <solidarity event id> [--chapter <id>] [--apply]');
+	console.error(
+		'usage: attendee-sync.ts --mobilize-event <mobilize.us event id> --timeslot <mobilize.us timeslot id> --session <solidarity session id> --event <solidarity event id> [--chapter <id>] [--apply]',
+	);
 	process.exit(1);
 }
 
@@ -89,5 +87,7 @@ if (report.abortedReason) console.log(`  ABORTED: ${report.abortedReason}`);
 const matched = report.matchedByEmail + report.matchedByPhone;
 const considered = matched + report.profilesCreated;
 if (considered > 0) {
-	console.log(`\n  match rate: ${Math.round((matched / considered) * 100)}% of signups already exist in Solidarity`);
+	console.log(
+		`\n  match rate: ${Math.round((matched / considered) * 100)}% of signups already exist in Solidarity`,
+	);
 }
