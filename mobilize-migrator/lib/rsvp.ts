@@ -168,8 +168,15 @@ export async function createAttendance(token: string, target: RsvpTarget): Promi
 		{ retriesUsed: 0 },
 	);
 	if (!res.ok) {
-		throw new Error(
-			`Solidarity attendance create returned ${res.status}: ${(await res.text()).slice(0, 200)}`,
-		);
+		const body = (await res.text()).slice(0, 200);
+		// Solidarity enforces one attendance row per (event, session, user), so a
+		// 422 "User has already been taken" means the row we were about to create
+		// already exists — the exact state this call wanted. Treating it as an
+		// error made deliberate re-runs page on success: the ledger write lands
+		// after this call, so any run interrupted between the two leaves the
+		// participation looking unrecorded, and the next run collides here.
+		// Narrow on purpose — every other 4xx still throws.
+		if (res.status === 422 && /already been taken/i.test(body)) return;
+		throw new Error(`Solidarity attendance create returned ${res.status}: ${body}`);
 	}
 }

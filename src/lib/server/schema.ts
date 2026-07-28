@@ -382,6 +382,25 @@ export const zipChapterMap = sqliteTable('zip_chapter_map', {
 	updatedAt: text('updated_at').notNull(),
 });
 
+// One row per long-running sync that must not overlap itself. Cancelling a
+// GitHub Actions run does not stop the request it fired — nothing propagates the
+// cancellation to Fly — so a re-run can start while the previous sync is still
+// writing. Two runs then snapshot the ledger before either has written to it and
+// both attempt the same Solidarity creates.
+//
+// `expiresAt` makes the lock self-healing: a process that dies without releasing
+// would otherwise wedge the sync forever. Stored as an ISO-8601 UTC string,
+// which is fixed-width, so lexicographic comparison is chronological.
+//
+// `token` identifies the holder, so a run that overran its TTL and lost the lock
+// cannot release the lock a newer run now holds.
+export const syncLocks = sqliteTable('sync_locks', {
+	name: text('name').primaryKey(),
+	token: text('token').notNull(),
+	acquiredAt: text('acquired_at').notNull(),
+	expiresAt: text('expires_at').notNull(),
+});
+
 export type MobilizeSyncedTimeslotRow = typeof mobilizeSyncedTimeslots.$inferSelect;
 export type NewMobilizeSyncedTimeslotRow = typeof mobilizeSyncedTimeslots.$inferInsert;
 

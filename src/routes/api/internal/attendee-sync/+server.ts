@@ -4,6 +4,17 @@ import { db } from '$lib/server/db.js';
 import { runSolidarityAttendeeSync } from '$lib/server/attendee-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
 import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
+import { withSyncLock } from '$lib/server/sync-lock.js';
+
+const SYNC_LOCK_NAME = 'attendee-sync';
+
+// Must exceed the longest plausible run or the lock expires mid-sync and lets a
+// second run in — the race this closes. The windowless nightly pass is the long
+// one, and the workflow already allows it 50 minutes of curl before giving up
+// (the server keeps working past that), so 90 gives real headroom. The cost of
+// erring high is only that a crashed run blocks the next pass for that long,
+// which the 30-minute cadence absorbs.
+const SYNC_LOCK_TTL_MS = 90 * 60 * 1000;
 
 // Mirrors Mobilize signups into Solidarity as event RSVPs, so organizers only
 // have to look in one place. Auth via ?key=<INTERNAL_CRON_SECRET>.
@@ -54,12 +65,25 @@ export const POST: RequestHandler = async ({ url }) => {
 	const maxNewProfiles = maxParam ? parseInt(maxParam, 10) : undefined;
 
 	try {
-		const result = await runSolidarityAttendeeSync(db, {
-			apply: !dryRun,
-			windowHours,
-			lookbackHours,
-			maxNewProfiles,
-		});
+		const run = await withSyncLock(db, SYNC_LOCK_NAME, SYNC_LOCK_TTL_MS, () =>
+			runSolidarityAttendeeSync(db, {
+				apply: !dryRun,
+				windowHours,
+				lookbackHours,
+				maxNewProfiles,
+			}),
+		);
+
+		// 200 rather than 409 on purpose. The every-30-minutes pass routinely
+		// overlaps the windowless nightly one, which can run for the better part
+		// of an hour — that is expected, not a failure, and the workflow uses
+		// `curl --fail-with-body`, so a 4xx would turn a normal skip into a red
+		// run and train everyone to ignore the alerts. No Slack post either.
+		if (run.skipped) {
+			console.log('[attendee-sync] skipped — another sync is already running');
+			return json({ skipped: true, reason: 'another attendee sync is already running' });
+		}
+		const result = run.result;
 
 		// Deliberately count-only: this data is people's emails and phone numbers,
 		// and these logs go to Fly and Slack.
