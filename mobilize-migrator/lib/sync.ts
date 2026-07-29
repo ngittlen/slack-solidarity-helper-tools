@@ -65,6 +65,21 @@ export interface SyncConfig {
 	createLimit?: number;
 	/** When false, plan and report but write nothing. */
 	apply: boolean;
+	/**
+	 * Absolute epoch ms after which no NEW write is started. The run then returns
+	 * with `incomplete` set, and the caller re-invokes to carry on where this left
+	 * off — the ledger is what makes that safe.
+	 *
+	 * This exists because the server runs behind fly-proxy, whose autostop loop
+	 * decides a machine is excess capacity from its `soft_limit` concurrency and
+	 * not from requests in flight: a single long request looks exactly like an
+	 * idle machine, and gets SIGINT mid-sync (502 to the caller). A deadline, not
+	 * a write count, because one create with an image upload costs ~30s while an
+	 * update costs ~1s — only elapsed time bounds the request.
+	 *
+	 * Undefined means run to completion, which is what the CLI wants.
+	 */
+	writeDeadline?: number;
 	/** Milliseconds between writes, to stay clear of Cloudflare rate limiting. */
 	pauseMs?: number;
 	log?: (message: string) => void;
@@ -79,6 +94,14 @@ export interface SyncReport {
 	failed: number;
 	/** Set when the run refused to act because the plan was suspiciously large. */
 	abortedReason?: string;
+	/** The write deadline passed with work left. Re-invoke to continue. */
+	incomplete: boolean;
+	/**
+	 * Planned events this run stopped before reaching. An upper bound on the work
+	 * left rather than a count of pending writes: most events turn out to need no
+	 * edit, and that is only known once each is evaluated.
+	 */
+	pending: number;
 	/** Mobilize answered 403 — the API key is rejected or lacks write access. */
 	authFailed: boolean;
 	createdTitles: string[];
@@ -257,6 +280,8 @@ export async function runSync(
 		unchanged: 0,
 		skippedExisting: 0,
 		failed: 0,
+		incomplete: false,
+		pending: 0,
 		authFailed: false,
 		createdTitles: [],
 		updatedTitles: [],
@@ -347,8 +372,18 @@ export async function runSync(
 		return uploaded.publicUrl;
 	};
 
-	for (const plan of toCreate) {
+	// Checked before starting each write, never in the middle of one: a chunk that
+	// stops between writes leaves the ledger consistent, so the next one resumes
+	// rather than repeats.
+	const outOfTime = () => config.writeDeadline !== undefined && Date.now() >= config.writeDeadline;
+
+	for (const [index, plan] of toCreate.entries()) {
 		if (config.createLimit !== undefined && report.created >= config.createLimit) break;
+		if (outOfTime()) {
+			report.incomplete = true;
+			report.pending += toCreate.length - index;
+			break;
+		}
 		const zipped = await resolveZip(plan);
 		if (!zipped) {
 			report.failed++;
@@ -391,7 +426,12 @@ export async function runSync(
 		await pause();
 	}
 
-	for (const { plan, record } of toSync) {
+	for (const [index, { plan, record }] of toSync.entries()) {
+		if (outOfTime()) {
+			report.incomplete = true;
+			report.pending += toSync.length - index;
+			break;
+		}
 		try {
 			// Prefer the bulk list; fall back to a direct read only for events it
 			// doesn't cover (all timeslots already past, or not publicly listed).

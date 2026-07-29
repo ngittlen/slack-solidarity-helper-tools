@@ -222,6 +222,35 @@ endpoint on the Fly app, so credentials and Turso stay where they already live:
 state arrives through a `Ledger` interface, credentials through `SyncConfig`.
 Same dual-use trick as `src/lib/server/solidarity-paginate.ts`.
 
+### One night is several requests
+
+**The endpoint does not do the whole sync in one call, on purpose.** fly-proxy
+autostops a machine when it decides there is excess capacity, and it decides
+that from the `soft_limit` concurrency setting — [not from requests in
+flight](https://fly.io/docs/reference/fly-proxy-autostop-autostart/). A single
+long request therefore looks exactly like an idle machine. That is not
+hypothetical: a sync doing ~15 image uploads at ~30s each was killed six minutes
+in, mid-write, and the workflow got a bare `502`:
+
+```
+proxy: App has excess capacity, autostopping machine … 1 out of 2 machines left running
+app:   Sending signal SIGINT to main child process
+```
+
+So each request stops starting writes at a time budget (`DEFAULT_BUDGET_MS`,
+overridable with `?budgetMs=`), reports `incomplete: true` with a `pending`
+count, and the workflow re-posts until `incomplete` is false. The budget covers
+the whole request, reads included — the Solidarity and Mobilize reads take the
+better part of a minute before any write happens.
+
+The deadline is only ever checked _between_ writes, so a chunk always stops with
+the ledger consistent and the next one resumes rather than repeats. Raising
+`kill_timeout` is not an alternative: Fly caps it at 300 seconds, which is less
+than a first bulk run takes.
+
+This means a busy night posts several "created N, updated M" messages to Slack,
+one per chunk — the incomplete ones say `Still working — N to go.`
+
 ### Rollout
 
 1. `npm run db:migrate` — creates the ledger tables.

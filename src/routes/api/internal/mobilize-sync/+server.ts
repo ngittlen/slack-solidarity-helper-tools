@@ -10,10 +10,17 @@ import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$l
 //
 //   ?dry=1        plan and report without writing
 //   ?maxCreates=N raise the create guardrail for a deliberate bulk run
+//   ?budgetMs=N   override how long one request may spend before it stops
 //
 // Idempotent: a Turso ledger records every event created, so repeated runs
 // update rather than duplicate. Safe to fire several times a night, which
 // matters because GitHub cron is best-effort (see door-knock-snapshot.yml).
+//
+// One request is deliberately NOT the whole sync. It stops starting writes at
+// its time budget and answers `incomplete: true`; the caller re-posts until that
+// is false. fly-proxy autostops a machine using concurrency limits that ignore
+// requests in flight, so a long request is killed mid-write and answers 502 —
+// see the budget note in $lib/server/mobilize-sync.ts.
 
 export const POST: RequestHandler = async ({ url }) => {
 	if (!INTERNAL_CRON_SECRET) {
@@ -39,13 +46,16 @@ export const POST: RequestHandler = async ({ url }) => {
 	const dryRun = url.searchParams.get('dry') === '1';
 	const maxCreatesParam = url.searchParams.get('maxCreates');
 	const maxCreates = maxCreatesParam ? parseInt(maxCreatesParam, 10) : undefined;
+	const budgetParam = url.searchParams.get('budgetMs');
+	const budgetMs = budgetParam ? parseInt(budgetParam, 10) : undefined;
 
 	try {
-		const result = await runMobilizeSync(db, { apply: !dryRun, maxCreates });
+		const result = await runMobilizeSync(db, { apply: !dryRun, maxCreates, budgetMs });
 		console.log(
 			`[mobilize-sync]${dryRun ? ' (dry)' : ''} planned ${result.planned}: ` +
 				`created ${result.created}, updated ${result.updated}, unchanged ${result.unchanged}, ` +
-				`existing ${result.skippedExisting}, no-address ${result.skippedNoAddress}, failed ${result.failed}`,
+				`existing ${result.skippedExisting}, no-address ${result.skippedNoAddress}, failed ${result.failed}` +
+				(result.incomplete ? `, INCOMPLETE — ${result.pending} not reached` : ''),
 		);
 
 		// A rejected key is the one failure that always needs a human.
@@ -62,8 +72,11 @@ export const POST: RequestHandler = async ({ url }) => {
 					'Nothing was created. Re-run with `?maxCreates=N` once the plan looks right.',
 			);
 		} else if (!dryRun && (result.created > 0 || result.updated > 0)) {
+			// A big night runs as several chunks, so say so — otherwise three of
+			// these in a row reads like the sync fired three times.
 			const lines = [
-				`:calendar: Mobilize sync: created ${result.created}, updated ${result.updated}.`,
+				`:calendar: Mobilize sync: created ${result.created}, updated ${result.updated}.` +
+					(result.incomplete ? ` Still working — ${result.pending} to go.` : ''),
 				...result.createdTitles.slice(0, 10).map((t) => `• new: ${t}`),
 			];
 			if (result.createdTitles.length > 10) {
