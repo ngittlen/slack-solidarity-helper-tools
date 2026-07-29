@@ -32,6 +32,30 @@ const EXTENSION_BY_TYPE: Record<string, string> = {
 	'image/webp': 'webp',
 };
 
+/**
+ * Is a previously-recorded upload URL still usable as `featured_image_url`?
+ *
+ * The v1 API validates this field and answers
+ * `{"featured_image_url":["Invalid featured image url"]}` for a URL on the raw
+ * upload bucket — `mobilize-uploads-prod.s3.us-east-2.amazonaws.com`. Those URLs
+ * are in the ledger because the pre-v1 dashboard code recorded what *it* was
+ * given and the dashboard accepted them; every URL `POST /v1/images` returns is
+ * on Mobilize's image CDN instead, and all 63 live events with an image use it.
+ *
+ * Written as a deny-list rather than an allow-list of the CDN host on purpose:
+ * if Mobilize ever moves the CDN, an allow-list would reject every fresh upload
+ * and re-upload the same image every night forever.
+ */
+export function isReusableImageUrl(url: string): boolean {
+	let host: string;
+	try {
+		host = new URL(url).host.toLowerCase();
+	} catch {
+		return false;
+	}
+	return !(host.startsWith('mobilize-uploads-') && host.endsWith('.amazonaws.com'));
+}
+
 export function imageFilename(title: string, extension: string): string {
 	const slug =
 		title

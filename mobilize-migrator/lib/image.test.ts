@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { imageFilename } from './image.js';
+import { imageFilename, isReusableImageUrl } from './image.js';
 import { uploadImage, type MobilizeApiConfig } from './mobilize.js';
 
 const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 44679 };
@@ -49,5 +49,32 @@ describe('imageFilename', () => {
 
 	it('falls back when a title slugifies to nothing', () => {
 		expect(imageFilename('🗳️', 'jpg')).toBe('event-image.jpg');
+	});
+});
+
+describe('isReusableImageUrl', () => {
+	it('keeps a URL from POST /v1/images', () => {
+		expect(isReusableImageUrl(HOSTED)).toBe(true);
+	});
+
+	it('rejects a dashboard-era raw upload bucket URL', () => {
+		// The exact shape sitting in 38 ledger rows, and what v1 answers
+		// "Invalid featured image url" for.
+		expect(
+			isReusableImageUrl(
+				'https://mobilize-uploads-prod.s3.us-east-2.amazonaws.com/uploads/event/operation-get-out-the-vote-flint_20260727020913704660.png',
+			),
+		).toBe(false);
+	});
+
+	it('rejects anything that is not a URL at all', () => {
+		expect(isReusableImageUrl('')).toBe(false);
+		expect(isReusableImageUrl('not a url')).toBe(false);
+	});
+
+	it('accepts a CDN host it has never seen, rather than re-uploading forever', () => {
+		// Deny-list, not allow-list: an allow-list pinned to today's CDN would
+		// reject every fresh upload the day Mobilize moves it.
+		expect(isReusableImageUrl('https://images.mobilize.us/uploads/event/x.png')).toBe(true);
 	});
 });

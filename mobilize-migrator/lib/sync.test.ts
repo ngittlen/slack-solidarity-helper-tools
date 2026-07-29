@@ -462,6 +462,102 @@ describe('runSync postal codes', () => {
 	});
 });
 
+describe('runSync image cache', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 1 };
+	const CONTACT: EventContact = {
+		name: 'Field Team',
+		emailAddress: 'field@example.org',
+		phoneNumber: '',
+	};
+	const LEGACY =
+		'https://mobilize-uploads-prod.s3.us-east-2.amazonaws.com/uploads/event/x_20260727020913704660.png';
+	const FRESH = 'https://mobilizeamerica.imgix.net/uploads/event/x_20260729021012538951.png';
+
+	/** Mobilize plus the Solidarity image download, routed by URL. */
+	function stubApis() {
+		const calls: { url: string; method: string; body: unknown }[] = [];
+		vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+			const url = String(input);
+			const method = init.method ?? 'GET';
+			calls.push({ url, method, body: null });
+			if (url.startsWith('https://solidarity.example')) {
+				return {
+					ok: true,
+					status: 200,
+					headers: new Headers({ 'content-type': 'image/png' }),
+					arrayBuffer: async () => new ArrayBuffer(8),
+				};
+			}
+			const body = url.endsWith('/images')
+				? JSON.stringify({ data: { url: FRESH } })
+				: method === 'POST'
+					? JSON.stringify({ data: { event: { id: 901, title: 'x', timeslots: [] } } })
+					: JSON.stringify({ data: [], next: null });
+			return { ok: true, status: 200, text: async () => body, headers: new Headers() };
+		});
+		return calls;
+	}
+
+	function imageLedger(cachedUrl: string | null) {
+		const recorded: string[] = [];
+		const ledger: Ledger = {
+			async all() {
+				return [];
+			},
+			async record() {},
+			async imageFor() {
+				return cachedUrl;
+			},
+			async recordImage(_source, mobilizeUrl) {
+				recorded.push(mobilizeUrl);
+			},
+			async zipFor() {
+				return null;
+			},
+			async recordZip() {},
+		};
+		return { ledger, recorded };
+	}
+
+	const withImage = () => plan({ sourceImageUrl: 'https://solidarity.example/fist.png' });
+
+	const run = (ledger: Ledger) =>
+		runSync(
+			[withImage()],
+			{ api: API, contact: CONTACT, maxCreatesPerRun: 100, apply: true, pauseMs: 0 },
+			ledger,
+			() => null,
+		);
+
+	it('re-uploads when the cached URL is one v1 rejects, and records the new one', async () => {
+		// The dashboard-era rows: reusing one fails the create with
+		// {"featured_image_url":["Invalid featured image url"]}.
+		const calls = stubApis();
+		const { ledger, recorded } = imageLedger(LEGACY);
+
+		const report = await run(ledger);
+
+		expect(report.created).toBe(1);
+		expect(calls.some((c) => c.url.endsWith('/images') && c.method === 'POST')).toBe(true);
+		expect(recorded).toEqual([FRESH]);
+	});
+
+	it('still reuses a good cached URL without uploading again', async () => {
+		const calls = stubApis();
+		const { ledger, recorded } = imageLedger(FRESH);
+
+		const report = await run(ledger);
+
+		expect(report.created).toBe(1);
+		expect(calls.some((c) => c.url.endsWith('/images'))).toBe(false);
+		expect(recorded).toEqual([]);
+	});
+});
+
 describe('runSync write budget', () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();

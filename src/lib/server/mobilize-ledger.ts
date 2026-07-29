@@ -51,11 +51,18 @@ export class TursoLedger implements Ledger {
 		return rows[0]?.mobilizeUrl ?? null;
 	}
 
+	/** Upserts rather than ignoring a conflict: a re-upload happens precisely
+	 *  because the recorded URL was no longer usable, and keeping the old row
+	 *  would re-upload the same image every night forever. */
 	async recordImage(sourceUrl: string, mobilizeUrl: string): Promise<void> {
+		const now = new Date().toISOString();
 		await this.db
 			.insert(mobilizeSyncedImages)
-			.values({ sourceUrl, mobilizeUrl, uploadedAt: new Date().toISOString() })
-			.onConflictDoNothing();
+			.values({ sourceUrl, mobilizeUrl, uploadedAt: now })
+			.onConflictDoUpdate({
+				target: mobilizeSyncedImages.sourceUrl,
+				set: { mobilizeUrl, uploadedAt: now },
+			});
 	}
 
 	/** Geocoded once per venue: Mobilize requires a postal code, and Solidarity
