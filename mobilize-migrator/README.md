@@ -80,6 +80,30 @@ coordinates, so `lib/address.ts` parses that string. City-only addresses ("Ann A
 MI, USA") are _rejected_ rather than migrated — Mobilize would drop a pin on the city
 centroid, which is worse than a missing event a human can add correctly.
 
+Where a record does carry structured components, they are read field by field
+rather than all-or-nothing: Solidarity routinely fills `address_postal_code` on a
+record whose `address_city` is blank, and that zip is the one field Mobilize will
+not do without.
+
+**Postal codes.** `postal_code` is the _only_ required field in the v1 `location`
+object ("Required if `is_virtual` is `false` or unset … all other `location`
+fields are optional"), and about a third of the campaign's sessions have no zip
+anywhere in them. A create or update for one of those is rejected outright:
+
+```
+/organizations/44679/events returned 400: {"error":{"location":{"postal_code":["This field may not be blank."]}}}
+```
+
+Every such session does carry coordinates, so `lib/geocode.ts` recovers the zip
+from those through the Census Bureau's geocoder (free, keyless, no account) and
+caches it in `mobilize_geocoded_zips`, keyed by the rounded point — a venue's zip
+does not change, and the campaign runs the same field offices all season. The
+update pass also backfills a zip onto events migrated before the v1 switch, which
+the old dashboard API let through with none.
+
+An event whose zip cannot be resolved at all is reported rather than sent, since
+Mobilize would only reject it again the next night.
+
 **Descriptions.** `/v1/events` returns a _flattened plain-text_ description — the
 bold, links and lists on the event page are stripped before we see them. The real
 content is on the linked ActionPage (`/v1/pages/{event_page_id}`) as HTML, so
@@ -95,6 +119,17 @@ flattened text with its single newlines promoted to real paragraph breaks.
 
 Events already in Mobilize get this applied by the sync's update pass, which
 re-sends the event via PUT whenever the rendered description differs.
+
+A handful of Solidarity events have no description at all — no `description`, no
+ActionPage HTML, no session note — and Mobilize requires a non-blank one. Those
+get the title and the signup page instead of a rejection:
+
+```
+**Macomb Defenders Rising**
+
+Details and updates:
+https://go.abdulforsenate.com/macomb-defenders-rising
+```
 
 **Images.** `featured_image_url` must be a URL Mobilize hosts, so the bytes are
 re-uploaded rather than linked. `lib/image.ts` downloads from Solidarity and
@@ -115,8 +150,8 @@ that already have an image are left alone.
 **Private addresses.** A Solidarity event with `hide_address_until_rsvp` syncs
 with its venue, city, region and postal code but **no street line**. City plus
 zip still give a usable pin without publishing the address. A private event with
-no postal code is skipped instead, since `postal_code` is the one required
-location field and there would be nothing left to place it by.
+no postal code _and_ no coordinates to geocode one from is skipped instead, since
+there would be nothing left to place it by.
 
 Two dead ends, both checked against the live API rather than assumed:
 
@@ -130,7 +165,8 @@ Two dead ends, both checked against the live API rather than assumed:
 
 **Skipped.** Virtual events (they need a join URL the list payload doesn't expose),
 co-hosted mirrors of another org's event, past sessions, anything without a
-usable street address, and private-address events with no postal code.
+usable street address, and private-address events with neither a postal code nor
+coordinates to geocode one from.
 
 ### What the v1 API cannot set
 

@@ -155,6 +155,13 @@
       "when": 1785207161690,
       "tag": "0021_youthful_master_mold",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1785289398833,
+      "tag": "0022_odd_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }

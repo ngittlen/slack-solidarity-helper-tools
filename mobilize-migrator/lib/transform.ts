@@ -6,6 +6,7 @@
 // produces five Mobilize events.
 
 import { parseAddress } from './address.js';
+import { parseCoordinates, type Coordinates } from './geocode.js';
 import { htmlToMarkdown, plainTextToMarkdown } from './html-to-markdown.js';
 import { EVENT_TYPE, type EventTypeName } from './payload.js';
 import { type SolidarityEvent, type SolidaritySession } from './solidarity.js';
@@ -26,6 +27,10 @@ export interface PlannedEvent {
 	country: string;
 	/** Street address is withheld from the payload when this is set. */
 	locationIsPrivate: boolean;
+	/** The venue's point, when Solidarity has one. Mobilize does not take
+	 *  coordinates, but `postal_code` is required and often missing, and the sync
+	 *  geocodes this to recover it — see lib/geocode.ts. */
+	coordinates: Coordinates | null;
 	/** Unix seconds, which is what the v1 API takes. */
 	timeslots: { startDate: number; endDate: number; maxAttendees: number | null }[];
 	/** Absolute instants in ms, kept for duplicate detection and timeslot matching. */
@@ -84,6 +89,15 @@ interface ResolvedLocation {
  * city centroid, which is worse than a missing event a human can add correctly.
  */
 function resolveLocation(sessions: SolidaritySession[]): ResolvedLocation | null {
+	// Last-resort zip, used only where the session supplying the address has none
+	// of its own: Solidarity often fills address_postal_code on a record whose
+	// address_city is blank, and the all-or-nothing structured branch below would
+	// otherwise discard a perfectly good zip, leaving the payload with the one
+	// field Mobilize insists on empty. Borrowing across the group is sound because
+	// they share a location key, but it stays the fallback rather than the answer.
+	const harvestedZip =
+		sessions.map((s) => (s.location_data?.address_postal_code ?? '').trim()).find(Boolean) ?? '';
+
 	const structured = sessions.find(
 		(s) => s.location_data?.address_line_1 && s.location_data.address_city,
 	);
@@ -94,7 +108,7 @@ function resolveLocation(sessions: SolidaritySession[]): ResolvedLocation | null
 			addressLine1: data.address_line_1!,
 			city: data.address_city!,
 			state: data.address_state || 'MI',
-			zipcode: data.address_postal_code || '',
+			zipcode: data.address_postal_code || harvestedZip,
 			country: data.address_country || 'US',
 			venueExtra: '',
 			withAddress: structured,
@@ -109,13 +123,24 @@ function resolveLocation(sessions: SolidaritySession[]): ResolvedLocation | null
 			addressLine1: parsed.addressLine1,
 			city: parsed.city,
 			state: parsed.state || 'MI',
-			zipcode: parsed.zipcode,
+			zipcode: parsed.zipcode || harvestedZip,
 			country: parsed.country,
 			venueExtra: parsed.venueExtra,
 			withAddress: session,
 		};
 	}
 	return null;
+}
+
+/**
+ * Mobilize requires a non-blank description, and a handful of Solidarity events
+ * have none at all — no `description`, no ActionPage HTML, no session note. They
+ * used to be rejected with 400 every night. The title plus the signup page is
+ * the most useful thing that can honestly be said about them.
+ */
+export function fallbackDescription(title: string, pageUrl: string | null): string {
+	const heading = `**${title.trim()}**`;
+	return pageUrl ? `${heading}\n\nDetails and updates:\n${pageUrl}` : heading;
 }
 
 /** Solidarity uses 0 for "no cap"; Mobilize would read 0 as "nobody may sign up". */
@@ -188,7 +213,7 @@ export function planMigration(
 			}
 			const { addressLine1, city, venueExtra, withAddress } = resolved;
 
-			const description = buildDescription(event, pageDescriptions);
+			const sourceDescription = buildDescription(event, pageDescriptions);
 			// A multi-location event would otherwise produce several identically
 			// named Mobilize events; the session title usually already carries the
 			// city ("Operation Get Out the Vote: Flint"), so prefer it.
@@ -200,11 +225,23 @@ export function planMigration(
 						? `${event.title} — ${city}`
 						: event.title;
 
+			// Read from the session the address itself came from, so a geocoded zip
+			// describes the address being published. Grouping only guarantees a shared
+			// location KEY — the same address string, or the same venue name where no
+			// session has an address at all — which is not quite the same as a shared
+			// point: two venues can share a name, and one session in a group can carry
+			// coordinates while another does not. Any other session in the group is a
+			// fallback for exactly that second case.
+			const coordinates =
+				parseCoordinates(withAddress.location_data?.coordinates) ??
+				sessions.map((s) => parseCoordinates(s.location_data?.coordinates)).find(Boolean) ??
+				null;
+
 			// postal_code is the one required field in the v1 location object, and
 			// for a private event it is all that places the pin — there is no street
-			// line to fall back on. Better skipped and added by hand than published
-			// with no location at all.
-			if (event.hide_address_until_rsvp && !resolved.zipcode) {
+			// line to fall back on. The sync geocodes a missing one from the venue's
+			// coordinates, so only an event with neither is beyond rescue.
+			if (event.hide_address_until_rsvp && !resolved.zipcode && !coordinates) {
 				skipped.push({
 					solidarityEventId: event.id,
 					title: `${event.title}${key ? ` @ ${key}` : ''}`,
@@ -213,6 +250,8 @@ export function planMigration(
 				continue;
 			}
 
+			const description =
+				sourceDescription.trim() || fallbackDescription(title, event.event_page_url);
 			const eventType = classifyEventType(`${title} ${event.title}`, description);
 			const ordered = [...sessions].sort(
 				(a, b) => Date.parse(a.start_time) - Date.parse(b.start_time),
@@ -232,6 +271,7 @@ export function planMigration(
 				zipcode: resolved.zipcode,
 				country: resolved.country,
 				locationIsPrivate: event.hide_address_until_rsvp,
+				coordinates,
 				timeslots: ordered.map((s) => ({
 					startDate: Math.floor(Date.parse(s.start_time) / 1000),
 					endDate: Math.floor(Date.parse(s.end_time) / 1000),

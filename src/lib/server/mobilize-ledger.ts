@@ -10,7 +10,12 @@ import { eq } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 
 import type { Ledger, LedgerRecord, TimeslotPairing } from '../../../mobilize-migrator/lib/sync.js';
-import { mobilizeSyncedEvents, mobilizeSyncedImages, mobilizeSyncedTimeslots } from './schema.js';
+import {
+	mobilizeGeocodedZips,
+	mobilizeSyncedEvents,
+	mobilizeSyncedImages,
+	mobilizeSyncedTimeslots,
+} from './schema.js';
 
 export type LedgerDb = LibSQLDatabase<Record<string, unknown>>;
 
@@ -50,6 +55,23 @@ export class TursoLedger implements Ledger {
 		await this.db
 			.insert(mobilizeSyncedImages)
 			.values({ sourceUrl, mobilizeUrl, uploadedAt: new Date().toISOString() })
+			.onConflictDoNothing();
+	}
+
+	/** Geocoded once per venue: Mobilize requires a postal code, and Solidarity
+	 *  frequently has none. */
+	async zipFor(point: string): Promise<string | null> {
+		const rows = await this.db
+			.select({ postalCode: mobilizeGeocodedZips.postalCode })
+			.from(mobilizeGeocodedZips)
+			.where(eq(mobilizeGeocodedZips.point, point));
+		return rows[0]?.postalCode ?? null;
+	}
+
+	async recordZip(point: string, postalCode: string): Promise<void> {
+		await this.db
+			.insert(mobilizeGeocodedZips)
+			.values({ point, postalCode, lookedUpAt: new Date().toISOString() })
 			.onConflictDoNothing();
 	}
 

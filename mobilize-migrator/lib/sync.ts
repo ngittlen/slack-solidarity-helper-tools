@@ -5,6 +5,7 @@
 // endpoint can use it — state comes in through the `Ledger` interface, config
 // through `SyncConfig`. Same dual-use pattern as src/lib/server/solidarity-paginate.ts.
 
+import { lookupPostalCode, pointKey } from './geocode.js';
 import { copyImageToMobilize } from './image.js';
 import {
 	createEvent,
@@ -40,6 +41,9 @@ export interface Ledger {
 	/** Solidarity image URL -> Mobilize-hosted URL, so an image uploads once. */
 	imageFor(sourceUrl: string): Promise<string | null>;
 	recordImage(sourceUrl: string, mobilizeUrl: string): Promise<void>;
+	/** Venue coordinates -> zip, so a venue is geocoded once and not every night. */
+	zipFor(point: string): Promise<string | null>;
+	recordZip(point: string, postalCode: string): Promise<void>;
 	/**
 	 * Mobilize timeslot -> Solidarity session, consumed by the attendee sync.
 	 * Optional so the file-backed CLI ledger doesn't have to implement it.
@@ -193,6 +197,10 @@ export function describeChanges(
 	if (plan.description.trim() !== (live.description ?? '').trim()) changes.push('description');
 	if (wantsImage && !live.featured_image_url) changes.push('image');
 	if (timeslotsChanged) changes.push('timeslots');
+	// Events migrated before the v1 switch went in with no postal code at all —
+	// the old dashboard API allowed it. Backfill one when we now have it, rather
+	// than leaving them unfindable by zip in Mobilize's search.
+	if (plan.zipcode && !(live.location?.postal_code ?? '').trim()) changes.push('postal code');
 	const liveCity = (live.location?.locality ?? '').trim().toLowerCase();
 	if (liveCity && plan.city.trim().toLowerCase() !== liveCity) changes.push('location');
 	return changes;
@@ -300,6 +308,35 @@ export async function runSync(
 		return report;
 	}
 
+	/**
+	 * The plan with a usable `zipcode`, or null when there is none to be had.
+	 *
+	 * `postal_code` is the one location field Mobilize v1 requires, and about a
+	 * third of Solidarity's sessions carry an address string with no zip in it, so
+	 * the zip is geocoded from the venue's coordinates and cached by point. A dry
+	 * run still looks up (it is a read, and the preview would otherwise claim
+	 * events will sync that in fact cannot) but never writes to the cache.
+	 */
+	const resolveZip = async (plan: PlannedEvent): Promise<PlannedEvent | null> => {
+		if (plan.zipcode) return plan;
+		if (!plan.coordinates) return null;
+		const key = pointKey(plan.coordinates);
+		const cached = await ledger.zipFor(key);
+		if (cached) return { ...plan, zipcode: cached };
+		const looked = await lookupPostalCode(plan.coordinates);
+		if (!looked) return null;
+		if (config.apply) await ledger.recordZip(key, looked);
+		log(`geocoded ${key} -> ${looked} for "${plan.title}"`);
+		return { ...plan, zipcode: looked };
+	};
+
+	const noZip = (plan: PlannedEvent) =>
+		`no postal code — Solidarity has none and ${
+			plan.coordinates
+				? 'the ZIP lookup for its coordinates found nothing'
+				: 'the session has no coordinates to geocode'
+		}. Mobilize requires one, so this event needs its address fixed in Solidarity.`;
+
 	const resolveImage = async (plan: PlannedEvent): Promise<string | undefined> => {
 		if (!plan.sourceImageUrl) return undefined;
 		const cached = await ledger.imageFor(plan.sourceImageUrl);
@@ -312,16 +349,22 @@ export async function runSync(
 
 	for (const plan of toCreate) {
 		if (config.createLimit !== undefined && report.created >= config.createLimit) break;
+		const zipped = await resolveZip(plan);
+		if (!zipped) {
+			report.failed++;
+			report.errors.push(`create "${plan.title}": ${noZip(plan)}`);
+			continue;
+		}
 		if (!config.apply) {
 			report.created++;
 			report.createdTitles.push(plan.title);
 			continue;
 		}
 		try {
-			const imageUrl = await resolveImage(plan);
+			const imageUrl = await resolveImage(zipped);
 			const { id, event } = await createEvent(
 				config.api,
-				payloadForPlan(plan, config.contact, imageUrl),
+				payloadForPlan(zipped, config.contact, imageUrl),
 			);
 			await ledger.record({ key: plan.key, mobilizeEventId: id, title: plan.title });
 			report.created++;
@@ -368,8 +411,11 @@ export async function runSync(
 			if (config.apply && ledger.recordTimeslots) {
 				await ledger.recordTimeslots(slotPlan.pairings);
 			}
+			// Resolved before the change check because a recovered zip is itself a
+			// change worth pushing to an event that has none.
+			const zipped = (await resolveZip(plan)) ?? plan;
 			const wantsImage = Boolean(plan.sourceImageUrl);
-			const changes = describeChanges(plan, live, wantsImage, slotPlan.changed);
+			const changes = describeChanges(zipped, live, wantsImage, slotPlan.changed);
 			if (changes.length === 0) {
 				report.unchanged++;
 				continue;
@@ -379,11 +425,18 @@ export async function runSync(
 				report.updatedTitles.push(`${plan.title} (${changes.join(', ')})`);
 				continue;
 			}
+			// A PUT with a blank postal_code is rejected outright, so the edit waits
+			// for a fixed address rather than failing against the API every night.
+			if (!zipped.zipcode) {
+				report.failed++;
+				report.errors.push(`update "${plan.title}": ${noZip(plan)}`);
+				continue;
+			}
 
-			const imageUrl = live.featured_image_url ? undefined : await resolveImage(plan);
+			const imageUrl = live.featured_image_url ? undefined : await resolveImage(zipped);
 			// reconcileTimeslots owns timeslot identity, so its list — ids and all —
 			// replaces the one payloadForPlan derived from the plan alone.
-			const payload = payloadForPlan(plan, config.contact, imageUrl, slotPlan.timeslots);
+			const payload = payloadForPlan(zipped, config.contact, imageUrl, slotPlan.timeslots);
 
 			await updateEvent(config.api, record.mobilizeEventId, payload);
 			report.updated++;
