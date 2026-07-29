@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { MobilizeApiConfig, MobilizeEvent } from './mobilize.js';
-import { describeChanges, reconcileTimeslots, runSync, type Ledger } from './sync.js';
+import {
+	describeChanges,
+	reconcileTimeslots,
+	runSync,
+	type Ledger,
+	type LedgerRecord,
+} from './sync.js';
 import type { EventContact } from './payload.js';
 import type { PlannedEvent } from './transform.js';
 
@@ -453,5 +459,158 @@ describe('runSync postal codes', () => {
 
 		expect(report.created).toBe(1);
 		expect(recorded).toEqual({});
+	});
+});
+
+describe('runSync write budget', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 1 };
+	const CONTACT: EventContact = {
+		name: 'Field Team',
+		emailAddress: 'field@example.org',
+		phoneNumber: '',
+	};
+
+	/** Counts POSTs and PUTs so a test can see exactly where a run stopped. */
+	function stubMobilize(liveEvents: unknown[] = []) {
+		const writes: string[] = [];
+		vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+			const method = init.method ?? 'GET';
+			if (method !== 'GET') writes.push(`${method} ${String(input).replace(/\?.*/, '')}`);
+			const body =
+				method === 'POST'
+					? JSON.stringify({ data: { event: { id: 901, title: 'x', timeslots: [] } } })
+					: JSON.stringify({ data: liveEvents, next: null });
+			return { ok: true, status: 200, text: async () => body, headers: new Headers() };
+		});
+		return writes;
+	}
+
+	function countingLedger(known: LedgerRecord[] = []) {
+		return {
+			async all() {
+				return known;
+			},
+			async record() {},
+			async imageFor() {
+				return null;
+			},
+			async recordImage() {},
+			async zipFor() {
+				return null;
+			},
+			async recordZip() {},
+		} satisfies Ledger;
+	}
+
+	const threePlans = [
+		plan({ key: 'a', title: 'A' }),
+		plan({ key: 'b', title: 'B' }),
+		plan({ key: 'c', title: 'C' }),
+	];
+
+	it('stops starting creates once the deadline passes and says what is left', async () => {
+		const writes = stubMobilize();
+		const report = await runSync(
+			threePlans,
+			{
+				api: API,
+				contact: CONTACT,
+				maxCreatesPerRun: 100,
+				apply: true,
+				// Each write costs a 40ms pause here, so the budget runs out mid-way.
+				pauseMs: 40,
+				writeDeadline: Date.now() + 50,
+			},
+			countingLedger(),
+			() => null,
+		);
+
+		expect(report.incomplete).toBe(true);
+		expect(report.created).toBeLessThan(3);
+		expect(report.created + report.pending).toBe(3);
+		// The point of the budget: fewer writes attempted than planned.
+		expect(writes.length).toBe(report.created);
+	});
+
+	it('reports complete when the whole plan fits', async () => {
+		stubMobilize();
+		const report = await runSync(
+			threePlans,
+			{
+				api: API,
+				contact: CONTACT,
+				maxCreatesPerRun: 100,
+				apply: true,
+				pauseMs: 0,
+				writeDeadline: Date.now() + 60_000,
+			},
+			countingLedger(),
+			() => null,
+		);
+
+		expect(report.created).toBe(3);
+		expect(report.incomplete).toBe(false);
+		expect(report.pending).toBe(0);
+	});
+
+	it('runs to completion with no deadline at all, which is what the CLI wants', async () => {
+		stubMobilize();
+		const report = await runSync(
+			threePlans,
+			{ api: API, contact: CONTACT, maxCreatesPerRun: 100, apply: true, pauseMs: 0 },
+			countingLedger(),
+			() => null,
+		);
+
+		expect(report.created).toBe(3);
+		expect(report.incomplete).toBe(false);
+	});
+
+	it('counts unreached updates as pending, not as unchanged', async () => {
+		// Miscounting here would be worse than the interruption: the workflow would
+		// stop looping while events still needed pushing.
+		const live = threePlans.map((p, index) => ({
+			id: 900 + index,
+			title: 'stale title, so an update is warranted',
+			event_type: 'COMMUNITY_CANVASS',
+			description: p.description,
+			timeslots: [
+				{
+					id: 5000 + index,
+					start_date: p.timeslots[0].startDate,
+					end_date: p.timeslots[0].endDate,
+				},
+			],
+			location: { locality: p.city, postal_code: p.zipcode },
+		}));
+		stubMobilize(live);
+		const known = threePlans.map((p, index) => ({
+			key: p.key,
+			mobilizeEventId: 900 + index,
+			title: p.title,
+		}));
+
+		const report = await runSync(
+			threePlans,
+			{
+				api: API,
+				contact: CONTACT,
+				maxCreatesPerRun: 100,
+				apply: true,
+				pauseMs: 40,
+				writeDeadline: Date.now() + 50,
+			},
+			countingLedger(known),
+			() => null,
+		);
+
+		expect(report.incomplete).toBe(true);
+		expect(report.updated).toBeLessThan(3);
+		expect(report.updated + report.pending).toBe(3);
+		expect(report.unchanged).toBe(0);
 	});
 });
