@@ -6,7 +6,7 @@
 // through `SyncConfig`. Same dual-use pattern as src/lib/server/solidarity-paginate.ts.
 
 import { lookupPostalCode, pointKey } from './geocode.js';
-import { copyImageToMobilize } from './image.js';
+import { copyImageToMobilize, isReusableImageUrl } from './image.js';
 import {
 	createEvent,
 	getOrgEvent,
@@ -365,7 +365,11 @@ export async function runSync(
 	const resolveImage = async (plan: PlannedEvent): Promise<string | undefined> => {
 		if (!plan.sourceImageUrl) return undefined;
 		const cached = await ledger.imageFor(plan.sourceImageUrl);
-		if (cached) return cached;
+		if (cached && isReusableImageUrl(cached)) return cached;
+		// A dashboard-era entry points at the raw upload bucket, which v1 rejects
+		// with "Invalid featured image url". Re-upload and overwrite the row rather
+		// than failing this event every night.
+		if (cached) log(`re-uploading image for "${plan.title}" — cached URL is not accepted by v1`);
 		if (!config.apply) return undefined;
 		const uploaded = await copyImageToMobilize(plan.sourceImageUrl, plan.title, config.api);
 		await ledger.recordImage(plan.sourceImageUrl, uploaded.publicUrl);

@@ -142,6 +142,22 @@ pass for any event that still has no image. Uploads are recorded in
 uploaded once and reused — 53 events were covered by 38 distinct uploads. Events
 that already have an image are left alone.
 
+**Not every recorded URL is still usable.** v1 validates `featured_image_url` and
+rejects one on the raw upload bucket:
+
+```
+/organizations/44679/events returned 400: {"error":{"featured_image_url":["Invalid featured image url"]}}
+```
+
+38 of the 44 ledger rows are exactly that — `mobilize-uploads-prod.s3.us-east-2
+.amazonaws.com/…`, recorded by the pre-v1 dashboard code, which was given those
+URLs and accepted them. Every URL `POST /v1/images` returns is on Mobilize's
+image CDN instead. `isReusableImageUrl` in `lib/image.ts` therefore screens the
+cache, and a rejected entry is re-uploaded and **overwritten** — `recordImage`
+upserts, because a row that survives a re-upload would re-upload the same image
+every night forever. Existing events keep whatever URL they already display;
+only new sends are screened.
+
 **Event types.** Plain strings from the v1 enum. Only `COMMUNITY` and
 `COMMUNITY_CANVASS` are used. Solidarity has no structured
 "is this a canvass" flag, so classification is by title/description keyword
