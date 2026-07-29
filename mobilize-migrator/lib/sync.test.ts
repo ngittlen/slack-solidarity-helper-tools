@@ -27,6 +27,7 @@ function plan(overrides: Partial<PlannedEvent> = {}): PlannedEvent {
 		zipcode: '48202',
 		country: 'US',
 		locationIsPrivate: false,
+		coordinates: { lat: 42.3806, lng: -83.0658 },
 		timeslots: starts.map((s) => ({
 			startDate: Math.floor(s / 1000),
 			endDate: Math.floor((s + 2 * HOUR) / 1000),
@@ -54,7 +55,7 @@ function live(
 			start_date: Math.floor(s.start / 1000),
 			end_date: Math.floor((s.end ?? s.start + 2 * HOUR) / 1000),
 		})),
-		location: { locality: 'Detroit' },
+		location: { locality: 'Detroit', postal_code: '48202' },
 		...overrides,
 	};
 }
@@ -209,8 +210,22 @@ describe('describeChanges', () => {
 	});
 
 	it('detects a city change', () => {
-		const moved = live([{ id: 1, start: START }], { location: { locality: 'Ypsilanti' } });
+		const moved = live([{ id: 1, start: START }], {
+			location: { locality: 'Ypsilanti', postal_code: '48202' },
+		});
 		expect(describeChanges(plan(), moved, false, false)).toEqual(['location']);
+	});
+
+	it('backfills a postal code onto an event migrated without one', () => {
+		// Everything created before the v1 switch went in with no zip — the old
+		// dashboard API accepted that, and v1 will not.
+		const noZip = live([{ id: 1, start: START }], { location: { locality: 'Detroit' } });
+		expect(describeChanges(plan(), noZip, false, false)).toEqual(['postal code']);
+	});
+
+	it('does not ask for an update when we have no zip to offer either', () => {
+		const noZip = live([{ id: 1, start: START }], { location: { locality: 'Detroit' } });
+		expect(describeChanges(plan({ zipcode: '' }), noZip, false, false)).toEqual([]);
 	});
 });
 
@@ -241,6 +256,12 @@ describe('runSync dry run', () => {
 			},
 			async recordImage() {
 				writes.push('recordImage');
+			},
+			async zipFor() {
+				return null;
+			},
+			async recordZip() {
+				writes.push('recordZip');
 			},
 			async recordTimeslots() {
 				writes.push('recordTimeslots');
@@ -294,5 +315,143 @@ describe('runSync dry run', () => {
 
 		expect(report.updated).toBe(1);
 		expect(writes).toEqual([]);
+	});
+});
+
+describe('runSync postal codes', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 1 };
+	const CONTACT: EventContact = {
+		name: 'Field Team',
+		emailAddress: 'field@example.org',
+		phoneNumber: '',
+	};
+
+	/**
+	 * Both services on one stub, routed by URL: the Mobilize client reads its
+	 * responses with text(), the Census geocoder with json().
+	 */
+	function stubApis(zip: string | null) {
+		const calls: { url: string; method: string; body: unknown }[] = [];
+		vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+			const url = String(input);
+			calls.push({
+				url,
+				method: init.method ?? 'GET',
+				body: init.body ? JSON.parse(String(init.body)) : null,
+			});
+			if (url.includes('census.gov')) {
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({
+						result: {
+							geographies: {
+								'Zip Code Tabulation Areas': zip ? [{ ZCTA5: zip, BASENAME: zip }] : [],
+							},
+						},
+					}),
+				};
+			}
+			const body =
+				init.method === 'POST'
+					? JSON.stringify({
+							data: { event: { id: 901, title: 'Detroit Canvass', timeslots: [] } },
+						})
+					: JSON.stringify({ data: [], next: null });
+			return { ok: true, status: 200, text: async () => body, headers: new Headers() };
+		});
+		return calls;
+	}
+
+	function ledgerWith(zips: Record<string, string> = {}) {
+		const recorded: Record<string, string> = {};
+		const ledger: Ledger = {
+			async all() {
+				return [];
+			},
+			async record() {},
+			async imageFor() {
+				return null;
+			},
+			async recordImage() {},
+			async zipFor(point) {
+				return zips[point] ?? null;
+			},
+			async recordZip(point, postalCode) {
+				recorded[point] = postalCode;
+			},
+		};
+		return { ledger, recorded };
+	}
+
+	const run = (planned: PlannedEvent, ledger: Ledger, apply = true) =>
+		runSync(
+			[planned],
+			{ api: API, contact: CONTACT, maxCreatesPerRun: 100, apply, pauseMs: 0 },
+			ledger,
+			() => null,
+		);
+
+	it('geocodes a missing postal code and sends it, because Mobilize requires one', async () => {
+		const calls = stubApis('48507');
+		const { ledger, recorded } = ledgerWith();
+
+		const report = await run(
+			plan({ zipcode: '', coordinates: { lat: 42.9837207, lng: -83.6748673 } }),
+			ledger,
+		);
+
+		expect(report.created).toBe(1);
+		expect(report.failed).toBe(0);
+		const create = calls.find((c) => c.method === 'POST')!;
+		expect((create.body as { location: { postal_code: string } }).location.postal_code).toBe(
+			'48507',
+		);
+		// Cached by point, so the same venue is not looked up again tomorrow.
+		expect(recorded).toEqual({ '42.98372,-83.67487': '48507' });
+	});
+
+	it('reuses a cached zip instead of calling the geocoder', async () => {
+		const calls = stubApis(null);
+		const { ledger } = ledgerWith({ '42.98372,-83.67487': '48507' });
+
+		const report = await run(
+			plan({ zipcode: '', coordinates: { lat: 42.9837207, lng: -83.6748673 } }),
+			ledger,
+		);
+
+		expect(report.created).toBe(1);
+		expect(calls.some((c) => c.url.includes('census.gov'))).toBe(false);
+	});
+
+	it('reports the event instead of sending a create Mobilize will reject', async () => {
+		// A blank postal_code is a 400 every night; saying so once is more useful.
+		const calls = stubApis(null);
+		const { ledger } = ledgerWith();
+
+		const report = await run(plan({ zipcode: '', coordinates: null }), ledger);
+
+		expect(report.created).toBe(0);
+		expect(report.failed).toBe(1);
+		expect(report.errors[0]).toMatch(/no postal code/);
+		expect(calls.some((c) => c.method === 'POST')).toBe(false);
+	});
+
+	it('does not cache a lookup made during a dry run', async () => {
+		stubApis('48507');
+		const { ledger, recorded } = ledgerWith();
+
+		const report = await run(
+			plan({ zipcode: '', coordinates: { lat: 42.9837207, lng: -83.6748673 } }),
+			ledger,
+			false,
+		);
+
+		expect(report.created).toBe(1);
+		expect(recorded).toEqual({});
 	});
 });

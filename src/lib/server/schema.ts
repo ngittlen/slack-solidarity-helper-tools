@@ -334,6 +334,20 @@ export const mobilizeSyncedImages = sqliteTable('mobilize_synced_images', {
 	uploadedAt: text('uploaded_at').notNull(),
 });
 
+// Venue coordinates -> postal code. `postal_code` is the one location field
+// Mobilize requires and a third of Solidarity's sessions have no zip anywhere in
+// them, so it is geocoded from the coordinates they do carry. Cached because a
+// venue's zip never changes and the campaign runs the same offices all season.
+export const mobilizeGeocodedZips = sqliteTable('mobilize_geocoded_zips', {
+	// "42.98372,-83.67487" — see pointKey() in mobilize-migrator/lib/geocode.ts.
+	point: text('point').primaryKey(),
+	postalCode: text('postal_code').notNull(),
+	lookedUpAt: text('looked_up_at').notNull(),
+});
+
+export type MobilizeGeocodedZipRow = typeof mobilizeGeocodedZips.$inferSelect;
+export type NewMobilizeGeocodedZipRow = typeof mobilizeGeocodedZips.$inferInsert;
+
 export type MobilizeSyncedEventRow = typeof mobilizeSyncedEvents.$inferSelect;
 export type NewMobilizeSyncedEventRow = typeof mobilizeSyncedEvents.$inferInsert;
 

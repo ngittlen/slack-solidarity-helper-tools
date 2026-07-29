@@ -221,6 +221,129 @@ describe('planMigration', () => {
 		expect(skipped).toHaveLength(1);
 	});
 
+	it('keeps a structured postal code even when the record has no city', () => {
+		// Real shape from Solidarity: address_city is blank but address_line_1 and
+		// address_postal_code are both filled. The all-or-nothing structured branch
+		// used to discard the zip here and fall through to the address string,
+		// which has none — and Mobilize rejects a create with a blank postal_code.
+		const { planned } = planMigration(
+			[
+				event({
+					event_sessions: [
+						session({
+							location_address:
+								'Canton Public Library, Canton Center Road, Canton Township, MI, USA',
+							location_data: {
+								full_address: 'Canton Public Library, Canton Center Road, Canton Township, MI, USA',
+								address_line_1: '1200 Canton Center Road',
+								address_city: '',
+								address_state: 'MI',
+								address_postal_code: '48188',
+								address_country: 'US',
+								coordinates: '{"lat":42.2967192,"lng":-83.488087}',
+							},
+						}),
+					],
+				}),
+			],
+			NOW,
+		);
+		expect(planned).toHaveLength(1);
+		expect(planned[0].zipcode).toBe('48188');
+		expect(planned[0].city).toBe('Canton Township');
+	});
+
+	it('takes coordinates from the session the address came from', () => {
+		// Grouping guarantees a shared location key, not a shared point — a venue
+		// name is the key when no session has an address. Geocoding the wrong
+		// session's point would put a zip on an address it does not belong to.
+		// Same location key, but only the second session has the structured address
+		// resolveLocation ends up publishing — so its point, not the first one's,
+		// is the one a geocoded zip has to come from.
+		const first = session({
+			id: 1,
+			location_address: 'Flint Field Office',
+			location_data: {
+				full_address: 'Flint Field Office',
+				coordinates: '{"lat":42.28,"lng":-83.74}',
+			},
+		});
+		const addressBearing = session({
+			id: 2,
+			location_address: 'Flint Field Office',
+			location_data: {
+				full_address: 'Flint Field Office',
+				address_line_1: '4400 South Saginaw Street',
+				address_city: 'Flint',
+				address_state: 'MI',
+				coordinates: '{"lat":42.9837207,"lng":-83.6748673}',
+			},
+		});
+		const { planned } = planMigration([event({ event_sessions: [first, addressBearing] })], NOW);
+		expect(planned).toHaveLength(1);
+		expect(planned[0].addressLine1).toBe('4400 South Saginaw Street');
+		expect(planned[0].coordinates).toEqual({ lat: 42.9837207, lng: -83.6748673 });
+	});
+
+	it('falls back to another session in the group when that one has no coordinates', () => {
+		const noCoords = session({ id: 1, location_data: { full_address: 'Somewhere, MI' } });
+		const hasCoords = session({
+			id: 2,
+			location_data: { full_address: 'Somewhere, MI', coordinates: '{"lat":42.28,"lng":-83.74}' },
+		});
+		const { planned } = planMigration([event({ event_sessions: [noCoords, hasCoords] })], NOW);
+		expect(planned[0].coordinates).toEqual({ lat: 42.28, lng: -83.74 });
+	});
+
+	it('carries the venue coordinates so a missing zip can be geocoded', () => {
+		const { planned } = planMigration(
+			[
+				event({
+					event_sessions: [
+						session({
+							location_address: '4400 South Saginaw Street, Flint, MI, USA',
+							location_data: { coordinates: '{"lat":42.9837207,"lng":-83.6748673}' },
+						}),
+					],
+				}),
+			],
+			NOW,
+		);
+		expect(planned[0].zipcode).toBe('');
+		expect(planned[0].coordinates).toEqual({ lat: 42.9837207, lng: -83.6748673 });
+	});
+
+	it('synthesizes a description for an event that has none', () => {
+		// Mobilize requires a non-blank description; a handful of Solidarity events
+		// have no description, no page HTML and no note anywhere.
+		const { planned } = planMigration(
+			[
+				event({
+					title: 'Macomb Defenders Rising',
+					description: null,
+					event_page_url: 'https://go.example.org/macomb-defenders-rising',
+				}),
+			],
+			NOW,
+		);
+		expect(planned[0].description).toBe(
+			'**Macomb Defenders Rising**\n\nDetails and updates:\nhttps://go.example.org/macomb-defenders-rising',
+		);
+	});
+
+	it('still synthesizes something when there is no page to link either', () => {
+		const { planned } = planMigration(
+			[event({ title: 'Macomb Defenders Rising', description: null, event_page_url: null })],
+			NOW,
+		);
+		expect(planned[0].description).toBe('**Macomb Defenders Rising**');
+	});
+
+	it('leaves a real description alone', () => {
+		const { planned } = planMigration([event({ description: 'Come knock doors' })], NOW);
+		expect(planned[0].description).toBe('Come knock doors');
+	});
+
 	it('converts a zero capacity to unlimited rather than zero seats', () => {
 		const { planned } = planMigration(
 			[event({ event_sessions: [session({ max_capacity: 0 })] })],

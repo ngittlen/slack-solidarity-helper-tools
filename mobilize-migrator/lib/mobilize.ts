@@ -81,12 +81,20 @@ async function request(
 	}
 }
 
-function describeFailure(status: number, url: string): string {
+/**
+ * Mobilize answers a rejected write with 400 and a body naming the offending
+ * field — "description: This field may not be blank." The body is the entire
+ * diagnosis, so it goes in the message: a nightly run reporting only
+ * `/organizations/44679/events returned 400` says nothing a reader can act on,
+ * which is exactly how ten failing events went unexplained for a night.
+ */
+function describeFailure(status: number, url: string, body: string): string {
 	const path = url.replace(BASE, '');
 	if (status === 403) {
 		return `${path} returned 403 — MOBILIZE_API_KEY is rejected, or lacks the write access these endpoints require`;
 	}
-	return `${path} returned ${status}`;
+	const detail = body.trim().replace(/\s+/g, ' ').slice(0, 300);
+	return detail ? `${path} returned ${status}: ${detail}` : `${path} returned ${status}`;
 }
 
 /** One JSON call. Throws MobilizeError on any non-2xx or an `error` in the body. */
@@ -98,7 +106,7 @@ async function callJson<T>(
 	const res = await request(config, url, init);
 	const text = await res.text();
 	if (!res.ok) {
-		throw new MobilizeError(describeFailure(res.status, url), res.status, text.slice(0, 500));
+		throw new MobilizeError(describeFailure(res.status, url, text), res.status, text.slice(0, 500));
 	}
 	// 204s and the odd empty write response are legitimate.
 	if (!text.trim()) return {};
