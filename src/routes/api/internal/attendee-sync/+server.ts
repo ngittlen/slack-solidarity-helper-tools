@@ -89,7 +89,8 @@ export const POST: RequestHandler = async ({ url }) => {
 		// and these logs go to Fly and Slack.
 		console.log(
 			`[attendee-sync]${dryRun ? ' (dry)' : ''} window=${result.windowHours ?? 'all'} ` +
-				`lookback=${result.lookbackHours}h events ${result.events}, timeslots ${result.timeslots}, ` +
+				`lookback=${result.lookbackHours}h events ${result.events}, gone ${result.eventsGone}, ` +
+				`timeslots ${result.timeslots}, ` +
 				`signups ${result.participations}: ` +
 				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated}, profiles +${result.profilesCreated}, ` +
 				`matched ${result.matchedByEmail}e/${result.matchedByPhone}p, unchanged ${result.unchanged}, ` +

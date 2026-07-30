@@ -9,7 +9,7 @@
 // user ids.
 
 import { fetchEventParticipations, type MobilizeParticipation } from './attendees.js';
-import { MobilizeError, type MobilizeApiConfig } from './mobilize.js';
+import { getOrgEvent, MobilizeError, type MobilizeApiConfig } from './mobilize.js';
 import {
 	createUser,
 	findExistingUser,
@@ -52,6 +52,15 @@ export interface RsvpRecord {
 export interface AttendeeLedger {
 	rsvpsByAttendanceId(): Promise<Map<number, RsvpRecord>>;
 	recordRsvp(record: RsvpRecord): Promise<void>;
+	/**
+	 * Drop the timeslot pairings for a Mobilize event that no longer exists.
+	 * Optional so the inspection CLI, which keeps no ledger, can skip it.
+	 *
+	 * Self-healing rather than destructive: the event sync re-records pairings for
+	 * any event Mobilize still has, so if a 404 were ever wrong the next nightly
+	 * pass puts the rows back.
+	 */
+	forgetEvent?(mobilizeEventId: number): Promise<void>;
 }
 
 export interface AttendeeSyncConfig {
@@ -67,6 +76,8 @@ export interface AttendeeSyncConfig {
 export interface AttendeeSyncReport {
 	/** Mobilize events read — one request each, covering all their shifts. */
 	events: number;
+	/** Events Mobilize no longer has: their pairings were dropped, not failed. */
+	eventsGone: number;
 	timeslots: number;
 	participations: number;
 	rsvpsCreated: number;
@@ -90,6 +101,7 @@ export interface AttendeeSyncReport {
 function emptyReport(): AttendeeSyncReport {
 	return {
 		events: 0,
+		eventsGone: 0,
 		timeslots: 0,
 		participations: 0,
 		rsvpsCreated: 0,
@@ -110,6 +122,22 @@ function emptyReport(): AttendeeSyncReport {
 /** Stable, non-identifying handle for logs and error messages. */
 function refFor(participation: MobilizeParticipation): string {
 	return `participation ${participation.id}`;
+}
+
+/**
+ * Does this event still exist for our organization? `null` when the check itself
+ * failed, so callers can tell "confirmed gone" from "couldn't tell" and only
+ * prune on the former.
+ */
+async function confirmEventExists(
+	config: AttendeeSyncConfig,
+	eventId: number,
+): Promise<boolean | null> {
+	try {
+		return (await getOrgEvent(config.api, eventId)) !== null;
+	} catch {
+		return null;
+	}
 }
 
 export async function runAttendeeSync(
@@ -150,6 +178,22 @@ export async function runAttendeeSync(
 				report.authFailed = true;
 				report.errors.push('Mobilize rejected the API key (403) — check MOBILIZE_API_KEY');
 				return report;
+			}
+			// A 404 here is almost always an event deleted in Mobilize while our
+			// pairings for its shifts stayed behind. Left as a failure it recurs on
+			// every run forever, which is how one dead event produced a nightly Slack
+			// alert. Confirm the event itself is gone before dropping anything: if it
+			// still reads back, a 404 on its attendances is genuinely surprising and
+			// stays a failure.
+			if (err instanceof MobilizeError && err.status === 404) {
+				const stillThere = await confirmEventExists(config, eventId);
+				if (stillThere === false) {
+					report.eventsGone++;
+					log(`Mobilize event ${eventId} no longer exists — dropping its timeslot pairings`);
+					if (config.apply && ledger.forgetEvent) await ledger.forgetEvent(eventId);
+					await pause();
+					continue;
+				}
 			}
 			report.failed++;
 			report.errors.push(`event ${eventId}: ${err instanceof Error ? err.message : err}`);

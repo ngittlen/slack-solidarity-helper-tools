@@ -343,6 +343,17 @@ so `lib/attendee-sync.ts` groups its timeslot links by event and fans the result
 back out by `timeslot.id`. Signups for shifts outside the requested window come
 back too and are dropped.
 
+**An event deleted in Mobilize 404s this endpoint forever.** The timeslot pairings
+that point at it stay in `mobilize_synced_timeslots` — the event sync leaves a
+deleted event alone rather than resurrecting it, so nothing ever cleaned them up,
+and the sync re-requested a dead event on every run and alerted about the failure
+nightly. A 404 is now confirmed with a read of the event itself (`GET
+/events/{id}`): gone means the pairings are dropped and the run counts
+`eventsGone` instead of a failure; still present means the 404 is unexplained and
+stays a failure, because dropping the pairings would silently stop syncing a live
+event's signups. Dropping them is safe either way — the event sync re-records
+pairings for every event Mobilize still has.
+
 **Statuses are documented strings**, not the numeric codes the dashboard scrape
 had to reverse-engineer, and `CONFIRMED` — which was never observable before —
 now maps cleanly. `attended` is a real tri-state boolean rather than something

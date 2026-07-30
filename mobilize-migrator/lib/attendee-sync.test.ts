@@ -66,14 +66,51 @@ function mockApis(options: { attendances: MobilizeAttendance[]; userFound?: bool
 	return spy;
 }
 
-function ledgerWith(records: RsvpRecord[] = []): AttendeeLedger {
+/**
+ * The 404 case: an event deleted in Mobilize whose timeslot pairings stayed
+ * behind. `eventStillThere` controls the read-back the sync uses to tell a
+ * deleted event from an unexplained 404 on its attendances.
+ */
+function mockGoneEvent(options: { eventStillThere: boolean }) {
+	const spy = vi.fn(async (url: string | URL) => {
+		const href = String(url);
+		const reply = (status: number, body: unknown) =>
+			({
+				ok: status < 400,
+				status,
+				json: async () => body,
+				text: async () => JSON.stringify(body),
+				headers: new Headers(),
+			}) as unknown as Response;
+
+		if (href.includes('/attendances')) {
+			// The live body, verbatim.
+			return reply(404, { data: null, error: { detail: 'Not found.' } });
+		}
+		if (/\/organizations\/\d+\/events\/\d+$/.test(href)) {
+			return options.eventStillThere
+				? reply(200, { data: { id: LINK.mobilizeEventId, timeslots: [] } })
+				: reply(404, { data: null, error: { detail: 'Not found.' } });
+		}
+		return reply(200, { data: [] });
+	});
+	vi.stubGlobal('fetch', spy);
+	return spy;
+}
+
+function ledgerWith(records: RsvpRecord[] = []): AttendeeLedger & { forgotten: number[] } {
 	const map = new Map(records.map((r) => [r.mobilizeAttendanceId, r]));
+	const forgotten: number[] = [];
 	return {
+		forgotten,
 		async rsvpsByAttendanceId() {
 			return map;
 		},
 		async recordRsvp(record) {
 			map.set(record.mobilizeAttendanceId, record);
+		},
+		async forgetEvent(mobilizeEventId) {
+			forgotten.push(mobilizeEventId);
 		},
 	};
 }
@@ -167,6 +204,47 @@ describe('runAttendeeSync event grouping', () => {
 		const report = await run(ledgerWith());
 
 		expect(report.participations).toBe(1);
+	});
+});
+
+describe('runAttendeeSync deleted Mobilize events', () => {
+	it('drops the pairings for an event Mobilize no longer has, without failing', async () => {
+		// Regression: a Mobilize event deleted there leaves its timeslot pairings in
+		// the ledger, so every run re-requested /events/<id>/attendances, got 404,
+		// and reported a failure — the same alert, nightly, forever.
+		mockGoneEvent({ eventStillThere: false });
+		const ledger = ledgerWith();
+
+		const report = await run(ledger, true);
+
+		expect(report.eventsGone).toBe(1);
+		expect(report.failed).toBe(0);
+		expect(report.errors).toEqual([]);
+		expect(ledger.forgotten).toEqual([LINK.mobilizeEventId]);
+	});
+
+	it('keeps the pairings on a dry run', async () => {
+		mockGoneEvent({ eventStillThere: false });
+		const ledger = ledgerWith();
+
+		const report = await run(ledger, false);
+
+		expect(report.eventsGone).toBe(1);
+		expect(ledger.forgotten).toEqual([]);
+	});
+
+	it('still reports a failure when the event itself reads back fine', async () => {
+		// 404 on the attendances of a live event is not a deletion — it is something
+		// unexplained, and dropping the pairings would silently stop syncing a real
+		// event's signups.
+		mockGoneEvent({ eventStillThere: true });
+		const ledger = ledgerWith();
+
+		const report = await run(ledger, true);
+
+		expect(report.eventsGone).toBe(0);
+		expect(report.failed).toBe(1);
+		expect(ledger.forgotten).toEqual([]);
 	});
 });
 
