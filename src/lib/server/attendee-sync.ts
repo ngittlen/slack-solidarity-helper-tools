@@ -14,7 +14,7 @@
 // zip -> chapter map rebuilds on staleness rather than on a mode, which is why
 // neither cron entry is special-cased.
 
-import { desc, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 
 import {
@@ -76,6 +76,20 @@ class TursoAttendeeLedger implements AttendeeLedger {
 					syncedAt: now,
 				},
 			});
+	}
+
+	/**
+	 * Forget the shift pairings for a Mobilize event that has been deleted there.
+	 *
+	 * Only the pairings go. The event ledger row stays, because the event sync
+	 * treats an event deleted in Mobilize as deliberate and does not resurrect it;
+	 * so do the mirrored RSVP rows, which record what was written into Solidarity
+	 * and is still true.
+	 */
+	async forgetEvent(mobilizeEventId: number): Promise<void> {
+		await this.db
+			.delete(mobilizeSyncedTimeslots)
+			.where(eq(mobilizeSyncedTimeslots.mobilizeEventId, mobilizeEventId));
 	}
 }
 

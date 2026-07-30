@@ -80,6 +80,7 @@ console.log(`  RSVPs to create:      ${report.rsvpsCreated}`);
 console.log(`  RSVPs to update:      ${report.rsvpsUpdated}`);
 console.log(`  no email or phone:    ${report.skippedNoContact}`);
 console.log(`  unknown status:       ${report.skippedUnknownStatus}`);
+console.log(`  events gone:          ${report.eventsGone}`);
 console.log(`  failed:               ${report.failed}`);
 for (const err of report.errors.slice(0, 5)) console.log(`    ! ${err}`);
 if (report.abortedReason) console.log(`  ABORTED: ${report.abortedReason}`);
