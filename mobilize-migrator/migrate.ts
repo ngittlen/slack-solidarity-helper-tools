@@ -72,9 +72,14 @@ console.log('Fetching Solidarity event pages (formatted descriptions)…');
 const pageDescriptions = await fetchPageDescriptions();
 console.log(`  ${pageDescriptions.size} pages with descriptions`);
 
-const { planned, skipped } = planMigration(solidarityEvents, Date.now(), pageDescriptions);
+const { planned, skipped, excludedByTag } = planMigration(
+	solidarityEvents,
+	Date.now(),
+	pageDescriptions,
+);
 console.log(
-	`  ${solidarityEvents.length} events fetched → ${planned.length} candidate Mobilize events, ${skipped.length} skipped`,
+	`  ${solidarityEvents.length} events fetched → ${planned.length} candidate Mobilize events, ` +
+		`${skipped.length} skipped, ${excludedByTag.length} excluded by tag`,
 );
 
 const report = await runSync(
@@ -96,6 +101,13 @@ const report = await runSync(
 console.log(`\n=== ALREADY IN MOBILIZE — SKIPPING (${report.skippedExisting}) ===`);
 for (const detail of report.skippedDetails) {
 	console.log(`  - "${detail.title}" → ${detail.reason}`);
+}
+
+if (excludedByTag.length > 0) {
+	console.log(`\n=== EXCLUDED BY TAG (${excludedByTag.length}) ===`);
+	for (const s of excludedByTag) {
+		console.log(`  - [solidarity #${s.solidarityEventId}] ${s.title}`);
+	}
 }
 
 if (skipped.length > 0) {
@@ -122,6 +134,7 @@ writeJson(PLAN_PATH, {
 	report,
 	plannedEvents: planned,
 	skippedNoAddress: skipped,
+	excludedByTag,
 });
 console.log(`\nFull plan written to ${PLAN_PATH}`);
 

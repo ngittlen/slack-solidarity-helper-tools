@@ -65,6 +65,45 @@ timeslots. So sessions are grouped by location, and one Solidarity event can bec
 several Mobilize events — "Operation Get Out the Vote" (Flint, Grand Rapids, Detroit,
 Oakland, Ann Arbor) becomes five.
 
+**One venue, several spellings.** Sessions are grouped on a _normalized_ address
+(`normalizeLocation`): street types and directionals are collapsed onto one form
+and a trailing country and ZIP are dropped, because Solidarity stores whatever was
+typed that day and held the Pontiac office as all three of "1 South Saginaw Street,
+Pontiac, MI 48342, USA", "1 S Saginaw St, Pontiac, MI 48342, USA" and "1 South
+Saginaw Street, Pontiac, MI, USA" — three Mobilize events for one address, which
+the dedupe pass then had to treat as duplicates of each other.
+
+Only a _trailing_ five-digit token is dropped: Warren's house numbers are five
+digits too, and "29200 Hoover Rd" must not merge with "29500 Hoover Rd".
+
+The group's key is still a **raw** address — the lowest-sorting one where the
+spellings differ, so it does not depend on the order Solidarity returns sessions.
+That is deliberate: the ledger key is `solidarity:<eventId>:<locationKey>`, and
+normalizing it would orphan every event already in the ledger from the Mobilize
+event it created, which the next run would then publish a second time. An event
+whose sessions all spell the address one way — nearly all of them — keeps exactly
+the key it has always had.
+
+**Titles for a split event.** Each copy needs a title that still names the event
+_and_ differs from its siblings — identical titles read as accidental duplicates
+in the Mobilize feed, and `findDuplicate` treats them as duplicates outright.
+`titlesForLocations` takes the session's own title only when it already contains
+the event name (the organizer wrote "Operation GOTV: Flint" by hand); otherwise
+it keeps the campaign's title and appends the first thing that actually differs —
+city, then venue, then street. This used to take the session title unconditionally,
+and since plenty of sessions are named for the shift rather than the place, events
+went out to volunteers titled "Session 2" and "Thursday Shift" with the campaign's
+own name nowhere on the page.
+
+**Opting an event out.** An event tagged **`mobilize-exclude`** in Solidarity is
+never planned — the counterpart of the `slack-exclude` tag that keeps an event out
+of the Slack announcements. Tagging is reported separately from the events that
+were skipped for a fixable reason, since it is a choice rather than a failure.
+Note it does **not** take down an event already published: the sync stops updating
+it, but deleting a public event volunteers may have signed up for is not something
+to trigger from a tag. The nightly log says how many excluded events are still live
+so they can be removed by hand.
+
 **Times.** Timeslots are unix timestamps, which makes this mostly a non-issue:
 Solidarity returns absolute instants but renders them with an _inconsistent_ UTC
 offset — the same session came back as both `...T18:00:00-06:00` and
@@ -221,18 +260,40 @@ generically-named event in several cities on one night — "Debate Watch Party" 
 Coldwater, Lansing, Pontiac and Oakland, all at 7:15pm — and title overlap alone
 marks all of them as duplicates of each other.
 
-## Running nightly
+## Running on a schedule
 
 The scheduled path does not run this code in a GitHub runner. Following the same
 pattern as `daily-snapshot.yml`, the workflow just `curl`s an authenticated
 endpoint on the Fly app, so credentials and Turso stay where they already live:
 
 ```
-.github/workflows/mobilize-sync.yml
-  └─ POST /api/internal/mobilize-sync?key=$INTERNAL_CRON_SECRET
-       └─ src/lib/server/mobilize-sync.ts   (Turso-backed ledger)
-            └─ mobilize-migrator/lib/sync.ts   (shared with the CLI)
+.github/workflows/mobilize-sync.yml     every 30 min, plus 07:40 UTC windowless
+  ├─ POST /api/internal/mobilize-sync?key=$INTERNAL_CRON_SECRET
+  │    └─ src/lib/server/mobilize-sync.ts   (Turso-backed ledger)
+  │         └─ mobilize-migrator/lib/sync.ts   (shared with the CLI)
+  └─ POST /api/internal/attendee-sync?key=$INTERNAL_CRON_SECRET
+       └─ src/lib/server/attendee-sync.ts
+            └─ mobilize-migrator/lib/attendee-sync.ts
 ```
+
+**Both halves run in one job, events first.** The order is the reason: the event
+sync records the timeslot pairings the attendee sync reads, so an event created
+at 09:00 has its signups mirrored in the same run instead of waiting for a
+separate schedule to come round. The signup half runs even when the event half
+failed — signups already in Mobilize should still reach the CRM — and the job
+still goes red for whichever step failed.
+
+Each endpoint takes a lock (`sync_locks`) and answers `{"skipped": true}` with a
+200 rather than a 4xx when another run holds it, so an overlap is a logged skip
+instead of a red run. That was optional at two runs a night; on the 30-minute
+schedule it is what stops two passes planning from the same ledger snapshot and
+both deciding an event needs creating.
+
+The every-30-minutes pass sends `?quiet=1`, which drops the routine
+"created N, updated M" Slack line when nothing was **created**. An event that
+reports the same edit on every pass would otherwise post 48 times a day. New
+events, failures, a rejected key and an aborted run always alert, and the nightly
+pass reports the edits too.
 
 `lib/*` stays free of `$env` and `node:fs` so both entry points can use it —
 state arrives through a `Ledger` interface, credentials through `SyncConfig`.
@@ -276,10 +337,11 @@ MOBILIZE_CONTACT_EMAIL='…'`). The sync refuses to run without one.
 4. Verify without writing: `POST /api/internal/mobilize-sync?key=…&dry=1`, or run
    the workflow manually with **dry run** ticked.
 
-### What it does each night
+### What it does each run
 
 Full sync: creates events new to Solidarity, and pushes edits — title, times,
-description, image — onto ones already mirrored. Events created by hand in
+description, image — onto ones already mirrored. A steady-state pass is one
+request of a few seconds; the chunking below is for a bulk first night. Events created by hand in
 Mobilize are matched by the duplicate heuristic and left alone.
 
 Two behaviors worth knowing:
@@ -334,8 +396,9 @@ npx tsx mobilize-migrator/attendee-sync.ts \
   --mobilize-event 812345 --timeslot 6157028 --session 80929 --event 27463
 ```
 
-Scheduled via `.github/workflows/attendee-sync.yml` →
+Scheduled as the second step of `.github/workflows/mobilize-sync.yml` →
 `POST /api/internal/attendee-sync` (`?dry=1`, `?window=<hours>`, `?maxProfiles=N`).
+Run `only: signups` on a manual dispatch to skip the event half.
 
 **Where the data comes from.** `GET /v1/organizations/{orgId}/events/{eventId}/attendances`,
 one request per Mobilize **event** — it returns every shift on that event at once,
@@ -447,7 +510,8 @@ of the sync — so judge a run by _change_ in the rate, not its absolute value.
 
 Every 30 minutes with a **4.5-hour look-ahead**, plus a nightly windowless pass
 so events further out still get a rolling picture rather than their signups only
-landing 4.5h before doors.
+landing 4.5h before doors. Same job as the event sync, which runs first — see
+[Running on a schedule](#running-on-a-schedule).
 
 The ask was "4 hours before, and again 30 minutes before". GitHub cron cannot hit
 fixed offsets — it is best-effort and this repo documents delays of hours

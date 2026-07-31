@@ -6,10 +6,16 @@
 // produces five Mobilize events.
 
 import { parseAddress } from './address.js';
+import { normalizeTitle } from './dedupe.js';
 import { parseCoordinates, type Coordinates } from './geocode.js';
 import { htmlToMarkdown, plainTextToMarkdown } from './html-to-markdown.js';
 import { EVENT_TYPE, type EventTypeName } from './payload.js';
-import { type SolidarityEvent, type SolidaritySession } from './solidarity.js';
+import {
+	hasTag,
+	MOBILIZE_EXCLUDE_TAG,
+	type SolidarityEvent,
+	type SolidaritySession,
+} from './solidarity.js';
 
 export interface PlannedEvent {
 	/** Stable key for the ledger: one Solidarity event + one location. */
@@ -60,12 +66,151 @@ export function classifyEventType(title: string, description: string): EventType
 		: EVENT_TYPE.COMMUNITY;
 }
 
-/** Groups sessions that share a venue. Falls back to the venue name when there
- *  is no structured address, so two unaddressed venues don't merge. */
+/** One published location of an event, as far as naming it is concerned. */
+export interface LocationTitleInput {
+	/** Location key — stable across runs, so the last-resort numbering is too. */
+	key: string;
+	/** Every session title at this location; most are shift labels. */
+	sessionTitles: string[];
+	city: string;
+	locationName: string;
+	addressLine1: string;
+}
+
+function distinct(values: string[]): boolean {
+	return new Set(values.map(normalizeTitle)).size === values.length;
+}
+
+/** Is this session title a full name in its own right — one that already says
+ *  which event it belongs to? "Operation GOTV" -> "Operation GOTV: Flint". */
+function carriesEventName(sessionTitle: string, eventTitle: string): boolean {
+	const session = normalizeTitle(sessionTitle);
+	const event = normalizeTitle(eventTitle);
+	return Boolean(session && event && session.includes(event));
+}
+
+/**
+ * Public titles for the Mobilize events one Solidarity event splits into — one
+ * per group, in the order given.
+ *
+ * A single location keeps the campaign's title verbatim. Several locations each
+ * need a title that both still names the event and differs from its siblings:
+ * identical titles read as accidental duplicates in the Mobilize feed, and
+ * findDuplicate treats them as duplicates outright.
+ *
+ * This used to simply take a session's title whenever an event spanned several
+ * locations, assuming organizers put the city there ("Operation GOTV: Flint").
+ * Plenty of them name the shift instead — "Session 2", "Thursday Shift" — and
+ * that went out as the public event name with the campaign's own title nowhere
+ * on the page. Volunteers browsing mobilize.us saw an event called "Session 2".
+ */
+export function titlesForLocations(eventTitle: string, groups: LocationTitleInput[]): string[] {
+	const base = eventTitle.trim();
+	if (groups.length <= 1) return groups.map(() => base);
+
+	// Hand-written session titles that name the event stand on their own. Only
+	// when every group has one: mixing hand-written names with derived ones makes
+	// siblings look like unrelated events.
+	const written = groups.map(
+		(group) =>
+			group.sessionTitles.map((t) => t.trim()).find((t) => carriesEventName(t, base)) ?? '',
+	);
+	if (written.every(Boolean) && distinct(written)) return written;
+
+	// Otherwise keep the event's name and add whatever actually differs between
+	// the copies, in the order a volunteer would find useful.
+	for (const part of ['city', 'locationName', 'addressLine1'] as const) {
+		const values = groups.map((group) => group[part].trim());
+		if (values.every(Boolean) && distinct(values)) return values.map((v) => `${base} — ${v}`);
+	}
+
+	// Same name, same place: the shift label is all that is left to tell them
+	// apart, and a number after that. Numbered by location key rather than by
+	// input order, so a group keeps its number from one run to the next.
+	const labels = groups.map(
+		(group) => group.sessionTitles.map((t) => t.trim()).find(Boolean) ?? '',
+	);
+	if (labels.every(Boolean) && distinct(labels)) return labels.map((l) => `${base} — ${l}`);
+
+	const rank = new Map(
+		[...groups].sort((a, b) => a.key.localeCompare(b.key)).map((group, i) => [group.key, i + 1]),
+	);
+	return groups.map((group) => `${base} (${rank.get(group.key)})`);
+}
+
+/** The address as Solidarity holds it. Falls back to the venue name when there
+ *  is no address at all, so two unaddressed venues don't merge. */
 function locationKey(session: SolidaritySession): string {
 	const address = session.location_data?.full_address ?? session.location_address ?? '';
 	const name = session.location_name ?? '';
 	return (address || name).trim().toLowerCase();
+}
+
+/**
+ * Long and short forms of the words that vary between two spellings of the same
+ * address, collapsed onto the short one. Only forms that are unambiguous in a US
+ * street address are listed: "dr" is Drive here, never Doctor, because it is
+ * being compared against another address for the same venue rather than parsed.
+ */
+const ADDRESS_SYNONYMS: Record<string, string> = {
+	street: 'st',
+	avenue: 'ave',
+	boulevard: 'blvd',
+	road: 'rd',
+	drive: 'dr',
+	lane: 'ln',
+	court: 'ct',
+	place: 'pl',
+	parkway: 'pkwy',
+	highway: 'hwy',
+	square: 'sq',
+	terrace: 'ter',
+	circle: 'cir',
+	trail: 'trl',
+	suite: 'ste',
+	apartment: 'apt',
+	building: 'bldg',
+	floor: 'fl',
+	north: 'n',
+	south: 's',
+	east: 'e',
+	west: 'w',
+	northeast: 'ne',
+	northwest: 'nw',
+	southeast: 'se',
+	southwest: 'sw',
+	saint: 'st',
+	mount: 'mt',
+	fort: 'ft',
+	usa: 'us',
+};
+
+/**
+ * Two spellings of one address, reduced to the same string.
+ *
+ * Solidarity stores whatever was typed or whatever Google returned that day, so
+ * the same field office arrives as both "1 South Saginaw Street, Pontiac, MI"
+ * and "1 S Saginaw St, Pontiac, MI". Compared literally those are two venues,
+ * which published the same office as three separate Mobilize events.
+ *
+ * A trailing country and postal code are dropped as well, since the same office
+ * appears both with and without them ("…, Pontiac, MI 48342, USA" and "…,
+ * Pontiac, MI, USA"). Only from the END: a five-digit token anywhere else is a
+ * house number, and Warren's addresses are full of them.
+ *
+ * Only used to decide whether two sessions share a venue — never to build an
+ * address for Mobilize, which always comes from the session's own fields.
+ */
+export function normalizeLocation(raw: string): string {
+	const words = raw
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim()
+		.split(' ')
+		.map((word) => ADDRESS_SYNONYMS[word] ?? word);
+	if (words[words.length - 1] === 'us') words.pop();
+	if (/^\d{5}$/.test(words[words.length - 1] ?? '')) words.pop();
+	return words.join(' ');
 }
 
 interface ResolvedLocation {
@@ -151,6 +296,9 @@ function capacity(session: SolidaritySession): number | null {
 export interface PlanResult {
 	planned: PlannedEvent[];
 	skipped: SkippedEvent[];
+	/** Held back by the `mobilize-exclude` tag — a deliberate choice, not a
+	 *  failure, so it is counted apart from `skipped`. */
+	excludedByTag: SkippedEvent[];
 }
 
 /**
@@ -179,6 +327,7 @@ export function planMigration(
 ): PlanResult {
 	const planned: PlannedEvent[] = [];
 	const skipped: SkippedEvent[] = [];
+	const excludedByTag: SkippedEvent[] = [];
 
 	for (const event of events) {
 		if (event.event_type !== 'in_person') {
@@ -189,19 +338,52 @@ export function planMigration(
 			// A mirror is another org's copy of the same real event.
 			continue;
 		}
+		// The organizer's opt-out, tagged in Solidarity. Reported rather than
+		// silently dropped, since "why is my event not on Mobilize?" is otherwise
+		// unanswerable from the sync's output.
+		if (hasTag(event, MOBILIZE_EXCLUDE_TAG)) {
+			excludedByTag.push({
+				solidarityEventId: event.id,
+				title: event.title,
+				reason: `tagged ${MOBILIZE_EXCLUDE_TAG} in Solidarity`,
+			});
+			continue;
+		}
 
 		const future = event.event_sessions.filter((s) => Date.parse(s.start_time) > now);
 		if (future.length === 0) continue;
 
-		const groups = new Map<string, SolidaritySession[]>();
+		// Grouped on the normalized address, but keyed by a raw one: the ledger key
+		// is built from this, and re-keying every event already in the ledger would
+		// orphan it from the Mobilize event it created. An event whose sessions all
+		// spell the address the same way — nearly all of them — therefore keeps the
+		// exact key it has always had. Where spellings differ, the lowest sorting
+		// one wins, so the key doesn't depend on the order Solidarity returns.
+		const groups = new Map<string, { key: string; sessions: SolidaritySession[] }>();
 		for (const session of future) {
-			const key = locationKey(session);
-			const existing = groups.get(key);
-			if (existing) existing.push(session);
-			else groups.set(key, [session]);
+			const raw = locationKey(session);
+			const merged = normalizeLocation(raw);
+			const existing = groups.get(merged);
+			if (existing) {
+				existing.sessions.push(session);
+				if (raw < existing.key) existing.key = raw;
+			} else {
+				groups.set(merged, { key: raw, sessions: [session] });
+			}
 		}
 
-		for (const [key, sessions] of groups) {
+		// Resolve every group before naming any of them. A title has to tell this
+		// copy of the event apart from its siblings, so it can only be chosen once
+		// the set of siblings that will actually be published is known — which is
+		// after both skips below, not after grouping.
+		const usable: {
+			key: string;
+			sessions: SolidaritySession[];
+			resolved: ResolvedLocation;
+			coordinates: Coordinates | null;
+		}[] = [];
+
+		for (const { key, sessions } of groups.values()) {
 			const resolved = resolveLocation(sessions);
 			if (!resolved) {
 				skipped.push({
@@ -211,19 +393,6 @@ export function planMigration(
 				});
 				continue;
 			}
-			const { addressLine1, city, venueExtra, withAddress } = resolved;
-
-			const sourceDescription = buildDescription(event, pageDescriptions);
-			// A multi-location event would otherwise produce several identically
-			// named Mobilize events; the session title usually already carries the
-			// city ("Operation Get Out the Vote: Flint"), so prefer it.
-			const sessionTitle = sessions.find((s) => s.title)?.title ?? '';
-			const title =
-				groups.size > 1 && sessionTitle && sessionTitle !== event.title
-					? sessionTitle
-					: groups.size > 1
-						? `${event.title} — ${city}`
-						: event.title;
 
 			// Read from the session the address itself came from, so a geocoded zip
 			// describes the address being published. Grouping only guarantees a shared
@@ -233,7 +402,7 @@ export function planMigration(
 			// coordinates while another does not. Any other session in the group is a
 			// fallback for exactly that second case.
 			const coordinates =
-				parseCoordinates(withAddress.location_data?.coordinates) ??
+				parseCoordinates(resolved.withAddress.location_data?.coordinates) ??
 				sessions.map((s) => parseCoordinates(s.location_data?.coordinates)).find(Boolean) ??
 				null;
 
@@ -250,6 +419,25 @@ export function planMigration(
 				continue;
 			}
 
+			usable.push({ key, sessions, resolved, coordinates });
+		}
+
+		const titles = titlesForLocations(
+			event.title,
+			usable.map(({ key, sessions, resolved }) => ({
+				key,
+				sessionTitles: sessions.map((s) => s.title ?? ''),
+				city: resolved.city,
+				locationName: resolved.withAddress.location_name?.trim() || resolved.venueExtra,
+				addressLine1: resolved.addressLine1,
+			})),
+		);
+
+		for (const [index, { key, sessions, resolved, coordinates }] of usable.entries()) {
+			const { addressLine1, city, venueExtra, withAddress } = resolved;
+			const title = titles[index];
+
+			const sourceDescription = buildDescription(event, pageDescriptions);
 			const description =
 				sourceDescription.trim() || fallbackDescription(title, event.event_page_url);
 			const eventType = classifyEventType(`${title} ${event.title}`, description);
@@ -285,5 +473,5 @@ export function planMigration(
 		}
 	}
 
-	return { planned, skipped };
+	return { planned, skipped, excludedByTag };
 }

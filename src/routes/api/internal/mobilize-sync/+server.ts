@@ -4,13 +4,15 @@ import { db } from '$lib/server/db.js';
 import { runMobilizeSync } from '$lib/server/mobilize-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
 import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
+import { withSyncLock } from '$lib/server/sync-lock.js';
 
-// Internal endpoint called nightly by GitHub Actions to mirror upcoming
-// Solidarity events into Mobilize. Auth via ?key=<INTERNAL_CRON_SECRET>.
+// Internal endpoint called by GitHub Actions to mirror upcoming Solidarity
+// events into Mobilize. Auth via ?key=<INTERNAL_CRON_SECRET>.
 //
 //   ?dry=1        plan and report without writing
 //   ?maxCreates=N raise the create guardrail for a deliberate bulk run
 //   ?budgetMs=N   override how long one request may spend before it stops
+//   ?quiet=1      skip the Slack summary when nothing was CREATED
 //
 // Idempotent: a Turso ledger records every event created, so repeated runs
 // update rather than duplicate. Safe to fire several times a night, which
@@ -21,6 +23,19 @@ import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$l
 // is false. fly-proxy autostops a machine using concurrency limits that ignore
 // requests in flight, so a long request is killed mid-write and answers 502 —
 // see the budget note in $lib/server/mobilize-sync.ts.
+//
+// Runs are serialized on a lock, like the attendee sync. At two runs a night
+// overlap was barely possible; on the 30-minute schedule it is routine, and two
+// passes planning from the same ledger snapshot would both decide the same event
+// needs creating.
+
+const SYNC_LOCK_NAME = 'mobilize-sync';
+
+// Bounds ONE request, not the whole chunked loop — each chunk is its own POST
+// and takes the lock afresh. So this only has to exceed a single request's time
+// budget (120s by default) plus the write it was in the middle of when the
+// budget ran out; 10 minutes is well clear of the caller's 300s `--max-time`.
+const SYNC_LOCK_TTL_MS = 10 * 60 * 1000;
 
 export const POST: RequestHandler = async ({ url }) => {
 	if (!INTERNAL_CRON_SECRET) {
@@ -48,13 +63,32 @@ export const POST: RequestHandler = async ({ url }) => {
 	const maxCreates = maxCreatesParam ? parseInt(maxCreatesParam, 10) : undefined;
 	const budgetParam = url.searchParams.get('budgetMs');
 	const budgetMs = budgetParam ? parseInt(budgetParam, 10) : undefined;
+	// The 30-minute schedule sets this. An event that reports the same edit on
+	// every pass — an image Mobilize keeps dropping, say — would otherwise post
+	// the same Slack line 48 times a day and train everyone to ignore the
+	// channel. Creates, failures and stopped runs still alert either way.
+	const quiet = url.searchParams.get('quiet') === '1';
 
 	try {
-		const result = await runMobilizeSync(db, { apply: !dryRun, maxCreates, budgetMs });
+		const run = await withSyncLock(db, SYNC_LOCK_NAME, SYNC_LOCK_TTL_MS, () =>
+			runMobilizeSync(db, { apply: !dryRun, maxCreates, budgetMs }),
+		);
+
+		// 200, not 409: the schedules overlap by design and the caller uses
+		// `curl --fail-with-body`, so a 4xx would turn an ordinary skip into a red
+		// run. Matches the attendee sync.
+		if (run.skipped) {
+			console.log('[mobilize-sync] skipped — another sync is already running');
+			return json({ skipped: true, reason: 'another Mobilize sync is already running' });
+		}
+		const result = run.result;
+
 		console.log(
 			`[mobilize-sync]${dryRun ? ' (dry)' : ''} planned ${result.planned}: ` +
 				`created ${result.created}, updated ${result.updated}, unchanged ${result.unchanged}, ` +
-				`existing ${result.skippedExisting}, no-address ${result.skippedNoAddress}, failed ${result.failed}` +
+				`existing ${result.skippedExisting}, no-address ${result.skippedNoAddress}, ` +
+				`tag-excluded ${result.excludedByTag} (${result.excludedStillLive} already live), ` +
+				`failed ${result.failed}` +
 				(result.incomplete ? `, INCOMPLETE — ${result.pending} not reached` : ''),
 		);
 
@@ -71,7 +105,7 @@ export const POST: RequestHandler = async ({ url }) => {
 				`:warning: *Mobilize sync aborted.* ${result.abortedReason}\n` +
 					'Nothing was created. Re-run with `?maxCreates=N` once the plan looks right.',
 			);
-		} else if (!dryRun && (result.created > 0 || result.updated > 0)) {
+		} else if (!dryRun && (result.created > 0 || (result.updated > 0 && !quiet))) {
 			// A big night runs as several chunks, so say so — otherwise three of
 			// these in a row reads like the sync fired three times.
 			const lines = [

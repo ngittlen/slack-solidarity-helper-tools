@@ -1,66 +1,110 @@
-name: Nightly Mobilize event sync
+name: Mobilize sync
 
-# Mirrors upcoming in-person Solidarity events into Mobilize: creates ones that
-# are new, and pushes edits (title, times, description, image) to ones already
-# mirrored.
+# Both halves of the Mobilize integration, in order, every 30 minutes:
 #
-# 06:20 UTC = 02:20 EDT / 01:20 EST — after the day's events have been created
-# in Solidarity and well before volunteers are browsing. Two staggered attempts
-# because GitHub cron is best-effort and delays of hours are routine (see
-# door-knock-snapshot.yml). Re-running is harmless: a Turso ledger records every
-# event created, so a second run updates instead of duplicating.
+#   1. EVENTS  Solidarity -> Mobilize. Creates events that are new and pushes
+#              edits (title, times, description, image) to ones already mirrored.
+#   2. SIGNUPS Mobilize -> Solidarity. Mirrors signups back as event RSVPs,
+#              creating a Solidarity profile for anyone who doesn't have one.
 #
-# Requires MOBILIZE_API_KEY and MOBILIZE_ORG_ID on the Fly app, plus an event
-# contact (set on /settings, or MOBILIZE_CONTACT_EMAIL). The key must have write
-# access — creating events and uploading images are "restricted" endpoints
-# Mobilize grants per organization. If it is rejected this run goes red and the
-# app posts a Slack alert.
+# They run in one job because the order matters: the event sync records the
+# timeslot pairings the attendee sync reads, so an event created at 09:00 has its
+# signups mirrored in the same run rather than waiting for a separate schedule.
 #
-# The sync is driven as a LOOP of bounded requests, not one long one. fly-proxy
-# decides a machine is excess capacity from its concurrency limits, which do not
-# count requests in flight, so it autostopped a machine six minutes into a sync
-# and the caller got a 502 with the run half-done. Each request now stops at its
-# time budget and reports `incomplete`; this loops until that is false. The Turso
-# ledger is what makes resuming safe.
+# TIMING: the ask for signups was "4 hours before, and again 30 minutes before"
+# each event. GitHub cron cannot do that — it is best-effort and this repo
+# already documents delays of hours (door-knock-snapshot.yml: a 02:00 schedule
+# firing at 05:55). So this runs every 30 minutes and syncs every event starting
+# within the next 4.5 hours, which covers both marks; a skipped or delayed run
+# costs nothing because the next one still refreshes the event before doors open.
+#
+# The nightly pass (07:40 UTC = 03:40 EDT) drops the window entirely, so events
+# further out still get a rolling picture in Solidarity rather than their signups
+# only landing 4.5h before doors. It is also the run that reports routine event
+# edits to Slack — see `quiet` below.
+#
+# Both passes look BACK 48 hours as well: check-ins are recorded during and after
+# an event, so a forward-only scope would never sync who actually showed up.
+#
+# The event sync used to run twice a night on staggered crons, because a missed
+# best-effort cron meant waiting a day. At every 30 minutes that is moot: the
+# next run is never far away, and both endpoints hold a lock, so an overlap is a
+# logged skip rather than a double write.
 on:
   schedule:
-    - cron: '20 6 * * *'
-    - cron: '20 8 * * *'
+    - cron: '*/30 * * * *'
+    - cron: '40 7 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Plan only — report what would change without writing'
+        description: 'Report what would change without writing'
         type: boolean
         default: false
+      only:
+        description: 'Run just one half'
+        type: choice
+        options: [both, events, signups]
+        default: both
+      window_hours:
+        description: 'Signups: only events starting within N hours (blank = all upcoming)'
+        type: string
+        default: ''
       max_creates:
-        description: 'Raise the create guardrail (default 25) for a deliberate bulk run'
+        description: 'Events: raise the create guardrail (default 25) for a deliberate bulk run'
         type: string
         default: ''
       budget_ms:
-        description: 'Milliseconds one request may spend before it stops and reports the rest as pending (default 120000)'
+        description: 'Events: ms one request may spend before it stops and reports the rest as pending (default 120000)'
         type: string
         default: ''
+
+# Never two of these at once. The endpoints each hold their own lock, so an
+# overlap is already safe; this keeps the queue from filling with runs that would
+# only skip. `cancel-in-progress: false` — a sync in flight is doing real writes.
+concurrency:
+  group: mobilize-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      APP_URL: https://slack-solidarity-helper-tools.fly.dev
+      INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      # Passed through raw and decided in the shell below. Do NOT fold these into
+      # `${{ cond && 'a' || 'b' }}`: that idiom collapses to 'b' whenever 'a' is
+      # falsy, and '' is falsy — so every branch that wants "no window" silently
+      # produced 4.5 instead, including the nightly pass that exists precisely to
+      # run windowless.
+      EVENT_NAME: ${{ github.event_name }}
+      SCHEDULE: ${{ github.event.schedule }}
+      WINDOW_INPUT: ${{ inputs.window_hours }}
+      MAX_CREATES: ${{ inputs.max_creates }}
+      BUDGET_MS: ${{ inputs.budget_ms }}
+
     steps:
-      - name: Trigger Mobilize sync
+      - name: Sync events to Mobilize
+        if: inputs.only != 'signups'
         env:
-          APP_URL: https://slack-solidarity-helper-tools.fly.dev
-          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          MAX_CREATES: ${{ inputs.max_creates }}
-          BUDGET_MS: ${{ inputs.budget_ms }}
           # Enough for a first bulk night (~15 image uploads at ~30s each) with
           # room to spare. The cap exists so a sync that cannot make progress
-          # fails visibly instead of looping until the job timeout.
+          # fails visibly instead of looping until the job timeout. A steady-state
+          # pass finishes in one request in a few seconds.
           MAX_CHUNKS: 12
         run: |
           QUERY="key=${INTERNAL_CRON_SECRET}"
           [ "${DRY_RUN}" = "true" ] && QUERY="${QUERY}&dry=1"
           [ -n "${MAX_CREATES}" ] && QUERY="${QUERY}&maxCreates=${MAX_CREATES}"
           [ -n "${BUDGET_MS}" ] && QUERY="${QUERY}&budgetMs=${BUDGET_MS}"
+
+          # Routine edits stay out of Slack on the every-30-minutes pass: an event
+          # that reports the same change every time would otherwise post 48 times
+          # a day. New events, failures and stopped runs always alert, and the
+          # nightly pass reports the edits too.
+          if [ "${EVENT_NAME}" = "schedule" ] && [ "${SCHEDULE}" != "40 7 * * *" ]; then
+            QUERY="${QUERY}&quiet=1"
+          fi
 
           for chunk in $(seq 1 "${MAX_CHUNKS}"); do
             echo "--- request ${chunk}/${MAX_CHUNKS}"
@@ -76,6 +120,10 @@ jobs:
             fi
             echo "${RESPONSE}" | jq .
 
+            if [ "$(echo "${RESPONSE}" | jq -r '.skipped')" = "true" ]; then
+              echo "another Mobilize sync holds the lock — leaving it to that run"
+              exit 0
+            fi
             if [ "$(echo "${RESPONSE}" | jq -r '.incomplete')" != "true" ]; then
               echo "sync finished in ${chunk} request(s)"
               exit 0
@@ -85,3 +133,35 @@ jobs:
           echo "::error::still incomplete after ${MAX_CHUNKS} requests — check the" \
             "logs for an event failing every pass, or raise budget_ms"
           exit 1
+
+      # Runs even when the event half failed: signups already in Mobilize should
+      # still reach the CRM. The job still goes red for the failed step.
+      # `!cancelled()` rather than `always()` — a cancelled run means stop.
+      - name: Sync signups to Solidarity
+        if: ${{ !cancelled() && inputs.only != 'events' }}
+        run: |
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            # Manual run: honour the input exactly, blank included.
+            WINDOW="${WINDOW_INPUT}"
+          elif [ "${SCHEDULE}" = "40 7 * * *" ]; then
+            WINDOW=""
+          else
+            WINDOW="4.5"
+          fi
+          echo "window=${WINDOW:-<none: all upcoming>}"
+
+          QUERY="key=${INTERNAL_CRON_SECRET}"
+          [ "${DRY_RUN}" = "true" ] && QUERY="${QUERY}&dry=1"
+          [ -n "${WINDOW}" ] && QUERY="${QUERY}&window=${WINDOW}"
+
+          # Solidarity's 60-req/30s limit paces this, so the windowless nightly
+          # pass gets far longer. Only new or changed signups cost API calls —
+          # ledgered ones are skipped — so the first full run is the slow one.
+          if [ -n "${WINDOW}" ]; then MAX_TIME=900; else MAX_TIME=3000; fi
+
+          # No --retry: this writes to a CRM, and the two states a retry cannot
+          # fix (expired session, guardrail abort) answer 503. The ledger makes a
+          # deliberate re-run safe.
+          curl --fail-with-body -sS -X POST \
+            --max-time "${MAX_TIME}" \
+            "${APP_URL}/api/internal/attendee-sync?${QUERY}"
