@@ -50,6 +50,11 @@ export interface MobilizeSyncOptions {
 
 export interface MobilizeSyncResult extends SyncReport {
 	skippedNoAddress: number;
+	/** Held back by the `mobilize-exclude` tag in Solidarity. */
+	excludedByTag: number;
+	/** Of those, the ones already published to Mobilize by an earlier run. The
+	 *  tag stops further updates; it does not delete what is already live. */
+	excludedStillLive: number;
 	dryRun: boolean;
 }
 
@@ -77,7 +82,7 @@ export async function runMobilizeSync(
 		fetchPageDescriptions(SOLIDARITY_API_TOKEN),
 		loadSettings(db),
 	]);
-	const { planned, skipped } = planMigration(events, Date.now(), pageDescriptions);
+	const { planned, skipped, excludedByTag } = planMigration(events, Date.now(), pageDescriptions);
 
 	// The v1 API rejects a create or update with no contact, so stop here with a
 	// message naming the fix rather than letting every event fail one by one.
@@ -92,6 +97,7 @@ export async function runMobilizeSync(
 		);
 	}
 
+	const ledger = new TursoLedger(db);
 	const report = await runSync(
 		planned,
 		{
@@ -102,9 +108,27 @@ export async function runMobilizeSync(
 			writeDeadline,
 			log: (message) => console.log(`[mobilize-sync] ${message}`),
 		},
-		new TursoLedger(db),
+		ledger,
 		findDuplicate,
 	);
 
-	return { ...report, skippedNoAddress: skipped.length, dryRun: !apply };
+	// Tagging an event that was already published keeps the sync off it but does
+	// not take it down — deleting a public event volunteers may have signed up for
+	// is not something to do from a tag. Counted so the log says so out loud.
+	const excludedIds = new Set(excludedByTag.map((entry) => entry.solidarityEventId));
+	let excludedStillLive = 0;
+	if (excludedIds.size > 0) {
+		// Ledger keys are `solidarity:<eventId>:<location>`.
+		for (const record of await ledger.all()) {
+			if (excludedIds.has(Number(record.key.split(':')[1]))) excludedStillLive++;
+		}
+	}
+
+	return {
+		...report,
+		skippedNoAddress: skipped.length,
+		excludedByTag: excludedByTag.length,
+		excludedStillLive,
+		dryRun: !apply,
+	};
 }

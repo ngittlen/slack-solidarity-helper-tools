@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { findDuplicate, normalizeTitle, titleSimilarity } from './dedupe.js';
 import type { MobilizeEvent } from './mobilize.js';
-import { classifyEventType, planMigration } from './transform.js';
+import {
+	classifyEventType,
+	normalizeLocation,
+	planMigration,
+	titlesForLocations,
+} from './transform.js';
 import type { SolidarityEvent } from './solidarity.js';
 import { EVENT_TYPE } from './payload.js';
 
@@ -80,6 +85,83 @@ describe('classifyEventType', () => {
 	});
 });
 
+describe('normalizeLocation', () => {
+	it('reduces the spellings of one Pontiac office to a single string', () => {
+		// All three are the campaign's Pontiac office, as Solidarity stored it on
+		// three different days. Compared literally they published three events.
+		const forms = [
+			'1 South Saginaw Street, Pontiac, MI 48342, USA',
+			'1 S Saginaw St, Pontiac, MI 48342, USA',
+			'1 South Saginaw Street, Pontiac, MI, USA',
+		].map(normalizeLocation);
+		expect(new Set(forms).size).toBe(1);
+	});
+
+	it('keeps different venues apart', () => {
+		const different = [
+			// A five-digit house number must survive: only a TRAILING one is a zip.
+			'29200 Hoover Road, Warren, MI 48093, USA',
+			'29500 Hoover Rd, Warren, MI 48093, USA',
+			// Same number and street, opposite directional.
+			'1 N Saginaw St, Pontiac, MI, USA',
+			'1 S Saginaw St, Pontiac, MI, USA',
+			// Same number and street name, different type.
+			'100 Main St, Ann Arbor, MI, USA',
+			'100 Main Ave, Ann Arbor, MI, USA',
+		].map(normalizeLocation);
+		expect(new Set(different).size).toBe(6);
+	});
+});
+
+describe('titlesForLocations', () => {
+	const at = (overrides: Partial<Parameters<typeof titlesForLocations>[1][number]>) => ({
+		key: 'k',
+		sessionTitles: [],
+		city: 'Pontiac',
+		locationName: 'The Office',
+		addressLine1: '1 South Saginaw Street',
+		...overrides,
+	});
+
+	it('leaves the title of a single-location event alone', () => {
+		expect(titlesForLocations('Ann Arbor Canvass', [at({ key: 'a' })])).toEqual([
+			'Ann Arbor Canvass',
+		]);
+	});
+
+	it('falls through to the venue when every group is in one city', () => {
+		const titles = titlesForLocations('Saginaw Canvass', [
+			at({ key: 'a', city: 'Saginaw', locationName: 'Oracle Brewery' }),
+			at({ key: 'b', city: 'Saginaw', locationName: 'SVRC Marketplace' }),
+		]);
+		expect(titles).toEqual([
+			'Saginaw Canvass — Oracle Brewery',
+			'Saginaw Canvass — SVRC Marketplace',
+		]);
+	});
+
+	it('uses the shift label only when the place cannot tell them apart', () => {
+		const titles = titlesForLocations('Office Canvass Launch', [
+			at({ key: 'a', sessionTitles: ['Fridays'] }),
+			at({ key: 'b', sessionTitles: ['Saturdays'] }),
+		]);
+		expect(titles).toEqual([
+			'Office Canvass Launch — Fridays',
+			'Office Canvass Launch — Saturdays',
+		]);
+	});
+
+	it('numbers by location key when nothing distinguishes the groups', () => {
+		// Two rows for one venue, addresses spelled differently. Identical titles
+		// would read as duplicates in the feed — findDuplicate treats them as such.
+		const titles = titlesForLocations('Office Canvass Launch', [
+			at({ key: 'b', sessionTitles: ['Launch'] }),
+			at({ key: 'a', sessionTitles: ['Launch'] }),
+		]);
+		expect(titles).toEqual(['Office Canvass Launch (2)', 'Office Canvass Launch (1)']);
+	});
+});
+
 describe('planMigration', () => {
 	it('splits one multi-city event into one Mobilize event per location', () => {
 		const flint = session({
@@ -120,6 +202,148 @@ describe('planMigration', () => {
 		expect(planned.map((p) => p.city).sort()).toEqual(['Detroit', 'Flint']);
 		// Distinct titles, so the two don't look identical in the Mobilize feed.
 		expect(new Set(planned.map((p) => p.title)).size).toBe(2);
+		// Session titles that already name the event are the organizer's own
+		// wording, so they are kept verbatim.
+		expect(planned.map((p) => p.title).sort()).toEqual([
+			'Operation GOTV: Detroit',
+			'Operation GOTV: Flint',
+		]);
+	});
+
+	it('keeps the campaign title when the sessions are only named "Session 2"', async () => {
+		// Regression: a multi-location event took its Mobilize title from a session,
+		// so "Yallah! Canvassing with Yemenis for Abdul" was published to volunteers
+		// as an event called "Session 2" — the campaign's name nowhere on the page.
+		const melvindale = session({
+			id: 1,
+			title: 'Session 2',
+			location_name: '3696 Oakwood',
+			location_address: '3696 Oakwood Blvd, Melvindale, MI 48122, USA',
+			location_data: {
+				full_address: '3696 Oakwood Blvd, Melvindale, MI 48122, USA',
+				address_line_1: '3696 Oakwood Boulevard',
+				address_city: 'Melvindale',
+				address_state: 'MI',
+				address_postal_code: '48122',
+				address_country: 'US',
+				coordinates: '{"lat":42.28,"lng":-83.17}',
+			},
+		});
+		const dearborn = session({
+			id: 2,
+			title: 'Session 3',
+			location_name: '14767 Prospect St',
+			location_address: '14767 Prospect St, Dearborn, MI 48126, USA',
+			location_data: {
+				full_address: '14767 Prospect St, Dearborn, MI 48126, USA',
+				address_line_1: '14767 Prospect Street',
+				address_city: 'Dearborn',
+				address_state: 'MI',
+				address_postal_code: '48126',
+				address_country: 'US',
+				coordinates: '{"lat":42.33,"lng":-83.17}',
+			},
+		});
+
+		const { planned } = planMigration(
+			[
+				event({
+					title: 'Yallah! Canvassing with Yemenis for Abdul',
+					event_sessions: [melvindale, dearborn],
+				}),
+			],
+			NOW,
+		);
+
+		expect(planned.map((p) => p.title).sort()).toEqual([
+			'Yallah! Canvassing with Yemenis for Abdul — Dearborn',
+			'Yallah! Canvassing with Yemenis for Abdul — Melvindale',
+		]);
+	});
+
+	it('merges sessions whose addresses are the same place spelled differently', () => {
+		// The campaign's Pontiac office, stored three ways. This published three
+		// Mobilize events for one address — two of which volunteers could sign up
+		// for by mistake, and which the dedupe pass then treated as duplicates.
+		const pontiac = (id: number, address: string) =>
+			session({
+				id,
+				start_time: `2026-07-2${7 + id}T20:00:00Z`,
+				end_time: `2026-07-2${7 + id}T22:00:00Z`,
+				location_name: '1 S Saginaw St',
+				location_address: address,
+				location_data: {
+					full_address: address,
+					address_line_1: '1 South Saginaw Street',
+					address_city: 'Pontiac',
+					address_state: 'MI',
+					address_postal_code: '48342',
+					address_country: 'US',
+					coordinates: '{"lat":42.63,"lng":-83.29}',
+				},
+			});
+		const sessions = [
+			pontiac(0, '1 South Saginaw Street, Pontiac, MI 48342, USA'),
+			pontiac(1, '1 S Saginaw St, Pontiac, MI 48342, USA'),
+			pontiac(2, '1 South Saginaw Street, Pontiac, MI, USA'),
+		];
+
+		const { planned } = planMigration([event({ event_sessions: sessions })], NOW);
+
+		expect(planned).toHaveLength(1);
+		expect(planned[0].timeslots).toHaveLength(3);
+		// One location again, so the title is the campaign's, unqualified.
+		expect(planned[0].title).toBe('Ann Arbor Canvass');
+	});
+
+	it('keys a merged group on its lowest address, whatever order the sessions arrive in', () => {
+		// The key is the ledger key. If it moved, the sync would lose the event it
+		// already created in Mobilize and try to publish it a second time.
+		const at = (id: number, address: string) =>
+			session({ id, location_address: address, location_data: null });
+		const keyFor = (addresses: string[]) =>
+			planMigration([event({ event_sessions: addresses.map((a, i) => at(i, a)) })], NOW).planned[0]
+				.key;
+
+		const forward = keyFor([
+			'1 South Saginaw Street, Pontiac, MI 48342, USA',
+			'1 S Saginaw St, Pontiac, MI 48342, USA',
+		]);
+		const reversed = keyFor([
+			'1 S Saginaw St, Pontiac, MI 48342, USA',
+			'1 South Saginaw Street, Pontiac, MI 48342, USA',
+		]);
+		expect(forward).toBe(reversed);
+		expect(forward).toBe('solidarity:100:1 s saginaw st, pontiac, mi 48342, usa');
+	});
+
+	it('leaves the key of a single-spelling event exactly as it was', () => {
+		// Every event already in the ledger is keyed on its raw lowercased address,
+		// so normalization must not touch the key of one that never had a variant.
+		const { planned } = planMigration([event()], NOW);
+		expect(planned[0].key).toBe('solidarity:100:100 n main st, ann arbor, mi 48104, usa');
+	});
+
+	it('holds back an event tagged mobilize-exclude, and says so', () => {
+		const { planned, excludedByTag, skipped } = planMigration(
+			[
+				event({ id: 1, tags: ['wayne', 'Mobilize-Exclude '] }),
+				event({ id: 2, tags: ['wayne'] }),
+				event({ id: 3, tags: null }),
+			],
+			NOW,
+		);
+
+		expect(planned.map((p) => p.solidarityEventId)).toEqual([2, 3]);
+		// Deliberate, so it is reported apart from the events that need fixing.
+		expect(skipped).toEqual([]);
+		expect(excludedByTag).toEqual([
+			{
+				solidarityEventId: 1,
+				title: 'Ann Arbor Canvass',
+				reason: 'tagged mobilize-exclude in Solidarity',
+			},
+		]);
 	});
 
 	it('collapses many sessions at one venue into a single event with many timeslots', () => {

@@ -45,7 +45,19 @@ export interface SolidarityEvent {
 	hide_address_until_rsvp: boolean;
 	is_co_hosted_mirror: boolean;
 	primary_event_id: number;
+	/** Free-text organizer tags — "wayne", "doorshift", "slack-exclude". */
+	tags?: string[] | null;
 	event_sessions: SolidaritySession[];
+}
+
+/** Tagging an event with this in Solidarity keeps it off mobilize.us. Mirrors
+ *  `slack-exclude`, which keeps an event out of the Slack announcements. */
+export const MOBILIZE_EXCLUDE_TAG = 'mobilize-exclude';
+
+/** Tags are compared case- and space-insensitively: they are typed by hand, and
+ *  Solidarity preserves whatever was typed ("Student", "volunteer event"). */
+export function hasTag(event: Pick<SolidarityEvent, 'tags'>, tag: string): boolean {
+	return (event.tags ?? []).some((t) => t.trim().toLowerCase() === tag);
 }
 
 const PAGE_LIMIT = 100;
