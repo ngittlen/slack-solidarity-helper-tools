@@ -162,6 +162,13 @@
       "when": 1785289398833,
       "tag": "0022_odd_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1785981751321,
+      "tag": "0023_old_whiplash",
+      "breakpoints": true
     }
   ]
 }

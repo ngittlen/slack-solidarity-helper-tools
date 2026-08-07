@@ -168,6 +168,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			countdownLabel: '',
 			countdownEndAt: '',
 			welcomeDmMessage: '',
+			warningDmMessage: '',
 			// DB-only with a code default, so it resolves even with no env and
 			// no row — unlike the env-backed fields above.
 			doorTickerColumnsPerSecond: DEFAULT_TICKER_COLUMNS_PER_SECOND,
@@ -421,6 +422,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'countdownLabel',
 				'countdownEndAt',
 				'welcomeDmMessage',
+				'warningDmMessage',
 				'doorTickerColumnsPerSecond',
 			].sort(),
 		);

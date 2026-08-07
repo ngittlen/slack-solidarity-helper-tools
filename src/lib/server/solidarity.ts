@@ -1,6 +1,12 @@
 import { errMessage } from '../err-message.js';
 import { SOLIDARITY_API_TOKEN } from './env.js';
 import { fetchPaginated, fetchWithRetry } from './solidarity-paginate.js';
+import {
+	normalizeActivityList,
+	type NormalizedActivity,
+	type NormalizeOptions,
+} from './activity-feed.js';
+import { getSolidarityPages, getSolidarityEvents } from './autocomplete-sources.js';
 
 export interface SolidarityUser {
 	id: number;
@@ -105,4 +111,165 @@ export async function setUserCustomProperty(
 	if (!response.ok) {
 		throw new Error(`Solidarity user update returned ${response.status}: ${await response.text()}`);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Member activity (the member lookup page)
+// ---------------------------------------------------------------------------
+
+export interface ActivityFeed {
+	items: NormalizedActivity[];
+	/** `meta.total_count` when the API reports it. */
+	totalCount: number | null;
+	/** The API filled a whole page, so there may be rows we never saw. Since
+	 *  the default sort order is undocumented, those could in principle be more
+	 *  recent than what we're showing — surfaced as a footnote rather than
+	 *  silently trusted. */
+	truncated: boolean;
+}
+
+// One max-size page rather than `_limit=5`. The sort order of both endpoints is
+// undocumented, so asking for 5 could hand back the five *oldest* rows; we take
+// a full page and sort locally instead. 100 is the API maximum and covers every
+// member with fewer than 100 lifetime rows in a single request.
+const ACTIVITY_PAGE_LIMIT = 100;
+
+// Logged at most once per process per endpoint. The response schemas aren't
+// published, so the first real payload is the only way to confirm the field
+// probes in activity-feed.ts are looking for the right names. Keys only —
+// never values, which would put member data in the logs.
+const loggedShapes = new Set<string>();
+
+function logShapeOnce(resource: string, rows: unknown[]): void {
+	if (loggedShapes.has(resource) || rows.length === 0) return;
+	const first = rows[0];
+	if (typeof first !== 'object' || first === null) return;
+	loggedShapes.add(resource);
+	console.log(`[member-page] ${resource} sample keys: ${Object.keys(first).join(', ')}`);
+}
+
+/** Test-only: forget which shapes have been logged. */
+export function _resetShapeLogForTests(): void {
+	loggedShapes.clear();
+}
+
+async function fetchActivity(
+	token: string,
+	resource: string,
+	query: string,
+	limit: number,
+	opts: NormalizeOptions = {},
+): Promise<ActivityFeed> {
+	const url = `https://api.solidarity.tech/v1/${resource}?${query}&_limit=${ACTIVITY_PAGE_LIMIT}&_offset=0`;
+	const response = await fetchWithRetry(
+		url,
+		{ headers: { Authorization: `Bearer ${token}` } },
+		`${resource} lookup`,
+		'member-page',
+		{ retriesUsed: 0 },
+	);
+	if (!response.ok) {
+		throw new Error(`Solidarity ${resource} returned ${response.status}`);
+	}
+
+	const body = (await response.json()) as {
+		data?: unknown[];
+		meta?: { total_count?: number };
+	};
+	const rows = Array.isArray(body.data) ? body.data : [];
+	logShapeOnce(resource, rows);
+
+	const truncated = rows.length >= ACTIVITY_PAGE_LIMIT;
+	if (truncated) {
+		console.warn(
+			`[member-page] ${resource} returned a full page (${rows.length}) — sort order unverified`,
+		);
+	}
+
+	return {
+		items: normalizeActivityList(rows, limit, opts),
+		totalCount: typeof body.meta?.total_count === 'number' ? body.meta.total_count : null,
+		truncated,
+	};
+}
+
+/**
+ * Build an id -> name map, tolerating a lookup failure. A missing map only
+ * costs labels; the activity itself still renders with its dates, which is far
+ * better than failing the whole feed because one auxiliary list was down.
+ */
+async function safeNameMap(
+	fetcher: (token: string) => Promise<{ items: { id: number; name: string }[] }>,
+	token: string,
+	label: string,
+): Promise<Map<number, string>> {
+	try {
+		const { items } = await fetcher(token);
+		return new Map(items.map((i) => [i.id, i.name]));
+	} catch (err) {
+		console.error(`[member-page] ${label} lookup unavailable:`, errMessage(err));
+		return new Map();
+	}
+}
+
+function numeric(value: unknown): number | null {
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The member's most recent form/page submissions.
+ *
+ * Rows carry `action_page_id` and no label of their own, so the page names are
+ * resolved from the cached /v1/pages list — otherwise every entry would read
+ * "Untitled" and the feed would answer nothing about what the member did.
+ */
+export async function getRecentUserActions(
+	token: string,
+	solidarityUserId: number,
+	limit = 5,
+): Promise<ActivityFeed> {
+	const pages = await safeNameMap(getSolidarityPages, token, 'action pages');
+	return fetchActivity(token, 'user_actions', `user_id=${solidarityUserId}`, limit, {
+		resolveTitle: (row) => {
+			const id = numeric(row['action_page_id']);
+			if (id === null) return null;
+			return pages.get(id) ?? `Action page ${id}`;
+		},
+	});
+}
+
+/**
+ * The member's most recent event RSVPs.
+ *
+ * `full_user_payload=false` is explicit rather than relying on the default: the
+ * alternative embeds the member's complete personal record in every row, which
+ * is exactly what this page is built to avoid handling.
+ */
+export async function getRecentEventRsvps(
+	token: string,
+	solidarityUserId: number,
+	limit = 5,
+): Promise<ActivityFeed> {
+	const events = await safeNameMap(getSolidarityEvents, token, 'events');
+	return fetchActivity(
+		token,
+		'event_rsvps',
+		`user_id=${solidarityUserId}&full_user_payload=false`,
+		limit,
+		{
+			resolveTitle: (row) => {
+				const id = numeric(row['event_id']);
+				if (id === null) return null;
+				return events.get(id) ?? `Event ${id}`;
+			},
+			// Whether they actually turned up is the most useful thing on an
+			// RSVP row, and it's the difference between "signed up" and "showed
+			// up" when an admin is judging engagement.
+			resolveDetail: (row) => {
+				if (row['is_attending'] === false) return 'RSVP canceled';
+				if (row['is_confirmed'] === true) return 'Attended';
+				return 'RSVP’d';
+			},
+		},
+	);
 }

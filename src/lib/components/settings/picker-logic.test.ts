@@ -74,3 +74,41 @@ describe('reconcileBlurInput', () => {
 		}
 	});
 });
+
+// AutocompletePicker skips filterPickerItems entirely when a parent supplies
+// `onSearch` (server-search mode). These pin down *why* that skip is required
+// rather than merely an optimization: the server returns a capped page, and
+// re-filtering it locally would narrow against that page instead of the real
+// list.
+describe('server-search mode: why local filtering must be skipped', () => {
+	// The search endpoint caps results at 25. Simulate a roster where the
+	// wanted person exists but fell outside that page.
+	const serverPage = [
+		{ id: 1, label: 'Jordan Alpha', sublabel: 'a@example.org' },
+		{ id: 2, label: 'Jordan Beta', sublabel: 'b@example.org' },
+	];
+
+	it('local filtering would hide a result the server deliberately returned', () => {
+		// Server matched these on an alternate email the labels don't contain.
+		const hits = [{ id: 7, label: 'Sam Okafor', sublabel: 's.okafor@work.example.org' }];
+
+		// If the picker re-filtered by what was typed, this correct hit vanishes.
+		expect(filterPickerItems(hits, 'jordan')).toEqual([]);
+		// Which is exactly why server-search mode renders `items` untouched.
+	});
+
+	it('local filtering narrows against the page, not the roster', () => {
+		// Typing more after a broad query must re-query, not filter the page —
+		// otherwise "Jordan Gamma" (absent from this page) can never be found.
+		expect(filterPickerItems(serverPage, 'Jordan Gamma')).toEqual([]);
+		expect(serverPage.some((i) => i.label === 'Jordan Gamma')).toBe(false);
+	});
+
+	it('blur reconciliation still works against the server page', () => {
+		// The no-free-text guarantee is unchanged in server-search mode: only an
+		// exact label match among the rendered items commits a selection.
+		expect(reconcileBlurInput(serverPage, 'Jordan Alpha')).toEqual({ accept: true, id: 1 });
+		expect(reconcileBlurInput(serverPage, 'Jordan')).toEqual({ accept: false });
+		expect(reconcileBlurInput(serverPage, 'Jordan Gamma')).toEqual({ accept: false });
+	});
+});

@@ -102,6 +102,11 @@ export interface Settings {
 	 *  default" (renderWelcomeDm falls back). Stored raw with `{{channels}}`
 	 *  and `#channel-name` tokens resolved at send time. */
 	welcomeDmMessage: string;
+	/** Template for the DM sent when an admin logs a warning. DB-only; ''
+	 *  means "use the built-in default" (renderWarningDm falls back). Stored
+	 *  raw with `{{nth}}`, `{{note}}`, `{{message_link}}` and `#channel-name`
+	 *  tokens, all resolved at send time. */
+	warningDmMessage: string;
 	/** Door-knock ticker scroll speed, in LED columns per second. DB-only;
 	 *  always resolved to a usable number (see clampTickerColumnsPerSecond),
 	 *  never undefined. */
@@ -126,6 +131,7 @@ export type AppConfigPatch = Partial<{
 	countdownLabel: string;
 	countdownEndAt: string;
 	welcomeDmMessage: string;
+	warningDmMessage: string;
 	doorTickerColumnsPerSecond: number;
 }>;
 
@@ -196,6 +202,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	const countdownLabel = cfg?.countdownLabel ?? '';
 	const countdownEndAt = cfg?.countdownEndAt ?? '';
 	const welcomeDmMessage = cfg?.welcomeDmMessage ?? '';
+	const warningDmMessage = cfg?.warningDmMessage ?? '';
 	// DB-only with a code default rather than an env fallback — it's a display
 	// preference, not deployment config. Clamped on read so a hand-edited row
 	// can't hand the board an unusable rate.
@@ -217,6 +224,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		countdownLabel,
 		countdownEndAt,
 		welcomeDmMessage,
+		warningDmMessage,
 		doorTickerColumnsPerSecond,
 	};
 }
@@ -567,6 +575,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'countdownLabel',
 	'countdownEndAt',
 	'welcomeDmMessage',
+	'warningDmMessage',
 	'doorTickerColumnsPerSecond',
 ]);
 
