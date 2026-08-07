@@ -192,23 +192,25 @@ export function buildNoteModal(prefill: NotePrefill, opts: NoteModalOptions): No
 				'Sent to the member. {{nth}} = which warning, {{note}} = the details above, {{message_link}} = the linked message. Edits apply to this warning only.',
 			),
 		});
-	}
 
-	blocks.push({
-		type: 'input',
-		block_id: BLOCK.dm,
-		label: text('Notify'),
-		// Must be optional: an unchecked checkboxes element submits no value at
-		// all, and a required input block would reject the whole submission.
-		optional: true,
-		element: {
-			type: 'checkboxes',
-			action_id: ACTION_ID,
-			options: [DM_OPTION],
-			...((prefill.sendDm ?? true) ? { initial_options: [DM_OPTION] } : {}),
-		},
-		hint: text('Only applies to warnings.'),
-	});
+		// Only rendered for warnings, because only warnings DM the member.
+		// Showing it on a note and captioning it "only applies to warnings" made
+		// the reader work out that a visible control does nothing.
+		blocks.push({
+			type: 'input',
+			block_id: BLOCK.dm,
+			label: text('Notify'),
+			// Must be optional: an unchecked checkboxes element submits no value at
+			// all, and a required input block would reject the whole submission.
+			optional: true,
+			element: {
+				type: 'checkboxes',
+				action_id: ACTION_ID,
+				options: [DM_OPTION],
+				...((prefill.sendDm ?? true) ? { initial_options: [DM_OPTION] } : {}),
+			},
+		});
+	}
 
 	return {
 		type: 'modal',
@@ -251,8 +253,18 @@ function selectedKind(values: ViewStateValues): NoteKind {
 	return value === 'warning' ? 'warning' : 'note';
 }
 
-function dmChecked(values: ViewStateValues): boolean {
-	const raw = values[BLOCK.dm]?.[ACTION_ID]?.['selected_options'];
+/**
+ * `true`/`false` when the checkbox was on screen, `undefined` when it wasn't.
+ *
+ * The distinction matters: the block only exists for warnings, so toggling
+ * Note -> Warning reads a view that never had it. Reporting `false` there would
+ * make the rebuilt modal come back unchecked and silently suppress the DM —
+ * `undefined` lets buildNoteModal's default-checked apply instead.
+ */
+function dmChecked(values: ViewStateValues): boolean | undefined {
+	const block = values[BLOCK.dm]?.[ACTION_ID];
+	if (!block) return undefined;
+	const raw = block['selected_options'];
 	return Array.isArray(raw) && raw.length > 0;
 }
 
@@ -332,7 +344,7 @@ export function extractNoteSubmission(payload: unknown): SubmissionResult {
 			body,
 			messageRef,
 			warningText,
-			sendDm: dmChecked(values),
+			sendDm: dmChecked(values) === true,
 		},
 	};
 }

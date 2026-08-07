@@ -20,12 +20,18 @@ describe('buildNoteModal', () => {
 	it('emits the expected blocks for a note', () => {
 		const view = buildNoteModal({}, OPTS);
 		expect(view.callback_id).toBe(NOTE_MODAL_CALLBACK_ID);
-		expect(blockIds(view)).toEqual([BLOCK.member, BLOCK.kind, BLOCK.body, BLOCK.link, BLOCK.dm]);
+		expect(blockIds(view)).toEqual([BLOCK.member, BLOCK.kind, BLOCK.body, BLOCK.link]);
 	});
 
 	it('shows the warning-text box only when Warning is selected', () => {
 		expect(blockIds(buildNoteModal({ kind: 'note' }, OPTS))).not.toContain(BLOCK.warningText);
 		expect(blockIds(buildNoteModal({ kind: 'warning' }, OPTS))).toContain(BLOCK.warningText);
+	});
+
+	// Only warnings DM the member, so the control has no meaning on a note.
+	it('shows the Notify checkbox only when Warning is selected', () => {
+		expect(blockIds(buildNoteModal({ kind: 'note' }, OPTS))).not.toContain(BLOCK.dm);
+		expect(blockIds(buildNoteModal({ kind: 'warning' }, OPTS))).toContain(BLOCK.dm);
 	});
 
 	it('seeds the warning box with the configured template, tokens intact', () => {
@@ -47,16 +53,20 @@ describe('buildNoteModal', () => {
 	// An unchecked checkboxes element submits nothing; a required block would
 	// then reject the whole submission.
 	it('marks the DM block optional', () => {
-		expect(block(buildNoteModal({}, OPTS), BLOCK.dm)!.optional).toBe(true);
+		expect(block(buildNoteModal({ kind: 'warning' }, OPTS), BLOCK.dm)!.optional).toBe(true);
 	});
 
 	it('checks the DM box by default', () => {
-		expect(block(buildNoteModal({}, OPTS), BLOCK.dm)!.element['initial_options']).toHaveLength(1);
+		expect(
+			block(buildNoteModal({ kind: 'warning' }, OPTS), BLOCK.dm)!.element['initial_options'],
+		).toHaveLength(1);
 	});
 
 	it('leaves the DM box unchecked when the prefill says so', () => {
 		expect(
-			block(buildNoteModal({ sendDm: false }, OPTS), BLOCK.dm)!.element['initial_options'],
+			block(buildNoteModal({ kind: 'warning', sendDm: false }, OPTS), BLOCK.dm)!.element[
+				'initial_options'
+			],
 		).toBeUndefined();
 	});
 
@@ -267,8 +277,37 @@ describe('prefillFromView', () => {
 			body: null,
 			messageLink: null,
 			warningText: null,
-			sendDm: false,
+			// undefined, not false — nothing was on screen to read an opinion from.
+			sendDm: undefined,
 		});
+	});
+
+	// Note -> Warning reads a view that never rendered the checkbox. Reporting
+	// `false` there would rebuild the modal unchecked and silently suppress a
+	// DM the admin never chose to suppress.
+	it('does not turn the DM off when toggling from a view that lacked the checkbox', () => {
+		const noteView = view({ [BLOCK.kind]: { value: { selected_option: { value: 'warning' } } } });
+		// Simulate the note view: no dm block in state at all.
+		delete (noteView.view.state.values as Record<string, unknown>)[BLOCK.dm];
+
+		const prefill = prefillFromView(noteView);
+		expect(prefill.sendDm).toBeUndefined();
+
+		const rebuilt = buildNoteModal(prefill, OPTS);
+		expect(block(rebuilt, BLOCK.dm)!.element['initial_options']).toHaveLength(1);
+	});
+
+	it('preserves an explicit uncheck across a rebuild', () => {
+		const warningView = view({
+			[BLOCK.kind]: { value: { selected_option: { value: 'warning' } } },
+			[BLOCK.dm]: { value: { selected_options: [] } },
+		});
+
+		const prefill = prefillFromView(warningView);
+		expect(prefill.sendDm).toBe(false);
+
+		const rebuilt = buildNoteModal(prefill, OPTS);
+		expect(block(rebuilt, BLOCK.dm)!.element['initial_options']).toBeUndefined();
 	});
 });
 
