@@ -46,6 +46,7 @@ const settingsFixture = {
 	slackTrackingChannelId: 'C_TRACK',
 	slackGrowthReportChannelId: 'C_GROWTH',
 	slackMobilizeSyncChannelId: 'C_GROWTH',
+	slackMemberNoteChannelId: '',
 	mobilizeContactName: 'Field Team',
 	mobilizeContactEmail: 'field@example.org',
 	mobilizeContactPhone: '',

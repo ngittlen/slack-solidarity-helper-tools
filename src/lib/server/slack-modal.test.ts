@@ -46,6 +46,18 @@ describe('buildNoteModal', () => {
 		expect(block(view, BLOCK.warningText)!.element['initial_value']).toBe('Custom text');
 	});
 
+	it('marks the warning-message box optional', () => {
+		expect(block(buildNoteModal({ kind: 'warning' }, OPTS), BLOCK.warningText)!.optional).toBe(
+			true,
+		);
+	});
+
+	it('tells the admin what a blank warning message does', () => {
+		const hint = block(buildNoteModal({ kind: 'warning' }, OPTS), BLOCK.warningText)!.hint!.text;
+		expect(hint).toContain('Leave blank');
+		expect(hint).toContain('Settings');
+	});
+
 	it('sets dispatch_action on the kind block so the radio round-trips', () => {
 		expect(block(buildNoteModal({}, OPTS), BLOCK.kind)!.dispatch_action).toBe(true);
 	});
@@ -184,14 +196,17 @@ describe('extractNoteSubmission', () => {
 		expect(!result.ok && result.errors[BLOCK.member]).toBeTruthy();
 	});
 
-	it('rejects a warning with an empty warning message', () => {
+	// Blank is a meaningful answer — "send what Settings is configured to send" —
+	// so it must pass validation and reach the caller as ''.
+	it('accepts a warning with a blank warning message', () => {
 		const result = extractNoteSubmission(
 			view({
 				[BLOCK.kind]: { value: { selected_option: { value: 'warning' } } },
 				[BLOCK.warningText]: { value: { value: '  ' } },
 			}),
 		);
-		expect(!result.ok && result.errors[BLOCK.warningText]).toBeTruthy();
+		expect(result.ok).toBe(true);
+		expect(result.ok === true && result.submission.warningText).toBe('');
 	});
 
 	it('accepts a warning with warning text', () => {

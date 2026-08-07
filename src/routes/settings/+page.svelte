@@ -108,6 +108,7 @@
 				rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
 				countdownLabel={data.settings.countdownLabel}
 				countdownEndAt={data.settings.countdownEndAt}
+				memberNoteChannelId={data.settings.slackMemberNoteChannelId}
 				welcomeDmMessage={data.settings.welcomeDmMessage}
 				warningDmMessage={data.settings.warningDmMessage}
 				tickerColumnsPerSecond={data.settings.doorTickerColumnsPerSecond}

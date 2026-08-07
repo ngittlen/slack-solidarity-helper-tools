@@ -57,6 +57,7 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
 4. The note is written to the database _before_ any DM is attempted, so a Slack failure never loses the record
 5. For warnings, the member is DMed the rendered message. The warning number is the member's all-time count of warnings; notes don't count toward it
 6. **View member record** on a message's ⋯ menu posts an admin a link straight to that person's `/members` page
+7. If a **member notes channel** is configured on `/settings`, a line is posted there for every note and warning — `Note "…" added to user @person by @admin`, with `and warning "…" sent to them` when the member was actually DM'd — so moderation is visible to all admins rather than only whoever filed it. Make it a private admin channel: the note text and the warning both appear in it.
 
 The warning DM template is edited on `/settings` and supports `{{nth}}` (which warning this is), `{{note}}` (the details the admin typed), `{{message_link}}` (the linked message), and `#channel-name` links.
 

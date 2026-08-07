@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `slack_member_note_channel_id` text;

@@ -182,6 +182,7 @@ export const APP_CONFIG_FIELDS: {
 	slackTrackingChannelId: slackChannelField('slackTrackingChannelId'),
 	slackGrowthReportChannelId: slackChannelField('slackGrowthReportChannelId'),
 	slackMobilizeSyncChannelId: slackChannelField('slackMobilizeSyncChannelId'),
+	slackMemberNoteChannelId: slackChannelField('slackMemberNoteChannelId'),
 
 	// Contact fields use '' as the explicit "not configured" value, so clearing
 	// one falls back to its MOBILIZE_CONTACT_* env var.

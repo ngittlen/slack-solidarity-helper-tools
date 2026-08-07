@@ -177,6 +177,10 @@ export function buildNoteModal(prefill: NotePrefill, opts: NoteModalOptions): No
 			type: 'input',
 			block_id: BLOCK.warningText,
 			label: text('Warning message'),
+			// Optional because a blank box is a meaningful answer: send whatever
+			// Settings is configured to send. Requiring it forced the admin to
+			// re-approve a default they had already set.
+			optional: true,
 			element: {
 				type: 'plain_text_input',
 				action_id: ACTION_ID,
@@ -189,7 +193,9 @@ export function buildNoteModal(prefill: NotePrefill, opts: NoteModalOptions): No
 				initial_value: prefill.warningText ?? opts.warningTemplate,
 			},
 			hint: text(
-				'Sent to the member. {{nth}} = which warning, {{note}} = the details above, {{message_link}} = the linked message. Edits apply to this warning only.',
+				'Sent to the member. Leave blank to use the warning message from Settings. ' +
+					'{{nth}} = which warning, {{note}} = the details above, {{message_link}} = the ' +
+					'linked message. Edits apply to this warning only.',
 			),
 		});
 
@@ -287,6 +293,10 @@ export interface NoteSubmission {
 	kind: NoteKind;
 	body: string;
 	messageRef: SlackMessageRef | null;
+	/** Per-warning override of the DM text. `''` means the admin left it blank
+	 *  and wants whatever Settings is configured to send — the caller must
+	 *  substitute the stored template rather than letting renderWarningDm fall
+	 *  through to its own built-in default. */
 	warningText: string;
 	sendDm: boolean;
 }
@@ -329,10 +339,9 @@ export function extractNoteSubmission(payload: unknown): SubmissionResult {
 		}
 	}
 
+	// Deliberately unvalidated: empty means "use the configured Settings
+	// template", which the caller resolves. See NoteSubmission.warningText.
 	const warningText = stringField(values, BLOCK.warningText).trim();
-	if (kind === 'warning' && warningText === '') {
-		errors[BLOCK.warningText] = 'The warning message can’t be empty.';
-	}
 
 	if (Object.keys(errors).length > 0) return { ok: false, errors };
 

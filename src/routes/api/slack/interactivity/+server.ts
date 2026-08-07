@@ -9,6 +9,7 @@ import { isSlackAdmin, NOT_AUTHORIZED_TEXT } from '$lib/server/slack-admin.js';
 import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { insertNote, recordDmOutcome } from '$lib/server/member-notes.js';
 import { renderWarningDm } from '$lib/warning-dm.js';
+import { renderMemberNoteLog } from '$lib/member-note-log.js';
 import { buildSlackPermalink } from '$lib/slack-message-link.js';
 import {
 	buildNoteModal,
@@ -279,12 +280,14 @@ async function finishSubmission(args: FinishArgs): Promise<void> {
 
 	if (submission.kind !== 'warning') {
 		await recordDmOutcome(db, noteId, { status: 'not-a-warning' });
+		await announceToAdmins(submission, actorId, null);
 		await notifyAuthor(actorId, channelId, `Note logged for <@${submission.slackUserId}>.`);
 		return;
 	}
 
 	if (!submission.sendDm) {
 		await recordDmOutcome(db, noteId, { status: 'suppressed' });
+		await announceToAdmins(submission, actorId, null);
 		await notifyAuthor(
 			actorId,
 			channelId,
@@ -293,10 +296,22 @@ async function finishSubmission(args: FinishArgs): Promise<void> {
 		return;
 	}
 
+	// An empty box means "use what Settings says". Resolving it here rather than
+	// leaning on renderWarningDm's own fallback matters: that one drops to the
+	// hardcoded DEFAULT_WARNING_DM and would quietly ignore the admin's
+	// configured template. renderWarningDm still backstops a blank setting.
+	let template = submission.warningText;
+	if (template === '') {
+		try {
+			template = (await loadSettings(db)).warningDmMessage;
+		} catch (err) {
+			console.error(`${LOG} could not load the warning template:`, errMessage(err));
+			template = '';
+		}
+	}
+
 	const dmBody = renderWarningDm(
-		// The per-warning text from the modal, which starts as the configured
-		// template and may have been edited for this warning only.
-		submission.warningText,
+		template,
 		{
 			warningNumber: warningNumber ?? 1,
 			noteBody: submission.body,
@@ -320,6 +335,7 @@ async function finishSubmission(args: FinishArgs): Promise<void> {
 			sentAt: new Date().toISOString(),
 			body: dmBody,
 		});
+		await announceToAdmins(submission, actorId, dmBody);
 		await notifyAuthor(
 			actorId,
 			channelId,
@@ -331,6 +347,8 @@ async function finishSubmission(args: FinishArgs): Promise<void> {
 		// The note itself is already safe; record why the member wasn't told so
 		// the page can show it and an admin can follow up in person.
 		await recordDmOutcome(db, noteId, { status: message, body: dmBody });
+		// null, not dmBody: the send failed, so "sent to them" would be a lie.
+		await announceToAdmins(submission, actorId, null);
 		await notifyAuthor(
 			actorId,
 			channelId,
@@ -342,6 +360,40 @@ async function finishSubmission(args: FinishArgs): Promise<void> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Announce the note in the admin tracking channel, if one is configured.
+ *
+ * Opt-in and entirely best-effort: an unset channel is the normal state, not an
+ * error, and a posting failure must never surface to the admin or disturb the
+ * note — which is already committed by the time this runs.
+ */
+async function announceToAdmins(
+	submission: NoteSubmission,
+	actorId: string,
+	dmBody: string | null,
+): Promise<void> {
+	try {
+		const { slackMemberNoteChannelId } = await loadSettings(db);
+		if (!slackMemberNoteChannelId) return;
+
+		const text = renderMemberNoteLog({
+			kind: submission.kind,
+			body: submission.body,
+			targetSlackUserId: submission.slackUserId,
+			authorSlackUserId: actorId,
+			dmBody,
+		});
+
+		await slack.chat.postMessage({
+			channel: slackMemberNoteChannelId,
+			text,
+			blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+		});
+	} catch (err) {
+		console.error(`${LOG} could not post to the admin channel:`, errMessage(err));
+	}
+}
 
 /** Best-effort display name for the audit trail; falls back to the id. */
 async function displayName(slackUserId: string): Promise<string> {
