@@ -12,6 +12,7 @@
 	import { createFieldAutosave, type AutosaveStatus } from './use-field-autosave.svelte.js';
 	import { isoToLocalInput, localInputToIso } from '$lib/components/dashboard/countdown.js';
 	import { extractChannelNames, DEFAULT_WELCOME_DM } from '$lib/welcome-dm.js';
+	import { DEFAULT_WARNING_DM, validateWarningTemplate } from '$lib/warning-dm.js';
 	import {
 		DEFAULT_TICKER_COLUMNS_PER_SECOND,
 		RECOMMENDED_TICKER_RATES,
@@ -44,6 +45,8 @@
 		countdownEndAt: string;
 		/** New-member welcome DM template ('' means "use the built-in default"). */
 		welcomeDmMessage: string;
+		/** Warning DM template ('' means "use the built-in default"). */
+		warningDmMessage: string;
 		/** Door-knock ticker scroll speed, in LED columns per second. */
 		tickerColumnsPerSecond: number;
 		/** Today's real standings for the speed preview; [] before the first
@@ -66,6 +69,7 @@
 		countdownLabel,
 		countdownEndAt,
 		welcomeDmMessage,
+		warningDmMessage,
 		tickerColumnsPerSecond,
 		tickerEntries,
 		leaderboard,
@@ -194,6 +198,15 @@
 		save: (value) => postAppConfig({ welcomeDmMessage: value }),
 	});
 
+	// --- Warning DM template — same autosave shape as the welcome DM. An admin
+	// can also override the text per-warning in the Slack modal; this is the
+	// default that box is seeded with.
+
+	const warningDmSave = createFieldAutosave<string>({
+		initial: warningDmMessage,
+		save: (value) => postAppConfig({ warningDmMessage: value }),
+	});
+
 	// --- Door-knock ticker speed — debounced autosave like the alpha slider.
 	// Measured in LED columns per second because that is what the board
 	// actually does: it advances one column per animation step.
@@ -239,6 +252,7 @@
 		countdownLabelSave.destroy();
 		countdownEndSave.destroy();
 		welcomeDmSave.destroy();
+		warningDmSave.destroy();
 	});
 
 	const knownChannelNames = $derived(new Set(channels.map((c) => c.name.toLowerCase())));
@@ -259,24 +273,58 @@
 		),
 	);
 
+	const unknownWarningChannels = $derived(
+		extractChannelNames(warningDmSave.value).filter((n) => !knownChannelNames.has(n)),
+	);
+
+	// Mirrors the server-side check so a missing or misspelled token surfaces
+	// while typing rather than as a save failure.
+	const warningTemplateError = $derived.by(() => {
+		const result = validateWarningTemplate(warningDmSave.value);
+		return result.ok ? null : result.error;
+	});
+
+	// Sample values matching the "send to me" preview: number 2 so the ordinal
+	// is actually exercised.
+	const warningPreviewText = $derived(
+		(warningDmSave.value.trim() || DEFAULT_WARNING_DM)
+			.replaceAll('{{nth}}', 'second')
+			.replaceAll('{{note}}', '> Example: posting off-topic links after being asked to stop.')
+			.replaceAll(
+				'{{message_link}}',
+				'This is regarding: https://slack.com/archives/C0EXAMPLE/p1712345678123456',
+			)
+			.replace(/\n{3,}/g, '\n\n')
+			.trim(),
+	);
+
 	// --- "Send this DM to me" test button.
 
 	let testStatus = $state<'idle' | 'sending' | 'sent' | 'error'>('idle');
 	let testError = $state<string | null>(null);
 
+	let warningTestStatus = $state<'idle' | 'sending' | 'sent' | 'error'>('idle');
+	let warningTestError = $state<string | null>(null);
+
+	async function postTestDm(url: string, body: Record<string, string>): Promise<void> {
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		});
+		if (!res.ok) {
+			const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
+			throw new Error(parsed?.error ?? `Send failed (HTTP ${res.status})`);
+		}
+	}
+
 	async function sendTestDm(): Promise<void> {
 		testStatus = 'sending';
 		testError = null;
 		try {
-			const res = await fetch('/api/settings/welcome-dm-test', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ welcomeDmMessage: welcomeDmSave.value }),
+			await postTestDm('/api/settings/welcome-dm-test', {
+				welcomeDmMessage: welcomeDmSave.value,
 			});
-			if (!res.ok) {
-				const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
-				throw new Error(parsed?.error ?? `Send failed (HTTP ${res.status})`);
-			}
 			testStatus = 'sent';
 			setTimeout(() => {
 				if (testStatus === 'sent') testStatus = 'idle';
@@ -284,6 +332,23 @@
 		} catch (e) {
 			testStatus = 'error';
 			testError = errMessage(e);
+		}
+	}
+
+	async function sendTestWarningDm(): Promise<void> {
+		warningTestStatus = 'sending';
+		warningTestError = null;
+		try {
+			await postTestDm('/api/settings/warning-dm-test', {
+				warningDmMessage: warningDmSave.value,
+			});
+			warningTestStatus = 'sent';
+			setTimeout(() => {
+				if (warningTestStatus === 'sent') warningTestStatus = 'idle';
+			}, 3000);
+		} catch (e) {
+			warningTestStatus = 'error';
+			warningTestError = errMessage(e);
 		}
 	}
 
@@ -495,6 +560,58 @@
 				<span class="welcome-dm-test-ok">Sent — check your Slack DMs.</span>
 			{:else if testStatus === 'error'}
 				<span class="welcome-dm-test-err">{testError}</span>
+			{/if}
+		</div>
+	</SettingsRow>
+
+	<SettingsRow
+		label="Warning DM"
+		status={warningDmSave.status}
+		error={warningDmSave.error}
+		onRetry={warningDmSave.status === 'error' ? warningDmSave.retry : undefined}
+	>
+		<textarea
+			class="welcome-dm-input"
+			rows="5"
+			maxlength="3000"
+			placeholder={DEFAULT_WARNING_DM}
+			value={warningDmSave.value}
+			oninput={warningDmSave.oninput}></textarea>
+		<p class="app-config-note">
+			The DM a member receives when an admin logs a warning against them with
+			<code>/member-note</code>. Use <code>{'{{nth}}'}</code> for which warning this is (“first”,
+			“second”…), <code>{'{{note}}'}</code> for the details the admin typed, and
+			<code>{'{{message_link}}'}</code> for the linked Slack message. Write a channel name like
+			<code>#general</code> to link it. Admins can edit the text for an individual warning before sending;
+			this is the default they start from. Leave blank to use the default message.
+		</p>
+		{#if warningTemplateError}
+			<p class="welcome-dm-warning">⚠️ {warningTemplateError}</p>
+		{/if}
+		{#if unknownWarningChannels.length > 0}
+			<p class="welcome-dm-warning">
+				⚠️ Unknown channel{unknownWarningChannels.length > 1 ? 's' : ''}: {unknownWarningChannels
+					.map((n) => `#${n}`)
+					.join(', ')} — saving will fail until these match a real channel.
+			</p>
+		{/if}
+		<div class="welcome-dm-preview">
+			<span class="welcome-dm-preview-label">Preview (as a second warning)</span>
+			<p class="welcome-dm-preview-body">{warningPreviewText}</p>
+		</div>
+		<div class="welcome-dm-test">
+			<button
+				type="button"
+				class="welcome-dm-test-btn"
+				onclick={sendTestWarningDm}
+				disabled={warningTestStatus === 'sending'}
+			>
+				{warningTestStatus === 'sending' ? 'Sending…' : 'Send this DM to me'}
+			</button>
+			{#if warningTestStatus === 'sent'}
+				<span class="welcome-dm-test-ok">Sent — check your Slack DMs.</span>
+			{:else if warningTestStatus === 'error'}
+				<span class="welcome-dm-test-err">{warningTestError}</span>
 			{/if}
 		</div>
 	</SettingsRow>

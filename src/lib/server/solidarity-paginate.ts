@@ -68,6 +68,14 @@ export async function fetchWithRetry(
  *
  * `logTag` prefixes the rate-limit warn line so callers (snapshot vs.
  * autocomplete) can be distinguished in logs.
+ *
+ * `paceMs` sleeps between pages. Defaults to 0 (unchanged for every existing
+ * caller), but a long walk needs it: the retry budget above is shared across
+ * the *whole* walk, so a caller paginating hundreds of pages flat-out will
+ * exceed Solidarity's 60-requests-per-30-seconds limit far more than
+ * MAX_RETRIES times and abort partway through. Pacing under the limit means
+ * such a walk never gets a 429 in the first place, leaving the budget for
+ * genuine contention.
  */
 export async function fetchPaginated<T>(
 	apiToken: string,
@@ -75,10 +83,14 @@ export async function fetchPaginated<T>(
 	resourceLabel: string,
 	extraQuery = '',
 	logTag = 'solidarity',
+	paceMs = 0,
 ): Promise<T[]> {
 	const all: T[] = [];
 	const budget: RetryBudget = { retriesUsed: 0 };
 	for (let page = 0; page < MAX_PAGES; page++) {
+		if (paceMs > 0 && page > 0) {
+			await new Promise((r) => setTimeout(r, paceMs));
+		}
 		const offset = page * PAGE_LIMIT;
 		const url = `https://api.solidarity.tech${path}?_limit=${PAGE_LIMIT}&_offset=${offset}${extraQuery}`;
 		const res = await fetchWithRetry(

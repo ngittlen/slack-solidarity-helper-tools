@@ -3,6 +3,7 @@ import {
 	text,
 	integer,
 	real,
+	index,
 	uniqueIndex,
 	primaryKey,
 	check,
@@ -251,6 +252,13 @@ export const appConfig = sqliteTable(
 		// default" (see DEFAULT_WELCOME_DM). Stored raw with `{{channels}}` and
 		// friendly `#channel-name` tokens; resolution happens at send time.
 		welcomeDmMessage: text('welcome_dm_message'),
+		// Template for the DM a member receives when an admin logs a warning
+		// against them. NULL / '' means "use the built-in default" (see
+		// DEFAULT_WARNING_DM). Stored raw with `{{nth}}`, `{{note}}`,
+		// `{{message_link}}` and friendly `#channel-name` tokens; all resolved at
+		// send time. An admin can also override the text per-warning in the Slack
+		// modal without changing this template.
+		warningDmMessage: text('warning_dm_message'),
 		// Door-knock ticker scroll speed in LED columns per second. DB-only,
 		// no env fallback; NULL means DEFAULT_TICKER_COLUMNS_PER_SECOND.
 		doorTickerColumnsPerSecond: real('door_ticker_columns_per_second'),
@@ -423,3 +431,99 @@ export type NewMobilizeSyncedRsvpRow = typeof mobilizeSyncedRsvps.$inferInsert;
 
 export type ZipChapterRow = typeof zipChapterMap.$inferSelect;
 export type NewZipChapterRow = typeof zipChapterMap.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Member lookup + moderation notes
+// ---------------------------------------------------------------------------
+
+// Admin-made Slack -> Solidarity account links, for the members whose Slack
+// email doesn't match any Solidarity record. Consulted by the member lookup
+// page *before* it falls back to matching on email: an explicit human decision
+// has to outrank the heuristic, or someone who later corrects their Solidarity
+// email would silently re-point to a different record than the one an admin
+// deliberately picked.
+export const memberAccountLinks = sqliteTable(
+	'member_account_links',
+	{
+		// One Slack account maps to at most one Solidarity account, so the Slack
+		// id is the key — the page read is a point lookup and re-linking is a
+		// plain onConflictDoUpdate.
+		slackUserId: text('slack_user_id').primaryKey(),
+		solidarityUserId: integer('solidarity_user_id').notNull(),
+		// The Solidarity email as it read when the link was made. Audit trail
+		// only — never a lookup key, since the whole reason a link exists is that
+		// the emails don't line up.
+		solidarityEmail: text('solidarity_email'),
+		linkedBy: text('linked_by').notNull(),
+		linkedByName: text('linked_by_name').notNull(),
+		linkedAt: text('linked_at').notNull(),
+	},
+	// Deliberately NOT uniqueIndex: duplicate Solidarity records exist, and a
+	// mis-link has to be correctable rather than blowing up mid-request. The
+	// index is here for reverse lookups.
+	(table) => [index('member_account_links_solidarity_user_id').on(table.solidarityUserId)],
+);
+
+// Append-only moderation log: notes and warnings admins record about a Slack
+// member, written from the Slack modal and read by the member lookup page.
+//
+// Keyed by Slack user id, not Solidarity id: both entry points (the users_select
+// in the modal, the author of a shortcut's message) produce a Slack id, and
+// plenty of members have no Solidarity account at all. memberAccountLinks is
+// the join when Solidarity data is needed.
+export const memberNotes = sqliteTable(
+	'member_notes',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		slackUserId: text('slack_user_id').notNull(),
+		// drizzle's `enum` is compile-time only, so the check constraint below is
+		// what actually keeps junk out of the column.
+		kind: text('kind', { enum: ['note', 'warning'] }).notNull(),
+		body: text('body').notNull(),
+		// Permalink to the Slack message the note is about, when there is one.
+		// The raw URL is what we render — always clickable, and immune to
+		// permalink format changes.
+		messageLink: text('message_link'),
+		// Parsed from messageLink at write time. Kept alongside the raw URL so a
+		// fresh permalink can be re-resolved via chat.getPermalink after a channel
+		// rename without re-parsing.
+		messageChannelId: text('message_channel_id'),
+		messageTs: text('message_ts'),
+		// All-time warning rank at insert time, 1-based; NULL for kind='note'.
+		// Persisted rather than derived so the DM and the page agree forever —
+		// recomputing after a future delete would silently renumber history.
+		warningNumber: integer('warning_number'),
+		// What the admin chose in the modal, kept separately from the outcome so
+		// "chose not to notify" stays distinguishable from "tried and failed".
+		dmRequested: integer('dm_requested', { mode: 'boolean' }).notNull().default(false),
+		dmSentAt: text('dm_sent_at'),
+		// 'suppressed' | 'not-a-warning' | an error message. NULL once sent.
+		dmStatus: text('dm_status'),
+		// The fully rendered message actually delivered. Needed because admins can
+		// edit the warning text per-warning in the modal, so the template alone
+		// can't tell you what this member was told.
+		dmBody: text('dm_body'),
+		// Snapshot of the author's name at write time, matching the settings
+		// tables — names change, and the log should render what it said then.
+		authorSlackUserId: text('author_slack_user_id').notNull(),
+		authorSlackUserName: text('author_slack_user_name').notNull(),
+		createdAt: text('created_at').notNull(),
+		source: text('source', { enum: ['slash', 'shortcut'] })
+			.notNull()
+			.default('slash'),
+	},
+	(table) => [
+		index('member_notes_slack_user_created').on(table.slackUserId, table.createdAt),
+		// Makes the insert-then-rank warning count (see member-notes.ts) an
+		// index-only scan.
+		index('member_notes_warning_rank').on(table.slackUserId, table.kind, table.id),
+		check('member_notes_kind_check', sql`${table.kind} in ('note', 'warning')`),
+		check('member_notes_source_check', sql`${table.source} in ('slash', 'shortcut')`),
+	],
+);
+
+export type MemberAccountLinkRow = typeof memberAccountLinks.$inferSelect;
+export type NewMemberAccountLinkRow = typeof memberAccountLinks.$inferInsert;
+
+export type MemberNoteRow = typeof memberNotes.$inferSelect;
+export type NewMemberNoteRow = typeof memberNotes.$inferInsert;

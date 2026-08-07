@@ -1,8 +1,10 @@
 import type { Handle } from '@sveltejs/kit';
+import { text } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { sessionStore } from '$lib/server/db.js';
 import { validateEnv } from '$lib/server/env.js';
+import { isCrossSiteFormPost } from '$lib/server/csrf.js';
 
 export async function init() {
 	validateEnv();
@@ -18,6 +20,16 @@ export async function init() {
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
+	// Stands in for SvelteKit's own CSRF check, which is disabled in
+	// svelte.config.js so Slack's Origin-less form posts can reach
+	// /api/slack/*. Matches Kit's dev exemption so local form testing behaves
+	// the same as before. See src/lib/server/csrf.ts for the full rationale.
+	if (!dev && isCrossSiteFormPost(event.request, event.url)) {
+		return text(`Cross-site ${event.request.method} form submissions are forbidden`, {
+			status: 403,
+		});
+	}
+
 	const sid = event.cookies.get('session');
 
 	if (sid) {

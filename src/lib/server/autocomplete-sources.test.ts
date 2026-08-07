@@ -6,6 +6,7 @@ import {
 	getSolidarityChapters,
 	getSolidarityCustomProperties,
 	getSolidarityUserLists,
+	getSolidarityMembers,
 	_resetAutocompleteCachesForTests,
 } from './autocomplete-sources.js';
 
@@ -494,5 +495,270 @@ describe('NAV-3: AutocompleteResult.fetchedAt', () => {
 		expect(stale.stale).toBe(true);
 		// fetchedAt MUST reflect the original t0, not Date.now() (which is now t0 + 5m + 1ms).
 		expect(stale.fetchedAt).toBe(t0);
+	});
+});
+
+// ===========================================================================
+// Solidarity roster — the manual-link picker's search source
+// ===========================================================================
+
+/** A `/v1/users` page. `count` rows, so a full 100 keeps the walk going. */
+function rosterPage(items: unknown[]) {
+	return {
+		ok: true,
+		status: 200,
+		headers: new Headers(),
+		json: async () => ({ data: items }),
+		text: async () => '',
+	} as unknown as Response;
+}
+
+function rawUser(id: number, over: Record<string, unknown> = {}) {
+	return { id, email: `u${id}@example.org`, first_name: 'First', last_name: `Last${id}`, ...over };
+}
+
+describe('getSolidarityMembers', () => {
+	it('maps raw users to lean id/name/email entries, sorted by name', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				rosterPage([
+					rawUser(2, { first_name: 'Zoe', last_name: 'Zulu' }),
+					rawUser(1, { first_name: 'Ada', last_name: 'Alpha' }),
+				]),
+			);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const { items } = await getSolidarityMembers('tok');
+
+		expect(items).toEqual([
+			{ id: 1, name: 'Ada Alpha', email: 'u1@example.org', otherEmails: [] },
+			{ id: 2, name: 'Zoe Zulu', email: 'u2@example.org', otherEmails: [] },
+		]);
+	});
+
+	it('lowercases emails and carries other_emails', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					rosterPage([
+						rawUser(1, { email: 'MiXeD@Example.ORG', other_emails: ['Alt@Example.ORG', '', null] }),
+					]),
+				),
+		);
+
+		const { items } = await getSolidarityMembers('tok');
+
+		expect(items[0]!.email).toBe('mixed@example.org');
+		expect(items[0]!.otherEmails).toEqual(['alt@example.org']);
+	});
+
+	it('falls back through alternate_name, email, then the id for a name', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					rosterPage([
+						{ id: 1, first_name: null, last_name: null, alternate_name: 'Nickname' },
+						{ id: 2, email: 'only-email@example.org' },
+						{ id: 3 },
+					]),
+				),
+		);
+
+		const names = (await getSolidarityMembers('tok')).items.map((i) => i.name).sort();
+
+		expect(names).toEqual(['Nickname', 'Solidarity user 3', 'only-email@example.org']);
+	});
+
+	it('uses a 60-minute TTL, not the 5-minute default', async () => {
+		vi.useFakeTimers();
+		const t0 = new Date('2026-05-26T08:00:00Z').getTime();
+		vi.setSystemTime(t0);
+		const fetchMock = vi.fn().mockResolvedValue(rosterPage([rawUser(1)]));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getSolidarityMembers('tok');
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		// 10 minutes: well past the shared 5-minute TTL, still fresh for the roster.
+		vi.advanceTimersByTime(10 * 60 * 1000);
+		const warm = await getSolidarityMembers('tok');
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(warm.fetchedAt).toBe(t0);
+
+		// Past 60 minutes: refetched.
+		vi.advanceTimersByTime(51 * 60 * 1000);
+		await getSolidarityMembers('tok');
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('force bypasses the cache', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(rosterPage([rawUser(1)]));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getSolidarityMembers('tok');
+		await getSolidarityMembers('tok', { force: true });
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('serves stale data when a refetch fails', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-05-26T08:00:00Z').getTime());
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(rosterPage([rawUser(1)]))
+			.mockRejectedValueOnce(new Error('network down'));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getSolidarityMembers('tok');
+		vi.advanceTimersByTime(61 * 60 * 1000);
+		const stale = await getSolidarityMembers('tok');
+
+		expect(stale.stale).toBe(true);
+		expect(stale.items).toHaveLength(1);
+	});
+
+	it('rejects when the cache is cold and the fetch fails', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+
+		await expect(getSolidarityMembers('tok')).rejects.toThrow('network down');
+	});
+
+	it('does not serve one token’s roster to a different token', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(rosterPage([rawUser(1)]));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getSolidarityMembers('token-a');
+		await getSolidarityMembers('token-b');
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('is cleared by _resetAutocompleteCachesForTests', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(rosterPage([rawUser(1)]));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getSolidarityMembers('tok');
+		_resetAutocompleteCachesForTests();
+		await getSolidarityMembers('tok');
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+});
+
+// ===========================================================================
+// Stale-while-revalidate — the roster's cold walk is ~2 minutes, so callers
+// can opt out of ever waiting for it.
+// ===========================================================================
+
+describe('getSolidarityMembers with staleWhileRevalidate', () => {
+	const SWR = { staleWhileRevalidate: true } as const;
+
+	it('returns immediately with empty items on a cold cache, flagged refreshing', async () => {
+		// A walk that never settles during the test — the point is that the call
+		// does not wait for it.
+		const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+		vi.stubGlobal('fetch', fetchMock);
+
+		const result = await getSolidarityMembers('tok', SWR);
+
+		expect(result.items).toEqual([]);
+		expect(result.refreshing).toBe(true);
+		expect(result.fetchedAt).toBe(0);
+		// The walk was still started.
+		expect(fetchMock).toHaveBeenCalled();
+	});
+
+	it('serves the previous list while a refresh runs', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-05-26T08:00:00Z').getTime());
+		let resolveSecond: ((r: Response) => void) | null = null;
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(rosterPage([rawUser(1)]))
+			.mockImplementationOnce(() => new Promise<Response>((r) => (resolveSecond = r)));
+		vi.stubGlobal('fetch', fetchMock);
+
+		// Warm the cache, then age it past the 60-minute TTL.
+		await getSolidarityMembers('tok');
+		vi.advanceTimersByTime(61 * 60 * 1000);
+
+		const result = await getSolidarityMembers('tok', SWR);
+
+		// Answered from the old list rather than waiting for the new one.
+		expect(result.items).toHaveLength(1);
+		expect(result.refreshing).toBe(true);
+		expect(resolveSecond).not.toBeNull();
+	});
+
+	it('does not report refreshing once the cache is fresh', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(rosterPage([rawUser(1)])));
+
+		await getSolidarityMembers('tok');
+		const result = await getSolidarityMembers('tok', SWR);
+
+		expect(result.refreshing).toBeFalsy();
+		expect(result.items).toHaveLength(1);
+	});
+
+	it('does not start a second walk while one is already in flight', async () => {
+		const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getSolidarityMembers('tok', SWR);
+		await getSolidarityMembers('tok', SWR);
+		await getSolidarityMembers('tok', SWR);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	// A background walk that fails must not surface as an unhandled rejection,
+	// and must not take the caller down with it.
+	it('keeps serving the retained list when the background refresh fails', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-05-26T08:00:00Z').getTime());
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(rosterPage([rawUser(1)]))
+			.mockRejectedValueOnce(new Error('network down'));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getSolidarityMembers('tok');
+		vi.advanceTimersByTime(61 * 60 * 1000);
+
+		const during = await getSolidarityMembers('tok', SWR);
+		expect(during.items).toHaveLength(1);
+
+		// Let the failing refresh settle, then confirm the old list survives.
+		await vi.runAllTimersAsync();
+		const after = await getSolidarityMembers('tok', SWR);
+		expect(after.items).toHaveLength(1);
+	});
+
+	it('never rejects on a cold cache, unlike the blocking path', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+
+		await expect(getSolidarityMembers('tok', SWR)).resolves.toMatchObject({
+			items: [],
+			refreshing: true,
+		});
+	});
+
+	it('leaves the blocking path unchanged for callers that omit the flag', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(rosterPage([rawUser(1)])));
+
+		const result = await getSolidarityMembers('tok');
+
+		expect(result.refreshing).toBe(false);
+		expect(result.items).toHaveLength(1);
 	});
 });

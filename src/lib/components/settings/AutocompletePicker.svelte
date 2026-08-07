@@ -10,6 +10,25 @@
 		placeholder?: string;
 		disabled?: boolean;
 		showSublabel?: boolean;
+		/**
+		 * Opt into server-side search. When supplied, typing calls this
+		 * (debounced) and `items` is treated as already-filtered — the local
+		 * substring filter is skipped entirely.
+		 *
+		 * This exists for lists too large to ship to the browser, where filtering
+		 * a fixed array client-side isn't just slow but *wrong*: it would narrow
+		 * against whatever page the server last returned rather than the real
+		 * list, silently hiding matches that didn't make that page.
+		 *
+		 * Callers with a complete `items` array should omit it and keep the local
+		 * filter, which needs no round trip.
+		 */
+		onSearch?: (query: string) => void;
+		/** Debounce for `onSearch`, in ms. */
+		searchDebounceMs?: number;
+		/** Replaces the "No matches" empty state — lets a searching parent say
+		 *  "Type at least 2 characters" or "Searching…" instead. */
+		emptyMessage?: string;
 	}
 
 	let {
@@ -19,9 +38,25 @@
 		placeholder = '',
 		disabled = false,
 		showSublabel = false,
+		onSearch,
+		searchDebounceMs = 250,
+		emptyMessage = 'No matches',
 	}: Props = $props();
 
 	let inputEl: HTMLInputElement | null = $state(null);
+
+	let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+	// Clear a pending search if the picker goes away mid-keystroke.
+	$effect(() => () => {
+		if (searchTimer) clearTimeout(searchTimer);
+	});
+
+	function queueSearch(query: string): void {
+		if (!onSearch) return;
+		if (searchTimer) clearTimeout(searchTimer);
+		searchTimer = setTimeout(() => onSearch(query.trim()), searchDebounceMs);
+	}
 
 	const selectedItem = $derived(items.find((i) => i.id === value) ?? null);
 
@@ -32,6 +67,9 @@
 	let inputText = $derived(selectedItem?.label ?? '');
 
 	const filteredItems = $derived.by(() => {
+		// Server-search mode: `items` is the answer to the current query, so
+		// re-filtering it locally could only remove correct results.
+		if (onSearch) return items;
 		const q = inputText.trim().toLowerCase();
 		const selectedLabel = (selectedItem?.label ?? '').toLowerCase();
 		// Empty query OR query equals the current selection's label →
@@ -82,6 +120,7 @@
 			defaultValue={selectedItem?.label ?? ''}
 			oninput={(e) => {
 				inputText = (e.currentTarget as HTMLInputElement).value;
+				queueSearch(inputText);
 			}}
 			onblur={handleBlur}
 			{placeholder}
@@ -93,7 +132,7 @@
 	<Combobox.Portal>
 		<Combobox.Content class="picker-content">
 			{#if filteredItems.length === 0}
-				<div class="picker-empty">No matches</div>
+				<div class="picker-empty">{emptyMessage}</div>
 			{:else}
 				{#each filteredItems as item (item.id)}
 					<Combobox.Item

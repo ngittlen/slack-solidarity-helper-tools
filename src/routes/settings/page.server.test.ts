@@ -54,6 +54,7 @@ const settingsFixture = {
 	countdownLabel: '',
 	countdownEndAt: '',
 	welcomeDmMessage: '',
+	warningDmMessage: '',
 	doorTickerColumnsPerSecond: 30,
 };
 
