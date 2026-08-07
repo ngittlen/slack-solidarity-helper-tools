@@ -48,6 +48,21 @@ export interface UserListEntry {
 	name: string;
 }
 
+/** One row of the Solidarity roster, used only to let an admin search for an
+ *  account by name — which the API itself cannot do. Deliberately just
+ *  id/name/email: the member page exists to avoid exposing personal records,
+ *  and a lean row also keeps a large roster's memory footprint reasonable. */
+export interface SolidarityMemberEntry {
+	id: number;
+	/** "First Last", falling back to alternate_name, then email, then the id. */
+	name: string;
+	/** Primary email, lowercased; '' when absent. */
+	email: string;
+	/** `other_emails`, lowercased. Members are routinely findable only by one
+	 *  of these, which is often exactly why the automatic email match failed. */
+	otherEmails: string[];
+}
+
 export interface AutocompleteResult<T> {
 	/** Sorted ascending by display name. */
 	items: T[];
@@ -61,11 +76,34 @@ export interface AutocompleteResult<T> {
 	 * admin is picking against actually is.
 	 */
 	fetchedAt: number;
+	/**
+	 * A refresh is running in the background right now. The items returned
+	 * alongside it are the previous list — or empty, if this is the very first
+	 * fetch — so a caller can render what it has and tell the user that a fuller
+	 * list is on its way.
+	 *
+	 * Optional because only `staleWhileRevalidate` callers can ever see it true;
+	 * every blocking path has by definition finished fetching before it returns.
+	 * Absent means false — read it as `refreshing === true`.
+	 */
+	refreshing?: boolean;
 }
 
 export interface AutocompleteOptions {
 	/** Bypass the freshness check and refetch (the "Refresh lists" path). */
 	force?: boolean;
+	/**
+	 * Never block on a refetch. Return whatever is cached immediately — even
+	 * past the TTL, even nothing at all — and refresh in the background,
+	 * reporting `refreshing: true` while that runs.
+	 *
+	 * For lists whose refetch is slow enough that waiting is worse than
+	 * briefly-stale data. The Solidarity roster is the case this exists for: a
+	 * cold walk measures around two minutes, which is an unacceptable thing to
+	 * put in front of an admin mid-search, while a roster up to an hour old
+	 * answers their question perfectly well.
+	 */
+	staleWhileRevalidate?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +136,7 @@ const usersEntry: CacheEntry<UserEntry, WebClient> = makeEntry();
 const chaptersEntry: CacheEntry<SolidarityChapterEntry, string> = makeEntry();
 const customPropertiesEntry: CacheEntry<CustomPropertyEntry, string> = makeEntry();
 const userListsEntry: CacheEntry<UserListEntry, string> = makeEntry();
+const membersEntry: CacheEntry<SolidarityMemberEntry, string> = makeEntry();
 
 /**
  * Test-only: drop all cached lists and in-flight state so each test starts
@@ -110,6 +149,9 @@ export function _resetAutocompleteCachesForTests(): void {
 	Object.assign(chaptersEntry, makeEntry<SolidarityChapterEntry, string>());
 	Object.assign(customPropertiesEntry, makeEntry<CustomPropertyEntry, string>());
 	Object.assign(userListsEntry, makeEntry<UserListEntry, string>());
+	Object.assign(membersEntry, makeEntry<SolidarityMemberEntry, string>());
+	Object.assign(pagesEntry, makeEntry<SolidarityChapterEntry, string>());
+	Object.assign(eventsEntry, makeEntry<SolidarityChapterEntry, string>());
 }
 
 /**
@@ -129,14 +171,14 @@ async function runFetch<T, C>(
 		entry.data = result;
 		entry.fetchedAt = Date.now();
 		entry.credential = credential;
-		return { items: result, stale: false, fetchedAt: entry.fetchedAt };
+		return { items: result, stale: false, fetchedAt: entry.fetchedAt, refreshing: false };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		if (entry.data !== null && entry.credential === credential) {
 			console.warn(`[autocomplete] ${listName} refetch failed; serving stale: ${msg}`);
 			// `fetchedAt` deliberately reflects the original successful fetch,
 			// not the failed refetch attempt (NAV-3 R2).
-			return { items: entry.data, stale: true, fetchedAt: entry.fetchedAt };
+			return { items: entry.data, stale: true, fetchedAt: entry.fetchedAt, refreshing: false };
 		}
 		console.error(`[autocomplete] ${listName} fetch failed (no cached data): ${msg}`);
 		throw err;
@@ -154,14 +196,20 @@ async function getCached<T, C>(
 	credential: C,
 	fetcher: () => Promise<T[]>,
 	opts: AutocompleteOptions = {},
+	ttlMs = TTL_MS,
 ): Promise<AutocompleteResult<T>> {
 	const now = Date.now();
 	const credentialMatch = entry.credential === credential;
-	const fresh = credentialMatch && entry.data !== null && now - entry.fetchedAt < TTL_MS;
+	const fresh = credentialMatch && entry.data !== null && now - entry.fetchedAt < ttlMs;
 
 	if (!opts.force && fresh) {
 		// Non-null assertion safe — `fresh` implies `entry.data !== null`.
-		return { items: entry.data as T[], stale: false, fetchedAt: entry.fetchedAt };
+		return {
+			items: entry.data as T[],
+			stale: false,
+			fetchedAt: entry.fetchedAt,
+			refreshing: entry.inFlight !== null,
+		};
 	}
 
 	// Forced refresh never piggy-backs on an in-flight non-forced fetch — the
@@ -173,6 +221,11 @@ async function getCached<T, C>(
 
 	// Reuse the in-flight only if it was started with the same credential.
 	if (entry.inFlight && entry.inFlight.credential === credential) {
+		// Stale-while-revalidate: don't join the in-flight fetch, answer now
+		// with the previous list and let the refresh finish on its own.
+		if (opts.staleWhileRevalidate) {
+			return servePending(entry, credential);
+		}
 		return entry.inFlight.promise;
 	}
 
@@ -184,7 +237,34 @@ async function getCached<T, C>(
 		if (entry.inFlight?.promise === promise) entry.inFlight = null;
 	};
 	promise.then(cleanup, cleanup);
+
+	if (opts.staleWhileRevalidate) {
+		// The refresh is now running detached. Swallow its rejection here so a
+		// failure can't surface as an unhandled rejection — runFetch has already
+		// logged it, and the next call simply serves the retained list again.
+		promise.catch(() => {});
+		return servePending(entry, credential);
+	}
+
 	return promise;
+}
+
+/**
+ * The immediate answer while a background refresh runs: whatever is cached,
+ * flagged `refreshing`. An empty list here means the very first fetch is still
+ * walking — the caller is expected to say so rather than render "no results",
+ * which would be a lie.
+ */
+function servePending<T, C>(entry: CacheEntry<T, C>, credential: C): AutocompleteResult<T> {
+	const usable = entry.data !== null && entry.credential === credential;
+	return {
+		items: usable ? (entry.data as T[]) : [],
+		// `stale` stays reserved for its existing meaning — a retained list served
+		// because a refetch *failed*. This list is simply being superseded.
+		stale: false,
+		fetchedAt: usable ? entry.fetchedAt : 0,
+		refreshing: true,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +408,147 @@ export function getSolidarityCustomProperties(
 			return items;
 		},
 		opts,
+	);
+}
+
+// The roster is the one list here that costs ceil(N/100) requests instead of a
+// handful, so it gets its own, much longer TTL. It is also the slowest-changing
+// list in the app — a member's name and email barely churn — and its only
+// consumer is the manual-link fallback picker, where an account created in the
+// last hour being briefly missing is rare and recoverable with a forced
+// refresh. Refetching that every 5 minutes would burn the rate-limit budget for
+// no practical gain.
+const ROSTER_TTL_MS = 60 * 60 * 1000;
+
+// ~1.67 requests/second, comfortably under Solidarity's 60-per-30s ceiling.
+// Without pacing, a multi-hundred-page walk exhausts the shared retry budget on
+// 429s and aborts partway through (see fetchPaginated's `paceMs`).
+const ROSTER_PACE_MS = 600;
+
+interface RawSolidarityUser {
+	id: number;
+	email?: string | null;
+	first_name?: string | null;
+	last_name?: string | null;
+	alternate_name?: string | null;
+	other_emails?: string[] | null;
+}
+
+function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
+	const email = (raw.email ?? '').trim().toLowerCase();
+	const full = [raw.first_name, raw.last_name]
+		.map((part) => (part ?? '').trim())
+		.filter(Boolean)
+		.join(' ');
+	// Falling all the way back to the id keeps every roster row selectable —
+	// a nameless record is exactly the kind an admin may need to link.
+	const name = full || (raw.alternate_name ?? '').trim() || email || `Solidarity user ${raw.id}`;
+	return {
+		id: raw.id,
+		name,
+		email,
+		otherEmails: (raw.other_emails ?? [])
+			.filter((e): e is string => typeof e === 'string')
+			.map((e) => e.trim().toLowerCase())
+			.filter(Boolean),
+	};
+}
+
+/**
+ * The full Solidarity roster, for name/email search on the manual-link picker.
+ *
+ * Exists because `GET /v1/users` filters by exact email or phone only — there
+ * is no name search — so the sole way to answer "which Solidarity account
+ * belongs to this person?" by name is to hold the list and search it locally.
+ * Never send the result to the browser; use `searchSolidarityMembers` and
+ * return only the matches.
+ */
+export function getSolidarityMembers(
+	token: string,
+	opts: AutocompleteOptions = {},
+): Promise<AutocompleteResult<SolidarityMemberEntry>> {
+	return getCached(
+		membersEntry,
+		'solidarity-members',
+		token,
+		async () => {
+			const raw = await fetchPaginated<RawSolidarityUser>(
+				token,
+				'/v1/users',
+				'/v1/users roster',
+				'',
+				'autocomplete',
+				ROSTER_PACE_MS,
+			);
+			const items = raw.filter((u) => typeof u.id === 'number').map(toMemberEntry);
+			items.sort(byName);
+			return items;
+		},
+		opts,
+		ROSTER_TTL_MS,
+	);
+}
+
+// Lookup tables for the member activity feeds. Neither /v1/user_actions nor
+// /v1/event_rsvps carries a human-readable label — they reference
+// `action_page_id` and `event_id` respectively — so the names have to come from
+// these two lists. Both are small (hundreds of rows) and change slowly, so a
+// single cached sweep is far cheaper than a per-row lookup, and one member's
+// five recent actions can reference five different pages.
+const NAMED_TTL_MS = 30 * 60 * 1000;
+
+const pagesEntry: CacheEntry<SolidarityChapterEntry, string> = makeEntry();
+const eventsEntry: CacheEntry<SolidarityChapterEntry, string> = makeEntry();
+
+/** Action pages by id — `/v1/pages` exposes the label as `name`. */
+export function getSolidarityPages(
+	token: string,
+	opts: AutocompleteOptions = {},
+): Promise<AutocompleteResult<SolidarityChapterEntry>> {
+	return getCached(
+		pagesEntry,
+		'solidarity-pages',
+		token,
+		async () => {
+			const raw = await fetchPaginated<{ id: number; name?: string | null }>(
+				token,
+				'/v1/pages',
+				'/v1/pages',
+				'',
+				'member-page',
+			);
+			return raw
+				.filter((p) => typeof p.id === 'number' && !!p.name)
+				.map((p) => ({ id: p.id, name: p.name! }));
+		},
+		opts,
+		NAMED_TTL_MS,
+	);
+}
+
+/** Events by id — `/v1/events` exposes the label as `title`. */
+export function getSolidarityEvents(
+	token: string,
+	opts: AutocompleteOptions = {},
+): Promise<AutocompleteResult<SolidarityChapterEntry>> {
+	return getCached(
+		eventsEntry,
+		'solidarity-events',
+		token,
+		async () => {
+			const raw = await fetchPaginated<{ id: number; title?: string | null }>(
+				token,
+				'/v1/events',
+				'/v1/events',
+				'',
+				'member-page',
+			);
+			return raw
+				.filter((e) => typeof e.id === 'number' && !!e.title)
+				.map((e) => ({ id: e.id, name: e.title! }));
+		},
+		opts,
+		NAMED_TTL_MS,
 	);
 }
 

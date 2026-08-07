@@ -1,15 +1,14 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db } from '$lib/server/db.js';
 import { slackJoins } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
 import { loadSettings } from '$lib/server/settings.js';
-import { getSlackChannels } from '$lib/server/autocomplete-sources.js';
+import { verifySlackSignature } from '$lib/server/slack-signature.js';
+import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { renderWelcomeDm } from '$lib/welcome-dm.js';
 import {
-	SLACK_SIGNING_SECRET,
 	SLACK_BOT_TOKEN,
 	DOOR_KNOCK_CHANNEL_ID,
 	OPENFIELD_BASE_URL,
@@ -47,24 +46,10 @@ const canvasWatcher =
 // Slack signature verification
 // ---------------------------------------------------------------------------
 
-export async function _verifySlackSignature(request: Request, body: string): Promise<boolean> {
-	if (!SLACK_SIGNING_SECRET) {
-		console.error('[slack-events] SLACK_SIGNING_SECRET is not set');
-		return false;
-	}
-	const signature = request.headers.get('x-slack-signature');
-	const timestamp = request.headers.get('x-slack-request-timestamp');
-	if (!signature || !timestamp) return false;
-
-	// Reject requests older than 5 minutes to prevent replay attacks
-	if (Math.abs(Date.now() / 1000 - parseInt(timestamp, 10)) > 300) return false;
-
-	const sigBasestring = `v0:${timestamp}:${body}`;
-	const computed = `v0=${createHmac('sha256', SLACK_SIGNING_SECRET).update(sigBasestring).digest('hex')}`;
-
-	if (computed.length !== signature.length) return false;
-	return timingSafeEqual(Buffer.from(computed), Buffer.from(signature));
-}
+// Re-exported under the original name so this route's existing tests and any
+// other callers keep working; the implementation now lives in
+// $lib/server/slack-signature.js and is shared with the command routes.
+export const _verifySlackSignature = verifySlackSignature;
 
 // ---------------------------------------------------------------------------
 // Route handler
@@ -73,7 +58,7 @@ export async function _verifySlackSignature(request: Request, body: string): Pro
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.text();
 
-	if (!(await _verifySlackSignature(request, body))) {
+	if (!(await verifySlackSignature(request, body))) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 
@@ -309,22 +294,6 @@ async function announceInChannels(slackUserId: string, channelIds: string[]): Pr
 	}
 }
 
-// Lowercased-channel-name → id map from the cached channel list, for resolving
-// `#channel-name` tokens in the welcome template to real Slack links. A cache
-// miss (cold + fetch fail) is non-fatal: names stay literal, the DM still goes.
-async function channelNameToId(): Promise<Map<string, string>> {
-	try {
-		const { items } = await getSlackChannels(slack);
-		return new Map(items.map((c) => [c.name.toLowerCase(), c.id]));
-	} catch (err) {
-		console.error(
-			'[slack-events] channel list unavailable for welcome-DM link resolution:',
-			err instanceof Error ? err.message : err,
-		);
-		return new Map();
-	}
-}
-
 async function sendWelcomeDm(
 	slackUserId: string,
 	channelIds: string[],
@@ -337,7 +306,7 @@ async function sendWelcomeDm(
 		return false;
 	}
 
-	const text = renderWelcomeDm(template, channelIds, await channelNameToId());
+	const text = renderWelcomeDm(template, channelIds, await channelNameToId('slack-events'));
 
 	await slack.chat.postMessage({
 		channel: dmChannelId,

@@ -5,6 +5,8 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
 - **Welcome new members** — when someone joins the Slack workspace, the bot looks up their solidarity.tech account, automatically adds them to their county chapter channel(s), and sends them a DM with a link to those channels.
 - **Help volunteers join Slack** — when a volunteer has trouble joining, solidarity.tech calls the webhook, their details are queued in a database, and admins work through the queue at `/pending` with live updates via Server-Sent Events.
 - **Show signup trends** — every workspace member can sign in at `/` to see Solidarity vs. Slack signup charts over the last 7/30/90 days, with per-chapter drill-down at `/dashboard/solidarity` and `/dashboard/slack`.
+- **Look up a member** — admins can search any Slack member at `/members` and see their five most recent Solidarity actions and event RSVPs, plus any notes or warnings logged about them — without opening their full personal record in Solidarity.
+- **Track notes and warnings** — admins log notes or rule-breaking warnings from Slack with `/member-note` or the message shortcut. Warnings DM the member a numbered, configurable message the admin can edit before sending, and everything is visible at `/members`.
 - **Post a weekly growth report** — a scheduled internal endpoint computes per-chapter Slack-signup growth for the previous week and posts a Slack message highlighting the top performers.
 
 ## How it works
@@ -40,6 +42,24 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
 3. Chapters are ranked by a power-law score `newJoins / (existing + 1)^α` (configurable via `SLACK_GROWTH_REPORT_RANKING_ALPHA`, default `0.7`) and the top 5 are posted to `SLACK_GROWTH_REPORT_CHANNEL_ID`
 4. Pass `?dry_run=1` to compute the result without posting
 
+### Member lookup
+
+1. An admin opens `/members` and searches the Slack directory by name
+2. The member is matched to a Solidarity account by email; an admin-made link (below) takes precedence over the email match
+3. Their five most recent `/v1/user_actions` and `/v1/event_rsvps` rows are shown, newest first. Neither endpoint returns a label, so page names and event titles are resolved from cached `/v1/pages` and `/v1/events` lookups
+4. If no Solidarity account matches, the page shows the member's Slack email and a search box to find and **Link** the right account by name or email. Solidarity's API has no name search, so the roster is fetched once and cached for an hour, then searched server-side — the roster itself is never sent to the browser
+
+### Member notes and warnings
+
+1. An admin runs `/member-note` (optionally `@mentioning` someone), or picks **Log member note** from a message's ⋯ menu, which prefills both the member and a link to that message
+2. A modal collects the member, Note vs. Warning, the details, an optional Slack message link, and whether to DM the member
+3. Choosing **Warning** reveals an editable copy of the warning message, prefilled from the configured template. Edits apply to that one warning only
+4. The note is written to the database _before_ any DM is attempted, so a Slack failure never loses the record
+5. For warnings, the member is DMed the rendered message. The warning number is the member's all-time count of warnings; notes don't count toward it
+6. **View member record** on a message's ⋯ menu posts an admin a link straight to that person's `/members` page
+
+The warning DM template is edited on `/settings` and supports `{{nth}}` (which warning this is), `{{note}}` (the details the admin typed), `{{message_link}}` (the linked message), and `#channel-name` links.
+
 ## Setup
 
 ### 1. Configure the Slack App
@@ -52,6 +72,12 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
    - `groups:write` — to invite members to private channels
    - `users:read` — to list workspace members
    - `users:read.email` — to read member email addresses
+   - `channels:read`, `groups:read` — to list channels for the settings pickers and `#channel` links
+   - `files:read` — to read the door-knocking channel's Conversation Codes canvas
+   - `commands` — for the `/member-note` slash command and the message shortcuts
+
+   If you are adding `commands` to an existing app, **reinstall the app** afterwards and re-copy the bot token if it changes.
+
 3. Under **OAuth & Permissions**, add this user scope:
    - `identity.basic` — for Sign in with Slack
 4. Under **OAuth & Permissions → Redirect URLs**, add:
@@ -66,7 +92,22 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
    ```
    https://your-app.fly.dev/api/slack/events
    ```
-   Then under **Subscribe to bot events**, add `team_join`
+   Then under **Subscribe to bot events**, add `team_join` and `file_change`
+10. Under **Slash Commands**, create `/member-note`:
+    - Request URL: `https://your-app.fly.dev/api/slack/commands`
+    - Usage hint: `[@member]`
+    - **Turn ON "Escape channels, users, and links"** — without it the command text has no user id to prefill the modal with
+11. Under **Interactivity & Shortcuts**, enable interactivity and set the Request URL to:
+    ```
+    https://your-app.fly.dev/api/slack/interactivity
+    ```
+12. Under **Interactivity & Shortcuts → Shortcuts**, create two **message** shortcuts (the callback IDs must match exactly):
+    - "Log member note" — callback ID `log_member_note`
+    - "View member record" — callback ID `view_member_record`
+
+No new environment variables are needed; the warning DM template is configured on `/settings`.
+
+> **Note on CSRF:** Slack posts slash commands and interactivity payloads as form-encoded requests with no `Origin` header, which SvelteKit's built-in CSRF check rejects — and only in production. `svelte.config.js` therefore disables that check and `src/hooks.server.ts` re-implements it, exempting only the signature-verified `/api/slack/*` routes. See `src/lib/server/csrf.ts` for the details.
 
 ### 2. Find your Slack user IDs
 
@@ -188,6 +229,45 @@ Handles two event types:
 | `team_join`        | Looks up the new member in solidarity.tech, invites them to their county channel(s), and sends a welcome DM |
 
 The `team_join` handler does nothing if the member's email is not found in solidarity.tech, or if their chapter has no chapter↔channel mapping (configured on `/settings`, falling back to `SOLIDARITY_CHAPTER_CHANNEL_MAP`).
+
+### `POST /api/slack/commands`
+
+Slash commands (`/member-note`). Verifies the Slack signature over the raw body, then
+parses it as form-encoded. Restricted to the admin allowlist — non-admins get an
+ephemeral refusal. Opens the note modal via `views.open`.
+
+### `POST /api/slack/interactivity`
+
+Handles `message_action` (both message shortcuts), `block_actions` (the Note/Warning
+toggle, which re-renders the modal via `views.update`) and `view_submission` (saving the
+note). Same signature verification. On submit the note row is written first, the modal is
+closed, and the warning DM is sent detached — so a DM failure never loses the note.
+
+### `GET /members` (admin)
+
+Member lookup page. `?user=<slackUserId>` selects a member; the detail is streamed.
+
+### `POST /api/members/link` (admin)
+
+`{ "action": "link", "slackUserId": "U…", "solidarityUserId": 123 }` or
+`{ "action": "unlink", "slackUserId": "U…" }`. The Solidarity id is validated against the
+cached roster (no API call). Returns 503 only if that roster has never been fetched.
+
+### `GET /api/members/solidarity-search?q=` (admin)
+
+Searches the cached Solidarity roster by name or email (minimum 2 characters) and returns
+up to 25 matches. Exists because Solidarity's `/v1/users` filters only by exact email or
+phone — there is no name search.
+
+Stale-while-revalidate: it answers from the last fetched roster immediately and refreshes
+in the background, so it never waits on the walk (a cold one takes roughly two minutes).
+The response carries `refreshing` — a fuller list is on its way — and `firstFetch`, which
+distinguishes "still building the first list" from "searched, found nothing". The UI shows
+a spinner and re-runs the query until it settles.
+
+### `POST /api/settings/warning-dm-test` (admin)
+
+Renders the warning DM template with sample values and DMs it to the signed-in admin.
 
 ### `GET /webhook`
 

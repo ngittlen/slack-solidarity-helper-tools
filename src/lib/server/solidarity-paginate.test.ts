@@ -103,3 +103,64 @@ describe('fetchPaginated', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(7);
 	});
 });
+
+describe('fetchPaginated pacing', () => {
+	const fetchMock = vi.fn();
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.stubGlobal('fetch', fetchMock);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	function page(items: unknown[]) {
+		return {
+			ok: true,
+			status: 200,
+			headers: new Headers(),
+			json: async () => ({ data: items }),
+			text: async () => '',
+		} as unknown as Response;
+	}
+
+	const fullPage = Array.from({ length: 100 }, (_, i) => ({ id: i }));
+
+	it('does not sleep when paceMs is omitted (unchanged for existing callers)', async () => {
+		vi.useFakeTimers();
+		const sleepSpy = vi.spyOn(globalThis, 'setTimeout');
+		fetchMock.mockResolvedValueOnce(page(fullPage)).mockResolvedValueOnce(page([{ id: 999 }]));
+
+		await fetchPaginated('tok', '/v1/things', 'things');
+
+		expect(sleepSpy).not.toHaveBeenCalled();
+	});
+
+	it('sleeps between pages when paced, but not before the first', async () => {
+		vi.useFakeTimers();
+		fetchMock
+			.mockResolvedValueOnce(page(fullPage))
+			.mockResolvedValueOnce(page(fullPage))
+			.mockResolvedValueOnce(page([{ id: 999 }]));
+
+		const walk = fetchPaginated('tok', '/v1/things', 'things', '', 'tag', 600);
+		await vi.runAllTimersAsync();
+		const items = await walk;
+
+		expect(items).toHaveLength(201);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
+	it('paces a single-page walk without any delay', async () => {
+		vi.useFakeTimers();
+		const sleepSpy = vi.spyOn(globalThis, 'setTimeout');
+		fetchMock.mockResolvedValueOnce(page([{ id: 1 }]));
+
+		await fetchPaginated('tok', '/v1/things', 'things', '', 'tag', 600);
+
+		expect(sleepSpy).not.toHaveBeenCalled();
+	});
+});

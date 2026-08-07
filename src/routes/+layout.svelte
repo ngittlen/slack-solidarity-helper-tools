@@ -16,6 +16,7 @@
 		data.isAdmin
 			? [
 					{ href: '/pending', label: 'Pending applicants' },
+					{ href: '/members', label: 'Member lookup' },
 					{ href: '/settings', label: 'Settings' },
 				]
 			: [],
