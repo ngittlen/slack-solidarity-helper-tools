@@ -86,6 +86,11 @@ export interface Settings {
 	 *  channel — the channel these alerts used before the override existed.
 	 *  DB-only override; it has no env var of its own. */
 	slackMobilizeSyncChannelId: string;
+	/** Admin channel that gets a line whenever a member note or warning is
+	 *  logged. DB-only with no env fallback; '' means "don't post", since
+	 *  announcing moderation in the wrong channel is worse than not announcing
+	 *  it at all. */
+	slackMemberNoteChannelId: string;
 	/** Contact published on events the sync creates in Mobilize. The v1 API
 	 *  requires one on every create and update, and Solidarity events carry no
 	 *  contact data, so this is the only source. DB override, falling back to
@@ -124,6 +129,8 @@ export type AppConfigPatch = Partial<{
 	slackTrackingChannelId: string;
 	slackGrowthReportChannelId: string;
 	slackMobilizeSyncChannelId: string;
+	/** Where member notes/warnings are announced. '' means "don't post". */
+	slackMemberNoteChannelId: string;
 	mobilizeContactName: string;
 	mobilizeContactEmail: string;
 	mobilizeContactPhone: string;
@@ -194,6 +201,9 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	// field existed. Resolving here means callers read one field and never have
 	// to re-implement the chain.
 	const slackMobilizeSyncChannelId = cfg?.slackMobilizeSyncChannelId ?? slackGrowthReportChannelId;
+	// DB-only and no fallback: posting to the wrong channel is worse than not
+	// posting, so this stays empty until an admin picks one.
+	const slackMemberNoteChannelId = cfg?.slackMemberNoteChannelId ?? '';
 	const mobilizeContactName = cfg?.mobilizeContactName ?? MOBILIZE_CONTACT_NAME;
 	const mobilizeContactEmail = cfg?.mobilizeContactEmail ?? MOBILIZE_CONTACT_EMAIL;
 	const mobilizeContactPhone = cfg?.mobilizeContactPhone ?? MOBILIZE_CONTACT_PHONE;
@@ -217,6 +227,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
 		slackMobilizeSyncChannelId,
+		slackMemberNoteChannelId,
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
@@ -568,6 +579,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'slackTrackingChannelId',
 	'slackGrowthReportChannelId',
 	'slackMobilizeSyncChannelId',
+	'slackMemberNoteChannelId',
 	'mobilizeContactName',
 	'mobilizeContactEmail',
 	'mobilizeContactPhone',

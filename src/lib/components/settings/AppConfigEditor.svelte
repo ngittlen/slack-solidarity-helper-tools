@@ -34,6 +34,8 @@
 		/** Effective Mobilize-sync alert channel — the growth-report channel
 		 *  when no override is set. */
 		mobilizeSyncChannelId: string;
+		/** Admin channel for member note/warning announcements ('' = off). */
+		memberNoteChannelId: string;
 		/** Contact published on events the sync creates in Mobilize ('' when
 		 *  neither /settings nor the MOBILIZE_CONTACT_* env vars set it). */
 		mobilizeContactName: string;
@@ -62,6 +64,7 @@
 		trackingChannelId,
 		growthReportChannelId,
 		mobilizeSyncChannelId,
+		memberNoteChannelId,
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
@@ -119,6 +122,12 @@
 	});
 	let mobilizeSync = $state<ChannelField>({
 		value: mobilizeSyncChannelId,
+		status: 'idle',
+		error: null,
+		lastFailedId: null,
+	});
+	let memberNote = $state<ChannelField>({
+		value: memberNoteChannelId,
 		status: 'idle',
 		error: null,
 		lastFailedId: null,
@@ -562,6 +571,29 @@
 				<span class="welcome-dm-test-err">{testError}</span>
 			{/if}
 		</div>
+	</SettingsRow>
+
+	<SettingsRow
+		label="Member notes channel"
+		status={memberNote.status}
+		error={memberNote.error}
+		onRetry={memberNote.lastFailedId
+			? () => void saveChannel(memberNote, 'slackMemberNoteChannelId', memberNote.lastFailedId!)
+			: undefined}
+	>
+		<AutocompletePicker
+			items={channelItems}
+			value={memberNote.value || null}
+			onSelect={(id) => void saveChannel(memberNote, 'slackMemberNoteChannelId', id)}
+			placeholder="Pick a channel…"
+			showSublabel={true}
+		/>
+		<p class="app-config-note">
+			Where a line is posted each time an admin logs a member note or warning, so moderation is
+			visible to every admin rather than only whoever filed it. Make this a private admin channel —
+			the note text and the warning sent to the member both appear in it. Leave unset to post
+			nothing.
+		</p>
 	</SettingsRow>
 
 	<SettingsRow

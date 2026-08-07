@@ -236,6 +236,11 @@ export const appConfig = sqliteTable(
 		// "wherever the growth report goes" — the fallback these alerts had
 		// before this column existed. No env var of its own.
 		slackMobilizeSyncChannelId: text('slack_mobilize_sync_channel_id'),
+		// Admin channel that gets a line every time a member note or warning is
+		// logged, so moderation stays visible to the whole admin group rather
+		// than only to whoever filed it. NULL means "don't post" — the feature
+		// is opt-in, and an unconfigured channel must not be an error path.
+		slackMemberNoteChannelId: text('slack_member_note_channel_id'),
 		// Contact published on events the sync creates in Mobilize. The v1 API
 		// requires a contact on every create and update, and Solidarity events
 		// carry none, so it is configured here. NULL falls back to

@@ -161,6 +161,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			slackGrowthReportChannelId: '',
 			// Falls back to the growth-report channel, which is itself empty here.
 			slackMobilizeSyncChannelId: '',
+			slackMemberNoteChannelId: '',
 			mobilizeContactName: '',
 			mobilizeContactEmail: '',
 			mobilizeContactPhone: '',
@@ -415,6 +416,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'slackGrowthReportChannelId',
 				'slackGrowthReportRankingAlpha',
 				'slackMobilizeSyncChannelId',
+				'slackMemberNoteChannelId',
 				'slackTrackingChannelId',
 				'mobilizeContactName',
 				'mobilizeContactEmail',

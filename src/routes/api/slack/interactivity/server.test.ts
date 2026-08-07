@@ -96,6 +96,7 @@ beforeEach(() => {
 	mockLoadSettings.mockResolvedValue({
 		allowedSlackUserIds: new Set(['U_ADMIN']),
 		warningDmMessage: 'This is your {{nth}} warning.',
+		slackMemberNoteChannelId: 'C_ADMIN_LOG',
 	});
 	mockViewsOpen.mockResolvedValue({ ok: true });
 	mockViewsUpdate.mockResolvedValue({ ok: true });
@@ -413,7 +414,9 @@ describe('view_submission', () => {
 		await call(signedPayload(submissionPayload()));
 		await flush();
 
-		expect(mockPostMessage).not.toHaveBeenCalled();
+		// Narrowed to the member's DM channel — the admin tracking channel does
+		// get a post, and that isn't what this test is about.
+		expect(mockPostMessage.mock.calls.map((c) => c[0].channel)).not.toContain('D_TARGET');
 		expect(mockRecordDmOutcome).toHaveBeenCalledWith({}, 7, { status: 'not-a-warning' });
 	});
 
@@ -434,6 +437,26 @@ describe('view_submission', () => {
 			expect.objectContaining({ body: expect.stringContaining('second') }),
 		);
 		expect(mockRecordDmOutcome.mock.calls[0]![2].sentAt).toBeTruthy();
+	});
+
+	// The reason the route resolves the blank case itself: renderWarningDm's own
+	// fallback is the hardcoded DEFAULT_WARNING_DM, which would quietly ignore
+	// whatever the admin configured on /settings.
+	it('falls back to the Settings template when the warning box is left blank', async () => {
+		mockInsertNote.mockResolvedValue({ id: 9, warningNumber: 1 });
+		mockLoadSettings.mockResolvedValue({
+			allowedSlackUserIds: new Set(['U_ADMIN']),
+			warningDmMessage: 'Configured in settings: {{nth}} warning.',
+		});
+
+		await call(
+			signedPayload(
+				submissionPayload({}, warningValues({ [BLOCK.warningText]: { value: { value: '   ' } } })),
+			),
+		);
+		await flush();
+
+		expect(mockPostMessage.mock.calls[0]![0].text).toBe('Configured in settings: first warning.');
 	});
 
 	it('uses the admin’s edited warning text, not the stored template', async () => {
@@ -464,7 +487,7 @@ describe('view_submission', () => {
 		);
 		await flush();
 
-		expect(mockPostMessage).not.toHaveBeenCalled();
+		expect(mockPostMessage.mock.calls.map((c) => c[0].channel)).not.toContain('D_TARGET');
 		expect(mockRecordDmOutcome).toHaveBeenCalledWith({}, 9, { status: 'suppressed' });
 	});
 
@@ -539,5 +562,81 @@ describe('view_submission', () => {
 
 		expect(res.status).toBe(200);
 		expect(mockInsertNote).not.toHaveBeenCalled();
+	});
+});
+
+describe('admin tracking channel', () => {
+	const postedTo = (channel: string) =>
+		mockPostMessage.mock.calls.find((c) => c[0].channel === channel)?.[0];
+
+	it('announces a note, with no "sent to them" clause', async () => {
+		await call(signedPayload(submissionPayload()));
+		await flush();
+
+		expect(postedTo('C_ADMIN_LOG')!.text).toBe(
+			'Note “Some details” added to user <@U_TARGET> by <@U_ADMIN>',
+		);
+	});
+
+	it('announces a warning including the message the member received', async () => {
+		mockInsertNote.mockResolvedValue({ id: 9, warningNumber: 2 });
+
+		await call(signedPayload(submissionPayload({}, warningValues())));
+		await flush();
+
+		expect(postedTo('C_ADMIN_LOG')!.text).toBe(
+			'Warning “Some details” added to user <@U_TARGET> ' +
+				'and warning “This is your second warning.” sent to them by <@U_ADMIN>',
+		);
+	});
+
+	it('omits the sent clause when the DM was suppressed', async () => {
+		mockInsertNote.mockResolvedValue({ id: 9, warningNumber: 1 });
+
+		await call(
+			signedPayload(
+				submissionPayload({}, warningValues({ [BLOCK.dm]: { value: { selected_options: [] } } })),
+			),
+		);
+		await flush();
+
+		expect(postedTo('C_ADMIN_LOG')!.text).not.toContain('sent to them');
+	});
+
+	// A failed DM must not be announced as delivered.
+	it('omits the sent clause when the DM failed', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockInsertNote.mockResolvedValue({ id: 9, warningNumber: 1 });
+		mockConversationsOpen.mockRejectedValue(new Error('user_not_found'));
+
+		await call(signedPayload(submissionPayload({}, warningValues())));
+		await flush();
+
+		expect(postedTo('C_ADMIN_LOG')!.text).not.toContain('sent to them');
+	});
+
+	it('posts nothing when no channel is configured', async () => {
+		mockLoadSettings.mockResolvedValue({
+			allowedSlackUserIds: new Set(['U_ADMIN']),
+			warningDmMessage: '',
+			slackMemberNoteChannelId: '',
+		});
+
+		await call(signedPayload(submissionPayload()));
+		await flush();
+
+		expect(postedTo('C_ADMIN_LOG')).toBeUndefined();
+	});
+
+	// The note is already committed; a broken admin channel cannot be allowed to
+	// look like a failure to the person who filed it.
+	it('swallows a posting failure', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockPostMessage.mockRejectedValue(new Error('channel_not_found'));
+
+		const res = await call(signedPayload(submissionPayload()));
+		await flush();
+
+		expect(await res.json()).toEqual({});
 	});
 });
