@@ -36,9 +36,29 @@
 	padding-bottom: 12px;
 }
 
+/* Name left, chapters right. `baseline` rather than `center` so the two sit on
+   one line despite the size difference, and `wrap` so a member in several
+   chapters pushes them under the name instead of squeezing it. */
+.member-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 4px 12px;
+}
+
 .member-name {
 	margin: 0;
 	font-size: 1.3em;
+}
+
+.member-chapters {
+	margin: 0;
+	font-size: 1em;
+	font-weight: 500;
+	text-align: right;
+	color: var(--color-text-muted, #666);
+	overflow-wrap: anywhere;
 }
 
 .member-realname,
@@ -103,6 +123,13 @@
 .activity-unknown {
 	font-style: italic;
 	color: var(--color-text-muted, #888);
+}
+
+/* Only rendered on a collapsed entry ("6 sessions"), so it needs to read as a
+   subtitle of the title above it, not as another muted timestamp. */
+.activity-count {
+	font-size: 0.85em;
+	color: var(--color-text-muted, #666);
 }
 
 .activity-when {

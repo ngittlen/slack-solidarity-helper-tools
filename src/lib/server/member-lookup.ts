@@ -38,6 +38,10 @@ export interface MemberDetail {
 		linkedByName?: string;
 		linkedAt?: string;
 	};
+	/** Solidarity chapter names, alphabetical. Empty when the member has no
+	 *  Solidarity account, belongs to no chapter, or the lookup failed — this is
+	 *  a label on the header, not something worth a visible error. */
+	chapters: string[];
 	actions: FeedResult;
 	rsvps: FeedResult;
 	notes: MemberNoteRow[];
@@ -59,6 +63,8 @@ export interface MemberLookupDeps {
 	findByEmail: (email: string) => Promise<{ id: number } | null>;
 	fetchActions: (solidarityUserId: number) => Promise<FeedResult>;
 	fetchRsvps: (solidarityUserId: number) => Promise<FeedResult>;
+	/** Chapter names for the header. */
+	fetchChapters: (solidarityUserId: number) => Promise<string[]>;
 	listNotes: (slackUserId: string) => Promise<MemberNoteRow[]>;
 }
 
@@ -82,18 +88,30 @@ export async function resolveMember(
 
 	let actions: FeedResult = { ok: false, error: FEED_UNAVAILABLE };
 	let rsvps: FeedResult = { ok: false, error: FEED_UNAVAILABLE };
+	let chapters: string[] = [];
 
 	if (resolved.solidarityUserId !== null) {
-		// Independent so one failing feed still leaves the other rendered.
-		const [actionsResult, rsvpsResult] = await Promise.allSettled([
+		// Independent so one failing lookup still leaves the others rendered.
+		const [actionsResult, rsvpsResult, chaptersResult] = await Promise.allSettled([
 			deps.fetchActions(resolved.solidarityUserId),
 			deps.fetchRsvps(resolved.solidarityUserId),
+			deps.fetchChapters(resolved.solidarityUserId),
 		]);
 		actions = settledFeed(actionsResult, 'user actions', slackUserId);
 		rsvps = settledFeed(rsvpsResult, 'event RSVPs', slackUserId);
+		if (chaptersResult.status === 'fulfilled') {
+			chapters = chaptersResult.value;
+		} else {
+			// No visible error: the chapter line is context, and an admin who came
+			// here for someone's activity and notes still gets both.
+			console.error(
+				`${LOG} chapter lookup failed for ${slackUserId}:`,
+				errMessage(chaptersResult.reason),
+			);
+		}
 	}
 
-	return { slack, link: resolved, actions, rsvps, notes: await notesPromise };
+	return { slack, link: resolved, chapters, actions, rsvps, notes: await notesPromise };
 }
 
 function settledFeed(

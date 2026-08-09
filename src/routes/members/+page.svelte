@@ -69,7 +69,12 @@
 				<p class="member-empty">That Slack account isn't in the workspace directory.</p>
 			{:else}
 				<section class="member-card">
-					<h2 class="member-name">{member.slack.name}</h2>
+					<div class="member-head">
+						<h2 class="member-name">{member.slack.name}</h2>
+						{#if member.chapters.length > 0}
+							<p class="member-chapters">{member.chapters.join(', ')}</p>
+						{/if}
+					</div>
 					{#if member.slack.realName && member.slack.realName !== member.slack.name}
 						<p class="member-realname">{member.slack.realName}</p>
 					{/if}
@@ -106,8 +111,8 @@
 
 				{#if member.link.solidarityUserId !== null}
 					<div class="member-feeds">
-						{@render feed('Recent actions', member.actions)}
-						{@render feed('Recent event RSVPs', member.rsvps)}
+						{@render feed('Recent actions', member.actions, 'time')}
+						{@render feed('Recent event RSVPs', member.rsvps, 'session')}
 					</div>
 				{/if}
 
@@ -159,7 +164,7 @@
 	{/if}
 </div>
 
-{#snippet feed(title: string, result: FeedResult)}
+{#snippet feed(title: string, result: FeedResult, occurrence: string)}
 	<section class="member-feed">
 		<h3>{title}</h3>
 		{#if !result.ok}
@@ -182,8 +187,13 @@
 							</dl>
 						{:else}
 							<span class="activity-title">{item.title || 'Untitled'}</span>
+							{#if item.count > 1}
+								<span class="activity-count">{item.count} {occurrence}s</span>
+							{/if}
 							<span class="activity-when">
-								{when(item.occurredAt)}{item.detail ? ` · ${item.detail}` : ''}
+								{item.count > 1 ? 'latest ' : ''}{when(item.occurredAt)}{item.detail
+									? ` · ${item.detail}`
+									: ''}
 							</span>
 						{/if}
 					</li>

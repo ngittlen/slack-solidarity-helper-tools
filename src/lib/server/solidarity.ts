@@ -6,7 +6,11 @@ import {
 	type NormalizedActivity,
 	type NormalizeOptions,
 } from './activity-feed.js';
-import { getSolidarityPages, getSolidarityEvents } from './autocomplete-sources.js';
+import {
+	getSolidarityPages,
+	getSolidarityEvents,
+	getSolidarityChapters,
+} from './autocomplete-sources.js';
 
 export interface SolidarityUser {
 	id: number;
@@ -42,6 +46,37 @@ export async function findUserByEmailStrict(
 	}
 	const data = (await response.json()) as { data?: SolidarityUser[] };
 	return data.data?.[0] ?? null;
+}
+
+/**
+ * Fetch one Solidarity user by id. Returns null when no such user exists;
+ * throws on any other failure.
+ *
+ * The response envelope is unpublished and `GET /v1/users` (plural, filtered)
+ * wraps its result in `data: []` while a by-id GET plausibly returns either a
+ * bare object or `data: {}`, so all three shapes are accepted rather than
+ * betting on one.
+ */
+export async function getUserById(token: string, userId: number): Promise<SolidarityUser | null> {
+	const response = await fetchWithRetry(
+		`https://api.solidarity.tech/v1/users/${userId}`,
+		{ headers: { Authorization: `Bearer ${token}` } },
+		`user lookup for ${userId}`,
+		'solidarity',
+		{ retriesUsed: 0 },
+	);
+	if (response.status === 404) return null;
+	if (!response.ok) {
+		throw new Error(`Solidarity user lookup returned ${response.status} for ${userId}`);
+	}
+
+	const body: unknown = await response.json();
+	if (body === null || typeof body !== 'object') return null;
+
+	const payload = 'data' in body ? (body as { data: unknown }).data : body;
+	const user = Array.isArray(payload) ? payload[0] : payload;
+	if (user === null || typeof user !== 'object') return null;
+	return typeof (user as SolidarityUser).id === 'number' ? (user as SolidarityUser) : null;
 }
 
 /**
@@ -217,6 +252,35 @@ function numeric(value: unknown): number | null {
 }
 
 /**
+ * The member's chapter names, for the header line on the member page.
+ *
+ * `chapter_ids` is the authoritative list — plenty of members belong to more
+ * than one — but `chapter_id` is folded in too, since a member with exactly one
+ * chapter has been observed carrying only the singular field. Ids with no name
+ * in the chapter list still render as `Chapter 12`: knowing they're in *a*
+ * chapter we can't name beats showing nothing.
+ */
+export async function getUserChapterNames(
+	token: string,
+	solidarityUserId: number,
+): Promise<string[]> {
+	const user = await getUserById(token, solidarityUserId);
+	if (!user) return [];
+
+	const ids = new Set<number>();
+	for (const id of user.chapter_ids ?? []) {
+		if (numeric(id) !== null) ids.add(id);
+	}
+	if (numeric(user.chapter_id) !== null) ids.add(user.chapter_id!);
+	if (ids.size === 0) return [];
+
+	const chapters = await safeNameMap(getSolidarityChapters, token, 'chapters');
+	return [...ids]
+		.map((id) => chapters.get(id) ?? `Chapter ${id}`)
+		.sort((a, b) => a.localeCompare(b));
+}
+
+/**
  * The member's most recent form/page submissions.
  *
  * Rows carry `action_page_id` and no label of their own, so the page names are
@@ -234,6 +298,14 @@ export async function getRecentUserActions(
 			const id = numeric(row['action_page_id']);
 			if (id === null) return null;
 			return pages.get(id) ?? `Action page ${id}`;
+		},
+		// One row per submission, so signing up for six sessions through the same
+		// page reads as six identical entries. Group on the page, not the title:
+		// two distinct pages can share a name, and an id can't be missing a match
+		// in the cache the way a name can.
+		resolveGroupKey: (row) => {
+			const id = numeric(row['action_page_id']);
+			return id === null ? null : `page:${id}`;
 		},
 	});
 }
@@ -261,6 +333,13 @@ export async function getRecentEventRsvps(
 				const id = numeric(row['event_id']);
 				if (id === null) return null;
 				return events.get(id) ?? `Event ${id}`;
+			},
+			// A row is one *session* RSVP (`event_session_id`), so a weekly event
+			// someone committed to for six weeks is six rows under one title.
+			// Grouping on the event turns that back into one entry with a count.
+			resolveGroupKey: (row) => {
+				const id = numeric(row['event_id']);
+				return id === null ? null : `event:${id}`;
 			},
 			// Whether they actually turned up is the most useful thing on an
 			// RSVP row, and it's the difference between "signed up" and "showed

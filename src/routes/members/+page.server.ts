@@ -10,6 +10,7 @@ import {
 	findUserByEmailStrict,
 	getRecentUserActions,
 	getRecentEventRsvps,
+	getUserChapterNames,
 } from '$lib/server/solidarity.js';
 import { listNotes } from '$lib/server/member-notes.js';
 import {
@@ -64,6 +65,8 @@ const deps: MemberLookupDeps = {
 		const feed = await getRecentEventRsvps(SOLIDARITY_API_TOKEN, solidarityUserId);
 		return { ok: true, ...feed };
 	},
+
+	fetchChapters: (solidarityUserId) => getUserChapterNames(SOLIDARITY_API_TOKEN, solidarityUserId),
 
 	listNotes: (slackUserId) => listNotes(db, slackUserId),
 };

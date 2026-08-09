@@ -250,3 +250,123 @@ describe('normalizeActivity — caller-supplied resolvers', () => {
 		expect(out[0]).toMatchObject({ title: 'Resolved', detail: 'RSVP’d' });
 	});
 });
+
+describe('normalizeActivityList — collapsing repeat rows', () => {
+	// Rows as both live endpoints actually return them: one per occurrence,
+	// referencing the event/page by id with no label of their own.
+	const rsvp = (eventId: number, iso: string, sessionId: number) => ({
+		id: sessionId,
+		event_id: eventId,
+		event_session_id: sessionId,
+		created_at: iso,
+	});
+
+	const rsvpOpts = {
+		resolveTitle: (row: Record<string, unknown>) => `Event ${row['event_id']}`,
+		resolveGroupKey: (row: Record<string, unknown>) => `event:${row['event_id']}`,
+	};
+
+	it('collapses sessions of one event into a single counted entry', () => {
+		const out = normalizeActivityList(
+			[
+				rsvp(1, '2026-01-01T00:00:00Z', 11),
+				rsvp(1, '2026-01-08T00:00:00Z', 12),
+				rsvp(1, '2026-01-15T00:00:00Z', 13),
+			],
+			5,
+			rsvpOpts,
+		);
+
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ title: 'Event 1', count: 3 });
+	});
+
+	it('dates a group by its most recent session', () => {
+		const out = normalizeActivityList(
+			[rsvp(1, '2026-01-01T00:00:00Z', 11), rsvp(1, '2026-01-15T00:00:00Z', 12)],
+			5,
+			rsvpOpts,
+		);
+		expect(out[0]!.occurredAt).toBe('2026-01-15T00:00:00.000Z');
+	});
+
+	// The point of collapsing: freeing the slots the repeats were occupying.
+	it('collapses before applying the limit, so other events still make the list', () => {
+		const weekly = Array.from({ length: 6 }, (_, i) =>
+			rsvp(1, `2026-02-0${i + 1}T00:00:00Z`, 100 + i),
+		);
+		const others = [2, 3, 4, 5].map((id) => rsvp(id, '2026-01-01T00:00:00Z', id));
+
+		const out = normalizeActivityList([...weekly, ...others], 5, rsvpOpts);
+
+		expect(out.map((a) => a.title)).toEqual([
+			'Event 1',
+			'Event 2',
+			'Event 3',
+			'Event 4',
+			'Event 5',
+		]);
+		expect(out[0]!.count).toBe(6);
+	});
+
+	it('leaves distinct events uncollapsed and counted as one', () => {
+		const out = normalizeActivityList(
+			[rsvp(1, '2026-01-01T00:00:00Z', 11), rsvp(2, '2026-01-02T00:00:00Z', 21)],
+			5,
+			rsvpOpts,
+		);
+		expect(out).toHaveLength(2);
+		expect(out.every((a) => a.count === 1)).toBe(true);
+	});
+
+	it('does not collapse anything when no group resolver is supplied', () => {
+		const out = normalizeActivityList(
+			[rsvp(1, '2026-01-01T00:00:00Z', 11), rsvp(1, '2026-01-08T00:00:00Z', 12)],
+			5,
+		);
+		expect(out).toHaveLength(2);
+	});
+
+	it('does not collapse rows whose group key is null', () => {
+		const out = normalizeActivityList(
+			[{ title: 'A', created_at: '2026-01-01T00:00:00Z' }, { title: 'A' }],
+			5,
+			{ resolveGroupKey: () => null },
+		);
+		expect(out).toHaveLength(2);
+	});
+
+	// "Attended" against a six-session group would be a claim about all six.
+	it('keeps a detail only when every collapsed row agreed on it', () => {
+		const agreed = normalizeActivityList(
+			[rsvp(1, '2026-01-01T00:00:00Z', 11), rsvp(1, '2026-01-08T00:00:00Z', 12)],
+			5,
+			{ ...rsvpOpts, resolveDetail: () => 'Attended' },
+		);
+		expect(agreed[0]!.detail).toBe('Attended');
+
+		const mixed = normalizeActivityList(
+			[rsvp(1, '2026-01-01T00:00:00Z', 11), rsvp(1, '2026-01-08T00:00:00Z', 12)],
+			5,
+			{
+				...rsvpOpts,
+				resolveDetail: (row) => (row['event_session_id'] === 11 ? 'Attended' : 'RSVP’d'),
+			},
+		);
+		expect(mixed[0]!.detail).toBe('');
+	});
+
+	it('gives a group a key derived from what it grouped on', () => {
+		const out = normalizeActivityList([rsvp(7, '2026-01-01T00:00:00Z', 11)], 5, rsvpOpts);
+		expect(out[0]!.key).toBe('group:event:7');
+	});
+
+	// Collapsing an unrecognized row would hide the raw fields that view exists
+	// to surface.
+	it('never collapses unknown-shape rows', () => {
+		const out = normalizeActivityList([{ mystery: 'a' }, { mystery: 'b' }], 5, {
+			resolveGroupKey: () => 'same',
+		});
+		expect(out).toHaveLength(2);
+	});
+});

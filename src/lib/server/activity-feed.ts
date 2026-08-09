@@ -16,8 +16,15 @@ export interface NormalizedActivity {
 	key: string;
 	/** Human label; '' when nothing plausible was found. */
 	title: string;
-	/** Secondary line — e.g. whether an RSVP was actually attended. */
+	/** Secondary line — e.g. whether an RSVP was actually attended. Cleared on a
+	 *  collapsed entry whose rows disagreed, so a group never claims of six
+	 *  sessions what was only true of the most recent one. */
 	detail: string;
+	/** Identifies the thing this row is *about* (an event, an action page) so
+	 *  repeat rows can be collapsed. null means "never collapse this one". */
+	groupKey: string | null;
+	/** How many rows this entry stands for — 1 unless rows were collapsed. */
+	count: number;
 	/** ISO-8601, or null when no timestamp field was recognized. */
 	occurredAt: string | null;
 	/** Sort key in epoch ms; null sorts last. */
@@ -89,9 +96,21 @@ export type TitleResolver = (row: Record<string, unknown>) => string | null;
 /** Optional secondary line, e.g. RSVP attendance. */
 export type DetailResolver = (row: Record<string, unknown>) => string | null;
 
+/**
+ * Identifies what a row is about, so repeats collapse into one entry.
+ *
+ * Both feeds are per-*occurrence*: a weekly event books one RSVP row per
+ * session, and its signup page books one action row per signup. Left alone, a
+ * member who committed to six weeks of the same canvass fills the whole
+ * five-row feed with six identical lines and buries everything else they did.
+ * Returning null opts a row out of collapsing entirely.
+ */
+export type GroupKeyResolver = (row: Record<string, unknown>) => string | null;
+
 export interface NormalizeOptions {
 	resolveTitle?: TitleResolver;
 	resolveDetail?: DetailResolver;
+	resolveGroupKey?: GroupKeyResolver;
 }
 
 // `extras` is the one path where undocumented upstream fields reach the
@@ -211,6 +230,8 @@ export function normalizeActivity(
 			key: `idx-${index}`,
 			title: '',
 			detail: '',
+			groupKey: null,
+			count: 1,
 			occurredAt: null,
 			occurredAtMs: null,
 			unknownShape: true,
@@ -228,6 +249,10 @@ export function normalizeActivity(
 		key: probeId(raw, index),
 		title,
 		detail: opts.resolveDetail?.(raw) ?? '',
+		// An unrecognized row renders its raw fields, so collapsing it would hide
+		// exactly the evidence that view exists to show.
+		groupKey: unknownShape ? null : (opts.resolveGroupKey?.(raw) ?? null),
+		count: 1,
 		occurredAt: occurredAtMs === null ? null : new Date(occurredAtMs).toISOString(),
 		occurredAtMs,
 		unknownShape,
@@ -237,20 +262,58 @@ export function normalizeActivity(
 }
 
 /**
- * Normalize, sort newest-first, then take `limit`.
+ * Fold rows sharing a group key into their newest member, in place of it.
+ *
+ * Runs on the sorted list *before* the limit is applied, which is the whole
+ * point: collapsing six sessions down to one entry has to free the other four
+ * slots for different activity, not just shorten the same five rows.
+ */
+function collapseGroups(items: NormalizedActivity[]): NormalizedActivity[] {
+	const out: NormalizedActivity[] = [];
+	const seen = new Map<string, NormalizedActivity>();
+
+	for (const item of items) {
+		if (item.groupKey === null) {
+			out.push(item);
+			continue;
+		}
+		const existing = seen.get(item.groupKey);
+		if (!existing) {
+			// A copy: the caller's normalized rows stay untouched, and the group's
+			// key is derived from what it groups on so it survives a re-render.
+			const head = { ...item, key: `group:${item.groupKey}` };
+			seen.set(item.groupKey, head);
+			out.push(head);
+			continue;
+		}
+		existing.count += 1;
+		// "Attended" on a six-session group is a claim about all six. Only keep it
+		// when every collapsed row agreed.
+		if (existing.detail !== item.detail) existing.detail = '';
+	}
+
+	return out;
+}
+
+/**
+ * Normalize, sort newest-first, collapse repeats, then take `limit`.
  *
  * The sort is ours on purpose. The API's default ordering is unspecified, so
  * asking it for 5 rows could hand back the five *oldest* — we request a full
  * page and pick the recent ones here. Rows with no parseable timestamp sort
  * last rather than being dropped: an action we can't date is still evidence of
  * activity. Ties break on original index so the order is stable.
+ *
+ * Collapsing happens after the sort, so each group is represented by its most
+ * recent row, and before the limit, so `limit` counts distinct things the
+ * member did rather than individual occurrences.
  */
 export function normalizeActivityList(
 	raw: unknown[],
 	limit = 5,
 	opts: NormalizeOptions = {},
 ): NormalizedActivity[] {
-	return raw
+	const sorted = raw
 		.map((row, index) => ({ item: normalizeActivity(row, index, opts), index }))
 		.sort((a, b) => {
 			const aMs = a.item.occurredAtMs;
@@ -261,6 +324,7 @@ export function normalizeActivityList(
 			if (aMs !== bMs) return bMs - aMs;
 			return a.index - b.index;
 		})
-		.slice(0, limit)
 		.map((entry) => entry.item);
+
+	return collapseGroups(sorted).slice(0, limit);
 }
