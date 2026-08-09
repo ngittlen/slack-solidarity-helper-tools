@@ -8,6 +8,7 @@ import {
 } from './dashboard-signups.js';
 import { db } from './db.js';
 import { loadSettings } from './settings.js';
+import { loginRedirectPath } from './post-login-redirect.js';
 
 export type SourceResult = { ok: true; days: DaySignups[] } | { ok: false; error: string };
 
@@ -42,7 +43,7 @@ export async function loadDashboardPageData(event: DashboardLoadEvent): Promise<
 	// session here before doing any DB or Slack work.
 	const session = event.locals.session;
 	if (!session) {
-		redirect(302, '/auth/slack');
+		redirect(302, loginRedirectPath(event.url));
 	}
 
 	event.depends('app:dashboard');

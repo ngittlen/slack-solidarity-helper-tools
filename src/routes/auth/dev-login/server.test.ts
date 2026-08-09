@@ -18,8 +18,10 @@ vi.mock('$env/dynamic/private', () => ({
 
 import { GET } from './+server.js';
 
-function makeEvent() {
-	return { cookies: { set: vi.fn() } };
+function makeEvent(redirectTo?: string) {
+	const url = new URL('http://localhost/auth/dev-login');
+	if (redirectTo !== undefined) url.searchParams.set('redirectTo', redirectTo);
+	return { url, cookies: { set: vi.fn() } };
 }
 
 describe('GET /auth/dev-login', () => {
@@ -48,7 +50,7 @@ describe('GET /auth/dev-login', () => {
 
 		await expect(GET(event as never)).rejects.toMatchObject({
 			status: 302,
-			location: '/pending',
+			location: '/',
 		});
 
 		expect(mockSessionSet).toHaveBeenCalledTimes(1);
@@ -62,5 +64,23 @@ describe('GET /auth/dev-login', () => {
 			expect.any(String),
 			expect.objectContaining({ httpOnly: true }),
 		);
+	});
+
+	it('returns to the requested page', async () => {
+		mockPrivateEnv.env = { DEV_SLACK_USER_ID: 'UDEV' };
+
+		await expect(GET(makeEvent('/members?user=U123') as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/members?user=U123',
+		});
+	});
+
+	it('ignores an off-site redirectTo', async () => {
+		mockPrivateEnv.env = { DEV_SLACK_USER_ID: 'UDEV' };
+
+		await expect(GET(makeEvent('https://evil.example') as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/',
+		});
 	});
 });

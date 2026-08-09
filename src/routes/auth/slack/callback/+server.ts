@@ -4,6 +4,10 @@ import { dev } from '$app/environment';
 import { db, sessionStore } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
 import {
+	OAUTH_REDIRECT_COOKIE,
+	resolvePostLoginRedirect,
+} from '$lib/server/post-login-redirect.js';
+import {
 	SLACK_CLIENT_ID,
 	SLACK_CLIENT_SECRET,
 	SLACK_SUPERUSER_ID,
@@ -39,7 +43,13 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		error(400, 'Invalid OAuth state.');
 	}
 
+	// The page they were trying to reach when they got bounced to login. Read
+	// before the session exists; whether they may actually see it is decided
+	// below, once we know if they're an admin.
+	const requestedPath = cookies.get(OAUTH_REDIRECT_COOKIE) ?? null;
+
 	cookies.delete('oauth_state', { path: '/' });
+	cookies.delete(OAUTH_REDIRECT_COOKIE, { path: '/' });
 
 	// Exchange code for token
 	const tokenRes = await fetch('https://slack.com/api/oauth.v2.access', {
@@ -108,5 +118,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	console.log(
 		`[auth] login: ${identity.user.name} (${userId}) admin=${isAdmin}${isSuperuser ? ' (superuser)' : ''}`,
 	);
-	redirect(302, '/');
+	// Back to the page they asked for — or the dashboard, when they asked for
+	// nothing or for something this session may not see.
+	redirect(302, resolvePostLoginRedirect(requestedPath, { isAdmin }));
 };

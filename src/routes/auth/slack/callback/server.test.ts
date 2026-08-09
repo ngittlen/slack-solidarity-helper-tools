@@ -25,14 +25,20 @@ function jsonRes(body: unknown): Response {
 	return { json: async () => body } as never;
 }
 
-function makeEvent(opts: { code?: string; state?: string; cookieState?: string } = {}) {
+function makeEvent(
+	opts: { code?: string; state?: string; cookieState?: string; redirectTo?: string } = {},
+) {
 	const code = opts.code ?? 'CODE';
 	const state = opts.state ?? 'STATE';
 	const cookieState = opts.cookieState ?? 'STATE';
+	const jar: Record<string, string | undefined> = {
+		oauth_state: cookieState,
+		oauth_redirect: opts.redirectTo,
+	};
 	return {
 		url: new URL(`http://localhost/auth/slack/callback?code=${code}&state=${state}`),
 		cookies: {
-			get: vi.fn().mockReturnValue(cookieState),
+			get: vi.fn((name: string) => jar[name]),
 			set: vi.fn(),
 			delete: vi.fn(),
 		},
@@ -169,6 +175,40 @@ describe('GET /auth/slack/callback', () => {
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringMatching(/\[auth] login: Admin User \(UADMIN\) admin=true/),
 		);
+	});
+
+	it('returns an admin to the page they originally requested', async () => {
+		mockSuccessfulOAuth('UADMIN', 'Admin User');
+
+		await expect(
+			GET(makeEvent({ redirectTo: '/members?user=U123' }) as never),
+		).rejects.toMatchObject({ status: 302, location: '/members?user=U123' });
+	});
+
+	it('sends a non-admin who requested an admin page to /', async () => {
+		mockSuccessfulOAuth('UNORMAL', 'Bob');
+
+		await expect(GET(makeEvent({ redirectTo: '/settings' }) as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/',
+		});
+	});
+
+	it('ignores an off-site redirect cookie', async () => {
+		mockSuccessfulOAuth('UADMIN', 'Admin User');
+
+		await expect(
+			GET(makeEvent({ redirectTo: '//evil.example/steal' }) as never),
+		).rejects.toMatchObject({ status: 302, location: '/' });
+	});
+
+	it('clears the redirect cookie once it has been consumed', async () => {
+		mockSuccessfulOAuth('UADMIN', 'Admin User');
+		const event = makeEvent({ redirectTo: '/settings' });
+
+		await expect(GET(event as never)).rejects.toMatchObject({ status: 302 });
+
+		expect(event.cookies.delete).toHaveBeenCalledWith('oauth_redirect', { path: '/' });
 	});
 
 	it('rejects with 400 on OAuth state mismatch (preserved behavior)', async () => {

@@ -9,8 +9,9 @@ import type { RequestHandler } from './$types';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { sessionStore } from '$lib/server/db.js';
+import { resolvePostLoginRedirect } from '$lib/server/post-login-redirect.js';
 
-export const GET: RequestHandler = async ({ cookies }) => {
+export const GET: RequestHandler = async ({ url, cookies }) => {
 	const devUserId = (env as Record<string, string | undefined>)['DEV_SLACK_USER_ID'];
 	if (!dev || !devUserId) {
 		error(404, 'Not found');
@@ -30,5 +31,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 		maxAge: 8 * 60 * 60,
 	});
 
-	redirect(302, '/pending');
+	// Same rule as the real callback: the requested page if there was one,
+	// otherwise the dashboard.
+	redirect(302, resolvePostLoginRedirect(url.searchParams.get('redirectTo'), { isAdmin: true }));
 };
