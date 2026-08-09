@@ -100,6 +100,11 @@ export const ATTENDEE_SYNC_MAX_NEW_PROFILES = parseInt(
 // Callers pass it as ?key=<value>.
 export const INTERNAL_CRON_SECRET = get('INTERNAL_CRON_SECRET');
 
+// Which canvassing tool supplies the door-knock numbers (see
+// door-knock-env.ts). Empty means "openfield", so existing deployments need no
+// new variable.
+export const DOOR_KNOCK_PROVIDER = get('DOOR_KNOCK_PROVIDER').trim().toLowerCase();
+
 // Openfield door-knocking integration (all four required for the nightly
 // door-knock snapshot; the endpoint 500s with a clear message when unset).
 // OPENFIELD_BASE_URL e.g. https://abdulforsenate.openfield.ai (no trailing /).

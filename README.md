@@ -165,6 +165,7 @@ INTERNAL_CRON_SECRET=long-random-string           # required for /api/internal/*
 APP_URL=https://your-app.fly.dev
 SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
 SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
+DOOR_KNOCK_PROVIDER=openfield                         # optional; which canvassing tool supplies the numbers
 OPENFIELD_BASE_URL=https://yourcampaign.openfield.ai  # optional; enables the door-knock snapshot
 OPENFIELD_USERNAME=service-account-username           # a dedicated Openfield volunteer account
 OPENFIELD_PASSWORD=service-account-password
@@ -178,7 +179,9 @@ PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 
 `INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 
-The four `OPENFIELD_*`/`DOOR_KNOCK_*` vars enable the nightly door-knock snapshot (`/api/internal/door-knock-snapshot`): it reads the conversation codes from the door-knocking channel's "Conversation Codes" canvas (requires the `files:read` bot scope), logs into Openfield with the service account, and records each code's doors-knocked total for the day. The dashboard's "Doors knocked" chart appears once the first snapshot lands.
+The `OPENFIELD_*`/`DOOR_KNOCK_*` vars enable the nightly door-knock snapshot (`/api/internal/door-knock-snapshot`), which records each turf's doors-knocked total for the day. The dashboard's "Doors knocked" chart appears once the first snapshot lands.
+
+`DOOR_KNOCK_PROVIDER` picks which canvassing tool the numbers come from; it defaults to `openfield`, so an existing deployment needs no new variable. The Openfield provider reads conversation codes from the door-knocking channel's "Conversation Codes" canvas (requires the `files:read` bot scope), logs into Openfield with the service account, and pulls each code's leaderboard. Everything tool-specific lives behind the `DoorKnockProvider` interface in `src/lib/server/door-knock-provider.ts` — adding another canvassing tool (MiniVAN, say) means implementing `dateFor` + `collect` under `src/lib/server/door-knock/<tool>/` and registering it in `src/lib/server/door-knock-env.ts`; the snapshot writer, the refresh throttle, the schema, and the charts are unaffected.
 
 ### 6. Run the server
 

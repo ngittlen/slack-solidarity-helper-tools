@@ -63,17 +63,17 @@
 		buildState(data.doorKnock, doorKnockMode, 'Doors', { totalOverlay: false }),
 	);
 
-	// The door-knock card only appears once the nightly Openfield snapshot has
-	// ever written data (or on a load error) — hidden entirely while the
-	// integration is unconfigured, rather than showing a permanent empty card.
+	// The door-knock card only appears once the nightly snapshot has ever
+	// written data (or on a load error) — hidden entirely while the integration
+	// is unconfigured, rather than showing a permanent empty card.
 	const showDoorKnock = $derived(data.doorKnock.ok === false || doorKnockState.kind !== 'empty');
 
 	// On-demand door-knock refresh. When the server says nobody has pulled
-	// fresh Openfield numbers within the refresh window, this visit triggers
-	// one in the background: the chart keeps showing the numbers it loaded
-	// with, the header shows a spinner, and the page data is invalidated once
-	// the snapshot lands. The server throttles, so a visit inside the window
-	// never reaches Openfield.
+	// fresh numbers within the refresh window, this visit triggers one in the
+	// background: the chart keeps showing the numbers it loaded with, the
+	// header shows a spinner, and the page data is invalidated once the
+	// snapshot lands. The server throttles, so a visit inside the window never
+	// reaches the canvassing tool.
 	let refreshingDoorKnock = $state(false);
 
 	async function refreshDoorKnock() {

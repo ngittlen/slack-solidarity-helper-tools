@@ -8,39 +8,15 @@ import { loadSettings } from '$lib/server/settings.js';
 import { verifySlackSignature } from '$lib/server/slack-signature.js';
 import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { renderWelcomeDm } from '$lib/welcome-dm.js';
-import {
-	SLACK_BOT_TOKEN,
-	DOOR_KNOCK_CHANNEL_ID,
-	OPENFIELD_BASE_URL,
-	OPENFIELD_USERNAME,
-	OPENFIELD_PASSWORD,
-} from '$lib/server/env.js';
-import { createCanvasWatcher } from '$lib/server/door-knock-canvas-watch.js';
-import { createOpenfieldClient } from '$lib/server/openfield.js';
-import {
-	findCodesCanvasFile,
-	fetchConversationCodesCanvas,
-} from '$lib/server/door-knock-canvas.js';
+import { doorKnockCanvasWatcher } from '$lib/server/door-knock-env.js';
 
 // Watches the door-knocking channel's "Conversation Codes" canvas via Slack
 // file_change events (requires the file_change bot event subscription) and
-// caches new codes' Openfield conversation ids the moment they appear — so
-// codes swapped out later the same day still get their doors counted by the
-// nightly snapshot. Disabled when the integration isn't configured.
-const canvasWatcher =
-	DOOR_KNOCK_CHANNEL_ID && OPENFIELD_BASE_URL && OPENFIELD_USERNAME && OPENFIELD_PASSWORD
-		? createCanvasWatcher({
-				db,
-				findCanvasFileId: async () =>
-					(await findCodesCanvasFile(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID)).fileId,
-				fetchCanvasHtml: () => fetchConversationCodesCanvas(SLACK_BOT_TOKEN, DOOR_KNOCK_CHANNEL_ID),
-				openfield: createOpenfieldClient({
-					baseUrl: OPENFIELD_BASE_URL,
-					username: OPENFIELD_USERNAME,
-					password: OPENFIELD_PASSWORD,
-				}),
-			})
-		: null;
+// caches new codes' conversation ids the moment they appear — so codes swapped
+// out later the same day still get their doors counted by the nightly
+// snapshot. Null unless the configured door-knock provider needs one (only
+// Openfield does) — see doorKnockCanvasWatcher.
+const canvasWatcher = doorKnockCanvasWatcher();
 
 // ---------------------------------------------------------------------------
 // Slack signature verification

@@ -266,7 +266,7 @@ async function loadSlack(
 
 /** Doors knocked per day from the nightly door_knock_daily snapshot, bucketed
  *  like the signup sources so the dashboard chart pipeline can reuse
- *  buildDetailFrame. Openfield chapters have no Solidarity ids, so bands get
+ *  buildDetailFrame. Door-knock chapter names have no Solidarity ids, so bands get
  *  stable synthetic ids (index into the window's sorted chapter names) —
  *  excludedChapterIds deliberately does not apply here. */
 export async function loadDoorKnockSignups(

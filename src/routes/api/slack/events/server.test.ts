@@ -17,8 +17,10 @@ const mockLoadSettings = vi.hoisted(() => vi.fn());
 const mockHandleFileChange = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock('$lib/server/solidarity', () => ({ getUserByEmail: mockGetUserByEmail }));
-vi.mock('$lib/server/door-knock-canvas-watch', () => ({
-	createCanvasWatcher: vi.fn(() => ({ handleFileChange: mockHandleFileChange })),
+// Whether a watcher exists at all is door-knock-env's decision (only the
+// Openfield provider needs one) — this route just forwards to whatever it gets.
+vi.mock('$lib/server/door-knock-env', () => ({
+	doorKnockCanvasWatcher: vi.fn(() => ({ handleFileChange: mockHandleFileChange })),
 }));
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
 vi.mock('$lib/server/autocomplete-sources', () => ({
@@ -38,13 +40,7 @@ vi.mock('$lib/server/db', () => ({ db: { insert: mockInsert } }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
 	SLACK_BOT_TOKEN: 'xoxb-test',
-	// All four required to enable the canvas watcher
-	DOOR_KNOCK_CHANNEL_ID: 'C_DOOR',
-	OPENFIELD_BASE_URL: 'https://campaign.openfield.ai',
-	OPENFIELD_USERNAME: 'bot',
-	OPENFIELD_PASSWORD: 'pw',
 }));
-vi.mock('$lib/server/openfield', () => ({ createOpenfieldClient: vi.fn(() => ({})) }));
 
 // --- Helpers ---
 

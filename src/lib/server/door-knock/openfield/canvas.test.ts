@@ -3,7 +3,7 @@ import {
 	parseConversationCodes,
 	findCandidateCodes,
 	fetchConversationCodesCanvas,
-} from './door-knock-canvas.js';
+} from './canvas.js';
 
 // Condensed from real "Conversation Codes" canvas HTML across its observed
 // revisions: shouted chapter headings (bare, with a "CHAPTER - …" tail, or

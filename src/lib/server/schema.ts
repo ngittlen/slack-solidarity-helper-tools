@@ -142,10 +142,13 @@ export const channelWelcomeFlags = sqliteTable('channel_welcome_flags', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
-// One row per (ET date, conversation code): the code's total door-knock
-// attempts/contacts for that day, captured by the nightly snapshot from
-// Openfield's today-only leaderboard endpoint. chapter_name comes from the
-// "Conversation Codes" Slack canvas at snapshot time.
+// One row per (date, turf code): the turf's total door-knock attempts/contacts
+// for that day, captured by the nightly snapshot from whichever door-knock
+// provider is configured (see door-knock-provider.ts). `code` and
+// `chapter_name` mean whatever that provider says they mean — for Openfield, a
+// conversation code and the chapter the "Conversation Codes" Slack canvas
+// attributed it to at snapshot time. The date is likewise stamped in the
+// provider's rollover zone, NOT necessarily the campaign's.
 export const doorKnockDaily = sqliteTable(
 	'door_knock_daily',
 	{
@@ -159,9 +162,9 @@ export const doorKnockDaily = sqliteTable(
 );
 
 // One row per (date, code, canvasser): an individual's door-knock attempts on
-// that conversation for that day. Openfield's today-leaderboard already breaks
-// its totals down per canvasser — door_knock_daily throws that detail away, so
-// this table keeps it for the dashboard's daily personal ticker.
+// that turf for that day. Providers already break their totals down per
+// canvasser — door_knock_daily throws that detail away, so this table keeps it
+// for the dashboard's daily personal ticker.
 //
 // Keyed by code as well as canvasser (rather than pre-summing per person)
 // because the snapshot writes code by code and upserts; a mid-day re-run then
@@ -173,7 +176,7 @@ export const doorKnockCanvasserDaily = sqliteTable(
 	{
 		date: text('date').notNull(),
 		code: text('code').notNull(),
-		/** Openfield's display name for the canvasser, trimmed. */
+		/** The provider's display name for the canvasser, trimmed. */
 		canvasser: text('canvasser').notNull(),
 		/** Chapter the code belonged to that day, denormalised from the canvas
 		 *  the same way door_knock_daily stores it — so the ticker can name a
@@ -187,18 +190,19 @@ export const doorKnockCanvasserDaily = sqliteTable(
 	(table) => [primaryKey({ columns: [table.date, table.code, table.canvasser] })],
 );
 
-// Cache of conversation code → Openfield numeric conversation id. Resolving a
-// code costs a POST to /codes/, so each code is resolved once and reused.
+// Openfield provider only. Cache of conversation code → Openfield numeric
+// conversation id. Resolving a code costs a POST to /codes/, so each code is
+// resolved once and reused.
 export const doorKnockCodeIds = sqliteTable('door_knock_code_ids', {
 	code: text('code').primaryKey(),
 	conversationId: integer('conversation_id').notNull(),
 	resolvedAt: text('resolved_at').notNull(),
 });
 
-// Nightly archive of the "Conversation Codes" canvas HTML (~30 KB/night) —
-// Slack has no canvas version-history API, so this is our own record of what
-// the canvas said on each date. One row per ET date; a re-run the same
-// evening overwrites with the fresher copy.
+// Openfield provider only. Nightly archive of the "Conversation Codes" canvas
+// HTML (~30 KB/night) — Slack has no canvas version-history API, so this is
+// our own record of what the canvas said on each date. One row per date; a
+// re-run the same evening overwrites with the fresher copy.
 export const doorKnockCanvasArchive = sqliteTable('door_knock_canvas_archive', {
 	date: text('date').primaryKey(),
 	html: text('html').notNull(),
@@ -208,7 +212,7 @@ export const doorKnockCanvasArchive = sqliteTable('door_knock_canvas_archive', {
 // Singleton row recording the last door-knock snapshot ATTEMPT, so dashboard
 // visits can re-run the snapshot at most once every DOOR_KNOCK_REFRESH_MS
 // (see door-knock-refresh.ts). Stamped at claim time — before the snapshot
-// runs — so a failing Openfield/Slack call throttles the retry the same as a
+// runs — so a failing provider/Slack call throttles the retry the same as a
 // success instead of letting every page view start a new attempt.
 export const doorKnockRefresh = sqliteTable(
 	'door_knock_refresh',

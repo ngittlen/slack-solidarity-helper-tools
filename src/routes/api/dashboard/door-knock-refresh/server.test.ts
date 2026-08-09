@@ -3,12 +3,12 @@ import { POST } from './+server.js';
 
 const mockRefresh = vi.hoisted(() => vi.fn());
 const mockRunSnapshot = vi.hoisted(() => vi.fn());
-const mockDeps = vi.hoisted(() => vi.fn());
+const mockProvider = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/door-knock-refresh', () => ({ refreshDoorKnockIfStale: mockRefresh }));
 vi.mock('$lib/server/door-knock-snapshot', () => ({ runDoorKnockSnapshot: mockRunSnapshot }));
-vi.mock('$lib/server/door-knock-env', () => ({ doorKnockSnapshotDeps: mockDeps }));
+vi.mock('$lib/server/door-knock-env', () => ({ doorKnockProvider: mockProvider }));
 
 const session = { slackUserId: 'U123', slackUserName: 'Alice', isAdmin: false };
 
@@ -19,7 +19,7 @@ function makeReq(sessionData: object | null = session) {
 describe('POST /api/dashboard/door-knock-refresh', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockDeps.mockReturnValue({ ok: true, deps: { fetchCanvasHtml: vi.fn(), openfield: {} } });
+		mockProvider.mockReturnValue({ ok: true, provider: { name: 'openfield' } });
 		mockRefresh.mockResolvedValue({ status: 'refreshed' });
 	});
 
@@ -62,8 +62,8 @@ describe('POST /api/dashboard/door-knock-refresh', () => {
 		expect(await res.json()).toEqual({ status: 'failed' });
 	});
 
-	it('stays quiet and touches nothing when Openfield is not configured', async () => {
-		mockDeps.mockReturnValue({ ok: false, error: 'DOOR_KNOCK_CHANNEL_ID is not set' });
+	it('stays quiet and touches nothing when no provider is configured', async () => {
+		mockProvider.mockReturnValue({ ok: false, error: 'DOOR_KNOCK_CHANNEL_ID is not set' });
 		const res = await POST(makeReq() as never);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ status: 'unconfigured' });
