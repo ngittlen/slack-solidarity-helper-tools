@@ -3,8 +3,8 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { loadSettings } from '$lib/server/settings.js';
-import { runDoorKnockSnapshot, UNMAPPED_CHAPTER } from '$lib/server/door-knock-snapshot.js';
-import { doorKnockSnapshotDeps } from '$lib/server/door-knock-env.js';
+import { runDoorKnockSnapshot } from '$lib/server/door-knock-snapshot.js';
+import { doorKnockProvider } from '$lib/server/door-knock-env.js';
 import { beginDoorKnockRefresh, endDoorKnockRefresh } from '$lib/server/door-knock-refresh.js';
 import { INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 
@@ -19,9 +19,9 @@ export const POST: RequestHandler = async ({ url }) => {
 	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
-	const config = doorKnockSnapshotDeps();
-	if (!config.ok) {
-		return json({ error: config.error }, { status: 500 });
+	const configured = doorKnockProvider();
+	if (!configured.ok) {
+		return json({ error: configured.error }, { status: 500 });
 	}
 
 	// The scheduled run always runs — but it still resets the dashboard's
@@ -30,31 +30,28 @@ export const POST: RequestHandler = async ({ url }) => {
 	await beginDoorKnockRefresh(db, new Date());
 
 	try {
-		const result = await runDoorKnockSnapshot(db, config.deps);
+		const result = await runDoorKnockSnapshot(db, configured.provider);
 		await endDoorKnockRefresh(db, new Date(), null);
 		console.log(
-			`[door-knock] ${result.date}: ${result.rowsWritten} rows, ${result.totalAttempts} attempts` +
-				(result.codesFailed.length > 0 ? `, failed: ${result.codesFailed.join(',')}` : ''),
+			`[door-knock] ${result.provider} ${result.date}: ${result.rowsWritten} rows, ` +
+				`${result.totalAttempts} attempts`,
+			result.details,
 		);
 
-		// Parser-drift alarm only: codes the parser couldn't attribute to a
-		// chapter (counted under "Unmapped") need a human to fix the parser or
-		// the canvas. Off-canvas codes are routine (mid-day swaps) and handled
-		// silently. Best-effort — a Slack outage must not fail the snapshot
-		// that already ran.
-		if (result.unattributedCodes.length > 0) {
+		// Providers raise a warning only for conditions that need a human — for
+		// Openfield, codes its parser couldn't attribute to a chapter (counted
+		// under "Unmapped"). Routine conditions like a mid-day code swap are
+		// logged by the provider and never reach here. Best-effort: a Slack
+		// outage must not fail the snapshot that already ran.
+		if (result.warnings.length > 0) {
 			try {
 				const { slackTrackingChannelId } = await loadSettings(db);
-				await slack.chat.postMessage({
-					channel: slackTrackingChannelId,
-					text:
-						`:warning: Door-knock snapshot: ${result.unattributedCodes.length} code(s) on the canvas ` +
-						`couldn't be matched to a chapter (layout may have changed): ${result.unattributedCodes.join(', ')} — ` +
-						`counted under “${UNMAPPED_CHAPTER}” until the canvas or the parser is fixed.`,
-				});
+				for (const text of result.warnings) {
+					await slack.chat.postMessage({ channel: slackTrackingChannelId, text });
+				}
 			} catch (err) {
 				console.error(
-					'[door-knock] failed to post canvas-drift warning to Slack:',
+					'[door-knock] failed to post provider warning to Slack:',
 					err instanceof Error ? err.message : err,
 				);
 			}

@@ -2,8 +2,8 @@
 // (/api/slack/events, /api/slack/commands, /api/slack/interactivity).
 //
 // Lives here rather than in the events route because that module builds the
-// canvas watcher and an Openfield client at import time — importing it from the
-// command routes just to reuse one function would drag all of that along.
+// door-knock canvas watcher at import time — importing it from the command
+// routes just to reuse one function would drag all of that along.
 //
 // The HMAC is computed over the raw request body, so it works identically for
 // the events route's JSON payloads and the command/interactivity routes'

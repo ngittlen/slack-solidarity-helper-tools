@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createOpenfieldClient, type OpenfieldClient } from './openfield.js';
+import { createOpenfieldClient, type OpenfieldClient } from './client.js';
 
 // A tiny fake of Openfield's Django app: form login at /, code entry at
 // /codes/, JSON leaderboard at /endpoint/<id>/today. Sessions and CSRF are

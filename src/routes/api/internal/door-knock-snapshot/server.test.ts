@@ -6,23 +6,15 @@ const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockLoadSettings = vi.hoisted(() => vi.fn());
 const mockBeginRefresh = vi.hoisted(() => vi.fn());
 const mockEndRefresh = vi.hoisted(() => vi.fn());
-const mockEnv = vi.hoisted(() => ({
-	INTERNAL_CRON_SECRET: 'test-cron-secret',
-	SLACK_BOT_TOKEN: 'xoxb-test',
-	OPENFIELD_BASE_URL: 'https://campaign.openfield.ai',
-	OPENFIELD_USERNAME: 'bot',
-	OPENFIELD_PASSWORD: 'pw',
-	DOOR_KNOCK_CHANNEL_ID: 'C_DOOR',
-}));
+const mockDoorKnockProvider = vi.hoisted(() => vi.fn());
+const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'test-cron-secret' }));
 
-vi.mock('$lib/server/door-knock-snapshot', () => ({
-	runDoorKnockSnapshot: mockRunSnapshot,
-	UNMAPPED_CHAPTER: 'Unmapped',
-}));
+vi.mock('$lib/server/door-knock-snapshot', () => ({ runDoorKnockSnapshot: mockRunSnapshot }));
+// Provider selection and its env validation are door-knock-env's job (and its
+// own test's) — this route only cares that a provider is or isn't available.
+vi.mock('$lib/server/door-knock-env', () => ({ doorKnockProvider: mockDoorKnockProvider }));
 vi.mock('$lib/server/slack', () => ({ slack: { chat: { postMessage: mockPostMessage } } }));
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
-vi.mock('$lib/server/door-knock-canvas', () => ({ fetchConversationCodesCanvas: vi.fn() }));
-vi.mock('$lib/server/openfield', () => ({ createOpenfieldClient: vi.fn(() => ({})) }));
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/door-knock-refresh', () => ({
 	beginDoorKnockRefresh: mockBeginRefresh,
@@ -32,42 +24,27 @@ vi.mock('$lib/server/env', () => ({
 	get INTERNAL_CRON_SECRET() {
 		return mockEnv.INTERNAL_CRON_SECRET;
 	},
-	get SLACK_BOT_TOKEN() {
-		return mockEnv.SLACK_BOT_TOKEN;
-	},
-	get OPENFIELD_BASE_URL() {
-		return mockEnv.OPENFIELD_BASE_URL;
-	},
-	get OPENFIELD_USERNAME() {
-		return mockEnv.OPENFIELD_USERNAME;
-	},
-	get OPENFIELD_PASSWORD() {
-		return mockEnv.OPENFIELD_PASSWORD;
-	},
-	get DOOR_KNOCK_CHANNEL_ID() {
-		return mockEnv.DOOR_KNOCK_CHANNEL_ID;
-	},
 }));
 
 function makeReq(query: string) {
 	return { url: new URL(`http://localhost/api/internal/door-knock-snapshot${query}`) };
 }
 
+const OK_RESULT = {
+	provider: 'openfield',
+	date: '2026-07-06',
+	rowsWritten: 2,
+	canvasserRowsWritten: 3,
+	totalAttempts: 42,
+	warnings: [],
+	details: { codesFound: 2, codesFailed: [] },
+};
+
 describe('POST /api/internal/door-knock-snapshot', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockEnv.OPENFIELD_BASE_URL = 'https://campaign.openfield.ai';
-		mockEnv.DOOR_KNOCK_CHANNEL_ID = 'C_DOOR';
-		mockRunSnapshot.mockResolvedValue({
-			date: '2026-07-06',
-			codesFound: 2,
-			codesResolved: 2,
-			codesFailed: [],
-			unattributedCodes: [],
-			offCanvasCodes: [],
-			rowsWritten: 2,
-			totalAttempts: 42,
-		});
+		mockDoorKnockProvider.mockReturnValue({ ok: true, provider: { name: 'openfield' } });
+		mockRunSnapshot.mockResolvedValue(OK_RESULT);
 		mockPostMessage.mockResolvedValue({ ok: true });
 		mockLoadSettings.mockResolvedValue({ slackTrackingChannelId: 'C_TRACK' });
 		vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -80,26 +57,27 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 		expect(mockRunSnapshot).not.toHaveBeenCalled();
 	});
 
-	it('returns 500 with a clear message when Openfield config is missing', async () => {
-		mockEnv.OPENFIELD_BASE_URL = '';
+	it('returns 500 with the provider config error when no provider is available', async () => {
+		mockDoorKnockProvider.mockReturnValue({
+			ok: false,
+			error: 'OPENFIELD_BASE_URL/USERNAME/PASSWORD are not set',
+		});
 		const res = await POST(makeReq('?key=test-cron-secret') as never);
 		expect(res.status).toBe(500);
 		expect((await res.json()).error).toMatch(/OPENFIELD/);
 		expect(mockRunSnapshot).not.toHaveBeenCalled();
 	});
 
-	it('returns 500 when the channel id is missing', async () => {
-		mockEnv.DOOR_KNOCK_CHANNEL_ID = '';
-		const res = await POST(makeReq('?key=test-cron-secret') as never);
-		expect(res.status).toBe(500);
-		expect((await res.json()).error).toMatch(/DOOR_KNOCK_CHANNEL_ID/);
-	});
+	it('runs the snapshot with the configured provider and returns its result', async () => {
+		const provider = { name: 'openfield' };
+		mockDoorKnockProvider.mockReturnValue({ ok: true, provider });
 
-	it('runs the snapshot and returns its result', async () => {
 		const res = await POST(makeReq('?key=test-cron-secret') as never);
+
 		expect(res.status).toBe(200);
 		expect(await res.json()).toMatchObject({ date: '2026-07-06', totalAttempts: 42 });
 		expect(mockRunSnapshot).toHaveBeenCalledTimes(1);
+		expect(mockRunSnapshot.mock.calls[0]![1]).toBe(provider);
 	});
 
 	// The scheduled run resets the dashboard's on-demand refresh window, so a
@@ -118,70 +96,41 @@ describe('POST /api/internal/door-knock-snapshot', () => {
 		expect(mockEndRefresh.mock.calls[0]![2]).toBe('openfield 503');
 	});
 
-	it('does not stamp the window when config is missing', async () => {
-		mockEnv.DOOR_KNOCK_CHANNEL_ID = '';
+	it('does not stamp the window when no provider is configured', async () => {
+		mockDoorKnockProvider.mockReturnValue({ ok: false, error: 'nope' });
 		await POST(makeReq('?key=test-cron-secret') as never);
 		expect(mockBeginRefresh).not.toHaveBeenCalled();
 	});
 
-	it('does not ping Slack when every code was attributed', async () => {
+	it('does not ping Slack on a clean run', async () => {
 		const res = await POST(makeReq('?key=test-cron-secret') as never);
 		expect(res.status).toBe(200);
 		expect(mockPostMessage).not.toHaveBeenCalled();
 	});
 
-	it('posts a layout-drift warning to the tracking channel for unattributed codes', async () => {
+	// The provider decides what deserves a human's attention and writes the
+	// message; this route only delivers it.
+	it('posts each provider warning to the tracking channel verbatim', async () => {
 		mockRunSnapshot.mockResolvedValueOnce({
-			date: '2026-07-06',
-			codesFound: 10,
-			codesResolved: 12,
-			codesFailed: [],
-			unattributedCodes: ['ZZ9ZZ9', 'YY8YY8'],
-			offCanvasCodes: [],
-			rowsWritten: 12,
-			totalAttempts: 500,
+			...OK_RESULT,
+			warnings: ['drift: ZZ9ZZ9, YY8YY8', 'second thing'],
 		});
 		const res = await POST(makeReq('?key=test-cron-secret') as never);
 		expect(res.status).toBe(200);
-		expect(mockPostMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				channel: 'C_TRACK',
-				text: expect.stringContaining('ZZ9ZZ9, YY8YY8'),
-			}),
-		);
-	});
-
-	it('does not ping Slack for off-canvas codes (routine mid-day swaps)', async () => {
-		mockRunSnapshot.mockResolvedValueOnce({
-			date: '2026-07-06',
-			codesFound: 10,
-			codesResolved: 10,
-			codesFailed: [],
-			unattributedCodes: [],
-			offCanvasCodes: ['OLD123'],
-			rowsWritten: 11,
-			totalAttempts: 500,
+		expect(mockPostMessage).toHaveBeenCalledTimes(2);
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			channel: 'C_TRACK',
+			text: 'drift: ZZ9ZZ9, YY8YY8',
 		});
-		const res = await POST(makeReq('?key=test-cron-secret') as never);
-		expect(res.status).toBe(200);
-		expect(mockPostMessage).not.toHaveBeenCalled();
+		expect(mockPostMessage).toHaveBeenCalledWith({ channel: 'C_TRACK', text: 'second thing' });
 	});
 
 	it('a Slack failure does not fail the snapshot response', async () => {
-		mockRunSnapshot.mockResolvedValueOnce({
-			date: '2026-07-06',
-			codesFound: 10,
-			codesResolved: 11,
-			codesFailed: [],
-			unattributedCodes: ['ZZ9ZZ9'],
-			offCanvasCodes: [],
-			rowsWritten: 11,
-			totalAttempts: 500,
-		});
+		mockRunSnapshot.mockResolvedValueOnce({ ...OK_RESULT, warnings: ['drift: ZZ9ZZ9'] });
 		mockPostMessage.mockRejectedValueOnce(new Error('slack down'));
 		const res = await POST(makeReq('?key=test-cron-secret') as never);
 		expect(res.status).toBe(200);
-		expect((await res.json()).unattributedCodes).toEqual(['ZZ9ZZ9']);
+		expect((await res.json()).warnings).toEqual(['drift: ZZ9ZZ9']);
 	});
 
 	it('returns 500 with the error message when the snapshot throws', async () => {

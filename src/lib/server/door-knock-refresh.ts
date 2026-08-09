@@ -1,19 +1,20 @@
 // On-demand door-knock refresh: as election day approaches the nightly
-// snapshot is too slow a cadence, so a dashboard visit re-runs the Openfield
-// snapshot when nobody has run one in the last DOOR_KNOCK_REFRESH_MS.
+// snapshot is too slow a cadence, so a dashboard visit re-runs the snapshot
+// when nobody has run one in the last DOOR_KNOCK_REFRESH_MS.
 //
 // Re-running mid-day is safe by construction: runDoorKnockSnapshot upserts
-// (date, code) rows from Openfield's today-only leaderboard, so a fresh run
-// just overwrites today's row with newer numbers (see door-knock-snapshot.ts).
+// (date, code) rows from the provider's view of today, so a fresh run just
+// overwrites today's rows with newer numbers (see door-knock-snapshot.ts).
 //
-// Two layers keep visits from stampeding Openfield (one login + one GET per
-// conversation code per run):
+// Two layers keep visits from stampeding whatever canvassing tool is behind
+// the provider (for Openfield, one login + one GET per conversation code per
+// run):
 //
 //  1. A DB claim on the door_knock_refresh singleton — a conditional UPDATE
 //     that only wins when the last ATTEMPT started outside the window. It's
 //     stamped at claim time, not on success, so a failing run throttles the
 //     next attempt exactly like a successful one instead of letting every
-//     page view start a new attempt against a broken Openfield.
+//     page view start a new attempt against a broken upstream.
 //  2. An in-process single-flight promise, so several visitors landing at once
 //     on the same instance share one run and all get told when it's done.
 //

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createCanvasWatcher, type CanvasWatcherDeps } from './door-knock-canvas-watch.js';
-import { doorKnockCanvasArchive, doorKnockCodeIds } from './schema.js';
+import { createCanvasWatcher, type CanvasWatcherDeps } from './canvas-watch.js';
+import { doorKnockCanvasArchive, doorKnockCodeIds } from '$lib/server/schema.js';
 
 // Minimal canvas: one chapter table row per code.
 function canvasWith(...codes: string[]): string {

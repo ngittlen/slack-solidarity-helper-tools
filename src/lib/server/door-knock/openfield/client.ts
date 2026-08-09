@@ -17,7 +17,7 @@
 // Same import discipline as solidarity.ts: no $env/$lib imports — config and
 // fetch are injected so tests run without a network.
 
-import { errMessage } from '../err-message.js';
+import { errMessage } from '$lib/err-message.js';
 
 export interface OpenfieldConfig {
 	/** e.g. https://abdulforsenate.openfield.ai — no trailing slash. */

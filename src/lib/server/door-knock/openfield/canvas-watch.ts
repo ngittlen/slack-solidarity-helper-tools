@@ -12,15 +12,15 @@
 // calls, and (b) trailing-debounces the burst so one edit session becomes one
 // check.
 //
-// No $env/$lib imports — everything is injected (the Slack events route wires
+// No $env imports — everything is injected (the Slack events route wires
 // it); tests construct their own watcher.
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { doorKnockCanvasArchive, doorKnockCodeIds } from './schema.js';
-import { parseConversationCodes } from './door-knock-canvas.js';
-import { openfieldDate, resolveCodeIds } from './door-knock-snapshot.js';
-import type { OpenfieldClient } from './openfield.js';
-import { errMessage } from '../err-message.js';
+import { doorKnockCanvasArchive, doorKnockCodeIds } from '$lib/server/schema.js';
+import { parseConversationCodes } from './canvas.js';
+import { openfieldDate, resolveCodeIds } from './provider.js';
+import type { OpenfieldClient } from './client.js';
+import { errMessage } from '$lib/err-message.js';
 
 type Database = LibSQLDatabase<Record<string, unknown>>;
 

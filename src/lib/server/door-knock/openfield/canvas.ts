@@ -22,8 +22,8 @@
 // exactly 6 chars of A-Z0-9 (real codes can be all letters, e.g. QUJAUF).
 // Callers treat "zero codes parsed" as an error.
 //
-// No $env/$lib imports — the Slack token and fetch are injected (same
-// discipline as solidarity.ts) so tests run without a network.
+// No $env imports — the Slack token and fetch are injected (same discipline as
+// solidarity.ts) so tests run without a network.
 
 export interface ConversationCode {
 	code: string;

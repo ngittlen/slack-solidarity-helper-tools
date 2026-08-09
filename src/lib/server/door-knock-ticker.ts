@@ -2,7 +2,7 @@
 // dashboard's LED ticker.
 //
 // Reads door_knock_canvasser_daily, which the snapshot fills from the same
-// Openfield leaderboards that feed door_knock_daily. A person can canvass
+// provider rows that feed door_knock_daily. A person can canvass
 // under several conversation codes in a day (a metro code in the morning, a
 // county code in the afternoon), so the day's total per person is the sum
 // across codes — hence the aggregation here rather than a plain SELECT.
