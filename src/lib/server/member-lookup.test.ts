@@ -18,6 +18,7 @@ function makeDeps(over: Partial<MemberLookupDeps> = {}): MemberLookupDeps {
 		findByEmail: vi.fn().mockResolvedValue({ id: 500 }),
 		fetchActions: vi.fn().mockResolvedValue(feedOk),
 		fetchRsvps: vi.fn().mockResolvedValue(feedOk),
+		fetchChapters: vi.fn().mockResolvedValue(['Detroit']),
 		listNotes: vi.fn().mockResolvedValue([] as MemberNoteRow[]),
 		...over,
 	};
@@ -155,5 +156,36 @@ describe('resolveMember', () => {
 	it('carries the Slack summary through', async () => {
 		const result = await resolveMember(makeDeps(), 'U_TARGET');
 		expect(result!.slack).toEqual(SLACK_USER);
+	});
+
+	it('returns the chapters of a resolved account', async () => {
+		const deps = makeDeps({ fetchChapters: vi.fn().mockResolvedValue(['Ann Arbor', 'Detroit']) });
+
+		const result = await resolveMember(deps, 'U_TARGET');
+
+		expect(deps.fetchChapters).toHaveBeenCalledWith(500);
+		expect(result!.chapters).toEqual(['Ann Arbor', 'Detroit']);
+	});
+
+	it('has no chapters when there is no Solidarity account', async () => {
+		const deps = makeDeps({ findByEmail: vi.fn().mockResolvedValue(null) });
+
+		const result = await resolveMember(deps, 'U_TARGET');
+
+		expect(deps.fetchChapters).not.toHaveBeenCalled();
+		expect(result!.chapters).toEqual([]);
+	});
+
+	// The chapter line is context on the header — losing it must not cost the
+	// admin the activity and notes they actually came for.
+	it('degrades a failed chapter lookup to no chapters, leaving the feeds intact', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const deps = makeDeps({ fetchChapters: vi.fn().mockRejectedValue(new Error('503')) });
+
+		const result = await resolveMember(deps, 'U_TARGET');
+
+		expect(result!.chapters).toEqual([]);
+		expect(result!.actions.ok).toBe(true);
+		expect(result!.rsvps.ok).toBe(true);
 	});
 });

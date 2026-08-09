@@ -4,9 +4,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // ever sees the activity request under test.
 const mockGetSolidarityPages = vi.hoisted(() => vi.fn());
 const mockGetSolidarityEvents = vi.hoisted(() => vi.fn());
+const mockGetSolidarityChapters = vi.hoisted(() => vi.fn());
 vi.mock('./autocomplete-sources.js', () => ({
 	getSolidarityPages: mockGetSolidarityPages,
 	getSolidarityEvents: mockGetSolidarityEvents,
+	getSolidarityChapters: mockGetSolidarityChapters,
 }));
 
 import {
@@ -14,6 +16,7 @@ import {
 	setUserCustomProperty,
 	getRecentUserActions,
 	getRecentEventRsvps,
+	getUserChapterNames,
 	_resetShapeLogForTests,
 } from './solidarity.js';
 
@@ -328,5 +331,138 @@ describe('getRecentUserActions / getRecentEventRsvps', () => {
 		expect(shapeLines).toHaveLength(1);
 		expect(shapeLines[0]).toContain('id, title, secret_field');
 		expect(shapeLines[0]).not.toContain('PII');
+	});
+
+	// Both endpoints return one row per occurrence, so a member who committed to
+	// six weeks of the same event would otherwise fill the whole feed with it.
+	it('collapses repeat RSVPs for one event, freeing slots for other events', async () => {
+		mockGetSolidarityEvents.mockResolvedValue({
+			items: [
+				{ id: 10, name: 'Weekly Canvass' },
+				{ id: 20, name: 'Watch Party' },
+			],
+		});
+		fetchMock.mockResolvedValueOnce(
+			activityPage([
+				...Array.from({ length: 6 }, (_, i) => ({
+					id: i,
+					event_id: 10,
+					event_session_id: 100 + i,
+					created_at: `2026-03-0${i + 1}T00:00:00Z`,
+				})),
+				{ id: 99, event_id: 20, event_session_id: 200, created_at: '2026-02-01T00:00:00Z' },
+			]),
+		);
+
+		const feed = await getRecentEventRsvps('tok', 1);
+
+		expect(feed.items.map((i) => [i.title, i.count])).toEqual([
+			['Weekly Canvass', 6],
+			['Watch Party', 1],
+		]);
+	});
+
+	it('collapses repeat submissions of one action page', async () => {
+		mockGetSolidarityPages.mockResolvedValue({ items: [{ id: 5597, name: 'Join Us' }] });
+		fetchMock.mockResolvedValueOnce(
+			activityPage([
+				{ id: 1, action_page_id: 5597, created_at: '2026-01-01T00:00:00Z' },
+				{ id: 2, action_page_id: 5597, created_at: '2026-01-08T00:00:00Z' },
+			]),
+		);
+
+		const feed = await getRecentUserActions('tok', 1);
+
+		expect(feed.items).toHaveLength(1);
+		expect(feed.items[0]).toMatchObject({ title: 'Join Us', count: 2 });
+	});
+});
+
+describe('getUserChapterNames', () => {
+	const fetchMock = vi.fn();
+
+	function userPage(body: unknown, status = 200) {
+		return {
+			ok: status >= 200 && status < 300,
+			status,
+			headers: new Headers(),
+			json: async () => body,
+			text: async () => '',
+		} as unknown as Response;
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.stubGlobal('fetch', fetchMock);
+		mockGetSolidarityChapters.mockResolvedValue({
+			items: [
+				{ id: 1, name: 'Detroit' },
+				{ id: 2, name: 'Ann Arbor' },
+			],
+		});
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+
+	it('names every chapter the member belongs to, alphabetically', async () => {
+		fetchMock.mockResolvedValueOnce(
+			userPage({ data: { id: 42, chapter_id: 1, chapter_ids: [1, 2] } }),
+		);
+
+		expect(await getUserChapterNames('tok', 42)).toEqual(['Ann Arbor', 'Detroit']);
+		expect(fetchMock.mock.calls[0]![0]).toContain('/v1/users/42');
+	});
+
+	// The by-id envelope is unpublished; all three observed shapes are accepted.
+	it('reads a bare user object and a data array as well as data object', async () => {
+		fetchMock.mockResolvedValueOnce(userPage({ id: 42, chapter_id: null, chapter_ids: [2] }));
+		expect(await getUserChapterNames('tok', 42)).toEqual(['Ann Arbor']);
+
+		fetchMock.mockResolvedValueOnce(
+			userPage({ data: [{ id: 42, chapter_id: null, chapter_ids: [1] }] }),
+		);
+		expect(await getUserChapterNames('tok', 42)).toEqual(['Detroit']);
+	});
+
+	it('folds the singular chapter_id in without duplicating it', async () => {
+		fetchMock.mockResolvedValueOnce(
+			userPage({ data: { id: 42, chapter_id: 1, chapter_ids: [1] } }),
+		);
+		expect(await getUserChapterNames('tok', 42)).toEqual(['Detroit']);
+	});
+
+	// Better than showing nothing: the admin still learns they're in a chapter.
+	it('falls back to the id when the chapter list has no name for it', async () => {
+		fetchMock.mockResolvedValueOnce(userPage({ data: { id: 42, chapter_ids: [77] } }));
+		expect(await getUserChapterNames('tok', 42)).toEqual(['Chapter 77']);
+	});
+
+	it('returns [] for a member in no chapters', async () => {
+		fetchMock.mockResolvedValueOnce(
+			userPage({ data: { id: 42, chapter_id: null, chapter_ids: [] } }),
+		);
+		expect(await getUserChapterNames('tok', 42)).toEqual([]);
+	});
+
+	it('returns [] rather than throwing when the user is gone', async () => {
+		fetchMock.mockResolvedValueOnce(userPage({}, 404));
+		expect(await getUserChapterNames('tok', 42)).toEqual([]);
+	});
+
+	// Throws so resolveMember logs it; the header just loses its chapter line.
+	it('throws on any other non-2xx', async () => {
+		fetchMock.mockResolvedValueOnce(userPage({}, 500));
+		await expect(getUserChapterNames('tok', 42)).rejects.toThrow('returned 500');
+	});
+
+	it('still names what it can when the chapter list is unavailable', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockGetSolidarityChapters.mockRejectedValue(new Error('down'));
+		fetchMock.mockResolvedValueOnce(userPage({ data: { id: 42, chapter_ids: [1] } }));
+
+		expect(await getUserChapterNames('tok', 42)).toEqual(['Chapter 1']);
 	});
 });
