@@ -219,6 +219,39 @@ DEV_SLACK_USER_ID=U012AB3CD
 
 The `team_join` welcome flow requires real Slack credentials and cannot be tested locally without a tunnelling tool (e.g. `ngrok`).
 
+## Reports
+
+### Top RSVPers per chapter
+
+`scripts/top-rsvpers.ts` writes a CSV of each chapter's ten most active members — the people who RSVP'd to the most distinct events over a trailing window. Read-only; nothing is written back to Solidarity.
+
+```bash
+npx tsx --env-file=.env.local scripts/top-rsvpers.ts
+npx tsx --env-file=.env.local scripts/top-rsvpers.ts --months 3 --top 20
+npx tsx --env-file=.env.local scripts/top-rsvpers.ts --stdout > top.csv
+```
+
+| Flag       | Default                      | Meaning                                      |
+| ---------- | ---------------------------- | -------------------------------------------- |
+| `--out`    | `top-rsvpers-YYYY-MM-DD.csv` | Where to write                               |
+| `--stdout` | off                          | CSV to stdout, progress to stderr            |
+| `--months` | `2`                          | Window length in calendar months, ending now |
+| `--top`    | `10`                         | Members per chapter                          |
+
+Columns: `Chapter Name`, `RSVP count (over the past two months)`, `Full Name`, `Email`, `Phone Number`.
+
+The output carries members' contact details, so `top-rsvpers-*.csv` is gitignored. Point `--out` somewhere outside the repo if you'd rather not have it in the working directory at all.
+
+How the count is arrived at, since each choice changes who appears:
+
+- **One count per _event_, not per session.** Someone who committed to eight weeks of the same weekly canvass did one thing; counting it eight times would let a single recurring commitment outrank everyone who turned up to eight different things.
+- **Cancelled RSVPs (`is_attending: "no"`) don't count.** Everything else — yes, maybe, waitlisted — is someone putting their name down.
+- **Each person appears on exactly one chapter's list.** Members belong to their own chapter regardless of whose events they attended; a member of _several_ chapters is placed in the one where most of their RSVPs went, with ties broken on the lowest chapter id so repeat runs produce the same file. The reported count is still their total across every event in the window — turning out for a neighbouring chapter is engagement, not a reason to discount them.
+- **Members Solidarity's roster doesn't return** are reported under `(no chapter)`, using the contact card on their RSVP rows, rather than being dropped from a chapter's list.
+- **Duplicate Solidarity profiles for one person are merged on email _and_ name.** Solidarity genuinely holds duplicate people — its API has `POST /v1/users/merge` for exactly this — and the first run of this report put one member in a chapter's top ten twice, with her RSVPs split across two records so both counts understated her. Matching on email alone is wrong here: **29 different people share `noemail@gmail.com`**, a placeholder used when someone signs up without an address, and keying on it pooled all of them into one fictitious member who then topped their chapter. Requiring the name to match too costs the occasional real duplicate filed under "Bob" and "Robert" — much the cheaper error. Phone is not part of the key at all, since households share a number far more often than an inbox. The run logs how many profiles were folded together, which is a decent nudge that some records want merging upstream.
+
+Expect the run to take about **25 minutes** on a two-month window (measured: 1204 events, 1131 non-empty sessions, ~20k RSVPs, a 15.8k-member roster). Solidarity allows 60 requests per 30 seconds and offers no bulk RSVP-by-date filter, so the script makes one paced request per event session in the window (skipping the ones the API reports as empty) plus a full roster walk. Pacing is deliberately conservative — a run at this rate still drew one `429`, which the shared retry logic absorbed by honouring `Retry-After`. Progress goes to stderr.
+
 ## API
 
 ### `POST /api/slack/events`
