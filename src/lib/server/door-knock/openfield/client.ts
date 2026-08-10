@@ -20,7 +20,7 @@
 import { errMessage } from '$lib/err-message.js';
 
 export interface OpenfieldConfig {
-	/** e.g. https://abdulforsenate.openfield.ai — no trailing slash. */
+	/** e.g. https://your-org.openfield.ai — no trailing slash. */
 	baseUrl: string;
 	username: string;
 	password: string;

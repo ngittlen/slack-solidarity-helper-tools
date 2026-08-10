@@ -107,7 +107,7 @@ export const DOOR_KNOCK_PROVIDER = get('DOOR_KNOCK_PROVIDER').trim().toLowerCase
 
 // Openfield door-knocking integration (all four required for the nightly
 // door-knock snapshot; the endpoint 500s with a clear message when unset).
-// OPENFIELD_BASE_URL e.g. https://abdulforsenate.openfield.ai (no trailing /).
+// OPENFIELD_BASE_URL e.g. https://your-org.openfield.ai (no trailing /).
 // The username/password belong to a dedicated service account — the snapshot
 // logs in like a volunteer to read per-conversation leaderboards.
 // DOOR_KNOCK_CHANNEL_ID is the Slack channel whose "Conversation Codes"

@@ -536,3 +536,55 @@ export type NewMemberAccountLinkRow = typeof memberAccountLinks.$inferInsert;
 
 export type MemberNoteRow = typeof memberNotes.$inferSelect;
 export type NewMemberNoteRow = typeof memberNotes.$inferInsert;
+
+/**
+ * Every place a Slack invite link is currently published in Solidarity, one row
+ * per (page, location, link), refreshed by the hourly invite audit.
+ *
+ * A ledger rather than a scan cache: Solidarity exposes no `updated_at` on
+ * pages and its public pages send no ETag, so this table is the only record of
+ * *when* a link appeared on a page or *when* it went bad. `firstSeenAt` answers
+ * "how long have volunteers been hitting a dead link here", and
+ * `statusChangedAt` plus `previousStatus` make the transition visible even
+ * though the audit re-checks everything from scratch each run.
+ *
+ * Rows are kept after a link disappears from a page (`lastSeenAt` stops
+ * advancing) — deleting them would erase the history of a fix.
+ */
+export const slackInviteSightings = sqliteTable(
+	'slack_invite_sightings',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		pageId: integer('page_id').notNull(),
+		// Snapshotted so the log still reads correctly after a page is renamed.
+		pageName: text('page_name').notNull(),
+		pageUrl: text('page_url').notNull().default(''),
+		// 'page content' | 'redirect URL' | 'follow-up email' | 'follow-up text'
+		location: text('location').notNull(),
+		url: text('url').notNull(),
+		// 'valid' | 'broken' | 'unknown'
+		status: text('status').notNull(),
+		detail: text('detail').notNull().default(''),
+		previousStatus: text('previous_status'),
+		firstSeenAt: text('first_seen_at').notNull(),
+		lastSeenAt: text('last_seen_at').notNull(),
+		statusChangedAt: text('status_changed_at'),
+	},
+	(table) => [
+		// The natural key of a sighting: the same link in the email and in the
+		// text of one page are two independent things to fix.
+		uniqueIndex('slack_invite_sightings_page_location_url').on(
+			table.pageId,
+			table.location,
+			table.url,
+		),
+		index('slack_invite_sightings_status').on(table.status, table.lastSeenAt),
+		check(
+			'slack_invite_sightings_status_check',
+			sql`${table.status} in ('valid', 'broken', 'unknown')`,
+		),
+	],
+);
+
+export type SlackInviteSightingRow = typeof slackInviteSightings.$inferSelect;
+export type NewSlackInviteSightingRow = typeof slackInviteSightings.$inferInsert;

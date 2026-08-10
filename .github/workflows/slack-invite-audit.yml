@@ -1,0 +1,24 @@
+name: Slack invite audit
+
+# Hourly. A stale invite link is invisible from the inside — the volunteer who
+# hits it is not in the Slack to complain — so the check has to be routine
+# rather than triggered. The run is cheap: ~15 API calls, ~73 paced page
+# fetches, and one request per distinct invite link.
+on:
+  schedule:
+    - cron: '5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call invite-audit endpoint
+        env:
+          APP_URL: https://slack-solidarity-helper-tools.fly.dev
+          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            --max-time 600 \
+            --retry 3 --retry-delay 30 --retry-connrefused \
+            "${APP_URL}/api/internal/slack-invite-audit?key=${INTERNAL_CRON_SECRET}"
