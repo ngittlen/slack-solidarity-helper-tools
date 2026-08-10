@@ -167,7 +167,7 @@ get the title and the signup page instead of a rejection:
 **Macomb Defenders Rising**
 
 Details and updates:
-https://go.abdulforsenate.com/macomb-defenders-rising
+https://go.example.org/macomb-defenders-rising
 ```
 
 **Images.** `featured_image_url` must be a URL Mobilize hosts, so the bytes are

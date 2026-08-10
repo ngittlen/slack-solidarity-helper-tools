@@ -395,6 +395,34 @@ Returns the full leaderboard (window, totals, top chapters, whether the message 
 
 Scheduler-only. Writes today's per-chapter Solidarity signup counts into `solidarity_daily_snapshots`. The dashboard's Solidarity chart reads from this table, so this should run once per day (e.g. via GitHub Actions). Auth via `?key=<INTERNAL_CRON_SECRET>`.
 
+### `POST /api/internal/slack-invite-audit`
+
+Scheduler-only, hourly. Finds every Slack invite link published anywhere in Solidarity, checks each one still admits the public, and posts a report to the member-note channel (`slackMemberNoteChannelId` in `/settings`). Auth via `?key=<INTERNAL_CRON_SECRET>`.
+
+| Parameter | Required | Description                                                     |
+| --------- | -------- | --------------------------------------------------------------- |
+| `key`     | Yes      | Must match `INTERNAL_CRON_SECRET`                               |
+| `dry_run` | No       | When `1`, returns the report without posting or writing the log |
+
+A stale invite is invisible from inside the workspace: the page still loads and the button still looks right, but the volunteer who clicks it is bounced to a signup form demanding an email address on the workspace's own domain, and they aren't in the Slack to complain. Hence the routine check.
+
+**Where it looks.** Page content, the post-submit redirect URL, the follow-up email, and the follow-up text. Two things about discovery are worth knowing before changing this code:
+
+- `/v1/pages` returns no body at all for `ActionPage::PageBuilder` and `ActionPage::BlogPost` — `description` and `form` are both `null`, and the detail endpoint returns the same stub. A link in a PageBuilder button is **invisible** to an API-only scan. Those pages (~73 of ~1,442) are fetched as rendered HTML instead, paced at 1/sec because the public site rate-limits readily.
+- There is no incremental mode, deliberately. Solidarity exposes no `updated_at` on a page and its public pages send `cache-control: no-cache` with no `ETag`, so "only scan what changed" is not answerable — and a PageBuilder page's API record is byte-identical whether or not someone edited the button inside it. A full sweep takes ~100s.
+
+**How a link is judged.** Requests go out with a current Chrome `User-Agent`, which is load-bearing: Slack serves an "your browser is not supported" wall to anything it reads as an old browser (Chrome 131 is walled, 140+ is served), and that wall is byte-identical for valid, stale and entirely fabricated tokens. If Slack raises its floor past the pinned UA the audit reports `unknown` rather than declaring every link dead — bump `BROWSER_UA` in `slack-invite-audit.ts` when that happens.
+
+| Outcome   | Signal                                                      |
+| --------- | ----------------------------------------------------------- |
+| `valid`   | `200` and the real invite page                              |
+| `broken`  | `302` → `/signup#/domain-signup`, or `200` "Create Account" |
+| `unknown` | Browser wall, network error, or an unexpected status        |
+
+Stale and expired links are indistinguishable — both redirect to the domain-restricted signup — and both are equally broken for a volunteer, so they share one verdict. Classification runs once per _distinct_ URL, not once per page.
+
+**The log.** Every sighting is upserted into `slack_invite_sightings`, keyed by (page, location, link), carrying `firstSeenAt`, `lastSeenAt`, `previousStatus` and `statusChangedAt`. Because the audit is stateless, this table is the only record of when a link appeared on a page or when it went bad, and it lets the report lead with what changed since the last run. Rows are kept after a link is removed from a page — deleting them would erase the history of the fix.
+
 ### `GET /coalition-invite`
 
 Invites an existing Slack user to a coalition channel. Useful for solidarity.tech automations that route members to interest-based channels (labor, housing, etc.) after onboarding.
