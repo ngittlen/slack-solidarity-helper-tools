@@ -409,7 +409,6 @@ export function countsAsRsvp(raw: RawRsvp): boolean {
 	const value = raw.is_attending;
 	if (value === false) return false;
 	return !(typeof value === 'string' && value.trim().toLowerCase() === 'no');
-
 }
 
 export interface SessionInWindow {
