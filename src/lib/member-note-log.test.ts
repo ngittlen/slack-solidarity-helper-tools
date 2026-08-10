@@ -7,7 +7,10 @@ const base = {
 	targetSlackUserId: 'U0TARGET',
 	authorSlackUserId: 'U0ADMIN',
 	dmBody: null,
+	messageLink: null,
 };
+
+const PERMALINK = 'https://example.slack.com/archives/C0CHAN/p1712345678123456';
 
 describe('renderMemberNoteLog', () => {
 	it('renders a note', () => {
@@ -68,6 +71,37 @@ describe('renderMemberNoteLog', () => {
 	it('treats an empty DM body as no DM', () => {
 		expect(renderMemberNoteLog({ ...base, kind: 'warning', dmBody: '' })).not.toContain(
 			'sent to them',
+		);
+	});
+
+	it('links back to the message when one was attached', () => {
+		expect(renderMemberNoteLog({ ...base, messageLink: PERMALINK })).toBe(
+			'Note “Kept posting off-topic links” added to user <@U0TARGET> by <@U0ADMIN>' +
+				` — <${PERMALINK}|regarding this message>`,
+		);
+	});
+
+	it('links back on a warning too, after the sent clause', () => {
+		const out = renderMemberNoteLog({
+			...base,
+			kind: 'warning',
+			dmBody: 'This is your first warning.',
+			messageLink: PERMALINK,
+		});
+		expect(out).toBe(
+			'Warning “Kept posting off-topic links” added to user <@U0TARGET> ' +
+				'and warning “This is your first warning.” sent to them by <@U0ADMIN>' +
+				` — <${PERMALINK}|regarding this message>`,
+		);
+	});
+
+	it('omits the link when none was attached', () => {
+		expect(renderMemberNoteLog(base)).not.toContain('regarding this message');
+	});
+
+	it('treats a blank link as no link', () => {
+		expect(renderMemberNoteLog({ ...base, messageLink: '   ' })).not.toContain(
+			'regarding this message',
 		);
 	});
 });

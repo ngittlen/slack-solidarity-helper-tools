@@ -590,6 +590,17 @@ describe('admin tracking channel', () => {
 		);
 	});
 
+	it('links back to the message the note was filed against', async () => {
+		const permalink = 'https://example.slack.com/archives/C0CHAN/p1712345678123456';
+
+		await call(
+			signedPayload(submissionPayload({}, { [BLOCK.link]: { value: { value: permalink } } })),
+		);
+		await flush();
+
+		expect(postedTo('C_ADMIN_LOG')!.text).toContain(`<${permalink}|regarding this message>`);
+	});
+
 	it('omits the sent clause when the DM was suppressed', async () => {
 		mockInsertNote.mockResolvedValue({ id: 9, warningNumber: 1 });
 

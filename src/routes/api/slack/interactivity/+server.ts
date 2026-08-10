@@ -383,6 +383,7 @@ async function announceToAdmins(
 			targetSlackUserId: submission.slackUserId,
 			authorSlackUserId: actorId,
 			dmBody,
+			messageLink: submission.messageRef?.url ?? null,
 		});
 
 		await slack.chat.postMessage({
