@@ -261,6 +261,23 @@ export async function runSlackInviteAudit(
 
 const DASHBOARD_PAGE_URL = 'https://dashboard.solidarity.tech/pages';
 
+/**
+ * Whether this run has anything worth saying out loud.
+ *
+ * The check runs hourly and the overwhelmingly common outcome is that nothing
+ * is wrong. An hourly ":white_check_mark: all clear" teaches the channel to
+ * scroll past anything from the audit, which costs us the one message that
+ * matters. So we stay silent unless there is a problem — broken links, or
+ * links we could not check — or something changed since the last run: a fix is
+ * worth announcing even though the result itself is all clear.
+ *
+ * `changeCount` is the length of `recordAudit`'s return; it is passed as a
+ * number so this module stays independent of the ledger.
+ */
+export function auditIsWorthPosting(result: AuditResult, changeCount: number): boolean {
+	return result.broken.length > 0 || result.unknown.length > 0 || changeCount > 0;
+}
+
 /** Slack mrkdwn for the run. Groups by page so one broken link used in an
  *  email and a text reads as one problem to fix, not two. */
 export function formatAuditMessage(result: AuditResult): string {

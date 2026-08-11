@@ -5,6 +5,7 @@ import {
 	needsRenderedHtml,
 	classifyInvite,
 	formatAuditMessage,
+	auditIsWorthPosting,
 	type SolidarityPage,
 	type AuditResult,
 } from './slack-invite-audit.js';
@@ -250,5 +251,42 @@ describe('formatAuditMessage', () => {
 		);
 		expect(msg).toMatch(/could not be checked/);
 		expect(msg).not.toMatch(/rotating_light/);
+	});
+});
+
+describe('auditIsWorthPosting', () => {
+	const ref = {
+		url: FRESH,
+		pageId: 1,
+		pageName: 'p',
+		pageUrl: '',
+		location: 'page content' as const,
+	};
+
+	function result(overrides: Partial<AuditResult> = {}): AuditResult {
+		return {
+			pagesScanned: 1442,
+			pagesFetchedAsHtml: 73,
+			refs: [ref],
+			distinctUrls: 1,
+			statuses: new Map([[FRESH, { status: 'valid' as const, detail: 'ok' }]]),
+			broken: [],
+			unknown: [],
+			...overrides,
+		};
+	}
+
+	it('stays quiet when every link works and nothing changed', () => {
+		expect(auditIsWorthPosting(result(), 0)).toBe(false);
+	});
+
+	it('speaks up for a link that came back from the dead', () => {
+		// An all-clear run, but a fix since the last check is news worth having.
+		expect(auditIsWorthPosting(result(), 1)).toBe(true);
+	});
+
+	it('speaks up for broken and for unchecked links alike', () => {
+		expect(auditIsWorthPosting(result({ broken: [ref] }), 0)).toBe(true);
+		expect(auditIsWorthPosting(result({ unknown: [ref] }), 0)).toBe(true);
 	});
 });

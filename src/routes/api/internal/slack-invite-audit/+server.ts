@@ -4,13 +4,18 @@ import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { INTERNAL_CRON_SECRET, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
-import { runSlackInviteAudit, formatAuditMessage } from '$lib/server/slack-invite-audit.js';
+import {
+	runSlackInviteAudit,
+	formatAuditMessage,
+	auditIsWorthPosting,
+} from '$lib/server/slack-invite-audit.js';
 import { recordAudit, formatChanges } from '$lib/server/slack-invite-log.js';
 
 // Internal endpoint called hourly by a scheduler (GitHub Actions) to verify
 // every Slack invite link published through Solidarity still admits the public.
 // Auth via ?key=<INTERNAL_CRON_SECRET>. Optional ?dry_run=1 returns the report
-// without posting it.
+// without posting it. A clean run posts nothing (see `auditIsWorthPosting`) but
+// still returns its report here, so a manual call always gets the full picture.
 export const POST: RequestHandler = async ({ url }) => {
 	if (!INTERNAL_CRON_SECRET) {
 		console.error('[invite-audit] INTERNAL_CRON_SECRET is not set');
@@ -42,7 +47,8 @@ export const POST: RequestHandler = async ({ url }) => {
 			? `${changeSummary}\n\n${formatAuditMessage(result)}`
 			: formatAuditMessage(result);
 
-		if (!dryRun) {
+		const posted = !dryRun && auditIsWorthPosting(result, changes.length);
+		if (posted) {
 			await slack.chat.postMessage({
 				channel: settings.slackMemberNoteChannelId,
 				text: message,
@@ -53,7 +59,8 @@ export const POST: RequestHandler = async ({ url }) => {
 		console.log(
 			`[invite-audit] ${result.pagesScanned} pages (${result.pagesFetchedAsHtml} via HTML), ` +
 				`${result.distinctUrls} distinct links, ${result.broken.length} broken ref(s), ` +
-				`${result.unknown.length} unchecked`,
+				`${result.unknown.length} unchecked` +
+				(posted ? '' : ' — nothing to report, stayed quiet'),
 		);
 
 		return json({
@@ -63,7 +70,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			broken: result.broken,
 			unknown: result.unknown,
 			changes,
-			posted: !dryRun,
+			posted,
 			message,
 		});
 	} catch (err) {
