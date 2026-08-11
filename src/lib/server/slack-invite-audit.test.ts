@@ -23,6 +23,7 @@ function page(overrides: Partial<SolidarityPage> = {}): SolidarityPage {
 		url_slug: 'test',
 		full_url: 'https://go.example.org/test',
 		is_published: true,
+		website_id: 999,
 		...overrides,
 	};
 }
@@ -194,6 +195,7 @@ describe('formatAuditMessage', () => {
 				pageId: 10904,
 				pageName: 'Women’s Caucus',
 				pageUrl: '',
+				websiteId: 999,
 				location: 'follow-up email' as const,
 			},
 			{
@@ -201,6 +203,7 @@ describe('formatAuditMessage', () => {
 				pageId: 10904,
 				pageName: 'Women’s Caucus',
 				pageUrl: '',
+				websiteId: 999,
 				location: 'follow-up text' as const,
 			},
 		];
@@ -219,18 +222,78 @@ describe('formatAuditMessage', () => {
 		);
 		expect(msg).toMatch(/1 page\(s\) have a broken invite link/);
 		expect(msg).toMatch(/follow-up email, follow-up text/);
-		expect(msg).toContain('dashboard.solidarity.tech/pages/10904');
+		// The `/sites/<website_id>/` segment is required — without it the
+		// dashboard does not open the page.
+		expect(msg).toContain('https://dashboard.solidarity.tech/sites/999/pages/10904');
+	});
+
+	// Broken links are turning volunteers away right now, so this alert — and
+	// only this one — pings the channel.
+	it('@heres the channel about broken links', () => {
+		const refs = [
+			{
+				url: STALE,
+				pageId: 10904,
+				pageName: 'Women’s Caucus',
+				pageUrl: '',
+				websiteId: 999,
+				location: 'follow-up email' as const,
+			},
+		];
+		const msg = formatAuditMessage(
+			result({
+				refs,
+				broken: refs,
+				distinctUrls: 1,
+				statuses: new Map([[STALE, { status: 'broken' as const, detail: 'stale' }]]),
+			}),
+		);
+		expect(msg).toContain('<!here>');
+	});
+
+	it('names the page without a link when the site is unknown', () => {
+		const refs = [
+			{
+				url: STALE,
+				pageId: 10904,
+				pageName: 'Women’s Caucus',
+				pageUrl: '',
+				websiteId: null,
+				location: 'follow-up email' as const,
+			},
+		];
+		const msg = formatAuditMessage(
+			result({
+				refs,
+				broken: refs,
+				distinctUrls: 1,
+				statuses: new Map([[STALE, { status: 'broken' as const, detail: 'stale' }]]),
+			}),
+		);
+		expect(msg).toContain('Women’s Caucus');
+		expect(msg).not.toContain('dashboard.solidarity.tech');
+		expect(msg).not.toContain('edit in Solidarity');
 	});
 
 	it('says so plainly when everything works', () => {
 		const msg = formatAuditMessage(
 			result({
-				refs: [{ url: FRESH, pageId: 1, pageName: 'p', pageUrl: '', location: 'page content' }],
+				refs: [
+					{
+						url: FRESH,
+						pageId: 1,
+						pageName: 'p',
+						pageUrl: '',
+						websiteId: 999,
+						location: 'page content',
+					},
+				],
 				distinctUrls: 1,
 				statuses: new Map([[FRESH, { status: 'valid', detail: 'ok' }]]),
 			}),
 		);
 		expect(msg).toMatch(/all clear/);
+		expect(msg).not.toContain('<!here>');
 	});
 
 	it('keeps unchecked links visually separate from broken ones', () => {
@@ -239,6 +302,7 @@ describe('formatAuditMessage', () => {
 			pageId: 1,
 			pageName: 'p',
 			pageUrl: '',
+			websiteId: 999,
 			location: 'page content' as const,
 		};
 		const msg = formatAuditMessage(
@@ -251,6 +315,8 @@ describe('formatAuditMessage', () => {
 		);
 		expect(msg).toMatch(/could not be checked/);
 		expect(msg).not.toMatch(/rotating_light/);
+		// A link we merely failed to check is not worth waking the channel for.
+		expect(msg).not.toContain('<!here>');
 	});
 });
 
@@ -260,6 +326,7 @@ describe('auditIsWorthPosting', () => {
 		pageId: 1,
 		pageName: 'p',
 		pageUrl: '',
+		websiteId: 999,
 		location: 'page content' as const,
 	};
 
