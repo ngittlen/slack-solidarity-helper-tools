@@ -40,6 +40,9 @@ export interface InviteRef {
 	pageId: number;
 	pageName: string;
 	pageUrl: string;
+	/** The Solidarity site the page belongs to (`website_id` from the API).
+	 *  Carried on the ref because the dashboard edit link is scoped by site. */
+	websiteId: number | null;
 	location: InviteLocation;
 }
 
@@ -50,6 +53,7 @@ export interface SolidarityPage {
 	url_slug: string;
 	full_url: string | null;
 	is_published: boolean;
+	website_id?: number | null;
 	description?: string | null;
 	form?: unknown;
 	follow_up?: unknown;
@@ -109,6 +113,7 @@ export function collectInviteRefs(page: SolidarityPage): InviteRef[] {
 				pageId: page.id,
 				pageName: page.name,
 				pageUrl: page.full_url ?? '',
+				websiteId: page.website_id ?? null,
 				location,
 			});
 		}
@@ -125,6 +130,7 @@ export function collectInviteRefsFromHtml(page: SolidarityPage, html: string): I
 		pageId: page.id,
 		pageName: page.name,
 		pageUrl: page.full_url ?? '',
+		websiteId: page.website_id ?? null,
 		location: 'page content' as const,
 	}));
 }
@@ -259,7 +265,20 @@ export async function runSlackInviteAudit(
 	};
 }
 
-const DASHBOARD_PAGE_URL = 'https://dashboard.solidarity.tech/pages';
+const DASHBOARD_ORIGIN = 'https://dashboard.solidarity.tech';
+
+/**
+ * The dashboard editor URL for a page.
+ *
+ * Pages are scoped by site, so the `/sites/<website_id>/` segment is
+ * load-bearing: `/pages/<id>` on its own does not open the page. Returns null
+ * when the API gave us no `website_id` — the page name is then reported without
+ * a link, which is better than sending an admin somewhere that doesn't resolve.
+ */
+export function dashboardPageUrl(ref: Pick<InviteRef, 'pageId' | 'websiteId'>): string | null {
+	if (ref.websiteId == null) return null;
+	return `${DASHBOARD_ORIGIN}/sites/${ref.websiteId}/pages/${ref.pageId}`;
+}
 
 /**
  * Whether this run has anything worth saying out loud.
@@ -299,14 +318,19 @@ export function formatAuditMessage(result: AuditResult): string {
 			byPage.set(ref.pageId, [...(byPage.get(ref.pageId) ?? []), ref]);
 		}
 		lines.push(
-			`:rotating_light: *Slack invite audit* — ${byPage.size} page(s) have a broken invite link.`,
+			// <!here> is Slack's @here: broken invite links are actively turning
+			// volunteers away, so this one case is worth pinging the channel over.
+			// Deliberately only on the broken branch — the all-clear and the
+			// "couldn't check" notice stay quiet.
+			`:rotating_light: <!here> *Slack invite audit* — ${byPage.size} page(s) have a broken invite link.`,
 			`Anyone clicking these is asked for a staff email address and cannot join.`,
 			'',
 		);
-		for (const [pageId, pageRefs] of byPage) {
+		for (const pageRefs of byPage.values()) {
 			const first = pageRefs[0];
+			const editUrl = dashboardPageUrl(first);
 			lines.push(
-				`• *${first.pageName}* (<${DASHBOARD_PAGE_URL}/${pageId}|edit in Solidarity>)`,
+				`• *${first.pageName}*${editUrl ? ` (<${editUrl}|edit in Solidarity>)` : ''}`,
 				`    broken in: ${pageRefs.map((r) => r.location).join(', ')}`,
 				`    link: ${first.url}`,
 				`    ${result.statuses.get(first.url)?.detail ?? ''}`,
