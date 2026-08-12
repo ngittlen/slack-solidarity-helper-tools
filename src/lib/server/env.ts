@@ -3,6 +3,7 @@
 // Call validateEnv() from hooks.server.ts init() — never at module level.
 
 import { env } from '$env/dynamic/private';
+import { parseEncryptionKey } from './token-crypto.js';
 
 const get = (key: string) => (env as Record<string, string | undefined>)[key] ?? '';
 
@@ -49,6 +50,13 @@ export const SLACK_GROWTH_REPORT_RANKING_ALPHA: number | undefined = (() => {
 	}
 	return parsed;
 })();
+// Base64-encoded 32-byte key for the per-user Slack tokens in
+// `slack_user_tokens` (see token-crypto.ts). Generate with:
+//   openssl rand -base64 32
+// Rotating it does not break logins — it invalidates every stored token, and
+// each admin re-authorizes the next time they run an info command.
+export const TOKEN_ENCRYPTION_KEY = get('TOKEN_ENCRYPTION_KEY');
+
 export const TURSO_DATABASE_URL = get('TURSO_DATABASE_URL');
 export const TURSO_AUTH_TOKEN = get('TURSO_AUTH_TOKEN');
 export const WEBHOOK_SECRET = get('WEBHOOK_SECRET');
@@ -144,6 +152,7 @@ const REQUIRED_VARS = [
 	'SLACK_SIGNING_SECRET',
 	'SLACK_ALLOWED_USER_IDS',
 	'SLACK_TRACKING_CHANNEL_ID',
+	'TOKEN_ENCRYPTION_KEY',
 	'TURSO_DATABASE_URL',
 	'WEBHOOK_SECRET',
 	'APP_URL',
@@ -155,6 +164,15 @@ export function validateEnv(): void {
 			console.error(`Missing required environment variable: ${key}`);
 			process.exit(1);
 		}
+	}
+	// Checked at startup rather than on first use: a truncated or mistyped key
+	// otherwise surfaces as a Slack-looking failure the first time an admin runs
+	// an info command, long after the deploy that broke it.
+	try {
+		parseEncryptionKey(TOKEN_ENCRYPTION_KEY);
+	} catch (err) {
+		console.error(err instanceof Error ? err.message : err);
+		process.exit(1);
 	}
 	if (!TURSO_DATABASE_URL.startsWith('file:') && !TURSO_AUTH_TOKEN) {
 		console.error('Missing required environment variable: TURSO_AUTH_TOKEN');

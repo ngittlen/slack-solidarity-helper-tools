@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockSessionSet = vi.hoisted(() => vi.fn());
 const mockLoadSettings = vi.hoisted(() => vi.fn());
+const mockUsersInfo = vi.hoisted(() => vi.fn());
+const mockSaveUserToken = vi.hoisted(() => vi.fn());
+const mockDeleteUserToken = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({
 	sessionStore: { set: mockSessionSet },
@@ -9,6 +12,13 @@ vi.mock('$lib/server/db', () => ({
 }));
 
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
+
+vi.mock('$lib/server/slack', () => ({ slack: { users: { info: mockUsersInfo } } }));
+
+vi.mock('$lib/server/user-tokens', () => ({
+	saveUserToken: mockSaveUserToken,
+	deleteUserToken: mockDeleteUserToken,
+}));
 
 vi.mock('$lib/server/env', () => ({
 	SLACK_CLIENT_ID: 'client-id',
@@ -45,14 +55,18 @@ function makeEvent(
 	};
 }
 
-function mockSuccessfulOAuth(userId: string, userName: string): void {
+function mockSuccessfulOAuth(userId: string, userName: string, scope = 'chat:write'): void {
+	// A single call — the user id comes off the token response itself, so there
+	// is no users.identity round trip to stub.
 	vi.stubGlobal(
 		'fetch',
 		vi
 			.fn()
-			.mockResolvedValueOnce(jsonRes({ ok: true, authed_user: { access_token: 'tok' } }))
-			.mockResolvedValueOnce(jsonRes({ ok: true, user: { id: userId, name: userName } })),
+			.mockResolvedValue(
+				jsonRes({ ok: true, authed_user: { id: userId, access_token: 'tok', scope } }),
+			),
 	);
+	mockUsersInfo.mockResolvedValue({ ok: true, user: { name: userName } });
 }
 
 describe('GET /auth/slack/callback', () => {
@@ -62,6 +76,9 @@ describe('GET /auth/slack/callback', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UADMIN']) });
+		mockSaveUserToken.mockResolvedValue(undefined);
+		mockDeleteUserToken.mockResolvedValue(undefined);
+		mockUsersInfo.mockResolvedValue({ ok: true, user: { name: 'Someone' } });
 		logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 	});
@@ -226,5 +243,74 @@ describe('GET /auth/slack/callback', () => {
 
 		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 502 });
 		expect(mockSessionSet).not.toHaveBeenCalled();
+	});
+});
+
+// The user token is what lets the admin-defined info commands post as a real
+// person instead of as the bot (see user-tokens.ts).
+describe('GET /auth/slack/callback — user token capture', () => {
+	let logSpy: ReturnType<typeof vi.spyOn>;
+	let errorSpy: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UADMIN']) });
+		mockSaveUserToken.mockResolvedValue(undefined);
+		mockDeleteUserToken.mockResolvedValue(undefined);
+		mockUsersInfo.mockResolvedValue({ ok: true, user: { name: 'Someone' } });
+		logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
+		vi.unstubAllGlobals();
+	});
+
+	it("stores an admin's token with the scopes Slack granted", async () => {
+		mockSuccessfulOAuth('UADMIN', 'Admin User');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
+
+		expect(mockSaveUserToken).toHaveBeenCalledWith(expect.anything(), {
+			slackUserId: 'UADMIN',
+			accessToken: 'tok',
+			scopes: 'chat:write',
+		});
+		expect(mockDeleteUserToken).not.toHaveBeenCalled();
+	});
+
+	it('clears any stored token for a non-admin instead of keeping it', async () => {
+		// Holding a credential the app has no use for is the thing to avoid —
+		// this also cleans up after someone is dropped from the allowlist.
+		mockSuccessfulOAuth('URANDOM', 'Random User');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
+
+		expect(mockSaveUserToken).not.toHaveBeenCalled();
+		expect(mockDeleteUserToken).toHaveBeenCalledWith(expect.anything(), 'URANDOM');
+	});
+
+	it('records an empty scope string when Slack omits one', async () => {
+		mockSuccessfulOAuth('UADMIN', 'Admin User', '');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
+
+		expect(mockSaveUserToken).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ scopes: '' }),
+		);
+	});
+
+	it('still logs the admin in when storing the token fails', async () => {
+		// The session is the point of this route; the info commands degrade to
+		// "authorize again" on their own.
+		mockSaveUserToken.mockRejectedValue(new Error('db down'));
+		mockSuccessfulOAuth('UADMIN', 'Admin User');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
+
+		expect(mockSessionSet).toHaveBeenCalledTimes(1);
 	});
 });

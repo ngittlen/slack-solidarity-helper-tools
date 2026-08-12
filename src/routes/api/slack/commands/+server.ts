@@ -1,21 +1,31 @@
 import { json, text } from '@sveltejs/kit';
+import { WebClient } from '@slack/web-api';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
-import { loadSettings } from '$lib/server/settings.js';
+import { APP_URL } from '$lib/server/env.js';
+import { loadSettings, findInfoCommand } from '$lib/server/settings.js';
 import { verifySlackSignature } from '$lib/server/slack-signature.js';
 import { isSlackAdmin, NOT_AUTHORIZED_TEXT } from '$lib/server/slack-admin.js';
 import { buildNoteModal, parseCommandTarget } from '$lib/server/slack-modal.js';
+import { channelNameToId } from '$lib/server/slack-channel-names.js';
+import { loadUserToken, type TokenLookupFailure } from '$lib/server/user-tokens.js';
+import { normalizeCommandName, renderInfoMessage } from '$lib/info-command.js';
 import { errMessage } from '$lib/err-message.js';
 
-// Slash commands. Currently just /member-note, which opens the note/warning
-// modal.
+// Slash commands. Two kinds:
+//
+//   /member-note          — opens the note/warning modal (see slack-modal.ts)
+//   anything else         — looked up in `info_commands`, the admin-defined
+//                           blurbs, and posted **as the person who typed it**
 //
 // Two things differ from the events route: Slack sends slash commands as
 // `application/x-www-form-urlencoded` (so the body is parsed with
 // URLSearchParams, not JSON.parse), and those requests carry no Origin header —
 // which is why /api/slack/* is exempt from the CSRF check in
 // src/lib/server/csrf.ts. The signature verification below is what replaces it.
+
+const LOG = '[info-command]';
 
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.text();
@@ -31,10 +41,24 @@ export const POST: RequestHandler = async ({ request }) => {
 	const channelId = form.get('channel_id');
 	const commandText = form.get('text') ?? '';
 
-	if (command !== '/member-note') {
-		console.warn(`[member-note] unrecognized command "${command}"`);
-		return ephemeral('Unrecognized command.');
+	if (command === '/member-note') {
+		return handleMemberNote({ slackUserId, triggerId, channelId, commandText });
 	}
+
+	return handleInfoCommand({ command, slackUserId, channelId });
+};
+
+// ---------------------------------------------------------------------------
+// /member-note
+// ---------------------------------------------------------------------------
+
+async function handleMemberNote(args: {
+	slackUserId: string;
+	triggerId: string;
+	channelId: string | null;
+	commandText: string;
+}): Promise<Response> {
+	const { slackUserId, triggerId, channelId, commandText } = args;
 
 	if (!(await isSlackAdmin(slackUserId))) {
 		// 200 with an ephemeral body — only the person who typed it sees this.
@@ -69,8 +93,125 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Empty 200 — the modal is the response; echoing text would just clutter
 	// the channel.
 	return text('', { status: 200 });
-};
+}
+
+// ---------------------------------------------------------------------------
+// Admin-defined info commands
+// ---------------------------------------------------------------------------
+
+async function handleInfoCommand(args: {
+	command: string;
+	slackUserId: string;
+	channelId: string | null;
+}): Promise<Response> {
+	const { slackUserId, channelId } = args;
+	// Slack always sends the command lowercase and slash-prefixed, but the rows
+	// are keyed on the normalized form, so normalize both sides rather than
+	// trusting that to stay true.
+	const command = normalizeCommandName(args.command);
+
+	let entry;
+	try {
+		entry = await findInfoCommand(db, command);
+	} catch (err) {
+		console.error(`${LOG} lookup failed for ${command}:`, errMessage(err));
+		return ephemeral('Could not look that command up. Please try again.');
+	}
+
+	if (!entry) {
+		console.warn(`${LOG} unrecognized command "${command}"`);
+		return ephemeral('Unrecognized command.');
+	}
+
+	// Same gate as /member-note. It is also the only gate that can work today:
+	// a token is stored only for admins (see auth/slack/callback), so a
+	// non-admin has nothing to post with.
+	if (!(await isSlackAdmin(slackUserId))) {
+		return ephemeral(NOT_AUTHORIZED_TEXT);
+	}
+
+	if (!channelId) {
+		return ephemeral('Slack did not say which channel to post in.');
+	}
+
+	const lookup = await loadUserToken(db, slackUserId);
+	if (!lookup.ok) {
+		return ephemeral(reauthorizeMessage(lookup.reason));
+	}
+
+	// Channel links are resolved with the *bot* client: it is the one with
+	// channels:read, and the cached list is shared with the DM templates.
+	// Failing to resolve is non-fatal — names stay literal (see
+	// channelNameToId), which is better than not posting at all.
+	const message = renderInfoMessage(entry.message, await channelNameToId('info-command'));
+
+	try {
+		// A per-request client, not the shared bot `slack` proxy: this call must
+		// carry the user's own token, which is the entire point — the message
+		// lands as theirs, editable and deletable by them, with no APP badge.
+		await new WebClient(lookup.token).chat.postMessage({
+			channel: channelId,
+			text: message,
+			// No `blocks`: a section block would render the same text but strip
+			// the message of its plain-text fallback in notifications, and
+			// there is no structure here worth the tradeoff.
+			unfurl_links: false,
+		});
+	} catch (err) {
+		const detail = errMessage(err);
+		console.error(`${LOG} ${command} post as ${slackUserId} failed:`, detail);
+		return ephemeral(postFailureMessage(detail));
+	}
+
+	console.log(`${LOG} ${command} posted as ${slackUserId} in ${channelId}`);
+	// Empty 200 — the posted message is the response.
+	return text('', { status: 200 });
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function ephemeral(message: string): Response {
 	return json({ response_type: 'ephemeral', text: message });
+}
+
+/** All four lookup failures are fixed by logging in again, so they share a
+ *  call to action and differ only in why. */
+function reauthorizeMessage(reason: TokenLookupFailure): string {
+	const authorize = `${APP_URL}/auth/slack`;
+	switch (reason) {
+		case 'stale-scope':
+			return (
+				'This command posts as you, and your Slack authorization predates that. ' +
+				`Sign in again at ${authorize} to grant it, then retry.`
+			);
+		case 'unreadable':
+		case 'error':
+			return (
+				'Your stored Slack authorization could not be read. ' +
+				`Sign in again at ${authorize} to refresh it, then retry.`
+			);
+		case 'missing':
+		default:
+			return (
+				'This command posts as you, so it needs your authorization first. ' +
+				`Sign in at ${authorize}, then retry.`
+			);
+	}
+}
+
+/** Turn the two Slack errors an admin can actually act on into instructions,
+ *  and pass anything else through so the failure isn't silent. */
+function postFailureMessage(detail: string): string {
+	if (detail.includes('not_in_channel')) {
+		return 'You need to be a member of this channel to post here.';
+	}
+	if (detail.includes('token_revoked') || detail.includes('invalid_auth')) {
+		return (
+			'Slack rejected your stored authorization — it may have been revoked. ' +
+			`Sign in again at ${APP_URL}/auth/slack, then retry.`
+		);
+	}
+	return `Could not post the message: ${detail}`;
 }

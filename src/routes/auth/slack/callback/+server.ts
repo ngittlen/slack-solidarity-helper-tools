@@ -3,6 +3,8 @@ import type { RequestHandler } from './$types';
 import { dev } from '$app/environment';
 import { db, sessionStore } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
+import { saveUserToken, deleteUserToken } from '$lib/server/user-tokens.js';
+import { slack } from '$lib/server/slack.js';
 import {
 	OAUTH_REDIRECT_COOKIE,
 	resolvePostLoginRedirect,
@@ -16,13 +18,7 @@ import {
 
 interface SlackOAuthResponse {
 	ok: boolean;
-	authed_user?: { access_token: string };
-	error?: string;
-}
-
-interface SlackIdentityResponse {
-	ok: boolean;
-	user?: { id: string; name: string };
+	authed_user?: { id?: string; access_token: string; scope?: string };
 	error?: string;
 }
 
@@ -64,23 +60,16 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	});
 
 	const tokenData = (await tokenRes.json()) as SlackOAuthResponse;
-	if (!tokenData.ok || !tokenData.authed_user?.access_token) {
+	if (!tokenData.ok || !tokenData.authed_user?.access_token || !tokenData.authed_user.id) {
 		console.error('[auth] token exchange failed:', tokenData.error);
 		error(502, 'Authentication failed.');
 	}
 
-	// Get user identity
-	const identityRes = await fetch('https://slack.com/api/users.identity', {
-		headers: { Authorization: `Bearer ${tokenData.authed_user.access_token}` },
-	});
-
-	const identity = (await identityRes.json()) as SlackIdentityResponse;
-	if (!identity.ok || !identity.user?.id) {
-		console.error('[auth] identity fetch failed:', identity.error);
-		error(502, 'Authentication failed.');
-	}
-
-	const userId = identity.user.id;
+	// Straight off the token response — no users.identity round trip. That call
+	// needed the identity.basic scope, which Slack refuses to grant alongside
+	// chat:write (see the scope comment in ../+server.ts), and it told us
+	// nothing `authed_user.id` doesn't.
+	const userId = tokenData.authed_user.id;
 	// Admin gate reads the DB-backed allowed list via loadSettings (which falls
 	// back to env SLACK_ALLOWED_USER_IDS while the table is empty). The
 	// superuser is admitted without consulting the list — even when reading it
@@ -99,11 +88,45 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		}
 	}
 
+	// Keep the user token only for admins, and only for as long as they stay
+	// admins — the info commands are admin-only, so storing anyone else's would be
+	// holding a credential the app has no use for. A non-admin's row is dropped
+	// rather than left behind, which also cleans up after someone is removed
+	// from the allowed list and logs in again.
+	if (isAdmin) {
+		try {
+			await saveUserToken(db, {
+				slackUserId: userId,
+				accessToken: tokenData.authed_user.access_token,
+				scopes: tokenData.authed_user.scope ?? '',
+			});
+		} catch (err) {
+			// Never blocks the login: the session is the point of this route, and
+			// the info commands degrade to "authorize again" on their own.
+			console.error(
+				'[auth] could not store the user token:',
+				err instanceof Error ? err.message : err,
+			);
+		}
+	} else {
+		try {
+			await deleteUserToken(db, userId);
+		} catch (err) {
+			console.error(
+				'[auth] could not clear a stored user token:',
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
+
+	// Read once and reused for the session and the log line below.
+	const userName = await displayName(userId);
+
 	// Create session
 	const sid = crypto.randomUUID();
 	await sessionStore.set(
 		sid,
-		{ slackUserId: userId, slackUserName: identity.user.name, isAdmin },
+		{ slackUserId: userId, slackUserName: userName, isAdmin },
 		SESSION_MAX_AGE,
 	);
 
@@ -116,9 +139,34 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	});
 
 	console.log(
-		`[auth] login: ${identity.user.name} (${userId}) admin=${isAdmin}${isSuperuser ? ' (superuser)' : ''}`,
+		`[auth] login: ${userName} (${userId}) admin=${isAdmin}${isSuperuser ? ' (superuser)' : ''}`,
 	);
 	// Back to the page they asked for — or the dashboard, when they asked for
 	// nothing or for something this session may not see.
 	redirect(302, resolvePostLoginRedirect(requestedPath, { isAdmin }));
 };
+
+/**
+ * Display name for the session, read with the **bot** token — it already holds
+ * `users:read`, and the user token deliberately carries only `chat:write`.
+ *
+ * Never throws: the name is cosmetic (it labels the session and stamps audit
+ * rows), and a Slack hiccup must not cost someone their login. Falls back to
+ * the raw id, which every caller already tolerates.
+ */
+async function displayName(slackUserId: string): Promise<string> {
+	try {
+		const info = await slack.users.info({ user: slackUserId });
+		const user = info.user as
+			{ name?: string; profile?: { display_name?: string; real_name?: string } } | undefined;
+		return (
+			user?.profile?.display_name?.trim() ||
+			user?.profile?.real_name?.trim() ||
+			user?.name?.trim() ||
+			slackUserId
+		);
+	} catch (err) {
+		console.warn('[auth] could not read a display name:', err instanceof Error ? err.message : err);
+		return slackUserId;
+	}
+}

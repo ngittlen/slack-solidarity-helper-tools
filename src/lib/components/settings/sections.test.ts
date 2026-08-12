@@ -12,8 +12,8 @@ function flatten(tree: readonly SettingsNavItem[]): SettingsNavItem[] {
 }
 
 describe('SETTINGS_SECTIONS', () => {
-	it('has the five top-level sections the page renders', () => {
-		expect(SETTINGS_SECTIONS).toHaveLength(5);
+	it('has the six top-level sections the page renders', () => {
+		expect(SETTINGS_SECTIONS).toHaveLength(6);
 	});
 
 	it('uses unique ids across the whole tree', () => {

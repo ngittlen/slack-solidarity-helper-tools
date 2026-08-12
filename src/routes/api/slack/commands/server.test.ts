@@ -4,13 +4,34 @@ import { POST } from './+server.js';
 
 const mockViewsOpen = vi.hoisted(() => vi.fn());
 const mockLoadSettings = vi.hoisted(() => vi.fn());
+const mockFindInfoCommand = vi.hoisted(() => vi.fn());
+const mockLoadUserToken = vi.hoisted(() => vi.fn());
+const mockChannelNameToId = vi.hoisted(() => vi.fn());
+// Captures the token each per-request WebClient is constructed with, which is
+// the whole point of the info-command path: it must be the user's, not the bot's.
+const mockPostMessage = vi.hoisted(() => vi.fn());
+const mockWebClientCtor = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/slack', () => ({ slack: { views: { open: mockViewsOpen } } }));
-vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
+vi.mock('$lib/server/settings', () => ({
+	loadSettings: mockLoadSettings,
+	findInfoCommand: mockFindInfoCommand,
+}));
+vi.mock('$lib/server/user-tokens', () => ({ loadUserToken: mockLoadUserToken }));
+vi.mock('$lib/server/slack-channel-names', () => ({ channelNameToId: mockChannelNameToId }));
+vi.mock('@slack/web-api', () => ({
+	WebClient: class {
+		chat = { postMessage: mockPostMessage };
+		constructor(token: string) {
+			mockWebClientCtor(token);
+		}
+	},
+}));
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
 	SLACK_SUPERUSER_ID: 'U_SUPER',
+	APP_URL: 'https://app.example.org',
 }));
 
 const SECRET = 'test-signing-secret';
@@ -50,6 +71,10 @@ beforeEach(() => {
 		warningDmMessage: 'This is your {{nth}} warning.',
 	});
 	mockViewsOpen.mockResolvedValue({ ok: true });
+	mockFindInfoCommand.mockResolvedValue(null);
+	mockLoadUserToken.mockResolvedValue({ ok: true, token: 'xoxp-user-token' });
+	mockChannelNameToId.mockResolvedValue(new Map([['phone-bank', 'C_PHONE']]));
+	mockPostMessage.mockResolvedValue({ ok: true });
 });
 
 describe('POST /api/slack/commands — signature', () => {
@@ -176,12 +201,132 @@ describe('POST /api/slack/commands — modal', () => {
 		expect((await res.json()).text).toContain('Could not open');
 	});
 
-	it('ignores an unrecognized command', async () => {
+	it('reports an unrecognized command when no info command matches', async () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockFindInfoCommand.mockResolvedValue(null);
 
 		const res = await call(signedCommand({ command: '/something-else' }));
 
 		expect(mockViewsOpen).not.toHaveBeenCalled();
+		expect(mockPostMessage).not.toHaveBeenCalled();
+		const body = await res.json();
+		expect(body.response_type).toBe('ephemeral');
+		expect(body.text).toContain('Unrecognized command');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Admin-defined info commands
+// ---------------------------------------------------------------------------
+
+const INFO_ROW = {
+	command: '/info-phone',
+	message: 'Sign up here: #phone-bank',
+};
+
+const infoCall = (fields: Record<string, string> = {}) =>
+	call(signedCommand({ command: '/info-phone', user_id: 'U_ADMIN', ...fields }));
+
+describe('POST /api/slack/commands — info commands', () => {
+	beforeEach(() => {
+		mockFindInfoCommand.mockResolvedValue(INFO_ROW);
+	});
+
+	it('posts the message with the user token, not the bot token', async () => {
+		const res = await infoCall();
+
+		expect(res.status).toBe(200);
+		expect(mockWebClientCtor).toHaveBeenCalledWith('xoxp-user-token');
+		expect(mockPostMessage).toHaveBeenCalledTimes(1);
+		expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C_CHAN' }));
+	});
+
+	it('resolves #channel tokens to real links before posting', async () => {
+		await infoCall();
+		expect(mockPostMessage.mock.calls[0][0].text).toBe('Sign up here: <#C_PHONE>');
+	});
+
+	it('returns an empty 200 so nothing extra is echoed into the channel', async () => {
+		const res = await infoCall();
+		expect(await res.text()).toBe('');
+	});
+
+	it('looks the command up in its normalized form', async () => {
+		await infoCall();
+		expect(mockFindInfoCommand).toHaveBeenCalledWith(expect.anything(), '/info-phone');
+	});
+
+	it('refuses a non-admin without posting', async () => {
+		const res = await infoCall({ user_id: 'U_RANDOM' });
+
+		expect(mockPostMessage).not.toHaveBeenCalled();
 		expect((await res.json()).response_type).toBe('ephemeral');
+	});
+
+	it('tells an admin with no stored token where to authorize', async () => {
+		mockLoadUserToken.mockResolvedValue({ ok: false, reason: 'missing' });
+
+		const res = await infoCall();
+
+		expect(mockPostMessage).not.toHaveBeenCalled();
+		const text = (await res.json()).text as string;
+		expect(text).toContain('https://app.example.org/auth/slack');
+	});
+
+	it('explains a pre-chat:write authorization specifically', async () => {
+		// Distinguished from "missing" so someone who did log in isn't told to do
+		// the thing they already did.
+		mockLoadUserToken.mockResolvedValue({ ok: false, reason: 'stale-scope' });
+
+		const text = ((await (await infoCall()).json()) as { text: string }).text;
+		expect(text).toContain('predates');
+		expect(text).toContain('https://app.example.org/auth/slack');
+	});
+
+	it('turns not_in_channel into an instruction rather than a raw Slack error', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockPostMessage.mockRejectedValue(new Error('An API error occurred: not_in_channel'));
+
+		const text = ((await (await infoCall()).json()) as { text: string }).text;
+		expect(text).toContain('member of this channel');
+	});
+
+	it('tells the admin to re-authorize when Slack says the token was revoked', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockPostMessage.mockRejectedValue(new Error('An API error occurred: token_revoked'));
+
+		const text = ((await (await infoCall()).json()) as { text: string }).text;
+		expect(text).toContain('revoked');
+	});
+
+	it('surfaces an unexpected Slack error rather than failing silently', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockPostMessage.mockRejectedValue(new Error('ratelimited'));
+
+		const text = ((await (await infoCall()).json()) as { text: string }).text;
+		expect(text).toContain('ratelimited');
+	});
+
+	it('reports a lookup failure instead of claiming the command is unknown', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockFindInfoCommand.mockRejectedValue(new Error('db down'));
+
+		const text = ((await (await infoCall()).json()) as { text: string }).text;
+		expect(text).toContain('Could not look that command up');
+	});
+
+	it('still posts when the channel list is unavailable, leaving names literal', async () => {
+		// channelNameToId swallows its own failures and returns an empty map; a
+		// missing link must not cost the whole message.
+		mockChannelNameToId.mockResolvedValue(new Map());
+
+		await infoCall();
+
+		expect(mockPostMessage.mock.calls[0][0].text).toBe('Sign up here: #phone-bank');
+	});
+
+	it('does not open the note modal', async () => {
+		await infoCall();
+		expect(mockViewsOpen).not.toHaveBeenCalled();
 	});
 });

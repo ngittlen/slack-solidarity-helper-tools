@@ -45,13 +45,14 @@ export const APP_CONFIG_ROW_IDS = {
 	tickerSpeed: 'cfg-ticker-speed',
 } as const;
 
-/** Ids for the five top-level sections. `+page.svelte` stamps these onto its
+/** Ids for the six top-level sections. `+page.svelte` stamps these onto its
  *  <section> elements; each section's body is bespoke markup, so the page can't
  *  render them from a loop over this tree. */
 export const SECTION_IDS = {
 	chapterChannelMap: 'chapter-channel-map',
 	coalitionChannelMap: 'coalition-channel-map',
 	appConfig: APP_CONFIG_SECTION_ID,
+	infoCommands: 'info-commands',
 	allowedUsers: 'allowed-users',
 	excludedChapters: 'excluded-chapters',
 } as const;
@@ -77,6 +78,7 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 			{ id: APP_CONFIG_ROW_IDS.tickerSpeed, label: 'Doors ticker speed' },
 		],
 	},
+	{ id: SECTION_IDS.infoCommands, label: 'Info commands' },
 	{ id: SECTION_IDS.allowedUsers, label: 'Allowed Slack users' },
 	{ id: SECTION_IDS.excludedChapters, label: 'Excluded chapters' },
 ];

@@ -107,7 +107,7 @@ function makeDb(): MockDb {
 // `loadSettings` always issues six reads, in this exact order: chapter,
 // coalition, allowed users, excluded chapters, welcome flags, app_config.
 function pushAllEmpty(db: MockDb) {
-	for (let i = 0; i < 6; i++) db._pushSelect([]);
+	for (let i = 0; i < 7; i++) db._pushSelect([]);
 }
 
 describe('loadSettings — Story 1 (env fallback when tables are empty)', () => {
@@ -170,6 +170,9 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			countdownEndAt: '',
 			welcomeDmMessage: '',
 			warningDmMessage: '',
+			// DB-only with no env fallback: an empty table means no commands
+			// have been defined yet, which is the normal starting state.
+			infoCommands: [],
 			// DB-only with a code default, so it resolves even with no env and
 			// no row — unlike the env-backed fields above.
 			doorTickerColumnsPerSecond: DEFAULT_TICKER_COLUMNS_PER_SECOND,
@@ -425,6 +428,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'countdownEndAt',
 				'welcomeDmMessage',
 				'warningDmMessage',
+				'infoCommands',
 				'doorTickerColumnsPerSecond',
 			].sort(),
 		);
@@ -472,7 +476,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		expect(result2.countdownEndAt).toBe('');
 	});
 
-	it('no module-level cache — two calls each hit the DB (6 reads × 2 = 12)', async () => {
+	it('no module-level cache — two calls each hit the DB (7 reads × 2 = 14)', async () => {
 		const db = makeDb();
 		pushAllEmpty(db);
 		pushAllEmpty(db);
@@ -480,7 +484,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		await loadSettings(db as never);
 		await loadSettings(db as never);
 
-		expect(db.select).toHaveBeenCalledTimes(12);
+		expect(db.select).toHaveBeenCalledTimes(14);
 	});
 
 	it('welcomeDisabledChannelIds contains only channels with the flag off', async () => {

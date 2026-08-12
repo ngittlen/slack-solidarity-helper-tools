@@ -588,3 +588,50 @@ export const slackInviteSightings = sqliteTable(
 
 export type SlackInviteSightingRow = typeof slackInviteSightings.$inferSelect;
 export type NewSlackInviteSightingRow = typeof slackInviteSightings.$inferInsert;
+
+/**
+ * Admin-defined slash commands that post a canned blurb — "here's how to sign
+ * up to phone bank" and friends — as the person who typed the command rather
+ * than as the bot.
+ *
+ * Rows are created on /settings. Registering the command with Slack is a
+ * separate, manual step in the Slack app config: Slack only routes commands it
+ * knows about, so a row here with no matching Slack registration is inert (and
+ * the editor says so).
+ *
+ * `command` is the primary key, stored normalized — lowercase, leading slash —
+ * so the lookup in api/slack/commands is a direct hit on what Slack sends.
+ * `message` is stored raw with friendly `#channel-name` tokens, resolved to
+ * `<#C…>` at post time, the same convention the DM templates use.
+ */
+export const infoCommands = sqliteTable('info_commands', {
+	command: text('command').primaryKey(),
+	message: text('message').notNull(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
+export type InfoCommandRow = typeof infoCommands.$inferSelect;
+export type NewInfoCommandRow = typeof infoCommands.$inferInsert;
+
+/**
+ * Per-user Slack OAuth tokens (`xoxp-`), captured at login and used by the
+ * info commands above to post as the person who typed the command rather than
+ * as the bot.
+ *
+ * The token column holds ciphertext, never the raw token — see token-crypto.ts
+ * for the format and why this one table gets that treatment. `scopes` is the
+ * grant Slack actually returned, stored so the app can tell "you authorized
+ * before chat:write was requested" apart from "you never authorized".
+ */
+export const slackUserTokens = sqliteTable('slack_user_tokens', {
+	slackUserId: text('slack_user_id').primaryKey(),
+	encryptedToken: text('encrypted_token').notNull(),
+	// Comma-separated, exactly as Slack returns it in `authed_user.scope`.
+	scopes: text('scopes').notNull().default(''),
+	updatedAt: text('updated_at').notNull(),
+});
+
+export type SlackUserTokenRow = typeof slackUserTokens.$inferSelect;
+export type NewSlackUserTokenRow = typeof slackUserTokens.$inferInsert;

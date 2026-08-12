@@ -89,4 +89,24 @@ describe('GET /auth/slack', () => {
 			expect.objectContaining({ httpOnly: true }),
 		);
 	});
+
+	// chat:write is requested at login so there is no second authorization dance
+	// the first time an admin runs an info command. It must be the ONLY user
+	// scope: Slack fails the whole authorization with "Invalid permissions
+	// requested" if an identity.* scope is asked for alongside anything else.
+	it('requests chat:write alone as the user scope', async () => {
+		const event = makeEvent();
+
+		// The handler signals the redirect by throwing, so the location arrives on
+		// the rejection rather than as a return value.
+		const redirect = await Promise.resolve(GET(event as never)).then(
+			() => {
+				throw new Error('expected a redirect to Slack');
+			},
+			(e: { location: string }) => e.location,
+		);
+		const userScope = new URL(redirect).searchParams.get('user_scope');
+
+		expect(userScope?.split(',')).toEqual(['chat:write']);
+	});
 });

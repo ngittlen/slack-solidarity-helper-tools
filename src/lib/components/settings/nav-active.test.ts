@@ -115,6 +115,7 @@ describe('allAnchorIds', () => {
 			'coalition-channel-map',
 			APP_CONFIG_SECTION_ID,
 			...Object.values(APP_CONFIG_ROW_IDS),
+			'info-commands',
 			'allowed-users',
 			'excluded-chapters',
 		]);

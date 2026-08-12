@@ -17,6 +17,7 @@ import {
 	reportExcludedChapters,
 	channelWelcomeFlags,
 	appConfig,
+	infoCommands,
 } from './schema.js';
 import {
 	SOLIDARITY_CHAPTER_CHANNEL_MAP,
@@ -38,6 +39,7 @@ export {
 	reportExcludedChapters,
 	channelWelcomeFlags,
 	appConfig,
+	infoCommands,
 };
 
 export type {
@@ -51,6 +53,8 @@ export type {
 	NewExcludedChapterRow,
 	AppConfigRow,
 	NewAppConfigRow,
+	InfoCommandRow,
+	NewInfoCommandRow,
 } from './schema.js';
 
 type Database = ReturnType<typeof drizzle>;
@@ -69,6 +73,13 @@ export interface CoalitionEntry {
 	name: string;
 	/** Solidarity user list mirroring the property; null when not configured. */
 	userListId: number | null;
+}
+
+export interface InfoCommandEntry {
+	/** Normalized: lowercase, leading slash (see normalizeCommandName). */
+	command: string;
+	/** Raw message with `#channel-name` tokens, resolved at post time. */
+	message: string;
 }
 
 export interface Settings {
@@ -112,6 +123,10 @@ export interface Settings {
 	 *  raw with `{{nth}}`, `{{note}}`, `{{message_link}}` and `#channel-name`
 	 *  tokens, all resolved at send time. */
 	warningDmMessage: string;
+	/** Admin-defined slash commands that post a canned blurb as the person who
+	 *  ran them. DB-only; an empty list is the normal starting state. Sorted by
+	 *  command name so /settings renders stably. */
+	infoCommands: InfoCommandEntry[];
 	/** Door-knock ticker scroll speed, in LED columns per second. DB-only;
 	 *  always resolved to a usable number (see clampTickerColumnsPerSecond),
 	 *  never undefined. */
@@ -154,15 +169,23 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	// when non-empty (FR-012). The app_config singleton row falls back
 	// per-field (FR-013): a NULL column means "use env for that field", while
 	// a missing row means "use env for all three".
-	const [chapterRows, coalitionRows, allowedRows, excludedRows, welcomeRows, appConfigRows] =
-		await Promise.all([
-			db.select().from(chapterChannelMap),
-			db.select().from(coalitionChannelMap),
-			db.select().from(allowedSlackUsers),
-			db.select().from(reportExcludedChapters),
-			db.select().from(channelWelcomeFlags),
-			db.select().from(appConfig).limit(1),
-		]);
+	const [
+		chapterRows,
+		coalitionRows,
+		allowedRows,
+		excludedRows,
+		welcomeRows,
+		appConfigRows,
+		infoCommandRows,
+	] = await Promise.all([
+		db.select().from(chapterChannelMap),
+		db.select().from(coalitionChannelMap),
+		db.select().from(allowedSlackUsers),
+		db.select().from(reportExcludedChapters),
+		db.select().from(channelWelcomeFlags),
+		db.select().from(appConfig).limit(1),
+		db.select().from(infoCommands),
+	]);
 
 	const chapterChannelMapField: ChapterEntry[] =
 		chapterRows.length > 0
@@ -218,6 +241,12 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	// can't hand the board an unusable rate.
 	const doorTickerColumnsPerSecond = clampTickerColumnsPerSecond(cfg?.doorTickerColumnsPerSecond);
 
+	// Sorted here rather than in SQL so the order is part of the contract the
+	// settings page and its tests can rely on.
+	const infoCommandList: InfoCommandEntry[] = infoCommandRows
+		.map((r) => ({ command: r.command, message: r.message }))
+		.sort((a, b) => a.command.localeCompare(b.command));
+
 	return {
 		chapterChannelMap: chapterChannelMapField,
 		coalitionChannelMap: coalitionChannelMapField,
@@ -236,6 +265,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		countdownEndAt,
 		welcomeDmMessage,
 		warningDmMessage,
+		infoCommands: infoCommandList,
 		doorTickerColumnsPerSecond,
 	};
 }
@@ -631,4 +661,71 @@ export async function saveAppConfig(
 
 	const keysSummary = Object.keys(definedFields).join(',');
 	console.log(`[settings] saved app_config patch=${keysSummary} by ${editor.id} (${editor.name})`);
+}
+
+/**
+ * Create or update one admin-defined info command.
+ *
+ * `command` must already be normalized (see normalizeCommandName) — the API
+ * route does that as part of validating it, and the primary key depends on it.
+ * Upsert rather than insert so editing a blurb reuses the row and keeps the
+ * audit columns pointing at whoever last touched it.
+ */
+export async function saveInfoCommand(
+	db: Database,
+	entry: { command: string; message: string },
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	const row = {
+		command: entry.command,
+		message: entry.message,
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt,
+	};
+	await db
+		.insert(infoCommands)
+		.values(row)
+		.onConflictDoUpdate({
+			target: infoCommands.command,
+			set: {
+				message: row.message,
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	console.log(
+		`[settings] saved info_commands command=${entry.command} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function deleteInfoCommand(
+	db: Database,
+	command: string,
+	editor: Editor,
+): Promise<void> {
+	await db.delete(infoCommands).where(eq(infoCommands.command, command));
+	console.log(
+		`[settings] deleted info_commands command=${command} by ${editor.id} (${editor.name})`,
+	);
+}
+
+/**
+ * Look up one command by its normalized name.
+ *
+ * Separate from loadSettings because the Slack command route runs on a 3-second
+ * budget and has no use for the other five settings tables.
+ */
+export async function findInfoCommand(
+	db: Database,
+	command: string,
+): Promise<InfoCommandEntry | null> {
+	const rows = await db
+		.select({ command: infoCommands.command, message: infoCommands.message })
+		.from(infoCommands)
+		.where(eq(infoCommands.command, command))
+		.limit(1);
+	return rows[0] ?? null;
 }

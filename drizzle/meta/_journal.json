@@ -183,6 +183,13 @@
       "when": 1786244196543,
       "tag": "0025_quiet_warbound",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1786495151334,
+      "tag": "0026_big_sentinel",
+      "breakpoints": true
     }
   ]
 }

@@ -61,6 +61,18 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
 
 The warning DM template is edited on `/settings` and supports `{{nth}}` (which warning this is), `{{note}}` (the details the admin typed), `{{message_link}}` (the linked message), and `#channel-name` links.
 
+### Info commands
+
+Slash commands that post a set message **as the admin who runs them** — not as the bot. For the answers you retype constantly: "here's where to sign up to phone bank", "here's how to join a canvass".
+
+1. An admin adds a command on `/settings` → **Info commands**: a name (`/info-phone`) and the message it posts. Channels are written as `#channel-name` and become real links at post time
+2. **You must also register the command in your Slack app** (see setup step 11) — Slack only routes commands it knows about, so a command that exists only in `/settings` does nothing
+3. Running it posts the message into the current channel under the admin's own name and avatar. It is a real message from them: no **APP** badge, and they can edit or delete it like anything else they wrote
+4. This works by storing a per-admin Slack user token, captured at login. Tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY` and are stored only for admins — a non-admin's token is deleted on sight
+5. Admins who last logged in before this feature shipped will be told to sign in again: Slack does not add a new scope to a token it has already issued
+
+Because the token is captured at login, and only admins can log in, these commands are admin-only. An admin who has never signed in to the web app gets an ephemeral prompt with the link, rather than a failed post.
+
 ## Setup
 
 ### 1. Configure the Slack App
@@ -71,7 +83,7 @@ The warning DM template is edited on `/settings` and supports `{{nth}}` (which w
    - `im:write` — to open DM channels with new members
    - `channels:manage` — to invite members to public channels
    - `groups:write` — to invite members to private channels
-   - `users:read` — to list workspace members
+   - `users:read` — to list workspace members, and to read the display name at login
    - `users:read.email` — to read member email addresses
    - `channels:read`, `groups:read` — to list channels for the settings pickers and `#channel` links
    - `files:read` — to read the door-knocking channel's Conversation Codes canvas
@@ -79,8 +91,13 @@ The warning DM template is edited on `/settings` and supports `{{nth}}` (which w
 
    If you are adding `commands` to an existing app, **reinstall the app** afterwards and re-copy the bot token if it changes.
 
-3. Under **OAuth & Permissions**, add this user scope:
-   - `identity.basic` — for Sign in with Slack
+3. Under **OAuth & Permissions**, set the user scopes to exactly one entry:
+   - `chat:write` — signs the admin in _and_ lets the info commands post as them rather than as the bot
+
+   **If `identity.basic` is listed there, remove it.** Slack refuses any authorization that mixes an `identity.*` scope with a normal one, failing the install with _"Invalid permissions requested"_. Sign in no longer needs it: `oauth.v2.access` returns the user's id directly, and the display name comes from `users.info` on the bot token.
+
+   Adding `chat:write` after the fact does not upgrade tokens Slack has already issued: every existing admin has to sign in again before info commands work for them.
+
 4. Under **OAuth & Permissions → Redirect URLs**, add:
    ```
    https://your-app.fly.dev/auth/slack/callback
@@ -98,15 +115,30 @@ The warning DM template is edited on `/settings` and supports `{{nth}}` (which w
     - Request URL: `https://your-app.fly.dev/api/slack/commands`
     - Usage hint: `[@member]`
     - **Turn ON "Escape channels, users, and links"** — without it the command text has no user id to prefill the modal with
-11. Under **Interactivity & Shortcuts**, enable interactivity and set the Request URL to:
+11. Under **Slash Commands**, create one command per row you add on `/settings` → **Info commands**, e.g. `/info-phone`:
+    - Request URL: `https://your-app.fly.dev/api/slack/commands` (the same URL as `/member-note`)
+    - Leave "Escape channels, users, and links" off — these commands take no arguments
+
+    This step is not optional and not automatic: Slack will not route a command it has no registration for, so a command that exists only on `/settings` silently does nothing. Deleting a command is likewise two steps — remove the row on `/settings` **and** the registration here.
+
+12. Under **Interactivity & Shortcuts**, enable interactivity and set the Request URL to:
     ```
     https://your-app.fly.dev/api/slack/interactivity
     ```
-12. Under **Interactivity & Shortcuts → Shortcuts**, create two **message** shortcuts (the callback IDs must match exactly):
+13. Under **Interactivity & Shortcuts → Shortcuts**, create two **message** shortcuts (the callback IDs must match exactly):
     - "Log member note" — callback ID `log_member_note`
     - "View member record" — callback ID `view_member_record`
 
-No new environment variables are needed; the warning DM template is configured on `/settings`.
+One new environment variable is required — `TOKEN_ENCRYPTION_KEY`, which encrypts the per-admin Slack tokens the info commands post with. Generate one and set it before deploying; the app refuses to start without it, and a key that doesn't decode to 32 bytes is rejected at startup rather than at first use:
+
+```
+openssl rand -base64 32
+fly secrets set TOKEN_ENCRYPTION_KEY="<the generated value>"
+```
+
+Rotating the key does not break logins — it invalidates every stored token, and each admin re-authorizes the next time they run an info command.
+
+The warning DM template and the info-command messages are configured on `/settings`.
 
 > **Note on CSRF:** Slack posts slash commands and interactivity payloads as form-encoded requests with no `Origin` header, which SvelteKit's built-in CSRF check rejects — and only in production. `svelte.config.js` therefore disables that check and `src/hooks.server.ts` re-implements it, exempting only the signature-verified `/api/slack/*` routes. See `src/lib/server/csrf.ts` for the details.
 

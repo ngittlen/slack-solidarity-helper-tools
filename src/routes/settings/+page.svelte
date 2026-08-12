@@ -8,6 +8,7 @@
 	import ChapterChannelEditor from '$lib/components/settings/ChapterChannelEditor.svelte';
 	import CoalitionChannelEditor from '$lib/components/settings/CoalitionChannelEditor.svelte';
 	import AllowedUsersEditor from '$lib/components/settings/AllowedUsersEditor.svelte';
+	import InfoCommandsEditor from '$lib/components/settings/InfoCommandsEditor.svelte';
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
 	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
 	import { SECTION_IDS } from '$lib/components/settings/sections.js';
@@ -136,6 +137,15 @@
 					leaderboard={data.leaderboard}
 				/>
 			{/if}
+		</section>
+
+		<section
+			id={SECTION_IDS.infoCommands}
+			data-settings-anchor={SECTION_IDS.infoCommands}
+			tabindex="-1"
+		>
+			<h2>Info commands</h2>
+			<InfoCommandsEditor commands={data.settings.infoCommands} />
 		</section>
 
 		<section
