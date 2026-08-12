@@ -17,7 +17,7 @@ import type { WebClient } from '@slack/web-api';
 import type { AppConfigPatch } from './settings.js';
 import { validateSlackChannel } from './settings-validation.js';
 import { getSlackChannels } from './autocomplete-sources.js';
-import { extractChannelNames } from '../welcome-dm.js';
+import { extractChannelNames } from '../channel-tokens.js';
 import { validateWarningTemplate } from '../warning-dm.js';
 import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '../ticker-speed.js';
 

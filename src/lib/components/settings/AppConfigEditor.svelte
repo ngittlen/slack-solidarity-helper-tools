@@ -12,7 +12,8 @@
 	import type { PickerItem } from './picker-types.js';
 	import { createFieldAutosave, type AutosaveStatus } from './use-field-autosave.svelte.js';
 	import { isoToLocalInput, localInputToIso } from '$lib/components/dashboard/countdown.js';
-	import { extractChannelNames, DEFAULT_WELCOME_DM } from '$lib/welcome-dm.js';
+	import { extractChannelNames } from '$lib/channel-tokens.js';
+	import { DEFAULT_WELCOME_DM } from '$lib/welcome-dm.js';
 	import { DEFAULT_WARNING_DM, validateWarningTemplate } from '$lib/warning-dm.js';
 	import {
 		DEFAULT_TICKER_COLUMNS_PER_SECOND,

@@ -5,7 +5,8 @@ import { slack } from '$lib/server/slack.js';
 import { loadSettings, type ChapterEntry } from '$lib/server/settings.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
 import { getSlackChannels } from '$lib/server/autocomplete-sources.js';
-import { DEFAULT_WELCOME_DM, renderWelcomeDm, resolveChannelLinks } from '$lib/welcome-dm.js';
+import { DEFAULT_WELCOME_DM, renderWelcomeDm } from '$lib/welcome-dm.js';
+import { resolveChannelLinks } from '$lib/channel-tokens.js';
 
 // "Send this DM to me" — renders the welcome template and DMs it to the signed-
 // in admin so they can proof-read the real thing (links, emoji, formatting)

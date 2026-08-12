@@ -16,9 +16,7 @@
 // exactly the same substitution and channel-link resolution as the default.
 
 import { ordinal } from './ordinal.js';
-// The `#channel` tokenizer is shared with the welcome DM, not reimplemented,
-// so both templates accept exactly the same channel syntax.
-import { extractChannelNames, resolveChannelLinks } from './welcome-dm.js';
+import { extractChannelNames, resolveChannelLinks } from './channel-tokens.js';
 
 /** Used when no template is configured. Deliberately opens with the ordinal —
  *  the whole point of numbering warnings is that the member knows where they

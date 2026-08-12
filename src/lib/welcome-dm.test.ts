@@ -1,26 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_WELCOME_DM, extractChannelNames, renderWelcomeDm } from './welcome-dm.js';
+import { DEFAULT_WELCOME_DM, renderWelcomeDm } from './welcome-dm.js';
 
 const NAME_TO_ID = new Map([
 	['general', 'C_GEN'],
 	['announcements', 'C_ANN'],
 ]);
-
-describe('extractChannelNames', () => {
-	it('pulls lowercased, deduped channel names from #tokens', () => {
-		expect(extractChannelNames('Say hi in #General and #announcements and #general again')).toEqual(
-			['general', 'announcements'],
-		);
-	});
-
-	it('ignores the # inside an existing <#C…> mention', () => {
-		expect(extractChannelNames('Welcome to <#C0ABC123> — see also #general')).toEqual(['general']);
-	});
-
-	it('returns nothing when there are no tokens', () => {
-		expect(extractChannelNames('no channels here')).toEqual([]);
-	});
-});
 
 describe('renderWelcomeDm', () => {
 	it('falls back to the default template when blank', () => {
