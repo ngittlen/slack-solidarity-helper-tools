@@ -9,6 +9,8 @@
 	import CoalitionChannelEditor from '$lib/components/settings/CoalitionChannelEditor.svelte';
 	import AllowedUsersEditor from '$lib/components/settings/AllowedUsersEditor.svelte';
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
+	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
+	import { SECTION_IDS } from '$lib/components/settings/sections.js';
 	import AppConfigEditor from '$lib/components/settings/AppConfigEditor.svelte';
 
 	const { data } = $props();
@@ -30,121 +32,148 @@
 	// in sync; $effect is client-only so no SSR guard is needed.
 	$effect(() => {
 		if (page.url.searchParams.get('refresh') === 'lists') {
-			replaceState(resolve('/settings'), {});
+			// The hash is preserved deliberately: `resolve('/settings')` is the bare
+			// route, so replacing with it alone would silently drop a settings-nav
+			// deep link (e.g. /settings?refresh=lists#cfg-warning-dm) on arrival.
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- a resolve()'d route plus a fragment; the rule only accepts a bare resolve() call for replaceState (its allowFragment option covers <a href> only), and typed linting isn't enabled here so the ResolvedPathname escape hatch is unavailable
+			replaceState(`${resolve('/settings')}${page.url.hash}`, {});
 		}
 	});
 </script>
 
-<main>
-	<div class="settings-header">
-		<Tooltip.Provider>
-			<Tooltip.Root>
-				<Tooltip.Trigger class="refresh-link-trigger">
-					<a class="refresh-link" href="{resolve('/settings')}?refresh=lists">Refresh lists</a>
-				</Tooltip.Trigger>
-				<Tooltip.Portal>
-					<Tooltip.Content class="refresh-tooltip" sideOffset={4}>
-						Lists are cached for 5 minutes. Click to force a refresh.
-					</Tooltip.Content>
-				</Tooltip.Portal>
-			</Tooltip.Root>
-		</Tooltip.Provider>
-		<span class="last-refreshed">Last refreshed {lastRefreshedLabel}</span>
-	</div>
+<!-- Ids on the sections below are the settings-nav anchor targets; they are
+     kept in sync with $lib/components/settings/sections.ts (SECTION_IDS). Each
+     section body is bespoke markup, so the page can't render them from a loop
+     over that tree. -->
+<div class="settings-page">
+	<SettingsNav />
+	<main>
+		<div class="settings-header">
+			<Tooltip.Provider>
+				<Tooltip.Root>
+					<Tooltip.Trigger class="refresh-link-trigger">
+						<a class="refresh-link" href="{resolve('/settings')}?refresh=lists">Refresh lists</a>
+					</Tooltip.Trigger>
+					<Tooltip.Portal>
+						<Tooltip.Content class="refresh-tooltip" sideOffset={4}>
+							Lists are cached for 5 minutes. Click to force a refresh.
+						</Tooltip.Content>
+					</Tooltip.Portal>
+				</Tooltip.Root>
+			</Tooltip.Provider>
+			<span class="last-refreshed">Last refreshed {lastRefreshedLabel}</span>
+		</div>
 
-	<section>
-		<h2>Chapter ↔ Slack channel</h2>
-		{#if data.errors.slackChannels}
-			<p class="error">Slack channels: {data.errors.slackChannels}</p>
-		{/if}
-		{#if data.errors.solidarityChapters}
-			<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
-		{/if}
-		{#if data.slackChannels && data.solidarityChapters}
-			<ChapterChannelEditor
-				chapters={data.solidarityChapters.items}
-				channels={data.slackChannels.items}
-				entries={data.settings.chapterChannelMap}
-				welcomeDisabledChannelIds={[...data.settings.welcomeDisabledChannelIds]}
-			/>
-		{/if}
-	</section>
+		<section
+			id={SECTION_IDS.chapterChannelMap}
+			data-settings-anchor={SECTION_IDS.chapterChannelMap}
+			tabindex="-1"
+		>
+			<h2>Chapter ↔ Slack channel</h2>
+			{#if data.errors.slackChannels}
+				<p class="error">Slack channels: {data.errors.slackChannels}</p>
+			{/if}
+			{#if data.errors.solidarityChapters}
+				<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
+			{/if}
+			{#if data.slackChannels && data.solidarityChapters}
+				<ChapterChannelEditor
+					chapters={data.solidarityChapters.items}
+					channels={data.slackChannels.items}
+					entries={data.settings.chapterChannelMap}
+					welcomeDisabledChannelIds={[...data.settings.welcomeDisabledChannelIds]}
+				/>
+			{/if}
+		</section>
 
-	<section>
-		<h2>Coalition ↔ Slack channel</h2>
-		{#if data.errors.slackChannels}
-			<p class="error">Slack channels: {data.errors.slackChannels}</p>
-		{/if}
-		{#if data.errors.customProperties}
-			<p class="error">Solidarity custom properties: {data.errors.customProperties}</p>
-		{/if}
-		{#if data.errors.userLists}
-			<p class="error">Solidarity user lists: {data.errors.userLists}</p>
-		{/if}
-		{#if data.slackChannels && data.customProperties && data.userLists}
-			<CoalitionChannelEditor
-				channels={data.slackChannels.items}
-				customProperties={data.customProperties.items}
-				userLists={data.userLists.items}
-				entries={data.settings.coalitionChannelMap}
-			/>
-		{/if}
-	</section>
+		<section
+			id={SECTION_IDS.coalitionChannelMap}
+			data-settings-anchor={SECTION_IDS.coalitionChannelMap}
+			tabindex="-1"
+		>
+			<h2>Coalition ↔ Slack channel</h2>
+			{#if data.errors.slackChannels}
+				<p class="error">Slack channels: {data.errors.slackChannels}</p>
+			{/if}
+			{#if data.errors.customProperties}
+				<p class="error">Solidarity custom properties: {data.errors.customProperties}</p>
+			{/if}
+			{#if data.errors.userLists}
+				<p class="error">Solidarity user lists: {data.errors.userLists}</p>
+			{/if}
+			{#if data.slackChannels && data.customProperties && data.userLists}
+				<CoalitionChannelEditor
+					channels={data.slackChannels.items}
+					customProperties={data.customProperties.items}
+					userLists={data.userLists.items}
+					entries={data.settings.coalitionChannelMap}
+				/>
+			{/if}
+		</section>
 
-	<section>
-		<h2>App config</h2>
-		{#if data.errors.slackChannels}
-			<p class="error">Slack channels: {data.errors.slackChannels}</p>
-		{/if}
-		{#if data.slackChannels}
-			<AppConfigEditor
-				channels={data.slackChannels.items}
-				trackingChannelId={data.settings.slackTrackingChannelId}
-				growthReportChannelId={data.settings.slackGrowthReportChannelId}
-				mobilizeSyncChannelId={data.settings.slackMobilizeSyncChannelId}
-				mobilizeContactName={data.settings.mobilizeContactName}
-				mobilizeContactEmail={data.settings.mobilizeContactEmail}
-				mobilizeContactPhone={data.settings.mobilizeContactPhone}
-				rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
-				countdownLabel={data.settings.countdownLabel}
-				countdownEndAt={data.settings.countdownEndAt}
-				memberNoteChannelId={data.settings.slackMemberNoteChannelId}
-				welcomeDmMessage={data.settings.welcomeDmMessage}
-				warningDmMessage={data.settings.warningDmMessage}
-				tickerColumnsPerSecond={data.settings.doorTickerColumnsPerSecond}
-				tickerEntries={data.tickerEntries}
-				leaderboard={data.leaderboard}
-			/>
-		{/if}
-	</section>
+		<section id={SECTION_IDS.appConfig} data-settings-anchor={SECTION_IDS.appConfig} tabindex="-1">
+			<h2>App config</h2>
+			{#if data.errors.slackChannels}
+				<p class="error">Slack channels: {data.errors.slackChannels}</p>
+			{/if}
+			{#if data.slackChannels}
+				<AppConfigEditor
+					channels={data.slackChannels.items}
+					trackingChannelId={data.settings.slackTrackingChannelId}
+					growthReportChannelId={data.settings.slackGrowthReportChannelId}
+					mobilizeSyncChannelId={data.settings.slackMobilizeSyncChannelId}
+					mobilizeContactName={data.settings.mobilizeContactName}
+					mobilizeContactEmail={data.settings.mobilizeContactEmail}
+					mobilizeContactPhone={data.settings.mobilizeContactPhone}
+					rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
+					countdownLabel={data.settings.countdownLabel}
+					countdownEndAt={data.settings.countdownEndAt}
+					memberNoteChannelId={data.settings.slackMemberNoteChannelId}
+					welcomeDmMessage={data.settings.welcomeDmMessage}
+					warningDmMessage={data.settings.warningDmMessage}
+					tickerColumnsPerSecond={data.settings.doorTickerColumnsPerSecond}
+					tickerEntries={data.tickerEntries}
+					leaderboard={data.leaderboard}
+				/>
+			{/if}
+		</section>
 
-	<section>
-		<h2>Allowed Slack users</h2>
-		{#if data.errors.slackUsers}
-			<p class="error">Slack users: {data.errors.slackUsers}</p>
-		{/if}
-		{#if data.slackUsers}
-			<AllowedUsersEditor
-				users={data.slackUsers.items}
-				allowedIds={[...data.settings.allowedSlackUserIds]}
-				selfId={data.selfSlackUserId}
-			/>
-		{/if}
-	</section>
+		<section
+			id={SECTION_IDS.allowedUsers}
+			data-settings-anchor={SECTION_IDS.allowedUsers}
+			tabindex="-1"
+		>
+			<h2>Allowed Slack users</h2>
+			{#if data.errors.slackUsers}
+				<p class="error">Slack users: {data.errors.slackUsers}</p>
+			{/if}
+			{#if data.slackUsers}
+				<AllowedUsersEditor
+					users={data.slackUsers.items}
+					allowedIds={[...data.settings.allowedSlackUserIds]}
+					selfId={data.selfSlackUserId}
+				/>
+			{/if}
+		</section>
 
-	<section>
-		<h2>Excluded chapters</h2>
-		{#if data.errors.solidarityChapters}
-			<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
-		{/if}
-		{#if data.solidarityChapters}
-			<ExcludedChaptersEditor
-				chapters={data.solidarityChapters.items}
-				excludedIds={[...data.settings.reportExcludedChapterIds]}
-			/>
-		{/if}
-	</section>
-</main>
+		<section
+			id={SECTION_IDS.excludedChapters}
+			data-settings-anchor={SECTION_IDS.excludedChapters}
+			tabindex="-1"
+		>
+			<h2>Excluded chapters</h2>
+			{#if data.errors.solidarityChapters}
+				<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
+			{/if}
+			{#if data.solidarityChapters}
+				<ExcludedChaptersEditor
+					chapters={data.solidarityChapters.items}
+					excludedIds={[...data.settings.reportExcludedChapterIds]}
+				/>
+			{/if}
+		</section>
+	</main>
+</div>
 
 <style>
 	.settings-header {
