@@ -7,6 +7,7 @@
 	import DoorTicker from '$lib/components/dashboard/DoorTicker.svelte';
 	import type { TickerEntry } from '$lib/server/door-knock-ticker';
 	import SettingsRow from './SettingsRow.svelte';
+	import { APP_CONFIG_ROW_IDS } from './sections.js';
 	import AutocompletePicker from './AutocompletePicker.svelte';
 	import type { PickerItem } from './picker-types.js';
 	import { createFieldAutosave, type AutosaveStatus } from './use-field-autosave.svelte.js';
@@ -379,6 +380,7 @@
 
 <div class="app-config-editor">
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.trackingChannel}
 		label="Volunteer-help tracking channel"
 		status={tracking.status}
 		error={tracking.error}
@@ -399,6 +401,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.growthReportChannel}
 		label="Weekly growth report channel"
 		status={growthReport.status}
 		error={growthReport.error}
@@ -418,6 +421,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.mobilizeSyncChannel}
 		label="Mobilize sync channel"
 		status={mobilizeSync.status}
 		error={mobilizeSync.error}
@@ -441,6 +445,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.mobilizeContact}
 		label="Mobilize event contact"
 		status={contactStatus}
 		error={contactError}
@@ -489,6 +494,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.countdown}
 		label="Header countdown"
 		status={countdownEndSave.status === 'idle'
 			? countdownLabelSave.status
@@ -527,6 +533,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.welcomeDm}
 		label="New-member welcome DM"
 		status={welcomeDmSave.status}
 		error={welcomeDmSave.error}
@@ -574,6 +581,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.memberNotesChannel}
 		label="Member notes channel"
 		status={memberNote.status}
 		error={memberNote.error}
@@ -597,6 +605,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.warningDm}
 		label="Warning DM"
 		status={warningDmSave.status}
 		error={warningDmSave.error}
@@ -649,6 +658,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.rankingAlpha}
 		label="Growth report ranking α = {alphaSave.value.toFixed(2)}"
 		status={alphaSave.status}
 		error={alphaSave.error}
@@ -679,6 +689,7 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.tickerSpeed}
 		label="Doors ticker speed = {tickerSpeedSave.value} columns/sec"
 		status={tickerSpeedSave.status}
 		error={tickerSpeedSave.error}

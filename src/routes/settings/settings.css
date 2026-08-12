@@ -1,30 +1,109 @@
-/* /settings page-scoped styles (NAV-3).
- * Mirrors the conventions in src/routes/pending/pending.css — see that file for
- * the canonical `main` container width/spacing pattern. Sections and the
- * Refresh-lists header row are added by US1/US2/US3 tasks as they land.
+/* /settings page styles.
+ *
+ * IMPORTANT: this is a plain CSS import, so every rule here is GLOBAL and stays
+ * in <head> after a client-side navigation away from /settings. Selectors are
+ * therefore anchored to `.settings-page`; a bare `main { ... }` here would also
+ * apply to / and /pending once a user has visited this route. (The rules used to
+ * be unanchored and happened to match pending.css's, which is why nothing had
+ * broken.) Mirrors the container width/spacing pattern in
+ * src/routes/pending/pending.css.
  */
 
-main {
+/* --- Shell --------------------------------------------------------------- */
+
+/* The nav is an inline flex column, not an overlay: opening it shrinks the space
+ * `main` centers itself in, so the content is pushed right rather than covered.
+ * `flex: 1 1 auto` + `max-width` + `margin: auto` means the content column
+ * re-centers within whatever space the sidebar leaves. */
+.settings-page {
+	--settings-nav-w: 240px;
+	--settings-nav-rail-w: 44px;
+	--settings-nav-bar-h: 44px;
+
+	display: flex;
+	align-items: flex-start; /* a stretched flex item can't be sticky */
+}
+
+.settings-page > main {
+	flex: 1 1 auto;
+	min-width: 0; /* let the column shrink instead of overflowing the row */
 	max-width: 1200px;
 	margin: 32px auto;
 	padding: 0 24px;
 }
 
+/* --- Section cards ------------------------------------------------------- */
+
 /* Each section reads as a card: rounded border + padding, with breathing room
  * between cards — the editors are dense enough that heading margins alone
  * read as one continuous wall. */
-main section {
+.settings-page > main section {
 	border: 1px solid var(--color-border, #ddd);
 	border-radius: var(--radius-lg, 10px);
 	padding: 20px 24px;
 }
 
-main section + section {
+.settings-page > main section + section {
 	margin-top: 32px;
 }
 
 /* The section heading hugs the top of its card instead of floating on its
  * default browser margin. */
-main section > h2 {
+.settings-page > main section > h2 {
 	margin-top: 0;
+}
+
+/* --- Anchor targets ------------------------------------------------------ */
+
+/* SvelteKit jumps to fragments with `element.scrollIntoView()` — on deep links
+ * and on same-page hash clicks alike — specifically so `scroll-margin` and
+ * `scroll-behavior` apply. That's why the nav uses plain <a href="#id"> and
+ * intercepts nothing. Keyed off an explicit data attribute rather than `[id]`
+ * so it can't catch incidental ids on form controls inside the editors. */
+.settings-page [data-settings-anchor] {
+	scroll-margin-top: 16px;
+}
+
+/* Anchors take programmatic focus after a jump so keyboard and screen-reader
+ * users continue from the section rather than the top of the page. They aren't
+ * interactive controls, so no visible ring. */
+.settings-page section[data-settings-anchor]:focus {
+	outline: none;
+}
+
+/* `scroll-behavior` has to sit on the scrolling element, which is outside this
+ * subtree. `:has()` keeps it scoped to while /settings is mounted, instead of a
+ * route stylesheet switching smooth scrolling on app-wide. */
+@media (prefers-reduced-motion: no-preference) {
+	html:has(.settings-page) {
+		scroll-behavior: smooth;
+	}
+}
+
+/* --- Narrow: the sidebar becomes a sticky top drawer ---------------------- */
+
+/* 960px matches the shell breakpoint already used on the dashboard. Below it the
+ * content column would be narrower than AppConfigEditor's own 720px max-width,
+ * so the two-column push stops paying for itself. The nav's own styles switch at
+ * the same width (SettingsNav.svelte). */
+@media (max-width: 960px) {
+	/* Block flow, so the nav is a normal-flow first child whose containing block
+	 * for `position: sticky` is the viewport scroller. */
+	.settings-page {
+		display: block;
+	}
+
+	.settings-page > main {
+		margin: 20px auto;
+		padding: 0 16px;
+	}
+
+	.settings-page > main section {
+		padding: 16px;
+	}
+
+	/* Clear the sticky bar, so a jump doesn't land the heading underneath it. */
+	.settings-page [data-settings-anchor] {
+		scroll-margin-top: calc(var(--settings-nav-bar-h) + 12px);
+	}
 }
