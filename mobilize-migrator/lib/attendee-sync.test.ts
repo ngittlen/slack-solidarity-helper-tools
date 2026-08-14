@@ -38,11 +38,39 @@ function attendance(overrides: Partial<MobilizeAttendance> = {}): MobilizeAttend
 	};
 }
 
+/** The live 422 Solidarity returns for a number it cannot text. */
+const PHONE_REJECTED = {
+	error: 'Failed to save user',
+	details: [
+		{
+			field_name: 'phone_number',
+			message: 'Please enter a valid phone number capable of receiving text messages',
+		},
+	],
+};
+
 /** Routes by URL: Mobilize v1 API, Solidarity RSVP list, Solidarity user search. */
-function mockApis(options: { attendances: MobilizeAttendance[]; userFound?: boolean }) {
+function mockApis(options: {
+	attendances: MobilizeAttendance[];
+	userFound?: boolean;
+	/** Refuse any user create that carries a phone, the way Solidarity does. */
+	rejectPhoneOnCreate?: boolean;
+}) {
 	const spy = vi.fn(async (url: string | URL, init?: RequestInit) => {
 		const href = String(url);
 		const writing = init?.method === 'POST' || init?.method === 'PUT';
+		if (options.rejectPhoneOnCreate && writing && href.includes('/v1/users')) {
+			const sent = JSON.parse(String(init?.body ?? '{}')) as { phone_number?: string | null };
+			if (sent.phone_number) {
+				return {
+					ok: false,
+					status: 422,
+					json: async () => PHONE_REJECTED,
+					text: async () => JSON.stringify(PHONE_REJECTED),
+					headers: new Headers(),
+				} as unknown as Response;
+			}
+		}
 		let body: unknown = {};
 		if (href.includes('api.mobilize.us')) {
 			body = { data: options.attendances, next: null };
@@ -171,6 +199,89 @@ describe('runAttendeeSync dry-run accounting', () => {
 		const report = await run(ledgerWith(), true);
 
 		expect(report.profilesCreated).toBe(1);
+	});
+});
+
+describe('runAttendeeSync phone numbers Solidarity will not accept', () => {
+	// Regression: Solidarity checks that a new profile's number can receive texts
+	// and Mobilize does not, so landlines and typos came through and 422'd the
+	// create. That failed the whole signup, so their RSVP never landed and the
+	// same person alerted on every run forever.
+
+	it('creates the profile without the phone when there is an email to keep', async () => {
+		const spy = mockApis({
+			attendances: [attendance()],
+			userFound: false,
+			rejectPhoneOnCreate: true,
+		});
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.failed).toBe(0);
+		expect(report.errors).toEqual([]);
+		expect(report.profilesCreated).toBe(1);
+		expect(report.profilesCreatedWithoutPhone).toBe(1);
+		expect(report.rsvpsCreated).toBe(1);
+
+		// The retry keeps everything else the signup gave us.
+		const retry = spy.mock.calls
+			.filter(([url, init]) => String(url).includes('/v1/users') && (init as RequestInit)?.body)
+			.map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+			.at(-1);
+		expect(retry).toMatchObject({ email: 'a@example.com', phone_number: null, first_name: 'A' });
+	});
+
+	it('skips the signup, without failing, when the phone was all we had', async () => {
+		mockApis({
+			attendances: [
+				attendance({
+					person: {
+						given_name: 'No',
+						family_name: 'Email',
+						phone_numbers: [{ primary: true, number: '6165551234' }],
+					},
+				}),
+			],
+			userFound: false,
+			rejectPhoneOnCreate: true,
+		});
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.skippedInvalidPhone).toBe(1);
+		expect(report.failed).toBe(0);
+		expect(report.errors).toEqual([]);
+		expect(report.profilesCreated).toBe(0);
+		expect(report.rsvpsCreated).toBe(0);
+	});
+
+	it('still fails on a 422 that is not about the phone', async () => {
+		const rejected = { error: 'Failed to save user', details: [{ field_name: 'chapter_id' }] };
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string | URL, init?: RequestInit) => {
+				const href = String(url);
+				const writing = init?.method === 'POST';
+				const bad = writing && href.includes('/v1/users');
+				const body = href.includes('api.mobilize.us')
+					? { data: [attendance()], next: null }
+					: bad
+						? rejected
+						: { data: [] };
+				return {
+					ok: !bad,
+					status: bad ? 422 : 200,
+					json: async () => body,
+					text: async () => JSON.stringify(body),
+					headers: new Headers(),
+				} as unknown as Response;
+			}),
+		);
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.failed).toBe(1);
+		expect(report.errors[0]).toContain('chapter_id');
 	});
 });
 

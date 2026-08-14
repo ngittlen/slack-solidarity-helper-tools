@@ -79,6 +79,8 @@ console.log(`  would create profile: ${report.profilesCreated}`);
 console.log(`  RSVPs to create:      ${report.rsvpsCreated}`);
 console.log(`  RSVPs to update:      ${report.rsvpsUpdated}`);
 console.log(`  no email or phone:    ${report.skippedNoContact}`);
+console.log(`  phone rejected:       ${report.skippedInvalidPhone}`);
+console.log(`  created sans phone:   ${report.profilesCreatedWithoutPhone}`);
 console.log(`  unknown status:       ${report.skippedUnknownStatus}`);
 console.log(`  events gone:          ${report.eventsGone}`);
 console.log(`  failed:               ${report.failed}`);

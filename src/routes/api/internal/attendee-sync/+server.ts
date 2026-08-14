@@ -94,7 +94,9 @@ export const POST: RequestHandler = async ({ url }) => {
 				`signups ${result.participations}: ` +
 				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated}, profiles +${result.profilesCreated}, ` +
 				`matched ${result.matchedByEmail}e/${result.matchedByPhone}p, unchanged ${result.unchanged}, ` +
-				`no-contact ${result.skippedNoContact}, unknown-status ${result.skippedUnknownStatus}, ` +
+				`no-contact ${result.skippedNoContact}, bad-phone ${result.skippedInvalidPhone}, ` +
+				`phone-dropped ${result.profilesCreatedWithoutPhone}, ` +
+				`unknown-status ${result.skippedUnknownStatus}, ` +
 				`failed ${result.failed}`,
 		);
 

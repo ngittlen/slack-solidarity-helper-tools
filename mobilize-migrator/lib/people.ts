@@ -36,20 +36,35 @@ export interface ResolvedPerson {
 }
 
 /**
+ * A structurally valid NANP number: `1` + area code + exchange + line number,
+ * where area code and exchange both start 2-9 and neither is an N11 service
+ * code (411, 911...).
+ *
+ * Mobilize does no such check, so filler like 1234567890 or 0000000000 arrives
+ * looking like a phone number. Solidarity rejects those at create time with a
+ * 422 on `phone_number`, which used to surface as a nightly sync failure for
+ * the same person forever.
+ */
+const NANP = /^1(?![2-9]11)[2-9]\d\d(?![2-9]11)[2-9]\d{6}$/;
+
+/**
  * Normalize to the digits-only E.164 form Solidarity stores ("16165551234").
  * Mobilize hands us bare 10-digit national numbers.
  *
  * Solidarity's own matching is lenient — national, digits-only and +E.164 all
  * resolved to the same record in testing — so this only has to be consistent,
  * not exact.
+ *
+ * Structural validity is checked, but that is all it can prove: whether a
+ * well-formed number actually reaches a phone that can receive texts is
+ * Solidarity's call, and only it can answer that. See createUser.
  */
 export function normalizePhone(raw: string | null | undefined): string | null {
 	if (!raw) return null;
 	const digits = raw.replace(/\D/g, '');
-	if (digits.length === 10) return `1${digits}`;
-	if (digits.length === 11 && digits.startsWith('1')) return digits;
-	// Anything else (short codes, non-US) is not safely matchable.
-	return null;
+	const e164 = digits.length === 10 ? `1${digits}` : digits;
+	// Anything else (short codes, non-US, junk) is not safely matchable.
+	return NANP.test(e164) ? e164 : null;
 }
 
 export function normalizeEmail(raw: string | null | undefined): string | null {
@@ -118,6 +133,44 @@ export interface CreateUserResult {
 }
 
 /**
+ * Solidarity refused to create the profile.
+ *
+ * Carries the rejected field names so callers can tell a fixable rejection from
+ * a real fault. The message keeps the body excerpt the old plain Error had —
+ * Solidarity's validation replies name the field and the rule, never the value,
+ * so it is safe for Slack.
+ */
+export class SolidarityUserCreateError extends Error {
+	constructor(
+		readonly status: number,
+		readonly fields: string[],
+		body: string,
+	) {
+		super(`Solidarity user create returned ${status}: ${body.slice(0, 200)}`);
+		this.name = 'SolidarityUserCreateError';
+	}
+
+	/**
+	 * Solidarity rejected the phone number itself. It verifies that a new
+	 * profile's number can receive texts; Mobilize collects numbers without
+	 * checking, so landlines, VoIP lines and typos all arrive here.
+	 */
+	get phoneRejected(): boolean {
+		return this.status === 422 && this.fields.includes('phone_number');
+	}
+}
+
+/** Field names from Solidarity's `details` array, when it sent one. */
+function rejectedFields(body: string): string[] {
+	try {
+		const parsed = JSON.parse(body) as { details?: { field_name?: string }[] };
+		return (parsed.details ?? []).map((d) => d.field_name).filter((f): f is string => !!f);
+	} catch {
+		return [];
+	}
+}
+
+/**
  * Create a Solidarity profile for someone who signed up on Mobilize.
  *
  * Consent: only `sms_permission` is set, mirroring Mobilize's opt-in. Call and
@@ -161,9 +214,8 @@ export async function createUser(
 		{ retriesUsed: 0 },
 	);
 	if (!res.ok) {
-		throw new Error(
-			`Solidarity user create returned ${res.status}: ${(await res.text()).slice(0, 200)}`,
-		);
+		const body = await res.text();
+		throw new SolidarityUserCreateError(res.status, rejectedFields(body), body);
 	}
 	// `/v1/users` breaks the envelope convention the rest of the API follows: a
 	// single user comes back BARE, while `/v1/event_rsvps/:id` and every list

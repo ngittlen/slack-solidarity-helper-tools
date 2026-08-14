@@ -7,6 +7,7 @@ import {
 	normalizeEmail,
 	normalizePhone,
 	resolveChapterId,
+	SolidarityUserCreateError,
 } from './people.js';
 import { attendingFor } from './rsvp.js';
 
@@ -46,6 +47,16 @@ describe('normalizePhone', () => {
 		expect(normalizePhone('12345')).toBeNull();
 		expect(normalizePhone('')).toBeNull();
 		expect(normalizePhone(null)).toBeNull();
+	});
+
+	it('refuses filler that is the right length but not a real NANP number', () => {
+		// Mobilize does not validate what people type, and Solidarity 422s these
+		// at create time — which used to fail the signup and alert every run.
+		expect(normalizePhone('0000000000')).toBeNull();
+		expect(normalizePhone('1111111111')).toBeNull();
+		expect(normalizePhone('1234567890')).toBeNull(); // exchange starts with 1
+		expect(normalizePhone('616-011-1234')).toBeNull(); // exchange starts with 0
+		expect(normalizePhone('911-555-1234')).toBeNull(); // N11 area code
 	});
 });
 
@@ -161,6 +172,51 @@ describe('createUser', () => {
 
 		await expect(createUser(TOKEN, person, 1330)).rejects.toThrow(/response keys: user/);
 		await expect(createUser(TOKEN, person, 1330)).rejects.not.toThrow(/example\.com/);
+	});
+
+	it('reports which fields Solidarity rejected, so the caller can react', async () => {
+		// The live 422 for a number Solidarity cannot text.
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => {
+				const body = {
+					error: 'Failed to save user',
+					details: [
+						{
+							field_name: 'phone_number',
+							message: 'Please enter a valid phone number capable of receiving text messages',
+						},
+					],
+				};
+				return {
+					ok: false,
+					status: 422,
+					json: async () => body,
+					text: async () => JSON.stringify(body),
+					headers: new Headers(),
+				} as unknown as Response;
+			}),
+		);
+
+		const err = await createUser(TOKEN, person, 1330).catch((e: unknown) => e);
+
+		expect(err).toBeInstanceOf(SolidarityUserCreateError);
+		const failure = err as SolidarityUserCreateError;
+		expect(failure.phoneRejected).toBe(true);
+		expect(failure.fields).toEqual(['phone_number']);
+		// The old message is preserved: it is what reaches the logs.
+		expect(failure.message).toContain('returned 422');
+	});
+
+	it('does not claim the phone was at fault when Solidarity says nothing about it', async () => {
+		mockFetch(() => ({ ok: false, body: { error: 'nope' } }));
+
+		const err = (await createUser(TOKEN, person, 1330).catch(
+			(e: unknown) => e,
+		)) as SolidarityUserCreateError;
+
+		expect(err.phoneRejected).toBe(false);
+		expect(err.fields).toEqual([]);
 	});
 });
 
