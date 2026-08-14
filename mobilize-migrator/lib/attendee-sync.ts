@@ -16,6 +16,7 @@ import {
 	normalizeEmail,
 	normalizePhone,
 	resolveChapterId,
+	SolidarityUserCreateError,
 } from './people.js';
 import {
 	attendingFor,
@@ -84,11 +85,22 @@ export interface AttendeeSyncReport {
 	rsvpsUpdated: number;
 	attendancesRecorded: number;
 	profilesCreated: number;
+	/**
+	 * Of those, ones created without the phone number because Solidarity refused
+	 * it. Counted separately because dropping a contact detail someone gave us is
+	 * worth being able to see.
+	 */
+	profilesCreatedWithoutPhone: number;
 	matchedByEmail: number;
 	matchedByPhone: number;
 	unchanged: number;
 	/** No email and no phone — nothing to match or create on. */
 	skippedNoContact: number;
+	/**
+	 * Phone rejected by Solidarity as not text-capable, and no email to fall back
+	 * on. Not a failure: nothing here can fix someone else's phone number.
+	 */
+	skippedInvalidPhone: number;
 	/** Mobilize status we don't have a mapping for. */
 	skippedUnknownStatus: number;
 	abortedReason?: string;
@@ -108,10 +120,12 @@ function emptyReport(): AttendeeSyncReport {
 		rsvpsUpdated: 0,
 		attendancesRecorded: 0,
 		profilesCreated: 0,
+		profilesCreatedWithoutPhone: 0,
 		matchedByEmail: 0,
 		matchedByPhone: 0,
 		unchanged: 0,
 		skippedNoContact: 0,
+		skippedInvalidPhone: 0,
 		skippedUnknownStatus: 0,
 		authFailed: false,
 		failed: 0,
@@ -276,12 +290,12 @@ export async function runAttendeeSync(
 						log(report.abortedReason);
 						return report;
 					}
-					report.profilesCreated++;
 					if (!config.apply) {
 						// Don't skip the rest: a dry run must still project the RSVP
 						// this person would get, or it reports far fewer writes than
 						// the real run performs — which is exactly the number a human
 						// uses to decide whether to go ahead.
+						report.profilesCreated++;
 						report.rsvpsCreated++;
 						continue;
 					}
@@ -298,19 +312,41 @@ export async function runAttendeeSync(
 						report.errors.push(`${refFor(participation)}: no chapter could be resolved`);
 						continue;
 					}
-					const created = await createUser(
-						config.solidarityToken,
-						{
-							firstName: participation.firstName,
-							lastName: participation.lastName,
-							email: participation.email,
-							phone: participation.phone,
-							zipcode: participation.zipcode,
-						},
-						chapterId,
-					);
+					const person = {
+						firstName: participation.firstName,
+						lastName: participation.lastName,
+						email: participation.email,
+						phone: participation.phone,
+						zipcode: participation.zipcode,
+					};
+
+					let created: { id: number };
+					try {
+						created = await createUser(config.solidarityToken, person, chapterId);
+					} catch (err) {
+						if (!(err instanceof SolidarityUserCreateError && err.phoneRejected)) throw err;
+						// Solidarity checks that a new profile's number can receive
+						// texts. Mobilize never does, so landlines and typos reach us
+						// looking fine. Failing the whole signup over it meant the same
+						// person alerted on every run forever, and their RSVP never
+						// landed — so drop the number and keep the human.
+						if (!email) {
+							// Nothing left to create them on. Skipped rather than failed:
+							// it is a fact about their contact details, not a fault, and
+							// it self-heals if they correct the number in Mobilize.
+							report.skippedInvalidPhone++;
+							log(`${refFor(participation)}: Solidarity rejected the phone and there is no email`);
+							continue;
+						}
+						created = await createUser(
+							config.solidarityToken,
+							{ ...person, phone: null },
+							chapterId,
+						);
+						report.profilesCreatedWithoutPhone++;
+					}
 					userId = created.id;
-					// Already counted above, where the dry-run branch also needs it.
+					report.profilesCreated++;
 					log(`created Solidarity user ${userId} (chapter ${chapterId})`);
 				}
 			}
