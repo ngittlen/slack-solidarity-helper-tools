@@ -17,6 +17,7 @@
 			? [
 					{ href: '/pending', label: 'Pending applicants' },
 					{ href: '/members', label: 'Member lookup' },
+					{ href: '/turfs/demo', label: 'Turf checkout (demo)' },
 					{ href: '/settings', label: 'Settings' },
 				]
 			: [],
