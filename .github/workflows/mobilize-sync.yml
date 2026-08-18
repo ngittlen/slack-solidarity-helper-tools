@@ -69,7 +69,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     env:
-      APP_URL: https://slack-solidarity-helper-tools.fly.dev
+      APP_URL: https://slack.tools4abdul.com
       INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
       DRY_RUN: ${{ inputs.dry_run }}
       # Passed through raw and decided in the shell below. Do NOT fold these into
