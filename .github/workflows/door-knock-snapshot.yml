@@ -28,7 +28,7 @@ jobs:
     steps:
       - name: Call door-knock snapshot endpoint
         env:
-          APP_URL: https://slack-solidarity-helper-tools.fly.dev
+          APP_URL: https://slack.tools4abdul.com
           INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
         run: |
           curl --fail-with-body -sS -X POST \

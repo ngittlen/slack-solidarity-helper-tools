@@ -526,6 +526,28 @@ Returns `{ "status": "ok" }`. Useful for uptime monitoring.
 
 [Fly.io](https://fly.io) is the recommended hosting option. Install the CLI, run `fly launch` in the project directory, then set secrets and deploy:
 
+### Tools for Abdul production domain
+
+The Tools for Abdul deployment uses `https://slack.tools4abdul.com`. Attach the hostname to the existing Fly app and follow the DNS instructions printed by Fly:
+
+```bash
+fly certs add slack.tools4abdul.com -a slack-solidarity-helper-tools
+fly certs check slack.tools4abdul.com -a slack-solidarity-helper-tools
+```
+
+Once the certificate is ready, make the custom hostname canonical for application-generated links and SvelteKit origin handling:
+
+```bash
+fly secrets set \
+  APP_URL=https://slack.tools4abdul.com \
+  ORIGIN=https://slack.tools4abdul.com \
+  -a slack-solidarity-helper-tools
+```
+
+Before changing those secrets, add `https://slack.tools4abdul.com/auth/slack/callback` to the Slack app's OAuth redirect URLs. Then update its Event Subscriptions, Slash Commands, and Interactivity URLs to use the same hostname. The scheduled GitHub Actions in this repository already call the custom hostname.
+
+### New deployments
+
 ```bash
 fly secrets set \
   SLACK_BOT_TOKEN=xoxb-... \
