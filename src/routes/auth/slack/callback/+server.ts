@@ -8,7 +8,9 @@ import { slack } from '$lib/server/slack.js';
 import {
 	OAUTH_REDIRECT_COOKIE,
 	resolvePostLoginRedirect,
+	sanitizeRedirectTarget,
 } from '$lib/server/post-login-redirect.js';
+import { verifyState } from '$lib/server/oauth-state.js';
 import {
 	SLACK_CLIENT_ID,
 	SLACK_CLIENT_SECRET,
@@ -32,17 +34,66 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 
 	const code = url.searchParams.get('code');
-	const state = url.searchParams.get('state');
-	const storedState = cookies.get('oauth_state');
+	const rawState = url.searchParams.get('state');
+	const storedNonce = cookies.get('oauth_state');
 
-	if (!code || !state || state !== storedState) {
+	if (!code || !rawState) {
 		error(400, 'Invalid OAuth state.');
 	}
 
-	// The page they were trying to reach when they got bounced to login. Read
-	// before the session exists; whether they may actually see it is decided
-	// below, once we know if they're an admin.
-	const requestedPath = cookies.get(OAUTH_REDIRECT_COOKIE) ?? null;
+	const verdict = verifyState(rawState);
+	if (!verdict.ok) {
+		// A signature that does not check out is the only failure here that means
+		// somebody tampered with the round trip. Everything else is a browser
+		// being a browser, and earns another go.
+		if (verdict.reason === 'bad-signature') {
+			console.warn('[auth] OAuth state failed signature verification');
+			error(400, 'Invalid OAuth state.');
+		}
+		// `malformed` also covers the states minted by the previous bare-UUID
+		// code, so the few in flight across a deploy restart cleanly rather than
+		// 400ing. Neither reason can loop: the state we mint next is well-formed
+		// and freshly dated by construction.
+		console.warn(`[auth] restarting login: OAuth state ${verdict.reason}`);
+		restartLogin(null);
+	}
+	const state = verdict.state;
+
+	if (storedNonce === undefined) {
+		// The URL came back but the cookie did not, which is the signature of a
+		// login that changed browsers mid-flight: Slack's in-app webview hands the
+		// current URL to Safari on "Open in browser", and Safari has its own
+		// cookie jar. Nobody is attacking — so start the login over in whichever
+		// browser we are in now, and still send them where they were going, since
+		// the signed state carried the destination across even though the cookie
+		// could not.
+		if (!state.isRetry) {
+			console.warn('[auth] restarting login: no state cookie (browser handoff?)');
+			restartLogin(state.destination);
+		}
+		// One retry already happened and the cookie still is not sticking, so
+		// going round again would only spin. Say what is actually wrong instead.
+		console.error('[auth] login abandoned: state cookie missing after a retry');
+		error(
+			400,
+			'Your browser did not send back the login cookie. This usually means the link was opened ' +
+				'inside an app’s built-in browser. Open the site directly in your browser and sign in again.',
+		);
+	}
+
+	if (storedNonce !== state.nonce) {
+		// A cookie that is present but *different* is the case this check exists
+		// for: someone else's authorization being fed into this browser.
+		console.warn('[auth] OAuth state did not match the cookie');
+		error(400, 'Invalid OAuth state.');
+	}
+
+	// The page they were trying to reach when they got bounced to login. The
+	// cookie wins where it survived; the signed state is the fallback for the
+	// jars that drop one cookie but not the other. Read before the session
+	// exists — whether they may actually see it is decided below, once we know
+	// if they're an admin.
+	const requestedPath = cookies.get(OAUTH_REDIRECT_COOKIE) ?? state.destination;
 
 	cookies.delete('oauth_state', { path: '/' });
 	cookies.delete(OAUTH_REDIRECT_COOKIE, { path: '/' });
@@ -145,6 +196,25 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	// nothing or for something this session may not see.
 	redirect(302, resolvePostLoginRedirect(requestedPath, { isAdmin }));
 };
+
+/**
+ * Send someone back through login rather than dead-ending them on a 400.
+ *
+ * Safe by construction: the `code` Slack just handed us is dropped on the floor
+ * and a brand-new authorization begins, so nothing from an unverified response
+ * ever reaches a session. `retry=1` is what keeps this to at most one automatic
+ * attempt — ../+server.ts folds it into the state it mints, and the branch above
+ * refuses to restart a login that already carries it.
+ */
+function restartLogin(destination: string | null): never {
+	const params = new URLSearchParams();
+	// Re-sanitised rather than trusted: it is signed, but the rule that only
+	// same-origin paths reach a Location header should hold at every hop.
+	const target = sanitizeRedirectTarget(destination);
+	if (target !== null) params.set('redirectTo', target);
+	params.set('retry', '1');
+	redirect(302, `/auth/slack?${params}`);
+}
 
 /**
  * Display name for the session, read with the **bot** token — it already holds

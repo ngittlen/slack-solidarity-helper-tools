@@ -5,6 +5,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // `vi.mock('./env.js', …)` pattern from `src/lib/server/settings.test.ts`.
 vi.mock('$lib/server/settings.js', () => ({
 	loadSettings: vi.fn(),
+	loadVanChapterFolders: vi.fn(),
+	loadVanBlockedUsers: vi.fn(),
 }));
 
 vi.mock('$lib/server/autocomplete-sources.js', () => ({
@@ -20,7 +22,7 @@ vi.mock('$lib/server/slack.js', () => ({ slack: {} }));
 vi.mock('$lib/server/env.js', () => ({ SOLIDARITY_API_TOKEN: 'test-token' }));
 
 import { load, type SettingsPageData } from './+page.server.js';
-import { loadSettings } from '$lib/server/settings.js';
+import { loadSettings, loadVanChapterFolders, loadVanBlockedUsers } from '$lib/server/settings.js';
 import {
 	getSlackChannels,
 	getSlackUsers,
@@ -81,6 +83,10 @@ function makeEvent(overrides: {
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.mocked(loadSettings).mockResolvedValue(settingsFixture);
+	// VAN settings load alongside the rest. Empty is the normal pre-launch
+	// state — no chapter mapped yet means no turf published.
+	vi.mocked(loadVanChapterFolders).mockResolvedValue([]);
+	vi.mocked(loadVanBlockedUsers).mockResolvedValue([]);
 	vi.mocked(getSlackChannels).mockResolvedValue({
 		items: [{ id: 'C1', name: 'general', isPrivate: false }],
 		stale: false,

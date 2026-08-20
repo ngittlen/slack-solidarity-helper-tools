@@ -5,7 +5,14 @@ import { errMessage } from '$lib/err-message.js';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
-import { loadSettings, type Settings } from '$lib/server/settings.js';
+import {
+	loadSettings,
+	loadVanChapterFolders,
+	loadVanBlockedUsers,
+	type Settings,
+	type VanChapterFolderEntry,
+	type VanBlockedUserEntry,
+} from '$lib/server/settings.js';
 import { loadDoorKnockTicker, type TickerEntry } from '$lib/server/door-knock-ticker.js';
 import {
 	computeWeeklyLeaderboard,
@@ -38,6 +45,10 @@ export interface SettingsPageData {
 	 *  their chip so they can't attempt to remove themselves. */
 	selfSlackUserId: string;
 	settings: Settings;
+	/** Chapter → VAN folder mapping. Empty until an admin fills it in, which is
+	 *  also what makes the turf catalog sync a no-op. */
+	vanChapterFolderMappings: VanChapterFolderEntry[];
+	vanBlockedUsers: VanBlockedUserEntry[];
 	slackChannels: AutocompleteResult<ChannelEntry> | null;
 	slackUsers: AutocompleteResult<UserEntry> | null;
 	solidarityChapters: AutocompleteResult<SolidarityChapterEntry> | null;
@@ -49,6 +60,8 @@ export interface SettingsPageData {
 		solidarityChapters?: string;
 		customProperties?: string;
 		userLists?: string;
+		vanChapterFolders?: string;
+		vanBlocklist?: string;
 	};
 	oldestFetchedAt: number | null;
 	/** Today's real ticker standings, so the speed slider previews the board
@@ -168,10 +181,31 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		);
 	}
 
+	// VAN turf-checkout settings. Loaded separately from loadSettings rather
+	// than folded into it: the blocked set is read on every turf page load, so
+	// it stays a narrow query (see settings.ts). Neither is page-fatal — an
+	// empty mapping just means no turf is published yet.
+	const [vanChapterFoldersResult, vanBlockedUsersResult] = await Promise.allSettled([
+		loadVanChapterFolders(db),
+		loadVanBlockedUsers(db),
+	]);
+	const vanChapterFolderMappings =
+		vanChapterFoldersResult.status === 'fulfilled' ? vanChapterFoldersResult.value : [];
+	const vanBlockedUsers =
+		vanBlockedUsersResult.status === 'fulfilled' ? vanBlockedUsersResult.value : [];
+	if (vanChapterFoldersResult.status === 'rejected') {
+		errors.vanChapterFolders = 'Failed to load chapter → VAN folder mapping.';
+	}
+	if (vanBlockedUsersResult.status === 'rejected') {
+		errors.vanBlocklist = 'Failed to load the turf-checkout block list.';
+	}
+
 	return {
 		pageTitle: 'Settings' as const,
 		selfSlackUserId: locals.session.slackUserId,
 		settings,
+		vanChapterFolderMappings,
+		vanBlockedUsers,
 		leaderboard,
 		slackChannels,
 		slackUsers,

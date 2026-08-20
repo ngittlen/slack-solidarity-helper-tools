@@ -16,7 +16,8 @@
 		"check:migrator": "tsc -p tsconfig.migrator.json",
 		"prepare": "git config core.hooksPath .githooks || true && svelte-kit sync",
 		"db:generate": "drizzle-kit generate",
-		"db:migrate": "drizzle-kit migrate"
+		"db:migrate": "drizzle-kit migrate",
+		"db:seed": "node bin/seed-dev-db.js"
 	},
 	"license": "MIT",
 	"dependencies": {

@@ -118,6 +118,8 @@ describe('allAnchorIds', () => {
 			'info-commands',
 			'allowed-users',
 			'excluded-chapters',
+			'van-chapter-folders',
+			'van-blocklist',
 		]);
 	});
 

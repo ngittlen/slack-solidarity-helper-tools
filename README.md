@@ -251,6 +251,41 @@ DEV_SLACK_USER_ID=U012AB3CD
 
 The `team_join` welcome flow requires real Slack credentials and cannot be tested locally without a tunnelling tool (e.g. `ngrok`).
 
+### Test data
+
+A fresh `local.db` is empty, so the dashboard renders as a row of "No signups recorded yet" cards. `npm run db:seed` fills it with synthetic data:
+
+```bash
+npm run db:migrate    # create the tables first (needs TURSO_DATABASE_URL=file:local.db)
+npm run db:seed       # 120 days of generated dashboard data
+
+SEED=7 npm run db:seed              # a different but equally reproducible dataset
+DAYS=400 npm run db:seed            # longer window, to exercise the 90-day preset
+TURSO_DATABASE_URL=file:scratch.db npm run db:seed
+```
+
+**Nothing in it comes from production.** Chapters, members, canvassers and counts are all generated — no real names, no email addresses outside `@example.invalid`, and no Slack user IDs that resolve to a real account. Production data is not needed to exercise the dashboard, which reads almost entirely aggregates keyed by `(date, chapter)`.
+
+The script refuses to run against anything but a `file:` URL, so it can't be pointed at Turso by accident.
+
+Output is deterministic for a given `SEED` — two people running `npm run db:seed` on the same day get identical rows, so a bug one person sees reproduces for everyone. (Dates are relative to today, so the window moves forward as the calendar does.)
+
+It populates `solidarity_daily_snapshots`, `slack_joins`, `door_knock_daily`, `door_knock_canvasser_daily`, `weekly_growth_windows`, `weekly_chapter_growth`, `chapter_channel_map`, and the countdown fields of `app_config`, and deliberately includes the cases that are easy to miss:
+
+| case                                                                      | why it's there                                                                                                                                          |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Members in two chapters at once                                           | Per-chapter bands sum to more than the distinct daily total, so the dark overlay marker has something to show                                           |
+| Signups with no chapter                                                   | Feeds the `No chapter` band                                                                                                                             |
+| A chapter id with no name row                                             | Renders as the `Chapter #199` fallback                                                                                                                  |
+| More than ten chapters                                                    | Forces the `Other` band and its merged-chapter breakdown                                                                                                |
+| A five-day gap in the snapshots                                           | Charts must zero-fill rather than close the gap                                                                                                         |
+| Sundays with no activity                                                  | Same                                                                                                                                                    |
+| Mixed chapter naming — `Kent for Abdul`, `Ingham County`, `Detroit Metro` | The county heatmap derives county names from chapter names; these are the three shapes it has to cope with, including one that maps to no county at all |
+| Punctuated and multi-word counties — `St. Clair`, `Grand Traverse`        | Must survive normalization verbatim to match the map's geojson                                                                                          |
+| Door-knock regions that aren't counties                                   | Door-knock chapter names come from the canvassing tool, not the chapter list                                                                            |
+
+If you need a table the seeder doesn't cover, add it there rather than copying rows out of production — several tables (`member_notes`, `member_account_links`, `slack_user_tokens`, `sessions`) hold credentials or moderation records about named members and should not leave the production database.
+
 ## Reports
 
 ### Top RSVPers per chapter
@@ -525,6 +560,28 @@ Returns `{ "status": "ok" }`. Useful for uptime monitoring.
 ## Deployment
 
 [Fly.io](https://fly.io) is the recommended hosting option. Install the CLI, run `fly launch` in the project directory, then set secrets and deploy:
+
+### Tools for Abdul production domain
+
+The Tools for Abdul deployment uses `https://slack.tools4abdul.com`. Attach the hostname to the existing Fly app and follow the DNS instructions printed by Fly:
+
+```bash
+fly certs add slack.tools4abdul.com -a slack-solidarity-helper-tools
+fly certs check slack.tools4abdul.com -a slack-solidarity-helper-tools
+```
+
+Once the certificate is ready, make the custom hostname canonical for application-generated links and SvelteKit origin handling:
+
+```bash
+fly secrets set \
+  APP_URL=https://slack.tools4abdul.com \
+  ORIGIN=https://slack.tools4abdul.com \
+  -a slack-solidarity-helper-tools
+```
+
+Before changing those secrets, add `https://slack.tools4abdul.com/auth/slack/callback` to the Slack app's OAuth redirect URLs. Then update its Event Subscriptions, Slash Commands, and Interactivity URLs to use the same hostname. The scheduled GitHub Actions in this repository already call the custom hostname.
+
+### New deployments
 
 ```bash
 fly secrets set \

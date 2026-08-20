@@ -635,3 +635,176 @@ export const slackUserTokens = sqliteTable('slack_user_tokens', {
 
 export type SlackUserTokenRow = typeof slackUserTokens.$inferSelect;
 export type NewSlackUserTokenRow = typeof slackUserTokens.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// VAN turf checkout (specs/010-van-turf-checkout/plan.md)
+//
+// Nothing here holds voter data. Turf geometry arrives as a convex hull over
+// exported address coordinates, computed server-side with the rows discarded
+// (plan §3), so the most granular thing stored is a polygon and a count.
+// ---------------------------------------------------------------------------
+
+// Which VAN folders belong to which Solidarity chapter. Mirrors
+// chapter_channel_map deliberately: same composite-key shape, same audit
+// triplet, same settings-editor ergonomics.
+//
+// This is an INPUT, not something the sync discovers — a chapter with no row
+// here has no turf, so the first catalog sync is a no-op until an admin fills
+// it in. A chapter can span several folders (counties get cut in pieces).
+export const vanChapterFolders = sqliteTable(
+	'van_chapter_folders',
+	{
+		chapterId: integer('chapter_id').notNull(),
+		folderId: integer('folder_id').notNull(),
+		// Denormalised so /settings and the turf page can name a chapter without
+		// a Solidarity round-trip, exactly as chapter_channel_map does.
+		chapterName: text('chapter_name').notNull(),
+		lastEditedBy: text('last_edited_by').notNull(),
+		lastEditedByName: text('last_edited_by_name').notNull(),
+		lastEditedAt: text('last_edited_at').notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.chapterId, table.folderId] })],
+);
+
+// One row per VAN Map Route. `mapRouteId` is VAN's own identifier and is
+// stable across refreshes — a refresh re-runs the route's saved list, it does
+// not renumber routes.
+export const vanTurfs = sqliteTable(
+	'van_turfs',
+	{
+		mapRouteId: integer('map_route_id').primaryKey(),
+		mapRegionId: integer('map_region_id').notNull(),
+		folderId: integer('folder_id').notNull(),
+		// Resolved through van_chapter_folders at sync time so reads don't join.
+		chapterId: integer('chapter_id').notNull(),
+		chapterName: text('chapter_name').notNull().default(''),
+		regionName: text('region_name').notNull().default(''),
+		name: text('name').notNull(),
+		savedListId: integer('saved_list_id'),
+		/** The MiniVAN list number a volunteer types in. Nullable: a route can
+		 *  exist before anyone generates its printed list, and a turf without
+		 *  one must not be claimable. */
+		printedListNumber: text('printed_list_number'),
+		routeNumber: integer('route_number'),
+		/** People in the list (VAN's routeSize). */
+		routeSize: integer('route_size').notNull().default(0),
+		/** Unique doors (VAN's doorCount). */
+		doorCount: integer('door_count').notNull().default(0),
+		phoneCount: integer('phone_count').notNull().default(0),
+		centroidLat: real('centroid_lat'),
+		centroidLng: real('centroid_lng'),
+		/** JSON array of {lat,lng}, rounded to 5dp. Null while geometry is
+		 *  pending or when the hull was degenerate — the UI draws a pin. */
+		hullJson: text('hull_json'),
+		/** routeSize when the hull was computed. A materially different
+		 *  routeSize means the turf was re-cut and the hull is stale. */
+		hullSourceRouteSize: integer('hull_source_route_size'),
+		/** Canvassers VAN reports for this turf via /minivanExports, when an
+		 *  organizer distributed it outside this app. Null = not distributed. */
+		vanDistributedTo: text('van_distributed_to'),
+		firstSeenAt: text('first_seen_at').notNull(),
+		lastSeenAt: text('last_seen_at').notNull(),
+		lastRefreshedAt: text('last_refreshed_at'),
+		/** Stamped, never deleted, so a live checkout pointing at a vanished
+		 *  route still renders. */
+		retiredAt: text('retired_at'),
+	},
+	(table) => [
+		index('van_turfs_chapter').on(table.chapterId),
+		index('van_turfs_region').on(table.mapRegionId),
+	],
+);
+
+// Append-only checkout ledger. Rows are never updated in place except to stamp
+// a terminal timestamp, so the history of who held what survives.
+//
+// The partial unique index is the anti-collision guarantee: at most one row per
+// turf may be simultaneously unreleased and uncompleted. Two racing claims
+// cannot both win, because the constraint is enforced by the storage engine
+// rather than by a read-then-write in application code.
+export const vanTurfCheckouts = sqliteTable(
+	'van_turf_checkouts',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		mapRouteId: integer('map_route_id').notNull(),
+		slackUserId: text('slack_user_id').notNull(),
+		slackUserName: text('slack_user_name').notNull(),
+		claimedAt: text('claimed_at').notNull(),
+		/** When the claim lapses if untouched. Evaluated on read as well as by
+		 *  the sweep, so an expired claim never shows as held. */
+		expiresAt: text('expires_at').notNull(),
+		releasedAt: text('released_at'),
+		completedAt: text('completed_at'),
+		/** 'volunteer' | 'expired' | 'admin' | 'retired' | 'blocked' */
+		releaseReason: text('release_reason'),
+		/** Doors that left the turf between claim and the post-completion
+		 *  refresh. Zero means the volunteer probably never synced MiniVAN. */
+		confirmedDoorDelta: integer('confirmed_door_delta'),
+	},
+	(table) => [
+		uniqueIndex('van_turf_checkouts_one_active')
+			.on(table.mapRouteId)
+			.where(sql`${table.releasedAt} IS NULL AND ${table.completedAt} IS NULL`),
+		index('van_turf_checkouts_holder').on(table.slackUserId),
+	],
+);
+
+// Deny-list for turf checkout. Mirrors allowed_slack_users, inverted.
+// Blocking gates reads as well as writes — see src/lib/van/access.ts.
+export const vanBlockedUsers = sqliteTable('van_blocked_users', {
+	slackUserId: text('slack_user_id').primaryKey(),
+	displayName: text('display_name').notNull(),
+	/** Free text, shown only to admins. Nullable — a block doesn't require a
+	 *  stated reason, though one is strongly encouraged. */
+	reason: text('reason'),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
+// Work queue for the per-turf export jobs that produce hull geometry. Export
+// Jobs are scoped to one savedListId, so a 200-turf region is 200 jobs; this
+// exists to throttle them and to survive a dropped webhook.
+export const vanGeometryQueue = sqliteTable(
+	'van_geometry_queue',
+	{
+		mapRouteId: integer('map_route_id').primaryKey(),
+		savedListId: integer('saved_list_id').notNull(),
+		exportJobId: integer('export_job_id'),
+		/** 'pending' | 'running' | 'done' | 'failed' */
+		status: text('status').notNull().default('pending'),
+		attempts: integer('attempts').notNull().default(0),
+		requestedAt: text('requested_at'),
+		completedAt: text('completed_at'),
+		lastError: text('last_error'),
+	},
+	(table) => [index('van_geometry_queue_status').on(table.status)],
+);
+
+// zip -> lat/lng cache for the "no geolocation" fallback. Deliberately shaped
+// like mobilize_geocoded_zips, including the never-throw contract of the
+// geocoder that fills it: a lookup failure yields no row, never an exception.
+export const vanZipCentroids = sqliteTable('van_zip_centroids', {
+	zip: text('zip').primaryKey(),
+	lat: real('lat').notNull(),
+	lng: real('lng').notNull(),
+	fetchedAt: text('fetched_at').notNull(),
+});
+
+export type VanChapterFolderRow = typeof vanChapterFolders.$inferSelect;
+export type NewVanChapterFolderRow = typeof vanChapterFolders.$inferInsert;
+
+export type VanTurfRow = typeof vanTurfs.$inferSelect;
+export type NewVanTurfRow = typeof vanTurfs.$inferInsert;
+
+export type VanTurfCheckoutRow = typeof vanTurfCheckouts.$inferSelect;
+export type NewVanTurfCheckoutRow = typeof vanTurfCheckouts.$inferInsert;
+
+export type VanBlockedUserRow = typeof vanBlockedUsers.$inferSelect;
+export type NewVanBlockedUserRow = typeof vanBlockedUsers.$inferInsert;
+
+export type VanGeometryQueueRow = typeof vanGeometryQueue.$inferSelect;
+export type NewVanGeometryQueueRow = typeof vanGeometryQueue.$inferInsert;
+
+export type VanZipCentroidRow = typeof vanZipCentroids.$inferSelect;
+export type NewVanZipCentroidRow = typeof vanZipCentroids.$inferInsert;
