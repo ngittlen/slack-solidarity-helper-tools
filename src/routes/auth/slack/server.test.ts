@@ -15,15 +15,32 @@ vi.mock('$env/dynamic/private', () => ({
 }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_CLIENT_ID: 'client-id',
+	// Doubles as the key the state signature is derived from.
+	SLACK_CLIENT_SECRET: 'client-secret',
 	REDIRECT_URI: 'http://localhost/auth/slack/callback',
 }));
 
 import { GET } from './+server.js';
+import { verifyState } from '$lib/server/oauth-state.js';
 
-function makeEvent(redirectTo?: string) {
+function makeEvent(redirectTo?: string, retry = false) {
 	const url = new URL('http://localhost/auth/slack');
 	if (redirectTo !== undefined) url.searchParams.set('redirectTo', redirectTo);
+	if (retry) url.searchParams.set('retry', '1');
 	return { url, cookies: { set: vi.fn(), delete: vi.fn() } };
+}
+
+/** The `state` on the Slack authorize URL the handler redirected to. */
+async function stateFrom(event: ReturnType<typeof makeEvent>): Promise<string> {
+	const location = await Promise.resolve(GET(event as never)).then(
+		() => {
+			throw new Error('expected a redirect to Slack');
+		},
+		(e: { location: string }) => e.location,
+	);
+	const state = new URL(location).searchParams.get('state');
+	if (state === null) throw new Error('no state on the authorize URL');
+	return state;
 }
 
 describe('GET /auth/slack', () => {
@@ -88,6 +105,46 @@ describe('GET /auth/slack', () => {
 			expect.any(String),
 			expect.objectContaining({ httpOnly: true }),
 		);
+	});
+
+	// The state is signed so the callback can still learn something from it when
+	// the login comes back in a browser that never had the cookie — see
+	// $lib/server/oauth-state.ts.
+	it('cookies the nonce from the signed state, not the whole state', async () => {
+		const event = makeEvent();
+		const state = await stateFrom(event);
+
+		const verdict = verifyState(state);
+		expect(verdict.ok).toBe(true);
+		const nonce = verdict.ok ? verdict.state.nonce : '';
+		expect(event.cookies.set).toHaveBeenCalledWith(
+			'oauth_state',
+			nonce,
+			expect.objectContaining({ httpOnly: true }),
+		);
+		expect(nonce).not.toBe(state);
+	});
+
+	it('signs the requested page into the state so it survives a lost cookie jar', async () => {
+		const verdict = verifyState(await stateFrom(makeEvent('/members?user=U123')));
+
+		expect(verdict.ok && verdict.state.destination).toBe('/members?user=U123');
+	});
+
+	it('does not sign an off-site destination into the state', async () => {
+		const verdict = verifyState(await stateFrom(makeEvent('https://evil.example/steal')));
+
+		expect(verdict.ok && verdict.state.destination).toBe(null);
+	});
+
+	// Set by the callback when it restarts a login; the callback refuses to
+	// restart a second time, so a browser that drops cookies cannot ping-pong.
+	it('marks a retried attempt in the state, and an ordinary one as not a retry', async () => {
+		const retried = verifyState(await stateFrom(makeEvent('/members', true)));
+		const first = verifyState(await stateFrom(makeEvent('/members')));
+
+		expect(retried.ok && retried.state.isRetry).toBe(true);
+		expect(first.ok && first.state.isRetry).toBe(false);
 	});
 
 	// chat:write is requested at login so there is no second authorization dance

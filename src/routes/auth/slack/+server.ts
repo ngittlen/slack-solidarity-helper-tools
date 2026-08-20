@@ -5,6 +5,7 @@ import { SLACK_CLIENT_ID, REDIRECT_URI } from '$lib/server/env.js';
 import { env } from '$env/dynamic/private';
 import { OAUTH_REDIRECT_COOKIE, sanitizeRedirectTarget } from '$lib/server/post-login-redirect.js';
 import { POST_AS_USER_SCOPE } from '$lib/server/user-tokens.js';
+import { signState } from '$lib/server/oauth-state.js';
 
 const OAUTH_STATE_COOKIE = 'oauth_state';
 
@@ -32,9 +33,17 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		);
 	}
 
-	const state = crypto.randomUUID();
+	// Set by the callback when it restarts a login whose state cookie went
+	// missing, and carried into the signed state so the callback can tell a
+	// first attempt from the one automatic retry it allows itself. A browser
+	// that simply refuses our cookies would otherwise ping-pong forever.
+	const isRetry = url.searchParams.get('retry') === '1';
 
-	cookies.set(OAUTH_STATE_COOKIE, state, {
+	// The nonce is what the cookie holds and what the callback matches on; the
+	// rest of the state is signed context that survives a lost cookie jar.
+	const { state, nonce } = signState({ destination: redirectTo, isRetry });
+
+	cookies.set(OAUTH_STATE_COOKIE, nonce, {
 		path: '/',
 		httpOnly: true,
 		secure: !dev,
