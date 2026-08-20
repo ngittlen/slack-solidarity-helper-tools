@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>%sveltekit.status% · A4M Helper Tools</title>
+
+		<!--
+			The fallback error page, and the ONLY one the Slack OAuth callback can
+			reach: an `error()` thrown from a +server.ts endpoint is re-thrown past
+			the router into handle_fatal_error, which renders this template rather
+			than any +error.svelte. Login failures are the errors people actually
+			hit here, and they hit them on a phone, so this page has to stand on its
+			own and offer a way forward.
+
+			It is a static template, not a component: no app.css, no Svelte, only
+			the %sveltekit.status% and %sveltekit.error.message% placeholders. The
+			palette below is therefore copied from app.css rather than imported —
+			if the theme there changes, this file does not follow on its own.
+		-->
+		<style>
+			:root {
+				--color-text: #121c50;
+				--color-text-muted: #4a5580;
+				--color-bg: #fbf0e4;
+				--color-surface: #ffffff;
+				--color-border: #d8ccc0;
+				--color-action: #121c50;
+				--color-action-hover: #1e2d70;
+				--color-action-text: #fbf0e4;
+				--color-gold: #e1b682;
+			}
+
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			body {
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+				background: var(--color-bg);
+				color: var(--color-text);
+				min-height: 100vh;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				padding: 24px;
+				line-height: 1.5;
+			}
+
+			.card {
+				background: var(--color-surface);
+				border: 1px solid var(--color-border);
+				border-radius: 8px;
+				max-width: 30rem;
+				width: 100%;
+				overflow: hidden;
+				box-shadow: 0 1px 3px rgba(18, 28, 80, 0.08);
+			}
+
+			.card-header {
+				background: var(--color-action);
+				color: var(--color-action-text);
+				padding: 14px 24px;
+				display: flex;
+				align-items: baseline;
+				gap: 10px;
+			}
+
+			.status {
+				font-size: 1.35rem;
+				font-weight: 700;
+				color: var(--color-gold);
+				line-height: 1;
+			}
+
+			.status-label {
+				font-size: 0.85rem;
+				font-weight: 600;
+				letter-spacing: 0.02em;
+			}
+
+			.card-body {
+				padding: 24px;
+			}
+
+			/* The message is the whole point of the page — the OAuth callback writes
+			   full sentences here telling someone what to do next. */
+			.message {
+				font-size: 1rem;
+				/* Long, unbroken things (a stray URL) must not widen the card. */
+				overflow-wrap: anywhere;
+			}
+
+			.actions {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 10px;
+				margin-top: 22px;
+			}
+
+			.actions a {
+				display: inline-block;
+				padding: 9px 16px;
+				border-radius: 6px;
+				font-size: 0.9rem;
+				font-weight: 600;
+				text-decoration: none;
+				border: 1px solid transparent;
+			}
+
+			.primary {
+				background: var(--color-action);
+				color: var(--color-action-text);
+			}
+
+			.primary:hover,
+			.primary:focus-visible {
+				background: var(--color-action-hover);
+			}
+
+			.secondary {
+				color: var(--color-text);
+				border-color: var(--color-border);
+			}
+
+			.secondary:hover,
+			.secondary:focus-visible {
+				border-color: var(--color-action);
+			}
+
+			.hint {
+				margin-top: 18px;
+				font-size: 0.8rem;
+				color: var(--color-text-muted);
+			}
+		</style>
+	</head>
+	<body>
+		<main class="card">
+			<div class="card-header">
+				<span class="status">%sveltekit.status%</span>
+				<span class="status-label">Something went wrong</span>
+			</div>
+			<div class="card-body">
+				<p class="message">%sveltekit.error.message%</p>
+				<div class="actions">
+					<!-- Signing in again is the fix for very nearly everything that
+					     lands here, so it leads. -->
+					<a class="primary" href="/auth/slack">Sign in again</a>
+					<a class="secondary" href="/">Back to dashboard</a>
+				</div>
+				<p class="hint">
+					If this keeps happening, open the site directly in your browser rather than following a
+					link from inside another app.
+				</p>
+			</div>
+		</main>
+	</body>
+</html>

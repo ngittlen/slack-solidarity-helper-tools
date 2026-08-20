@@ -30,23 +30,43 @@ vi.mock('$lib/server/env', () => ({
 vi.mock('$app/environment', () => ({ dev: true }));
 
 import { GET } from './+server.js';
+import { signState } from '$lib/server/oauth-state.js';
 
 function jsonRes(body: unknown): Response {
 	return { json: async () => body } as never;
 }
 
-function makeEvent(
-	opts: { code?: string; state?: string; cookieState?: string; redirectTo?: string } = {},
-) {
+interface EventOpts {
+	code?: string;
+	/** Overrides the signed state entirely — for tampered/legacy state tests. */
+	rawState?: string;
+	/** Overrides the nonce the cookie holds; defaults to the one just signed. */
+	cookieState?: string;
+	/** Drops the state cookie, as a browser handoff does. */
+	noStateCookie?: boolean;
+	/** Destination baked into the *signed* state. */
+	stateDestination?: string | null;
+	/** Marks the attempt as the one automatic retry. */
+	isRetry?: boolean;
+	/** Destination in the oauth_redirect *cookie*. */
+	redirectTo?: string;
+}
+
+function makeEvent(opts: EventOpts = {}) {
 	const code = opts.code ?? 'CODE';
-	const state = opts.state ?? 'STATE';
-	const cookieState = opts.cookieState ?? 'STATE';
+	const { state, nonce } = signState({
+		destination: opts.stateDestination ?? null,
+		isRetry: opts.isRetry ?? false,
+	});
 	const jar: Record<string, string | undefined> = {
-		oauth_state: cookieState,
+		oauth_state: opts.noStateCookie ? undefined : (opts.cookieState ?? nonce),
 		oauth_redirect: opts.redirectTo,
 	};
+	const url = new URL('http://localhost/auth/slack/callback');
+	url.searchParams.set('code', code);
+	url.searchParams.set('state', opts.rawState ?? state);
 	return {
-		url: new URL(`http://localhost/auth/slack/callback?code=${code}&state=${state}`),
+		url,
 		cookies: {
 			get: vi.fn((name: string) => jar[name]),
 			set: vi.fn(),
@@ -229,9 +249,9 @@ describe('GET /auth/slack/callback', () => {
 	});
 
 	it('rejects with 400 on OAuth state mismatch (preserved behavior)', async () => {
-		await expect(GET(makeEvent({ state: 'A', cookieState: 'B' }) as never)).rejects.toMatchObject({
-			status: 400,
-		});
+		await expect(
+			GET(makeEvent({ cookieState: 'a-different-nonce' }) as never),
+		).rejects.toMatchObject({ status: 400 });
 		expect(mockSessionSet).not.toHaveBeenCalled();
 	});
 
@@ -312,5 +332,114 @@ describe('GET /auth/slack/callback — user token capture', () => {
 		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
 
 		expect(mockSessionSet).toHaveBeenCalledTimes(1);
+	});
+});
+
+// The failure this recovers from: a link tapped in Slack's in-app webview and
+// then reopened in Safari. The URL (and so the state) crosses over; the cookie
+// jar does not. Before this, every one of those landed on a bare 400.
+describe('GET /auth/slack/callback — recovering a login that lost its cookie', () => {
+	let warnSpy: ReturnType<typeof vi.spyOn>;
+	let errorSpy: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UADMIN']) });
+		mockUsersInfo.mockResolvedValue({ ok: true, user: { name: 'Someone' } });
+		warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		warnSpy.mockRestore();
+		errorSpy.mockRestore();
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+		vi.useRealTimers();
+	});
+
+	it('restarts the login instead of 400ing when the state cookie is missing', async () => {
+		await expect(GET(makeEvent({ noStateCookie: true }) as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/auth/slack?retry=1',
+		});
+		expect(mockSessionSet).not.toHaveBeenCalled();
+	});
+
+	it('carries the signed destination into the restart, since the cookie is gone too', async () => {
+		await expect(
+			GET(makeEvent({ noStateCookie: true, stateDestination: '/members?user=U123' }) as never),
+		).rejects.toMatchObject({
+			status: 302,
+			location: '/auth/slack?redirectTo=%2Fmembers%3Fuser%3DU123&retry=1',
+		});
+	});
+
+	it('never restarts to an off-site destination', async () => {
+		await expect(
+			GET(makeEvent({ noStateCookie: true, stateDestination: '//evil.example/steal' }) as never),
+		).rejects.toMatchObject({ status: 302, location: '/auth/slack?retry=1' });
+	});
+
+	it('gives up with an explanation rather than looping when the retry lost it too', async () => {
+		await expect(
+			GET(makeEvent({ noStateCookie: true, isRetry: true }) as never),
+		).rejects.toMatchObject({
+			status: 400,
+			body: { message: expect.stringContaining('did not send back the login cookie') },
+		});
+		expect(mockSessionSet).not.toHaveBeenCalled();
+	});
+
+	it('restarts a login that sat on the Slack approval screen past the TTL', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+		const event = makeEvent();
+		vi.setSystemTime(new Date('2026-01-01T00:11:00Z'));
+
+		await expect(GET(event as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/auth/slack?retry=1',
+		});
+		expect(mockSessionSet).not.toHaveBeenCalled();
+	});
+
+	// The bare UUIDs the previous implementation minted. Only the handful in
+	// flight during a deploy ever hit this, and they should not eat a 400.
+	it('restarts on a legacy unsigned state instead of rejecting it', async () => {
+		await expect(
+			GET(makeEvent({ rawState: '550e8400-e29b-41d4-a716-446655440000' }) as never),
+		).rejects.toMatchObject({ status: 302, location: '/auth/slack?retry=1' });
+	});
+
+	it('rejects — does not restart — a state whose payload was rewritten', async () => {
+		const { state, nonce } = signState({ destination: '/', isRetry: false });
+		const [payload, signature] = state.split('.');
+		const forged = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+		forged.d = '/settings';
+		const rawState = `${Buffer.from(JSON.stringify(forged), 'utf8').toString('base64url')}.${signature}`;
+
+		await expect(GET(makeEvent({ rawState, cookieState: nonce }) as never)).rejects.toMatchObject({
+			status: 400,
+		});
+		expect(mockSessionSet).not.toHaveBeenCalled();
+	});
+
+	it('falls back to the signed destination when only the redirect cookie is missing', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn().mockResolvedValue(
+				jsonRes({
+					ok: true,
+					authed_user: { id: 'UADMIN', access_token: 'tok', scope: 'chat:write' },
+				}),
+			),
+		);
+		mockSaveUserToken.mockResolvedValue(undefined);
+
+		await expect(
+			GET(makeEvent({ stateDestination: '/members?user=U123' }) as never),
+		).rejects.toMatchObject({ status: 302, location: '/members?user=U123' });
 	});
 });
