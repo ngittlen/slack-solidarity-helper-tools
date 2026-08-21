@@ -102,7 +102,7 @@
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-lg);
 		padding: 1.25rem 1.5rem;
-		box-shadow: 0 1px 2px rgba(18, 28, 80, 0.06);
+		box-shadow: var(--shadow-card);
 		margin-top: 1rem;
 	}
 	.leaderboard__title {

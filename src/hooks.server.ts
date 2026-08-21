@@ -2,7 +2,9 @@ import type { Handle } from '@sveltejs/kit';
 import { text } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
-import { sessionStore } from '$lib/server/db.js';
+import { db, sessionStore } from '$lib/server/db.js';
+import { getTheme } from '$lib/server/theme.js';
+import { errMessage } from '$lib/err-message.js';
 import { validateEnv } from '$lib/server/env.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
 
@@ -51,5 +53,22 @@ export const handle: Handle = async ({ event, resolve }) => {
 		event.locals.session = null;
 	}
 
-	return resolve(event);
+	// Inject the theme's custom properties into <head>. Done here rather than in
+	// a layout because it has to reach <html>/<body> — a wrapper div can set
+	// variables for its subtree but cannot colour the page background, and dark
+	// mode needs somewhere above the app to hang.
+	//
+	// Never let a theming failure cost the user their page: on error the
+	// placeholder is stripped and the app renders with app.css's own fallbacks.
+	let themeStyle = '';
+	try {
+		const { css } = await getTheme(db);
+		themeStyle = `<style id="theme-tokens">${css}</style>`;
+	} catch (err) {
+		console.error('[theme] injection failed, rendering without tokens:', errMessage(err));
+	}
+
+	return resolve(event, {
+		transformPageChunk: ({ html }) => html.replace('%theme.style%', themeStyle),
+	});
 };

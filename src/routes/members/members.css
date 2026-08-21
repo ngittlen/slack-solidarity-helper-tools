@@ -19,20 +19,20 @@
 .member-notice {
 	margin: 8px 0 0;
 	padding: 8px 10px;
-	border-radius: var(--radius-md, 6px);
-	background: var(--color-bg-hover, rgba(0, 0, 0, 0.05));
-	color: var(--color-text-muted, #666);
+	border-radius: var(--radius-md);
+	background: var(--color-bg-hover);
+	color: var(--color-text-muted);
 	font-size: 0.9em;
 }
 
 .member-empty {
 	margin: 0;
-	color: var(--color-text-muted, #888);
+	color: var(--color-text-muted);
 	font-style: italic;
 }
 
 .member-card {
-	border-bottom: 1px solid var(--color-border, #ccc);
+	border-bottom: 1px solid var(--color-border);
 	padding-bottom: 12px;
 }
 
@@ -57,14 +57,14 @@
 	font-size: 1em;
 	font-weight: 500;
 	text-align: right;
-	color: var(--color-text-muted, #666);
+	color: var(--color-text-muted);
 	overflow-wrap: anywhere;
 }
 
 .member-realname,
 .member-linkline {
 	margin: 4px 0 0;
-	color: var(--color-text-muted, #666);
+	color: var(--color-text-muted);
 	font-size: 0.9em;
 }
 
@@ -74,8 +74,8 @@
 	font: inherit;
 	font-size: 0.95em;
 	cursor: pointer;
-	border: 1px solid var(--color-border, #ccc);
-	border-radius: var(--radius-sm, 4px);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
 	background: transparent;
 	color: inherit;
 }
@@ -112,8 +112,8 @@
 	display: flex;
 	flex-direction: column;
 	padding: 8px 10px;
-	border: 1px solid var(--color-border, #ccc);
-	border-radius: var(--radius-md, 6px);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
 }
 
 .activity-title {
@@ -122,19 +122,19 @@
 
 .activity-unknown {
 	font-style: italic;
-	color: var(--color-text-muted, #888);
+	color: var(--color-text-muted);
 }
 
 /* Only rendered on a collapsed entry ("6 sessions"), so it needs to read as a
    subtitle of the title above it, not as another muted timestamp. */
 .activity-count {
 	font-size: 0.85em;
-	color: var(--color-text-muted, #666);
+	color: var(--color-text-muted);
 }
 
 .activity-when {
 	font-size: 0.85em;
-	color: var(--color-text-muted, #888);
+	color: var(--color-text-muted);
 }
 
 .activity-extras {
@@ -143,7 +143,7 @@
 	grid-template-columns: auto 1fr;
 	gap: 2px 10px;
 	font-size: 0.85em;
-	color: var(--color-text-muted, #666);
+	color: var(--color-text-muted);
 }
 
 .activity-extras dt {
@@ -158,18 +158,18 @@
 .activity-footnote {
 	margin: 8px 0 0;
 	font-size: 0.82em;
-	color: var(--color-text-muted, #888);
+	color: var(--color-text-muted);
 }
 
 .note {
 	padding: 10px 12px;
-	border: 1px solid var(--color-border, #ccc);
+	border: 1px solid var(--color-border);
 	border-left-width: 4px;
-	border-radius: var(--radius-md, 6px);
+	border-radius: var(--radius-md);
 }
 
 .note-warning {
-	border-left-color: var(--color-gold, #b8860b);
+	border-left-color: var(--color-gold);
 }
 
 .note-head {
@@ -187,13 +187,13 @@
 }
 
 .note-warning .note-chip {
-	color: var(--color-gold, #b8860b);
+	color: var(--color-gold);
 }
 
 .note-meta,
 .note-dm {
 	font-size: 0.85em;
-	color: var(--color-text-muted, #888);
+	color: var(--color-text-muted);
 }
 
 .note-body {
@@ -214,7 +214,7 @@
 .note-dm-body {
 	margin: 6px 0 0;
 	font-size: 0.85em;
-	color: var(--color-text-muted, #666);
+	color: var(--color-text-muted);
 }
 
 .note-dm-body pre {
@@ -222,7 +222,7 @@
 	padding: 8px;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
-	background: var(--color-bg-hover, rgba(0, 0, 0, 0.05));
-	border-radius: var(--radius-sm, 4px);
+	background: var(--color-bg-hover);
+	border-radius: var(--radius-sm);
 	font: inherit;
 }

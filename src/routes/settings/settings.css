@@ -38,8 +38,8 @@
  * between cards — the editors are dense enough that heading margins alone
  * read as one continuous wall. */
 .settings-page > main section {
-	border: 1px solid var(--color-border, #ddd);
-	border-radius: var(--radius-lg, 10px);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
 	padding: 20px 24px;
 }
 

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { BarChart, Bars } from 'layerchart';
-	import { CHART_BAND_COLORS } from '$lib/styles/chart-colors';
+	import { chartBands } from '$lib/styles/chart-bands.svelte.js';
 	import { formatDateTick, thinDateTicks, type ChartBand, type ChartFrame } from './chart-data.js';
 
 	type Props = {
@@ -14,6 +14,10 @@
 	};
 
 	let { variant, frame, legendBands, accessibleName, showTotalOverlay = false }: Props = $props();
+
+	// Read from the emitted theme rather than imported, so the bars follow dark
+	// mode. See $lib/styles/chart-bands.svelte.ts.
+	const bands = chartBands();
 
 	type Row = Record<string, string | number>;
 
@@ -33,7 +37,7 @@
 			key: band.key,
 			label: band.label,
 			value: (d: Row) => (d[band.key] as number | undefined) ?? 0,
-			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length],
+			color: bands.current[i % bands.current.length],
 		})),
 	);
 
@@ -44,7 +48,7 @@
 		legendBands.map((band, i) => ({
 			key: band.key,
 			label: band.label,
-			color: CHART_BAND_COLORS[i % CHART_BAND_COLORS.length],
+			color: bands.current[i % bands.current.length],
 		})),
 	);
 </script>

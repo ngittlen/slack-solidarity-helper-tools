@@ -13,6 +13,7 @@ import {
 	type VanChapterFolderEntry,
 	type VanBlockedUserEntry,
 } from '$lib/server/settings.js';
+import { loadThemeTokensJson } from '$lib/server/theme.js';
 import { loadDoorKnockTicker, type TickerEntry } from '$lib/server/door-knock-ticker.js';
 import {
 	computeWeeklyLeaderboard,
@@ -49,6 +50,8 @@ export interface SettingsPageData {
 	 *  also what makes the turf catalog sync a no-op. */
 	vanChapterFolderMappings: VanChapterFolderEntry[];
 	vanBlockedUsers: VanBlockedUserEntry[];
+	/** Stored theme overrides as JSON; '{}' when untouched. */
+	themeTokens: string;
 	slackChannels: AutocompleteResult<ChannelEntry> | null;
 	slackUsers: AutocompleteResult<UserEntry> | null;
 	solidarityChapters: AutocompleteResult<SolidarityChapterEntry> | null;
@@ -181,18 +184,24 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		);
 	}
 
-	// VAN turf-checkout settings. Loaded separately from loadSettings rather
-	// than folded into it: the blocked set is read on every turf page load, so
-	// it stays a narrow query (see settings.ts). Neither is page-fatal — an
-	// empty mapping just means no turf is published yet.
-	const [vanChapterFoldersResult, vanBlockedUsersResult] = await Promise.allSettled([
-		loadVanChapterFolders(db),
-		loadVanBlockedUsers(db),
-	]);
+	// VAN turf-checkout settings and the stored theme, in one parallel batch.
+	// Loaded separately from loadSettings rather than folded into it: the blocked
+	// set is read on every turf page load and the theme on every render, so both
+	// stay narrow queries (see settings.ts and server/theme.ts). None is
+	// page-fatal — an empty mapping just means no turf is published yet, and a
+	// theme read failure means the editor opens on the brand defaults, which is
+	// also what the site is rendering.
+	const [vanChapterFoldersResult, vanBlockedUsersResult, themeTokensResult] =
+		await Promise.allSettled([
+			loadVanChapterFolders(db),
+			loadVanBlockedUsers(db),
+			loadThemeTokensJson(db),
+		]);
 	const vanChapterFolderMappings =
 		vanChapterFoldersResult.status === 'fulfilled' ? vanChapterFoldersResult.value : [];
 	const vanBlockedUsers =
 		vanBlockedUsersResult.status === 'fulfilled' ? vanBlockedUsersResult.value : [];
+	const themeTokens = themeTokensResult.status === 'fulfilled' ? themeTokensResult.value : '{}';
 	if (vanChapterFoldersResult.status === 'rejected') {
 		errors.vanChapterFolders = 'Failed to load chapter → VAN folder mapping.';
 	}
@@ -206,6 +215,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		settings,
 		vanChapterFolderMappings,
 		vanBlockedUsers,
+		themeTokens,
 		leaderboard,
 		slackChannels,
 		slackUsers,

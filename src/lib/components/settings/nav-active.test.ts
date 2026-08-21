@@ -120,6 +120,7 @@ describe('allAnchorIds', () => {
 			'excluded-chapters',
 			'van-chapter-folders',
 			'van-blocklist',
+			'theme',
 		]);
 	});
 

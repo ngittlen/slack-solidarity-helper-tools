@@ -60,11 +60,11 @@
 		isolation: isolate;
 		overflow: hidden;
 		border-radius: var(--radius-lg);
-		background: #07070a;
-		border: 1px solid #26262e;
+		background: var(--led-panel);
+		border: 1px solid var(--led-bezel);
 		box-shadow:
-			inset 0 2px 14px rgba(0, 0, 0, 0.9),
-			0 2px 6px rgba(0, 0, 0, 0.3);
+			inset 0 2px 14px color-mix(in srgb, var(--led-panel) 90%, transparent),
+			0 2px 6px color-mix(in srgb, var(--led-panel) 30%, transparent);
 		padding: 18px 0 14px;
 	}
 
@@ -96,7 +96,7 @@
 		background-image: radial-gradient(
 			circle at center,
 			transparent 0 calc(var(--led-pitch) * 0.34),
-			#07070a calc(var(--led-pitch) * 0.44) 100%
+			var(--led-panel) calc(var(--led-pitch) * 0.44) 100%
 		);
 		background-size: var(--led-pitch) var(--led-pitch);
 		pointer-events: none;

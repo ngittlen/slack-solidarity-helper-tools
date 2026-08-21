@@ -1,68 +1,60 @@
-:root {
-	/* Colors */
-	--color-text: #121c50;
-	--color-text-muted: #4a5580;
-	--color-text-faint: #8a94b8;
-	--color-bg: #fbf0e4;
-	--color-surface: #ffffff;
-	--color-border: #d8ccc0;
-	--color-border-subtle: #ede4da;
-	--color-border-focus: #121c50;
-	--color-header-bg: #121c50;
-	--color-header-text: #fbf0e4;
-	--color-action: #121c50;
-	--color-action-hover: #1e2d70;
-	--color-action-text: #fbf0e4;
-	--color-warning: #d3951e;
-	--color-success: #27ae60;
-	--color-success-muted: #90d4aa;
-	--color-error: #c0392b;
+/* Global stylesheet.
+ *
+ * Design tokens are NOT here any more. They are generated from
+ * src/lib/styles/tokens.ts (brand defaults + admin overrides), emitted by
+ * src/lib/styles/theme-css.ts and injected into <head> by hooks.server.ts as
+ * `@layer theme`. This file holds only what a theme cannot supply: the layer
+ * order, @font-face, the reset, and a handful of global element rules.
+ *
+ * If you are looking for a colour, it is in tokens.ts.
+ */
 
-	/* Accent palette */
-	--color-navy-mid: #233071;
-	--color-blue: #406bbf;
-	--color-cream-light: #fcf4ed;
-	--color-gold-light: #f5cc9b;
-	--color-gold: #e1b682;
-	--color-gold-dark: #cba16e;
-	--color-near-black: #131110;
-	--color-warm-dark: #383533;
-	--color-coral: #ff564d;
-	--color-red: #d21214;
+/* Cascade layer order. Two jobs at once.
+ *
+ * (1) layerchart: we import individual components, not its global
+ *     `styles/core.css`, so the layer-order declaration it ships never reaches
+ *     our bundle — leaving `base` vs `components` up to bundling order (which
+ *     flips between toolchains and made hover highlights render opaque).
+ *     Declaring layerchart's real layers pins it: `.lc-highlight-area`
+ *     (components) beats `.lc-rect`'s opaque default (base).
+ * (2) theming: the injected token block lives in `theme`, below `base` and
+ *     `components`, so no component style ever loses to it. `fallback` sits
+ *     below everything as the last resort described further down. */
+@layer fallback, reset, theme, base, components, utilities;
 
-	/* Categorical chart band palette (--chart-band-1..N) is injected onto
-       :root by the root layout from $lib/styles/chart-colors so JS and CSS
-       share a single source of truth. */
-
-	/* Typography */
-	--font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-	--font-size-xs: 0.7rem;
-	--font-size-sm: 0.8rem;
-	--font-size-base: 0.85rem;
-	--font-size-md: 0.9rem;
-	--font-size-lg: 0.95rem;
-
-	/* Border radius */
-	--radius-sm: 4px;
-	--radius-md: 6px;
-	--radius-lg: 8px;
+/* Display face — stands in for Kensington (Fort Foundry), which the brand guide
+   specifies but which is Adobe Fonts and cannot be self-hosted. Oswald matches
+   its narrow all-caps headline voice. See static/fonts/OFL-Oswald-SourceSans3.txt.
+   Variable, 400–700, latin subset. */
+@font-face {
+	font-family: 'Oswald';
+	src: url('/fonts/Oswald-Variable.woff2') format('woff2-variations');
+	font-weight: 400 700;
+	font-display: swap;
 }
 
-/* Cascade layer order. We only import individual layerchart components, not its
-   global `styles/core.css`, so the layer-order declaration it ships never reaches
-   our bundle — leaving layerchart's `base` vs `components` order up to bundling
-   order (which flips between toolchains and made hover highlights render opaque).
-   Declaring layerchart's real layers here (theme < base < components < utilities)
-   pins it: `.lc-highlight-area` (components) beats `.lc-rect`'s opaque default
-   (base), restoring the translucent highlight. `reset` stays lowest so our
-   universal reset never strips layerchart's tooltip padding/margins. */
-@layer reset, theme, base, components, utilities;
+/* Body face — stands in for Halyard Text (Darden Studio), same reason. */
+@font-face {
+	font-family: 'Source Sans 3';
+	src: url('/fonts/SourceSans3-Variable.woff2') format('woff2-variations');
+	font-weight: 400 700;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Source Sans 3';
+	src: url('/fonts/SourceSans3-Italic-Variable.woff2') format('woff2-variations');
+	font-weight: 400 700;
+	font-style: italic;
+	font-display: swap;
+}
 
 /* Blocky bitmap face for the dashboard's LED board — countdown, projection
    and door-knock ticker alike. Vendored from Google Fonts (Silkscreen, OFL
    1.1 — license alongside the files), latin subset only. Drawn on a 10-unit
    grid per em, which is what lets LedBoard size everything in whole glyph
    pixels; a smooth typeface would turn to mush under the diode grid.
+   NOT swappable, and deliberately absent from the theme editor.
    @font-face is unaffected by cascade layers, so it lives outside. */
 @font-face {
 	font-family: 'Silkscreen';
@@ -77,6 +69,40 @@
 	font-display: swap;
 }
 
+/* Last-resort values, in the lowest layer so the injected theme always wins.
+ *
+ * This is NOT a second source of truth — it is a handful of declarations that
+ * keep the page legible if token injection fails outright. It only ever applies
+ * when the theme stylesheet is absent, because `fallback` is the bottom layer.
+ *
+ * That ordering is load-bearing and easy to break: the theme is injected BEFORE
+ * this file, so it restates the same @layer order to stop itself being
+ * registered as layer #1. If you ever see a page where some tokens are light and
+ * others dark, that is the bug — check the order, not the colours.
+ *
+ * Deliberately covers background/text/border together: a PARTIAL fallback is
+ * worse than none, because winning on only some tokens is what produces a
+ * half-themed page. Do not add colours here without a matching set. */
+@layer fallback {
+	:root {
+		color-scheme: light;
+		--color-bg: #fbf0e4;
+		--color-surface: #ffffff;
+		--color-surface-alt: #fdf5ed;
+		--color-bg-surface: #ffffff;
+		--color-bg-hover: #f3e6d6;
+		--color-cream-light: #fdf5ed;
+		--color-text: #1e204e;
+		--color-text-muted: #4a5075;
+		--color-text-faint: #8286a3;
+		--color-border: #ddccb8;
+		--color-border-subtle: #eee2d2;
+		--font-body: system-ui, sans-serif;
+		--font-family: system-ui, sans-serif;
+		--font-display: system-ui, sans-serif;
+	}
+}
+
 @layer reset {
 	*,
 	*::before,
@@ -87,10 +113,33 @@
 	}
 }
 
-body {
-	font-family: var(--font-family);
-	background: var(--color-bg);
-	color: var(--color-text);
+@layer base {
+	body {
+		font-family: var(--font-body);
+		background: var(--color-bg);
+		color: var(--color-text);
+	}
+
+	/* The brand guide sets headlines in Kensington Bold/Black, all caps, with
+	   tracking 5 and tight leading. This is that, as a utility — apply it to a
+	   heading rather than restyling every h1/h2, because plenty of headings in
+	   this app are UI labels that should stay sentence case. */
+	.display {
+		font-family: var(--font-display);
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: var(--tracking-headline);
+		line-height: 1.05;
+	}
+
+	/* Subheads: same face, looser tracking per the guide's "tracking 10". */
+	.display-sub {
+		font-family: var(--font-display);
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: var(--tracking-subhead);
+		line-height: 1.2;
+	}
 }
 
 /* Solid (non-translucent) background on chart tooltips so values stay

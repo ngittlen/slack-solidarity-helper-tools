@@ -57,6 +57,7 @@ export const SECTION_IDS = {
 	excludedChapters: 'excluded-chapters',
 	vanChapterFolders: 'van-chapter-folders',
 	vanBlocklist: 'van-blocklist',
+	theme: 'theme',
 } as const;
 
 export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
@@ -85,4 +86,5 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 	{ id: SECTION_IDS.excludedChapters, label: 'Excluded chapters' },
 	{ id: SECTION_IDS.vanChapterFolders, label: 'Chapter \u2192 VAN folders' },
 	{ id: SECTION_IDS.vanBlocklist, label: 'Blocked from turf checkout' },
+	{ id: SECTION_IDS.theme, label: 'Theme' },
 ];

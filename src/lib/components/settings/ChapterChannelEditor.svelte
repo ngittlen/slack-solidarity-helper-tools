@@ -366,9 +366,9 @@
 		width: 100%;
 		box-sizing: border-box;
 		padding: 6px 10px;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
-		background: var(--color-bg-surface, #fff);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
 		font: inherit;
 		color: inherit;
 	}
@@ -386,9 +386,9 @@
 		list-style: none;
 		margin: 8px 0 0;
 		padding: 4px;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
-		background: var(--color-bg-surface, #fff);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
 		max-height: 320px;
 		overflow-y: auto;
 	}
@@ -398,12 +398,12 @@
 		align-items: center;
 		gap: 8px;
 		padding: 5px 8px;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 		cursor: pointer;
 	}
 
 	.chapter-option:hover {
-		background: var(--color-bg-hover, rgba(0, 0, 0, 0.05));
+		background: var(--color-bg-hover);
 	}
 
 	.chapter-name {
@@ -412,13 +412,13 @@
 
 	.chapter-count {
 		font-size: 0.8em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		white-space: nowrap;
 	}
 
 	.chapter-list-empty {
 		padding: 8px 10px;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		font-style: italic;
 	}
 
@@ -435,13 +435,13 @@
 		padding: 0;
 		font: inherit;
 		font-size: 0.9em;
-		color: var(--color-gold, #b8860b);
+		color: var(--color-gold);
 		cursor: pointer;
 		border-bottom: 1px dashed currentColor;
 	}
 
 	.chapter-action:disabled {
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		cursor: not-allowed;
 		border-bottom-color: transparent;
 	}
@@ -449,12 +449,12 @@
 	.chapter-selected-count {
 		margin-left: auto;
 		font-size: 0.85em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.channel-hint,
 	.channel-note {
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		font-size: 0.9em;
 		margin: 8px 0 0;
 	}
@@ -469,11 +469,11 @@
 		gap: 12px;
 		margin-top: 20px;
 		padding-top: 16px;
-		border-top: 1px solid var(--color-border, #eee);
+		border-top: 1px solid var(--color-border);
 	}
 
 	.chapter-move-hint {
 		font-size: 0.85em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 </style>

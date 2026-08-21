@@ -133,7 +133,7 @@
 	}
 
 	.excluded-chapters-intro {
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		font-size: 0.9em;
 		margin: 0 0 4px;
 	}
