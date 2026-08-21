@@ -31,6 +31,7 @@ import {
 	MOBILIZE_CONTACT_PHONE,
 } from './env.js';
 import { clampTickerColumnsPerSecond } from '../ticker-speed.js';
+import { invalidateThemeCache } from './theme.js';
 
 export {
 	chapterChannelMap,
@@ -155,6 +156,10 @@ export type AppConfigPatch = Partial<{
 	welcomeDmMessage: string;
 	warningDmMessage: string;
 	doorTickerColumnsPerSecond: number;
+	/** Theme overrides, serialised. One JSON column rather than ~60 colour
+	 *  columns — see the comment on app_config.themeTokens in schema.ts.
+	 *  Validated by themeTokensField before it ever reaches here. */
+	themeTokens: string;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -619,6 +624,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'welcomeDmMessage',
 	'warningDmMessage',
 	'doorTickerColumnsPerSecond',
+	'themeTokens',
 ]);
 
 export async function saveAppConfig(
@@ -658,6 +664,10 @@ export async function saveAppConfig(
 	};
 
 	await db.insert(appConfig).values(values).onConflictDoUpdate({ target: appConfig.id, set });
+
+	// A theme write must take effect on the next render, not when the cache TTL
+	// lapses — an admin who saves a colour and sees no change assumes it failed.
+	if ('themeTokens' in definedFields) invalidateThemeCache();
 
 	const keysSummary = Object.keys(definedFields).join(',');
 	console.log(`[settings] saved app_config patch=${keysSummary} by ${editor.id} (${editor.name})`);

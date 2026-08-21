@@ -152,7 +152,7 @@
 
 <style>
 	main {
-		font-family: var(--font-family);
+		font-family: var(--font-body);
 		max-width: 1280px;
 		margin: 0 auto;
 		padding: 2rem 1.5rem;

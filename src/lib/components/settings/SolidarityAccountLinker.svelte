@@ -174,10 +174,10 @@
 
 <style>
 	.linker {
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
 		padding: 12px 14px;
-		background: var(--color-bg-surface, #fff);
+		background: var(--color-bg-surface);
 	}
 
 	.linker-headline {
@@ -187,7 +187,7 @@
 
 	.linker-email {
 		margin: 0 0 12px;
-		color: var(--color-text-muted, #666);
+		color: var(--color-text-muted);
 		font-size: 0.92em;
 	}
 
@@ -202,9 +202,9 @@
 		padding: 6px 14px;
 		font: inherit;
 		cursor: pointer;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
-		background: var(--color-bg-surface, #fff);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
 	}
 
 	.linker-btn:disabled {
@@ -218,15 +218,15 @@
 		gap: 8px;
 		margin: 10px 0 0;
 		font-size: 0.88em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.linker-spinner {
 		flex: none;
 		width: 12px;
 		height: 12px;
-		border: 2px solid var(--color-border, #ccc);
-		border-top-color: var(--color-gold, #b8860b);
+		border: 2px solid var(--color-border);
+		border-top-color: var(--color-gold);
 		border-radius: 50%;
 		animation: linker-spin 0.8s linear infinite;
 	}

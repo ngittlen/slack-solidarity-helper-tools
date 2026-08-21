@@ -1,0 +1,23 @@
+Oswald and Source Sans 3 are licensed under the SIL Open Font License 1.1.
+
+  Oswald         — Vernon Adams, Kalapi Gajjar, Cyreal.  https://fonts.google.com/specimen/Oswald
+  Source Sans 3  — Paul D. Hunt, Adobe.                  https://fonts.google.com/specimen/Source+Sans+3
+
+Full licence text: https://openfontlicense.org/open-font-license-official-text/
+
+WHY THESE ARE HERE
+The Abdul for US brand guide specifies Kensington (Fort Foundry) for display and
+Halyard Text (Darden Studio) for body copy. Both are distributed through Adobe
+Fonts, which does not permit self-hosting — using them on the web requires a
+Typekit web project tied to an Adobe subscription, with the site's domain
+allowlisted.
+
+Until that exists these two OFL faces stand in: Oswald for Kensington's narrow
+all-caps headline voice, Source Sans 3 for Halyard's humanist body. They
+approximate; they do not match.
+
+To switch to the real faces: add the Typekit stylesheet to src/app.html and put
+'kensington' / 'halyard-text' at the front of FONT_STACKS in
+src/lib/styles/brand.ts. Nothing else changes.
+
+Latin subset only, matching the Silkscreen vendoring alongside.

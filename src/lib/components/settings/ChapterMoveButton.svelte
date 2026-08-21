@@ -212,9 +212,9 @@
 <style>
 	:global(.move-trigger) {
 		background: transparent;
-		color: var(--color-gold, #b8860b);
+		color: var(--color-gold);
 		border: 1px solid currentColor;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 		padding: 5px 12px;
 		font: inherit;
 		font-size: 0.9em;
@@ -222,13 +222,13 @@
 	}
 
 	:global(.move-trigger:hover) {
-		background: rgba(184, 134, 11, 0.08);
+		background: color-mix(in srgb, var(--color-gold) 8%, transparent);
 	}
 
 	:global(.move-overlay) {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.4);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
 
@@ -237,14 +237,14 @@
 		left: 50%;
 		top: 50%;
 		transform: translate(-50%, -50%);
-		background: var(--color-bg-surface, #fff);
-		border-radius: var(--radius-md, 6px);
+		background: var(--color-bg-surface);
+		border-radius: var(--radius-md);
 		padding: 20px 24px;
 		width: min(640px, 92vw);
 		max-height: 84vh;
 		display: flex;
 		flex-direction: column;
-		box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+		box-shadow: var(--shadow-modal);
 		z-index: 101;
 	}
 
@@ -257,7 +257,7 @@
 	:global(.move-description) {
 		margin: 0 0 12px;
 		font-size: 0.9em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.move-loading {
@@ -271,8 +271,8 @@
 		flex-shrink: 0;
 		width: 22px;
 		height: 22px;
-		border: 3px solid var(--color-border, #ddd);
-		border-top-color: var(--color-gold, #b8860b);
+		border: 3px solid var(--color-border);
+		border-top-color: var(--color-gold);
 		border-radius: 50%;
 		animation: move-spin 0.8s linear infinite;
 	}
@@ -292,7 +292,7 @@
 
 	.move-status {
 		margin: 12px 0;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.move-summary {
@@ -303,20 +303,20 @@
 		display: block;
 		margin-top: 4px;
 		font-size: 0.85em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.move-plan {
 		overflow-y: auto;
-		border: 1px solid var(--color-border, #eee);
-		border-radius: var(--radius-sm, 4px);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
 		padding: 8px 12px;
 		margin-bottom: 12px;
 	}
 
 	.move-channel + .move-channel {
 		margin-top: 12px;
-		border-top: 1px solid var(--color-border, #eee);
+		border-top: 1px solid var(--color-border);
 		padding-top: 10px;
 	}
 
@@ -328,7 +328,7 @@
 	.move-channel-count {
 		font-weight: 400;
 		font-size: 0.85em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		margin-left: 6px;
 	}
 
@@ -347,16 +347,16 @@
 
 	.move-person-meta {
 		font-size: 0.85em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.move-error {
 		margin: 12px 0;
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 	}
 
 	.move-error-text {
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 	}
 
 	.move-actions {
@@ -369,19 +369,19 @@
 
 	:global(.move-secondary) {
 		background: transparent;
-		color: var(--color-text, inherit);
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-sm, 4px);
+		color: var(--color-text);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
 		padding: 5px 14px;
 		font: inherit;
 		cursor: pointer;
 	}
 
 	:global(.move-primary) {
-		background: var(--color-gold, #b8860b);
-		color: #fff;
-		border: 1px solid var(--color-gold, #b8860b);
-		border-radius: var(--radius-sm, 4px);
+		background: var(--color-gold);
+		color: var(--color-action-text);
+		border: 1px solid var(--color-gold);
+		border-radius: var(--radius-sm);
 		padding: 5px 14px;
 		font: inherit;
 		cursor: pointer;

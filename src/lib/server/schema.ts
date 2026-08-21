@@ -271,6 +271,13 @@ export const appConfig = sqliteTable(
 		// Door-knock ticker scroll speed in LED columns per second. DB-only,
 		// no env fallback; NULL means DEFAULT_TICKER_COLUMNS_PER_SECOND.
 		doorTickerColumnsPerSecond: real('door_ticker_columns_per_second'),
+		// Theme overrides as JSON: {"color-bg":{"light":"#fbf0e4"}}. One column
+		// rather than ~60, because adding a field to this table is a nine-step
+		// checklist across six files and a palette would be unmaintainable that
+		// way. NULL or '{}' means "all brand defaults". Validated on write and
+		// again on read (src/lib/styles/theme-css.ts) — a corrupt blob degrades
+		// to defaults rather than taking the site's styling down.
+		themeTokens: text('theme_tokens'),
 		lastEditedBy: text('last_edited_by').notNull(),
 		lastEditedByName: text('last_edited_by_name').notNull(),
 		lastEditedAt: text('last_edited_at').notNull(),

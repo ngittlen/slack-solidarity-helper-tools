@@ -2,7 +2,6 @@
 	import '../app.css';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { CHART_BAND_STYLE } from '$lib/styles/chart-colors';
 	import UserMenu, { type MenuItem } from '$lib/components/nav/UserMenu.svelte';
 
 	let { data, children } = $props();
@@ -24,7 +23,7 @@
 	);
 </script>
 
-<div class="theme-vars" style={CHART_BAND_STYLE}>
+<div class="app-shell">
 	<header class="app-header">
 		<div class="header-left">
 			{#if showBackLink}
@@ -61,7 +60,7 @@
 </div>
 
 <style>
-	.theme-vars {
+	.app-shell {
 		display: contents;
 	}
 	.app-header {
@@ -90,7 +89,7 @@
 	.back-link:hover,
 	.back-link:focus-visible {
 		opacity: 1;
-		background: rgba(255, 255, 255, 0.1);
+		background: color-mix(in srgb, var(--color-header-text) 10%, transparent);
 	}
 	.app-header h1 {
 		font-size: 1.1rem;
@@ -100,7 +99,7 @@
 	}
 	.user-info {
 		font-size: var(--font-size-base);
-		color: rgba(251, 240, 228, 0.75);
+		color: color-mix(in srgb, var(--color-header-text) 75%, transparent);
 		display: flex;
 		align-items: center;
 		gap: 14px;
@@ -117,7 +116,7 @@
 	.logout-btn {
 		background: transparent;
 		color: var(--color-header-text);
-		border: 1px solid rgba(251, 240, 228, 0.4);
+		border: 1px solid color-mix(in srgb, var(--color-header-text) 40%, transparent);
 		border-radius: var(--radius-md);
 		padding: 4px 10px;
 		font-size: var(--font-size-sm);
@@ -125,7 +124,7 @@
 		cursor: pointer;
 	}
 	.logout-btn:hover {
-		background: rgba(255, 255, 255, 0.1);
-		border-color: rgba(251, 240, 228, 0.8);
+		background: color-mix(in srgb, var(--color-header-text) 10%, transparent);
+		border-color: color-mix(in srgb, var(--color-header-text) 80%, transparent);
 	}
 </style>

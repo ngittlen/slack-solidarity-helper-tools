@@ -55,6 +55,7 @@ export const SECTION_IDS = {
 	infoCommands: 'info-commands',
 	allowedUsers: 'allowed-users',
 	excludedChapters: 'excluded-chapters',
+	theme: 'theme',
 } as const;
 
 export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
@@ -81,4 +82,5 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 	{ id: SECTION_IDS.infoCommands, label: 'Info commands' },
 	{ id: SECTION_IDS.allowedUsers, label: 'Allowed Slack users' },
 	{ id: SECTION_IDS.excludedChapters, label: 'Excluded chapters' },
+	{ id: SECTION_IDS.theme, label: 'Theme' },
 ];

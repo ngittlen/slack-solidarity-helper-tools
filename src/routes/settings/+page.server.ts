@@ -6,6 +6,7 @@ import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import { loadSettings, type Settings } from '$lib/server/settings.js';
+import { loadThemeTokensJson } from '$lib/server/theme.js';
 import { loadDoorKnockTicker, type TickerEntry } from '$lib/server/door-knock-ticker.js';
 import {
 	computeWeeklyLeaderboard,
@@ -38,6 +39,8 @@ export interface SettingsPageData {
 	 *  their chip so they can't attempt to remove themselves. */
 	selfSlackUserId: string;
 	settings: Settings;
+	/** Stored theme overrides as JSON; '{}' when untouched. */
+	themeTokens: string;
 	slackChannels: AutocompleteResult<ChannelEntry> | null;
 	slackUsers: AutocompleteResult<UserEntry> | null;
 	solidarityChapters: AutocompleteResult<SolidarityChapterEntry> | null;
@@ -168,10 +171,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		);
 	}
 
+	// Not page-fatal: a theme read failure just means the editor opens on the
+	// brand defaults, which is also what the site is rendering.
+	const themeTokens = await loadThemeTokensJson(db).catch(() => '{}');
+
 	return {
 		pageTitle: 'Settings' as const,
 		selfSlackUserId: locals.session.slackUserId,
 		settings,
+		themeTokens,
 		leaderboard,
 		slackChannels,
 		slackUsers,

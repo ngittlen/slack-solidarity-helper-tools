@@ -118,6 +118,7 @@ describe('allAnchorIds', () => {
 			'info-commands',
 			'allowed-users',
 			'excluded-chapters',
+			'theme',
 		]);
 	});
 

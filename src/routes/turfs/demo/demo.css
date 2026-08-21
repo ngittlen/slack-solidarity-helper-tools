@@ -205,7 +205,7 @@ main {
 }
 
 .turf-code {
-	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-family: var(--font-mono);
 	font-size: clamp(1.6rem, 5vw, 2.4rem);
 	font-weight: 700;
 	letter-spacing: 0.02em;
@@ -308,7 +308,7 @@ main {
 	height: 14px;
 	border-radius: 3px;
 	display: inline-block;
-	border: 1px solid rgb(0 0 0 / 0.15);
+	border: 1px solid color-mix(in srgb, var(--color-text) 15%, transparent);
 }
 
 .swatch-available {
@@ -436,7 +436,7 @@ main {
 }
 .badge-held-by-you {
 	background: color-mix(in srgb, var(--color-success) 20%, transparent);
-	color: #1a6b3c;
+	color: var(--color-success);
 }
 .badge-checked-out {
 	background: var(--color-border-subtle);
@@ -526,6 +526,6 @@ main {
 }
 
 .demo-footer code {
-	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-family: var(--font-mono);
 	font-size: 0.95em;
 }

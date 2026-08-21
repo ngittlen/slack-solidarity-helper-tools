@@ -597,7 +597,7 @@
 	}
 
 	figcaption kbd {
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-family: var(--font-mono);
 		font-size: 0.95em;
 		padding: 0 3px;
 		border: 1px solid var(--color-border);
@@ -670,7 +670,7 @@
 		bottom: 0;
 		margin: 0;
 		padding: 2px 6px;
-		background: rgb(255 255 255 / 0.75);
+		background: color-mix(in srgb, var(--color-surface) 75%, transparent);
 		border-top-left-radius: var(--radius-sm);
 		font-size: 10px;
 		color: var(--color-warm-dark);
@@ -703,9 +703,9 @@
 	.turf text {
 		font-size: 13px;
 		font-weight: 700;
-		fill: #fff;
+		fill: var(--color-surface);
 		paint-order: stroke;
-		stroke: rgb(0 0 0 / 0.45);
+		stroke: var(--color-scrim);
 		stroke-width: 3px;
 		pointer-events: none;
 		user-select: none;
@@ -748,7 +748,7 @@
 	.turf-held-by-you circle {
 		fill: var(--color-success);
 		fill-opacity: 0.65;
-		stroke: #1a6b3c;
+		stroke: var(--color-success);
 	}
 
 	.turf-checked-out polygon,
@@ -760,7 +760,7 @@
 
 	.me-dot {
 		fill: var(--color-coral);
-		stroke: #fff;
+		stroke: var(--color-surface);
 		stroke-width: 2.5;
 	}
 
@@ -779,7 +779,7 @@
 		font-weight: 600;
 		fill: var(--color-near-black);
 		paint-order: stroke;
-		stroke: rgb(255 255 255 / 0.85);
+		stroke: color-mix(in srgb, var(--color-surface) 85%, transparent);
 		stroke-width: 3px;
 	}
 

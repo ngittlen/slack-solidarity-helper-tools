@@ -96,22 +96,22 @@
 
 	.settings-row-label {
 		font-weight: 600;
-		color: var(--color-text, inherit);
+		color: var(--color-text);
 	}
 
 	.settings-row-status {
 		font-size: 0.85em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		min-width: 60px;
 		text-align: right;
 	}
 
 	.settings-row[data-status='saved'] .settings-row-status {
-		color: var(--color-success, #2e7d32);
+		color: var(--color-success);
 	}
 
 	.settings-row[data-status='error'] .settings-row-status {
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 	}
 
 	.settings-row-control {
@@ -121,15 +121,15 @@
 	.settings-row-error {
 		margin: 0;
 		font-size: 0.9em;
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 	}
 
 	.settings-row-retry {
 		align-self: flex-start;
 		background: transparent;
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 		border: 1px solid currentColor;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 		padding: 2px 10px;
 		font: inherit;
 		font-size: 0.85em;
@@ -137,6 +137,6 @@
 	}
 
 	.settings-row-retry:hover {
-		background: rgba(198, 40, 40, 0.08);
+		background: color-mix(in srgb, var(--color-error) 8%, transparent);
 	}
 </style>

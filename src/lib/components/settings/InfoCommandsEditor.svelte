@@ -225,11 +225,11 @@
 	.empty {
 		margin: 0;
 		font-size: 0.9em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.warn {
-		border-left: 3px solid var(--color-warning, #ed6c02);
+		border-left: 3px solid var(--color-warning);
 		padding-left: 10px;
 	}
 
@@ -247,12 +247,12 @@
 		flex-direction: column;
 		gap: 8px;
 		padding: 12px;
-		border: 1px solid var(--color-border, #ddd);
-		border-radius: var(--radius-sm, 4px);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
 	}
 
 	.row[data-status='error'] {
-		border-color: var(--color-error, #c62828);
+		border-color: var(--color-error);
 	}
 
 	.fields {
@@ -276,10 +276,10 @@
 	textarea {
 		font: inherit;
 		padding: 6px 8px;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-sm, 4px);
-		background: var(--color-surface, #fff);
-		color: var(--color-text, inherit);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-surface);
+		color: var(--color-text);
 		width: 100%;
 		box-sizing: border-box;
 	}
@@ -299,10 +299,10 @@
 		font: inherit;
 		font-size: 0.9em;
 		padding: 4px 12px;
-		border-radius: var(--radius-sm, 4px);
-		border: 1px solid var(--color-border, #ccc);
-		background: var(--color-surface, #fff);
-		color: var(--color-text, inherit);
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--color-border);
+		background: var(--color-surface);
+		color: var(--color-text);
 		cursor: pointer;
 	}
 
@@ -317,12 +317,12 @@
 
 	.status.saved {
 		font-size: 0.85em;
-		color: var(--color-success, #2e7d32);
+		color: var(--color-success);
 	}
 
 	.error {
 		margin: 0;
 		font-size: 0.9em;
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 	}
 </style>
