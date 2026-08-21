@@ -286,6 +286,53 @@ main {
 	}
 }
 
+/* Phone layout: the map leads.
+ *
+ * A volunteer opening this on a pavement wants to see where they are before
+ * they read anything, so the map goes above the banner and the chapter bar
+ * rather than a screen and a half below them. `display: contents` dissolves
+ * the two-column grid so its children become flex items of <main> and can be
+ * ordered against main's own children; the map's edge-to-edge treatment lives
+ * with the map, in TurfMap.svelte.
+ *
+ * The one thing that outranks the map is a turf you already hold: that card
+ * carries the MiniVAN list number, which is the thing a volunteer reopens the
+ * page to read. It sits above the map, so on the common case (holding
+ * nothing) the map is still the first thing on the screen. */
+@media (max-width: 640px) {
+	main {
+		display: flex;
+		flex-direction: column;
+		/* No gap between the header and the map — the map runs to the top edge
+		   of the page the same way it runs to the sides. */
+		margin-top: 0;
+		padding: 0 16px;
+	}
+
+	.turf-layout {
+		display: contents;
+	}
+
+	.my-turfs {
+		order: -2;
+		margin: 16px 0 20px;
+	}
+
+	.map-col {
+		order: -1;
+		/* The one gap the grid used to supply: everything below it carries its
+		   own bottom margin already. */
+		margin-bottom: 20px;
+	}
+
+	.turf-list {
+		/* Nothing to scroll beside any more, so an inner scroller here just
+		   traps the page's own scroll. Only the cap is lifted — the pane keeps
+		   its overflow clip, which is what rounds the first and last rows. */
+		max-height: none;
+	}
+}
+
 .legend {
 	list-style: none;
 	display: flex;
@@ -345,46 +392,83 @@ main {
 	color: var(--color-text-faint);
 }
 
+/* One pane of rows, not a stack of cards. At a card apiece a dozen turfs was
+   already longer than a phone screen, and the borders and gaps were carrying
+   no information the rows themselves don't. The pane owns the border; the rows
+   own a hairline between them. */
 .turf-list {
 	list-style: none;
 	margin: 0;
 	padding: 0;
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	/* Clips the first and last rows' hover/selected fill to the rounded corner. */
+	overflow: hidden;
 	max-height: 560px;
 	overflow-y: auto;
+}
+
+/* The row, not the button: it wraps both the summary button and the expanded
+   detail, so the accent and the tint cover the whole thing.
+
+   Both borders are always present and usually invisible, sized here so that
+   selecting a row or dividing it from its neighbour moves nothing. The left
+   edge is the accent, the top edge is the hairline between rows. */
+.turf-row {
+	border: 0 solid transparent;
+	border-top-width: 1px;
+	border-left-width: 3px;
+	transition:
+		background-color 120ms ease,
+		border-color 120ms ease;
+}
+
+.turf-list li + li.turf-row {
+	border-top-color: var(--color-border-subtle);
+}
+
+.turf-row:hover:not(.is-selected) {
+	background: var(--color-cream-light);
+}
+
+.turf-row.is-selected {
+	background: color-mix(in srgb, var(--color-action) 10%, transparent);
+	border-left-color: var(--color-action);
+}
+
+/* After .is-selected on purpose: holding a turf is a fact about the turf and
+   outranks the transient selection for the accent colour. Selection still
+   reads through the background tint. */
+.turf-row.is-mine {
+	border-left-color: var(--color-success);
+}
+
+/* On the summary only. A turf someone else is walking is dimmed in the list,
+   but once you have opened it the explanation of why has to be readable. */
+.turf-row.is-unavailable .turf-card {
+	opacity: 0.62;
+}
+
+.turf-row.is-unavailable.is-selected .turf-card {
+	opacity: 1;
 }
 
 .turf-card {
 	width: 100%;
 	text-align: left;
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-md);
-	padding: 12px 14px;
+	background: transparent;
+	border: none;
+	border-radius: 0;
+	padding: 10px 14px 10px 11px;
 	cursor: pointer;
 	font-family: inherit;
 	color: var(--color-text);
-	transition: border-color 120ms ease;
 }
 
-.turf-card:hover {
-	border-color: var(--color-action);
-}
-
-.turf-card.is-selected {
-	border-color: var(--color-action);
-	border-width: 2px;
-	padding: 11px 13px;
-}
-
-.turf-card.is-mine {
-	border-left: 4px solid var(--color-success);
-}
-
-.turf-card.is-unavailable {
-	opacity: 0.62;
+.turf-card:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: -2px;
 }
 
 .card-top {
@@ -392,19 +476,20 @@ main {
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
-	margin-bottom: 4px;
+	margin-bottom: 2px;
 }
 
 .turf-name {
 	font-weight: 700;
-	font-size: var(--font-size-lg);
+	font-size: var(--font-size-md);
 }
 
 .card-meta {
 	display: flex;
-	align-items: center;
+	align-items: baseline;
+	flex-wrap: wrap;
 	gap: 6px;
-	font-size: var(--font-size-md);
+	font-size: var(--font-size-sm);
 	color: var(--color-text-muted);
 }
 
@@ -413,7 +498,10 @@ main {
 	color: var(--color-text);
 }
 
-.card-region,
+.card-region {
+	color: var(--color-text-faint);
+}
+
 .card-note {
 	font-size: var(--font-size-xs);
 	color: var(--color-text-faint);
@@ -443,33 +531,22 @@ main {
 	color: var(--color-text-muted);
 }
 
-/* --- Detail panel ------------------------------------------------------- */
+/* --- The expanded half of a selected row --------------------------------- */
 
-.detail {
-	margin-top: 24px;
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-lg);
-	padding: 20px 24px;
-}
-
-.detail-head {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	margin-bottom: 16px;
-}
-
-.detail-head h2 {
-	margin: 0;
-	font-size: 1.15rem;
+.row-detail {
+	/* 11px on the left to sit flush with the summary above it, which is inset
+	   by the row's 3px accent border. */
+	padding: 0 14px 14px 11px;
 }
 
 .detail-stats {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 28px;
-	margin: 0 0 20px;
+	/* Auto-fit rather than a flex row: this lives in a 300px column on a
+	   desktop and the full width of a phone, and neither should get a ragged
+	   second line of statistics. */
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+	gap: 10px 16px;
+	margin: 0 0 14px;
 }
 
 .detail-stats dt {
@@ -482,12 +559,13 @@ main {
 
 .detail-stats dd {
 	margin: 0;
-	font-size: 1.15rem;
+	font-size: 1.05rem;
 	font-weight: 700;
 	color: var(--color-text);
 }
 
 .claim-btn {
+	width: 100%;
 	padding: 12px 24px;
 	background: var(--color-action);
 	color: var(--color-action-text);
@@ -503,10 +581,10 @@ main {
 }
 
 .claim-note {
-	margin: 12px 0 0;
-	font-size: var(--font-size-md);
+	margin: 10px 0 0;
+	font-size: var(--font-size-sm);
 	color: var(--color-text-muted);
-	line-height: 1.55;
+	line-height: 1.5;
 	max-width: 62ch;
 }
 

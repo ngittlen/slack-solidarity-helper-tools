@@ -56,13 +56,33 @@
 		}),
 	);
 
-	const selected = $derived(turfs.find((t) => t.mapRouteId === selectedId) ?? null);
 	const myTurfs = $derived(turfs.filter((t) => t.status === 'held-by-you'));
 	const availableCount = $derived(turfs.filter((t) => t.status === 'available').length);
 
+	/** From the map: always open, never close. Clicking a polygon you are
+	 *  already looking at should not collapse the panel you clicked it for. */
 	function select(mapRouteId: number) {
 		selectedId = mapRouteId;
 	}
+
+	/** From the list: a row is an accordion header, so clicking the open one
+	 *  shuts it. */
+	function toggle(mapRouteId: number) {
+		selectedId = selectedId === mapRouteId ? null : mapRouteId;
+	}
+
+	let listEl = $state<HTMLUListElement | null>(null);
+
+	// Selecting on the map expands a row that may be scrolled out of the pane
+	// (or, on a phone, below the fold). Without this the click looks like it did
+	// nothing at all. `nearest` so a row already in view doesn't move.
+	$effect(() => {
+		if (selectedId === null || !listEl) return;
+		listEl.querySelector('.turf-row.is-selected')?.scrollIntoView({
+			block: 'nearest',
+			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+		});
+	});
 
 	function claim(turf: DemoTurf) {
 		claimed[turf.mapRouteId] = true;
@@ -217,30 +237,43 @@
 					{/if}
 				</div>
 
-				<ul class="turf-list">
+				<!-- The <li> is the row, not the button: an expanded row holds a
+				     "Check out" button of its own, and a button cannot nest inside a
+				     button. The wrapper carries the accent border and the selected
+				     tint so both halves are visibly one row. -->
+				<ul class="turf-list" bind:this={listEl}>
 					{#each sortedTurfs as turf (turf.mapRouteId)}
-						<li>
+						<li
+							class="turf-row"
+							class:is-selected={turf.mapRouteId === selectedId}
+							class:is-mine={turf.status === 'held-by-you'}
+							class:is-unavailable={turf.status === 'checked-out'}
+						>
 							<button
 								type="button"
 								class="turf-card"
-								class:is-selected={turf.mapRouteId === selectedId}
-								class:is-mine={turf.status === 'held-by-you'}
-								class:is-unavailable={turf.status === 'checked-out'}
-								onclick={() => select(turf.mapRouteId)}
-								aria-pressed={turf.mapRouteId === selectedId}
+								onclick={() => toggle(turf.mapRouteId)}
+								aria-expanded={turf.mapRouteId === selectedId}
+								aria-controls={turf.mapRouteId === selectedId
+									? `turf-detail-${turf.mapRouteId}`
+									: undefined}
 							>
 								<div class="card-top">
 									<span class="turf-name">{turf.name}</span>
 									<span class="badge badge-{turf.status}">{statusLabel(turf.status)}</span>
 								</div>
+								<!-- One meta line rather than three stacked ones: in a dense
+								     pane the region is a qualifier on the row, not a heading of
+								     its own. -->
 								<div class="card-meta">
 									<span class="doors">{turf.doorsRemaining} doors left</span>
 									{#if distances[turf.mapRouteId] !== undefined}
 										<span class="dot" aria-hidden="true">·</span>
 										<span>{formatDistance(distances[turf.mapRouteId])} away</span>
 									{/if}
+									<span class="dot" aria-hidden="true">·</span>
+									<span class="card-region">{turf.regionName}</span>
 								</div>
-								<div class="card-region">{turf.regionName}</div>
 								{#if turf.heldBy}
 									<!-- Only ever populated for admins; the server nulls it for
 									     everyone else, so this can't leak by template edit. -->
@@ -251,62 +284,48 @@
 									</div>
 								{/if}
 							</button>
+
+							{#if turf.mapRouteId === selectedId}
+								<div class="row-detail" id="turf-detail-{turf.mapRouteId}">
+									<dl class="detail-stats">
+										<div>
+											<dt>Doors left</dt>
+											<dd>{turf.doorsRemaining}</dd>
+										</div>
+										<div>
+											<dt>Doors in turf</dt>
+											<dd>{turf.doorCount}</dd>
+										</div>
+										<div>
+											<dt>People</dt>
+											<dd>{turf.routeSize}</dd>
+										</div>
+									</dl>
+
+									{#if turf.status === 'available'}
+										<button type="button" class="claim-btn" onclick={() => claim(turf)}>
+											Check out this turf
+										</button>
+										<p class="claim-note">
+											You'll get a MiniVAN list number and {CLAIM_TTL_HOURS} hours to walk it. Nobody
+											else can take it in the meantime.
+										</p>
+									{:else if turf.status === 'held-by-you'}
+										<p class="claim-note">Your list number is at the top of the page.</p>
+									{:else}
+										<p class="claim-note">
+											Someone's already walking this one. It's shown rather than hidden so the map
+											doesn't look like it has a hole in it — check back later, or pick another turf
+											nearby.
+										</p>
+									{/if}
+								</div>
+							{/if}
 						</li>
 					{/each}
 				</ul>
 			</div>
 		</div>
-
-		{#if selected}
-			<section class="detail" aria-live="polite">
-				<div class="detail-head">
-					<h2>{selected.name}</h2>
-					<span class="badge badge-{selected.status}">{statusLabel(selected.status)}</span>
-				</div>
-				<dl class="detail-stats">
-					<div>
-						<dt>Doors left</dt>
-						<dd>{selected.doorsRemaining}</dd>
-					</div>
-					<div>
-						<dt>Doors in turf</dt>
-						<dd>{selected.doorCount}</dd>
-					</div>
-					<div>
-						<dt>People</dt>
-						<dd>{selected.routeSize}</dd>
-					</div>
-					<div>
-						<dt>Region</dt>
-						<dd>{selected.regionName}</dd>
-					</div>
-				</dl>
-
-				{#if selected.status === 'available'}
-					<button type="button" class="claim-btn" onclick={() => claim(selected)}>
-						Check out this turf
-					</button>
-					<p class="claim-note">
-						You'll get a MiniVAN list number and {CLAIM_TTL_HOURS} hours to walk it. Nobody else can take
-						it in the meantime.
-					</p>
-				{:else if selected.status === 'held-by-you'}
-					<p class="claim-note">Your list number is at the top of the page.</p>
-				{:else}
-					<p class="claim-note">
-						Someone's already walking this one. It's shown rather than hidden so the map doesn't
-						look like it has a hole in it — check back later, or pick another turf nearby.
-					</p>
-					{#if selected.heldBy}
-						<p class="claim-note admin-only">
-							Organizer view: held by {selected.heldBy}{selected.expiresInHours
-								? `, frees up in ${selected.expiresInHours} hours`
-								: ', assigned directly in VAN'}.
-						</p>
-					{/if}
-				{/if}
-			</section>
-		{/if}
 	{/if}
 
 	<footer class="demo-footer">
