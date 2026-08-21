@@ -10,6 +10,8 @@
 	import AllowedUsersEditor from '$lib/components/settings/AllowedUsersEditor.svelte';
 	import InfoCommandsEditor from '$lib/components/settings/InfoCommandsEditor.svelte';
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
+	import VanChapterFoldersEditor from '$lib/components/settings/VanChapterFoldersEditor.svelte';
+	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
 	import ThemeEditor from '$lib/components/settings/ThemeEditor.svelte';
 	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
 	import { SECTION_IDS } from '$lib/components/settings/sections.js';
@@ -180,6 +182,46 @@
 				<ExcludedChaptersEditor
 					chapters={data.solidarityChapters.items}
 					excludedIds={[...data.settings.reportExcludedChapterIds]}
+				/>
+			{/if}
+		</section>
+
+		<section
+			id={SECTION_IDS.vanChapterFolders}
+			data-settings-anchor={SECTION_IDS.vanChapterFolders}
+			tabindex="-1"
+		>
+			<h2>Chapter → VAN folders</h2>
+			{#if data.errors.vanChapterFolders}
+				<p class="error">{data.errors.vanChapterFolders}</p>
+			{/if}
+			{#if data.errors.solidarityChapters}
+				<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
+			{/if}
+			{#if data.solidarityChapters}
+				<VanChapterFoldersEditor
+					chapters={data.solidarityChapters.items}
+					mappings={data.vanChapterFolderMappings}
+				/>
+			{/if}
+		</section>
+
+		<section
+			id={SECTION_IDS.vanBlocklist}
+			data-settings-anchor={SECTION_IDS.vanBlocklist}
+			tabindex="-1"
+		>
+			<h2>Blocked from turf checkout</h2>
+			{#if data.errors.vanBlocklist}
+				<p class="error">{data.errors.vanBlocklist}</p>
+			{/if}
+			{#if data.errors.slackUsers}
+				<p class="error">Slack users: {data.errors.slackUsers}</p>
+			{/if}
+			{#if data.slackUsers}
+				<VanBlocklistEditor
+					users={data.slackUsers.items}
+					blockedIds={data.vanBlockedUsers.map((u) => u.slackUserId)}
 				/>
 			{/if}
 		</section>

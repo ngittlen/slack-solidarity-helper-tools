@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "caa065dd-ba7c-4db5-bdde-1b5069ec0d8b",
-  "prevId": "926f276a-6765-4da9-a6ae-ece1f9222666",
+  "id": "f9381508-7679-465b-ba08-4548b98a93a6",
+  "prevId": "caa065dd-ba7c-4db5-bdde-1b5069ec0d8b",
   "tables": {
     "allowed_slack_users": {
       "name": "allowed_slack_users",
@@ -146,6 +146,13 @@
         "door_ticker_columns_per_second": {
           "name": "door_ticker_columns_per_second",
           "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "theme_tokens": {
+          "name": "theme_tokens",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

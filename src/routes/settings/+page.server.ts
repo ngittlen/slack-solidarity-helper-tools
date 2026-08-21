@@ -5,7 +5,14 @@ import { errMessage } from '$lib/err-message.js';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
-import { loadSettings, type Settings } from '$lib/server/settings.js';
+import {
+	loadSettings,
+	loadVanChapterFolders,
+	loadVanBlockedUsers,
+	type Settings,
+	type VanChapterFolderEntry,
+	type VanBlockedUserEntry,
+} from '$lib/server/settings.js';
 import { loadThemeTokensJson } from '$lib/server/theme.js';
 import { loadDoorKnockTicker, type TickerEntry } from '$lib/server/door-knock-ticker.js';
 import {
@@ -39,6 +46,10 @@ export interface SettingsPageData {
 	 *  their chip so they can't attempt to remove themselves. */
 	selfSlackUserId: string;
 	settings: Settings;
+	/** Chapter → VAN folder mapping. Empty until an admin fills it in, which is
+	 *  also what makes the turf catalog sync a no-op. */
+	vanChapterFolderMappings: VanChapterFolderEntry[];
+	vanBlockedUsers: VanBlockedUserEntry[];
 	/** Stored theme overrides as JSON; '{}' when untouched. */
 	themeTokens: string;
 	slackChannels: AutocompleteResult<ChannelEntry> | null;
@@ -52,6 +63,8 @@ export interface SettingsPageData {
 		solidarityChapters?: string;
 		customProperties?: string;
 		userLists?: string;
+		vanChapterFolders?: string;
+		vanBlocklist?: string;
 	};
 	oldestFetchedAt: number | null;
 	/** Today's real ticker standings, so the speed slider previews the board
@@ -171,14 +184,37 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		);
 	}
 
-	// Not page-fatal: a theme read failure just means the editor opens on the
-	// brand defaults, which is also what the site is rendering.
-	const themeTokens = await loadThemeTokensJson(db).catch(() => '{}');
+	// VAN turf-checkout settings and the stored theme, in one parallel batch.
+	// Loaded separately from loadSettings rather than folded into it: the blocked
+	// set is read on every turf page load and the theme on every render, so both
+	// stay narrow queries (see settings.ts and server/theme.ts). None is
+	// page-fatal — an empty mapping just means no turf is published yet, and a
+	// theme read failure means the editor opens on the brand defaults, which is
+	// also what the site is rendering.
+	const [vanChapterFoldersResult, vanBlockedUsersResult, themeTokensResult] =
+		await Promise.allSettled([
+			loadVanChapterFolders(db),
+			loadVanBlockedUsers(db),
+			loadThemeTokensJson(db),
+		]);
+	const vanChapterFolderMappings =
+		vanChapterFoldersResult.status === 'fulfilled' ? vanChapterFoldersResult.value : [];
+	const vanBlockedUsers =
+		vanBlockedUsersResult.status === 'fulfilled' ? vanBlockedUsersResult.value : [];
+	const themeTokens = themeTokensResult.status === 'fulfilled' ? themeTokensResult.value : '{}';
+	if (vanChapterFoldersResult.status === 'rejected') {
+		errors.vanChapterFolders = 'Failed to load chapter → VAN folder mapping.';
+	}
+	if (vanBlockedUsersResult.status === 'rejected') {
+		errors.vanBlocklist = 'Failed to load the turf-checkout block list.';
+	}
 
 	return {
 		pageTitle: 'Settings' as const,
 		selfSlackUserId: locals.session.slackUserId,
 		settings,
+		vanChapterFolderMappings,
+		vanBlockedUsers,
 		themeTokens,
 		leaderboard,
 		slackChannels,

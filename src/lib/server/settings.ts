@@ -18,6 +18,8 @@ import {
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
+	vanChapterFolders,
+	vanBlockedUsers,
 } from './schema.js';
 import {
 	SOLIDARITY_CHAPTER_CHANNEL_MAP,
@@ -41,6 +43,8 @@ export {
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
+	vanChapterFolders,
+	vanBlockedUsers,
 };
 
 export type {
@@ -738,4 +742,158 @@ export async function findInfoCommand(
 		.where(eq(infoCommands.command, command))
 		.limit(1);
 	return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// VAN turf checkout settings (specs/010-van-turf-checkout/plan.md, Story 7.4)
+//
+// Kept out of loadSettings deliberately. The blocked set is read on EVERY turf
+// page load and every claim/release call — the hottest read in the feature —
+// while loadSettings pulls seven tables for an admin page nobody visits often.
+// Two narrow loaders beat one wide one here.
+// ---------------------------------------------------------------------------
+
+export interface VanChapterFolderEntry {
+	chapterId: number;
+	chapterName: string;
+	/** VAN folder ids whose Map Regions belong to this chapter. A county cut in
+	 *  pieces has several. */
+	folderIds: number[];
+}
+
+export interface VanBlockedUserEntry {
+	slackUserId: string;
+	displayName: string;
+	reason: string;
+	lastEditedByName: string;
+	lastEditedAt: string;
+}
+
+/** Chapter → VAN folder mapping, grouped by chapter and sorted by name so
+ *  /settings renders stably. This is an INPUT to the catalog sync: a chapter
+ *  absent here has no turf, and the sync is a no-op until an admin fills it in. */
+export async function loadVanChapterFolders(db: Database): Promise<VanChapterFolderEntry[]> {
+	const rows = await db.select().from(vanChapterFolders);
+	const byChapter = new Map<number, VanChapterFolderEntry>();
+	for (const row of rows) {
+		const existing = byChapter.get(row.chapterId);
+		if (existing) {
+			existing.folderIds.push(row.folderId);
+			continue;
+		}
+		byChapter.set(row.chapterId, {
+			chapterId: row.chapterId,
+			chapterName: row.chapterName,
+			folderIds: [row.folderId],
+		});
+	}
+	const entries = [...byChapter.values()];
+	for (const entry of entries) entry.folderIds.sort((a, b) => a - b);
+	entries.sort((a, b) => a.chapterName.localeCompare(b.chapterName));
+	return entries;
+}
+
+/** Just the ids, for the turf read path's access gate. */
+export async function loadVanBlockedIds(db: Database): Promise<Set<string>> {
+	const rows = await db.select({ slackUserId: vanBlockedUsers.slackUserId }).from(vanBlockedUsers);
+	return new Set(rows.map((r) => r.slackUserId));
+}
+
+/** Full rows, for the /settings editor. */
+export async function loadVanBlockedUsers(db: Database): Promise<VanBlockedUserEntry[]> {
+	const rows = await db.select().from(vanBlockedUsers);
+	return rows
+		.map((row) => ({
+			slackUserId: row.slackUserId,
+			displayName: row.displayName,
+			reason: row.reason ?? '',
+			lastEditedByName: row.lastEditedByName,
+			lastEditedAt: row.lastEditedAt,
+		}))
+		.sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+/**
+ * Replace one chapter's folder list wholesale.
+ *
+ * Delete-then-insert rather than a diff: the editor always submits the full
+ * set for a chapter, the rows are tiny, and a partial failure that leaves a
+ * chapter pointing at half its folders would silently hide turf. An empty
+ * `folderIds` removes the chapter's mapping entirely, which is how an admin
+ * says "this chapter has no turf".
+ */
+export async function saveVanChapterFolders(
+	db: Database,
+	entry: { chapterId: number; chapterName: string; folderIds: readonly number[] },
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, entry.chapterId));
+
+	const unique = [...new Set(entry.folderIds)];
+	if (unique.length > 0) {
+		await db.insert(vanChapterFolders).values(
+			unique.map((folderId) => ({
+				chapterId: entry.chapterId,
+				folderId,
+				chapterName: entry.chapterName,
+				lastEditedBy: editor.id,
+				lastEditedByName: editor.name,
+				lastEditedAt,
+			})),
+		);
+	}
+	console.log(
+		`[van] saved van_chapter_folders chapter_id=${entry.chapterId} folders=${unique.join(',') || '(none)'} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function deleteVanChapterFolders(
+	db: Database,
+	chapterId: number,
+	editor: Editor,
+): Promise<void> {
+	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, chapterId));
+	console.log(
+		`[van] deleted van_chapter_folders chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function saveVanBlockedUser(
+	db: Database,
+	entry: { slackUserId: string; displayName: string; reason: string },
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	const row = {
+		slackUserId: entry.slackUserId,
+		displayName: entry.displayName,
+		reason: entry.reason.trim() === '' ? null : entry.reason.trim(),
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt,
+	};
+	await db
+		.insert(vanBlockedUsers)
+		.values(row)
+		.onConflictDoUpdate({
+			target: vanBlockedUsers.slackUserId,
+			set: {
+				displayName: row.displayName,
+				reason: row.reason,
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	console.log(`[van] blocked slack_user_id=${entry.slackUserId} by ${editor.id} (${editor.name})`);
+}
+
+export async function deleteVanBlockedUser(
+	db: Database,
+	slackUserId: string,
+	editor: Editor,
+): Promise<void> {
+	await db.delete(vanBlockedUsers).where(eq(vanBlockedUsers.slackUserId, slackUserId));
+	console.log(`[van] unblocked slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`);
 }
