@@ -4,6 +4,7 @@ import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { db, sessionStore } from '$lib/server/db.js';
 import { getTheme } from '$lib/server/theme.js';
+import { parseThemeMode, themeAttribute, THEME_COOKIE } from '$lib/theme-mode.js';
 import { errMessage } from '$lib/err-message.js';
 import { validateEnv } from '$lib/server/env.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
@@ -68,7 +69,19 @@ export const handle: Handle = async ({ event, resolve }) => {
 		console.error('[theme] injection failed, rendering without tokens:', errMessage(err));
 	}
 
+	// The viewer's own light/dark choice, stamped on <html> server-side.
+	//
+	// A cookie rather than localStorage precisely so it can be read HERE: an
+	// inline script reading localStorage would run after first paint, which is
+	// the flash-of-wrong-theme this whole design avoids. 'system' writes no
+	// attribute at all, leaving prefers-color-scheme in charge.
+	// Note the replaced token includes the space BEFORE it: themeAttribute
+	// carries its own leading space, so 'system' collapses to `<html lang="en">`
+	// rather than leaving a stray one.
+	const themeAttr = themeAttribute(parseThemeMode(event.cookies.get(THEME_COOKIE)));
+
 	return resolve(event, {
-		transformPageChunk: ({ html }) => html.replace('%theme.style%', themeStyle),
+		transformPageChunk: ({ html }) =>
+			html.replace('%theme.style%', themeStyle).replace(' %theme.attr%', themeAttr),
 	});
 };

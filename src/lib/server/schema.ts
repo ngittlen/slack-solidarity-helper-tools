@@ -255,6 +255,11 @@ export const appConfig = sqliteTable(
 		// Header countdown (label + ISO end datetime). DB-only, no env fallback;
 		// '' means "not configured" (the set-only save contract reserves NULL for
 		// "use the fallback", so clearing writes '' rather than NULL).
+		// Shown in the browser tab after each page's own name, and as the header
+		// title fallback. DB-only with a code default (DEFAULT_SITE_NAME) rather
+		// than an env fallback — it is a display preference, not deployment
+		// config, same reasoning as the ticker speed.
+		siteName: text('site_name'),
 		countdownLabel: text('countdown_label'),
 		countdownEndAt: text('countdown_end_at'),
 		// New-member welcome DM template. NULL / '' means "use the built-in

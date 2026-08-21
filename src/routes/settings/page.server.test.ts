@@ -54,6 +54,7 @@ const settingsFixture = {
 	mobilizeContactPhone: '',
 	slackGrowthReportRankingAlpha: 0.5,
 	welcomeDisabledChannelIds: new Set<string>(),
+	siteName: '',
 	countdownLabel: '',
 	countdownEndAt: '',
 	welcomeDmMessage: '',

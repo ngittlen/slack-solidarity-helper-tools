@@ -99,10 +99,6 @@
 	});
 </script>
 
-<svelte:head>
-	<title>Dashboard</title>
-</svelte:head>
-
 <main>
 	<!-- One LED sign carrying the countdown and the day's personal standings.
 	     Either half can be absent — an unconfigured countdown no longer hides

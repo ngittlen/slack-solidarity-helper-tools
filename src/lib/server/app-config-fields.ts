@@ -21,6 +21,7 @@ import { extractChannelNames } from '../channel-tokens.js';
 import { validateWarningTemplate } from '../warning-dm.js';
 import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '../ticker-speed.js';
 import { parseOverrides } from '$lib/styles/theme-css.js';
+import { SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
 
 export interface FieldContext {
 	slack: WebClient;
@@ -241,6 +242,7 @@ export const APP_CONFIG_FIELDS: {
 	),
 	themeTokens: themeTokensField('themeTokens'),
 
+	siteName: boundedTextField('siteName', SITE_NAME_MAX_LENGTH),
 	countdownLabel: boundedTextField('countdownLabel', COUNTDOWN_LABEL_MAX_LENGTH),
 	countdownEndAt: isoDateTimeField('countdownEndAt'),
 

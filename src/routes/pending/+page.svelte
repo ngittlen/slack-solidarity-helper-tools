@@ -217,10 +217,6 @@
 	});
 </script>
 
-<svelte:head>
-	<title>A4M Slack Invite Queue</title>
-</svelte:head>
-
 <main>
 	{#if loading}
 		<p class="status">Loading...</p>
