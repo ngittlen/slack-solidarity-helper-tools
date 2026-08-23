@@ -123,6 +123,7 @@
 			{#if data.slackChannels}
 				<AppConfigEditor
 					channels={data.slackChannels.items}
+					siteName={data.settings.siteName}
 					trackingChannelId={data.settings.slackTrackingChannelId}
 					growthReportChannelId={data.settings.slackGrowthReportChannelId}
 					mobilizeSyncChannelId={data.settings.slackMobilizeSyncChannelId}

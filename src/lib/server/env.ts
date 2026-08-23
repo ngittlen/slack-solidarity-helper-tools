@@ -125,6 +125,38 @@ export const OPENFIELD_USERNAME = get('OPENFIELD_USERNAME');
 export const OPENFIELD_PASSWORD = get('OPENFIELD_PASSWORD');
 export const DOOR_KNOCK_CHANNEL_ID = get('DOOR_KNOCK_CHANNEL_ID');
 
+// NGP VAN / VoteBuilder turf checkout (see src/lib/server/van-env.ts and
+// specs/010-van-turf-checkout/plan.md). All optional: the app must boot and
+// run fine with VAN unconfigured, the way it does without Openfield.
+//
+// VAN_APP_NAME is the Application Name EveryAction issued alongside the key —
+// it is the HTTP Basic *username*, not a display string, and a wrong value
+// authenticates as nobody.
+// VAN_DATABASE_MODE selects which database the key reads: 0 = My Voters,
+// 1 = My Campaign. There is no safe default. Picking the wrong one does not
+// error — it authenticates and returns a different, mostly empty database —
+// so van-env.ts requires it explicitly rather than assuming 0.
+export const VAN_APP_NAME = get('VAN_APP_NAME');
+export const VAN_API_KEY = get('VAN_API_KEY');
+export const VAN_DATABASE_MODE = get('VAN_DATABASE_MODE').trim();
+// Export job type id for the coordinates-only export that feeds hull geometry.
+// EveryAction issues these per developer, so the `101` in VAN's docs is an
+// example — discover the real one with `npm run van:check`. Unset is fine:
+// the catalog sync runs without it and only geometry is skipped.
+export const VAN_EXPORT_JOB_TYPE_ID = parseInt(get('VAN_EXPORT_JOB_TYPE_ID') || '0', 10);
+
+// Basemap tiles for the turf map. Defaults to CARTO's keyless Positron
+// endpoint, which is what the demo has always used.
+//
+// Configurable because a keyless endpoint is courtesy, not an SLA, and a
+// canvass launch is the worst possible moment to discover a rate limit. Moving
+// to a keyed account (CARTO, Stadia, Protomaps, or self-hosted) should be a
+// secret to set, not a deploy — so the URL and its attribution live here
+// rather than as constants in the component. Attribution is a condition of use
+// for every provider worth using; change both together.
+export const MAP_TILE_URL_TEMPLATE = get('MAP_TILE_URL_TEMPLATE');
+export const MAP_TILE_ATTRIBUTION = get('MAP_TILE_ATTRIBUTION');
+
 export interface ChapterEntry {
 	chapterId: number;
 	channelId: string;

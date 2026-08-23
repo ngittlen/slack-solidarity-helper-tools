@@ -3,10 +3,16 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import UserMenu, { type MenuItem } from '$lib/components/nav/UserMenu.svelte';
+	import ThemeToggle from '$lib/components/nav/ThemeToggle.svelte';
+	import { documentTitle, resolveSiteName } from '$lib/site-name.js';
 
 	let { data, children } = $props();
 
-	const pageTitle = $derived<string>(page.data.pageTitle ?? 'A4M Helper Tools');
+	// The header <h1> shows the page's own name; the browser tab shows
+	// "<page> — <site>". Both come from the same `pageTitle`, set once per route
+	// in its load function, so a route can never disagree with itself.
+	const siteName = $derived(resolveSiteName(data.siteName));
+	const pageTitle = $derived<string>(page.data.pageTitle ?? siteName);
 
 	// Back-to-dashboard arrow on every non-root page (/pending, /settings).
 	const showBackLink = $derived(page.url.pathname !== '/');
@@ -22,6 +28,13 @@
 			: [],
 	);
 </script>
+
+<!-- One <title> for the whole app. Individual pages used to set their own and
+     drifted: / said "Dashboard" while /pending said "A4M Slack Invite Queue"
+     and three routes set none at all, so the tab showed a URL. -->
+<svelte:head>
+	<title>{documentTitle(page.data.pageTitle, siteName)}</title>
+</svelte:head>
 
 <div class="app-shell">
 	<header class="app-header">
@@ -46,6 +59,7 @@
 			<h1>{pageTitle}</h1>
 		</div>
 		<div class="user-info">
+			<ThemeToggle mode={data.themeMode} />
 			<UserMenu items={menuItems} />
 			<span class="user-greeting">
 				Logged in as <span class="user-name">{data.userName}</span>

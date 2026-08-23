@@ -7,5 +7,5 @@ export const load: PageServerLoad = ({ locals }) => {
 	if (!locals.session?.isAdmin) {
 		redirect(302, '/');
 	}
-	return { userName: locals.session.slackUserName, pageTitle: 'Pending Applicants' };
+	return { userName: locals.session.slackUserName, pageTitle: 'Slack help list' };
 };

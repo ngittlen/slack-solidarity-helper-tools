@@ -75,7 +75,7 @@ describe('page load', () => {
 	});
 
 	it('sets the page title', () => {
-		expect((load(event(adminSession)) as { pageTitle: string }).pageTitle).toBe('Member lookup');
+		expect((load(event(adminSession)) as { pageTitle: string }).pageTitle).toBe('Volunteer lookup');
 	});
 });
 

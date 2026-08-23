@@ -39,23 +39,59 @@
 		MIN_ZOOM,
 		TILE_ATTRIBUTION,
 		TILE_SIZE,
+		TILE_URL_TEMPLATE,
 		tileUrl,
 	} from '$lib/van/tiles.js';
 	import { statusLabel, type VolunteerStatus } from '$lib/van/turf-status.js';
-	import type { DemoTurf } from './demo-turfs.js';
+	import { shadeLabel, turfShade } from '$lib/van/turf-shade.js';
+	import type { MappableTurf } from '$lib/van/turf-view.js';
 
 	interface Props {
-		turfs: DemoTurf[];
+		/** Only turf with geometry — filter with `mappableTurfs()`. Turf without
+		 *  a hull or centroid is real and claimable, it just cannot be drawn, so
+		 *  the list view carries it instead of this component inventing a
+		 *  location for it. */
+		turfs: MappableTurf[];
 		selectedId: number | null;
-		location: LatLng;
+		/** Where the volunteer is. Null when geolocation was declined or is
+		 *  unavailable — the map still works, it just frames all the turf
+		 *  instead of the nearest few, and draws no "you" marker. Declining
+		 *  location must not cost you the map. */
+		location: LatLng | null;
 		onselect: (mapRouteId: number) => void;
+		/** Basemap source. Passed in rather than imported so moving to a keyed
+		 *  account is a secret to set, not a deploy (plan.md 6.3). */
+		tiles?: { urlTemplate: string; attribution: string };
+		/** Fired when the visible area settles after a pan or zoom, so the page
+		 *  can fetch turf outside the rows it was given. Debounced by the
+		 *  caller — a drag emits one of these, not sixty. */
+		onviewport?: (bounds: BoundingBox) => void;
 	}
 
-	let { turfs, selectedId, location, onselect }: Props = $props();
+	let {
+		turfs,
+		selectedId,
+		location,
+		onselect,
+		tiles = { urlTemplate: TILE_URL_TEMPLATE, attribution: TILE_ATTRIBUTION },
+		onviewport,
+	}: Props = $props();
 
-	const WIDTH = 720;
-	const HEIGHT = 520;
+	/** Fallback viewport, used for SSR and for the first frame before the
+	 *  element has been measured. Matches the desktop aspect ratio the
+	 *  stylesheet asks for, so hydration doesn't visibly reframe. */
+	const BASE_WIDTH = 720;
+	const BASE_HEIGHT = 520;
 	const PADDING = 32;
+
+	// The map is measured rather than fixed: on a phone it runs edge to edge
+	// and is taller than it is wide, on a desktop it sits in a 720x520 column.
+	// One viewBox unit is one CSS pixel at every size, which keeps tiles at
+	// their native resolution instead of scaling a fixed viewBox to fit.
+	let frameWidth = $state(0);
+	let frameHeight = $state(0);
+	const mapWidth = $derived(frameWidth || BASE_WIDTH);
+	const mapHeight = $derived(frameHeight || BASE_HEIGHT);
 
 	/** How many nearby turfs the opening view frames. Chapters run to ~150
 	 *  miles across while a turf is a couple of miles, so fitting the whole
@@ -73,11 +109,23 @@
 	 *  PIN_BELOW_PX because a 20px polygon can be drawn but not labelled. */
 	const LABEL_ABOVE_PX = 34;
 
-	const nearbyBounds = $derived(padBounds(boundsForNearest(location, turfs, NEARBY_COUNT), 0.15));
+	// With a location, open on the volunteer plus the nearest few turfs: a
+	// chapter can run 150 miles across and framing the whole thing shows a
+	// scatter of dots nobody can act on. Without one, all the turf is the only
+	// honest frame.
+	const nearbyBounds = $derived.by((): BoundingBox => {
+		if (location) return padBounds(boundsForNearest(location, turfs, NEARBY_COUNT), 0.15);
+		// Every turf here is mappable by the prop's contract, so unionBounds
+		// only returns null for an empty list — which the parent does not
+		// render this component for. The fallback keeps the type honest without
+		// a cast.
+		const all = unionBounds(turfs.map((t) => t.bounds));
+		return all ? padBounds(all, 0.1) : { minLat: 0, maxLat: 0, minLng: 0, maxLng: 0 };
+	});
 
 	const allBounds = $derived.by(() => {
 		const boxes = turfs.map((t) => t.bounds);
-		boxes.push(boundingBox([location])!);
+		if (location) boxes.push(boundingBox([location])!);
 		return padBounds(unionBounds(boxes) ?? nearbyBounds, 0.1);
 	});
 
@@ -90,19 +138,38 @@
 	const view = $derived(
 		createMapView({
 			centre: centre ?? boundsCentre(nearbyBounds),
-			zoom: zoom ?? fitZoom(nearbyBounds, WIDTH, HEIGHT, PADDING),
-			width: WIDTH,
-			height: HEIGHT,
+			zoom: zoom ?? fitZoom(nearbyBounds, mapWidth, mapHeight, PADDING),
+			width: mapWidth,
+			height: mapHeight,
 		}),
 	);
 
 	function frameTo(bounds: BoundingBox) {
 		centre = boundsCentre(bounds);
-		zoom = fitZoom(bounds, WIDTH, HEIGHT, PADDING);
+		zoom = fitZoom(bounds, mapWidth, mapHeight, PADDING);
 		moved = true;
 	}
 
-	const me = $derived(view.project(location));
+	const me = $derived(location ? view.project(location) : null);
+
+	// Report the visible area after it settles, so the page can fetch turf
+	// outside the rows it was handed. The debounce lives here rather than in
+	// the caller because the natural trigger is every camera change — a single
+	// drag produces one settled viewport, not one per pointer move — and
+	// $effect's cleanup makes the trailing-edge timer a two-line affair.
+	$effect(() => {
+		if (!onviewport) return;
+		const nw = view.unproject({ x: 0, y: 0 });
+		const se = view.unproject({ x: mapWidth, y: mapHeight });
+		const bounds: BoundingBox = {
+			minLat: se.lat,
+			maxLat: nw.lat,
+			minLng: nw.lng,
+			maxLng: se.lng,
+		};
+		const timer = setTimeout(() => onviewport(bounds), 250);
+		return () => clearTimeout(timer);
+	});
 
 	/** Tiles that failed to load — a dead provider must not leave a white void
 	 *  with no explanation, so the graticule and this flag stay behind them. */
@@ -118,7 +185,7 @@
 	}
 
 	interface RenderedTurf {
-		turf: DemoTurf;
+		turf: MappableTurf;
 		/** Pin/label position — the projected door centroid. */
 		x: number;
 		y: number;
@@ -151,8 +218,8 @@
 			const nw = view.project({ lat: turf.bounds.maxLat, lng: turf.bounds.minLng });
 			const se = view.project({ lat: turf.bounds.minLat, lng: turf.bounds.maxLng });
 
-			if (se.x < -margin || nw.x > WIDTH + margin) continue;
-			if (se.y < -margin || nw.y > HEIGHT + margin) continue;
+			if (se.x < -margin || nw.x > mapWidth + margin) continue;
+			if (se.y < -margin || nw.y > mapHeight + margin) continue;
 
 			const size = Math.max(Math.abs(se.x - nw.x), Math.abs(se.y - nw.y));
 			const centrePoint = view.project(turf.centre);
@@ -223,6 +290,21 @@
 		return Math.hypot(a.x - b.x, a.y - b.y);
 	}
 
+	/** The turf this gesture started on, or null for empty map.
+	 *
+	 *  Tapping a turf is resolved from the pointer events rather than from an
+	 *  onclick on the shape, because the svg takes a pointer capture below and a
+	 *  capture retargets the compatibility click event to the capturing element
+	 *  — so a click handler on the turf never fires. Giving up the capture is
+	 *  not an option: it is what keeps a drag alive when the pointer leaves the
+	 *  svg mid-pan. */
+	let pressedTurfId: number | null = null;
+
+	function turfIdAt(target: EventTarget | null): number | null {
+		const el = (target as Element | null)?.closest?.('[data-turf-id]');
+		return el ? Number(el.getAttribute('data-turf-id')) : null;
+	}
+
 	function onPointerDown(event: PointerEvent) {
 		if (event.pointerType === 'mouse' && event.button !== 0) return;
 		trackPointer(event);
@@ -232,12 +314,17 @@
 		if (pair) {
 			// Second finger down: stop panning, start pinching.
 			dragging = false;
+			pressedTurfId = null;
 			pinch = { distance: distanceBetween(pair[0], pair[1]), zoom: view.zoom };
 			return;
 		}
 
 		dragging = true;
 		dragMoved = false;
+		// Read before any movement: the capture retargets later events to the
+		// svg, so this is the last point at which the shape under the finger is
+		// still the event target.
+		pressedTurfId = turfIdAt(event.target);
 		dragOrigin = { x: event.clientX, y: event.clientY };
 	}
 
@@ -276,13 +363,13 @@
 
 		// The svg is scaled to its container, so a client-pixel delta is not a
 		// viewBox-unit delta. Convert through the rendered width.
-		const unitsPerPixel = WIDTH / svg.getBoundingClientRect().width;
+		const unitsPerPixel = mapWidth / svg.getBoundingClientRect().width;
 
 		dragMoved = true;
 		// Dragging right moves the map right, i.e. the centre moves left.
 		centre = view.unproject({
-			x: WIDTH / 2 - dx * unitsPerPixel,
-			y: HEIGHT / 2 - dy * unitsPerPixel,
+			x: mapWidth / 2 - dx * unitsPerPixel,
+			y: mapHeight / 2 - dy * unitsPerPixel,
 		});
 		zoom = view.zoom;
 		moved = true;
@@ -290,6 +377,14 @@
 	}
 
 	function onPointerUp(event: PointerEvent) {
+		// A tap: the last finger lifting, having started on a turf and never
+		// crossed the drag threshold. A gesture that panned or pinched is not a
+		// selection, which is what dragMoved records.
+		if (!dragMoved && pressedTurfId !== null && activePointers.length === 1) {
+			onselect(pressedTurfId);
+		}
+		pressedTurfId = null;
+
 		activePointers = activePointers.filter((p) => p.id !== event.pointerId);
 		(event.currentTarget as SVGSVGElement).releasePointerCapture?.(event.pointerId);
 
@@ -307,6 +402,13 @@
 		}
 	}
 
+	/** The browser took the gesture away (a system scroll, a call coming in).
+	 *  Not a tap, whatever the pointer did before it was cancelled. */
+	function onPointerCancel(event: PointerEvent) {
+		pressedTurfId = null;
+		onPointerUp(event);
+	}
+
 	// --- Keyboard -----------------------------------------------------------
 	// Without this the map is mouse-and-touch only, which fails anyone using a
 	// keyboard and anyone whose pointing device is imprecise. Arrows pan by a
@@ -320,8 +422,8 @@
 		if (step) {
 			event.preventDefault(); // otherwise the page scrolls instead
 			centre = view.unproject({
-				x: WIDTH / 2 + step[0] * (WIDTH / 4),
-				y: HEIGHT / 2 + step[1] * (HEIGHT / 4),
+				x: mapWidth / 2 + step[0] * (mapWidth / 4),
+				y: mapHeight / 2 + step[1] * (mapHeight / 4),
 			});
 			zoom = view.zoom;
 			moved = true;
@@ -346,25 +448,25 @@
 	 *  county overview to a single turf is six or seven zoom levels, and
 	 *  centre-only zoom loses whatever you were aiming at within two of them.
 	 *  Defaults to the middle, which is what the +/− buttons want. */
-	function changeZoom(delta: number, anchor = { x: WIDTH / 2, y: HEIGHT / 2 }) {
+	function changeZoom(delta: number, anchor = { x: mapWidth / 2, y: mapHeight / 2 }) {
 		const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.zoom + delta));
 		if (nextZoom === view.zoom) return;
 
 		const held = view.unproject(anchor);
-		const currentCentre = view.unproject({ x: WIDTH / 2, y: HEIGHT / 2 });
+		const currentCentre = view.unproject({ x: mapWidth / 2, y: mapHeight / 2 });
 
 		// Re-project the held point at the new zoom, then shift the centre by
 		// however far it drifted.
 		const probe = createMapView({
 			centre: currentCentre,
 			zoom: nextZoom,
-			width: WIDTH,
-			height: HEIGHT,
+			width: mapWidth,
+			height: mapHeight,
 		});
 		const after = probe.project(held);
 		centre = probe.unproject({
-			x: WIDTH / 2 + (after.x - anchor.x),
-			y: HEIGHT / 2 + (after.y - anchor.y),
+			x: mapWidth / 2 + (after.x - anchor.x),
+			y: mapHeight / 2 + (after.y - anchor.y),
 		});
 		zoom = nextZoom;
 		moved = true;
@@ -375,8 +477,8 @@
 	function toViewBox(event: { clientX: number; clientY: number }, el: SVGSVGElement) {
 		const rect = el.getBoundingClientRect();
 		return {
-			x: ((event.clientX - rect.left) / rect.width) * WIDTH,
-			y: ((event.clientY - rect.top) / rect.height) * HEIGHT,
+			x: ((event.clientX - rect.left) / rect.width) * mapWidth,
+			y: ((event.clientY - rect.top) / rect.height) * mapHeight,
 		};
 	}
 
@@ -400,17 +502,14 @@
 		moved = false;
 	}
 
-	/** A click that ended a drag is not a selection. */
-	function selectIfNotDragging(mapRouteId: number) {
-		if (dragMoved) return;
-		onselect(mapRouteId);
-	}
-
 	// --- Scale bar ----------------------------------------------------------
 
 	const scale = $derived.by(() => {
-		const mpp = metresPerPixel(view.unproject({ x: WIDTH / 2, y: HEIGHT / 2 }).lat, view.zoom);
-		const target = WIDTH / 4;
+		const mpp = metresPerPixel(
+			view.unproject({ x: mapWidth / 2, y: mapHeight / 2 }).lat,
+			view.zoom,
+		);
+		const target = mapWidth / 4;
 		const choice = [2000, 1000, 500, 250, 100, 50].find((m) => m / mpp <= target) ?? 50;
 		return {
 			px: choice / mpp,
@@ -422,18 +521,31 @@
 	 *  "Show all" is meaningful. Falls out of the cull for free. */
 	const hasOffscreenTurfs = $derived(rendered.length < turfs.length);
 
-	function statusClass(turf: DemoTurf): string {
-		return `turf turf-${turf.status}${turf.mapRouteId === selectedId ? ' is-selected' : ''}`;
+	function statusClass(turf: MappableTurf): string {
+		// Two classes, doing two jobs: the status sets the hue, the shade sets
+		// how strongly it is filled. Keeping them separate is what lets the
+		// door ramp apply to available turf without touching the colours that
+		// mean "yours" and "taken".
+		const shade = turfShade(turf.status, turf.doorsRemaining);
+		const selected = turf.mapRouteId === selectedId ? ' is-selected' : '';
+		return `turf turf-${turf.status} shade-${shade}${selected}`;
 	}
 
-	function ariaLabelFor(turf: DemoTurf): string {
-		const doors = turf.status === 'available' ? `, ${turf.doorsRemaining} doors remaining` : '';
-		return `${turf.name}, ${statusLabel(turf.status as VolunteerStatus)}${doors}`;
+	function ariaLabelFor(turf: MappableTurf): string {
+		// The ramp is invisible to a screen reader, so the band is spoken. The
+		// raw count goes with it — "nearly finished" is the gist, "3 doors
+		// remaining" is the fact someone decides on.
+		const status = turf.status as VolunteerStatus;
+		const doors =
+			status === 'available'
+				? `, ${turf.doorsRemaining} doors remaining, ${shadeLabel(turfShade(status, turf.doorsRemaining))}`
+				: '';
+		return `${turf.name}, ${statusLabel(status)}${doors}`;
 	}
 </script>
 
 <figure class="map-figure">
-	<div class="map-frame">
+	<div class="map-frame" bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}>
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 		<!-- Svelte's a11y heuristics don't model a map widget: it treats <svg> as
@@ -444,7 +556,7 @@
 		     — and every mapping library does the same thing. Suppressed
 		     deliberately, not because the rules are noisy. -->
 		<svg
-			viewBox="0 0 {WIDTH} {HEIGHT}"
+			viewBox="0 0 {mapWidth} {mapHeight}"
 			class="turf-map"
 			class:is-dragging={dragging}
 			role="application"
@@ -453,7 +565,7 @@
 			onpointerdown={onPointerDown}
 			onpointermove={onPointerMove}
 			onpointerup={onPointerUp}
-			onpointercancel={onPointerUp}
+			onpointercancel={onPointerCancel}
 			onwheel={onWheel}
 			onkeydown={onKeyDown}
 		>
@@ -469,17 +581,17 @@
 					/>
 				</pattern>
 				<clipPath id="map-clip">
-					<rect width={WIDTH} height={HEIGHT} />
+					<rect width={mapWidth} height={mapHeight} />
 				</clipPath>
 			</defs>
 
-			<rect width={WIDTH} height={HEIGHT} fill="url(#graticule)" />
+			<rect width={mapWidth} height={mapHeight} fill="url(#graticule)" />
 
 			<g clip-path="url(#map-clip)">
 				<g class="basemap">
 					{#each view.tiles as tile (tile.key)}
 						<image
-							href={tileUrl(tile)}
+							href={tileUrl(tile, tiles.urlTemplate)}
 							x={tile.left}
 							y={tile.top}
 							width={TILE_SIZE}
@@ -492,11 +604,11 @@
 				{#each rendered as item (item.turf.mapRouteId)}
 					<g
 						class={statusClass(item.turf)}
+						data-turf-id={item.turf.mapRouteId}
 						role="button"
 						aria-label={ariaLabelFor(item.turf)}
 						aria-pressed={item.turf.mapRouteId === selectedId}
 						tabindex={item.points ? 0 : -1}
-						onclick={() => selectIfNotDragging(item.turf.mapRouteId)}
 						onkeydown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
 								e.preventDefault();
@@ -524,16 +636,24 @@
 				{/each}
 
 				<g class="me" aria-hidden="true">
-					<circle class="me-halo" cx={me.x} cy={me.y} r="16" />
-					<circle class="me-dot" cx={me.x} cy={me.y} r="6" />
+					{#if me}
+						<circle class="me-halo" cx={me.x} cy={me.y} r="16" />
+						<circle class="me-dot" cx={me.x} cy={me.y} r="6" />
+					{/if}
 				</g>
 			</g>
 
 			<g class="scale-bar" aria-hidden="true">
-				<line x1={PADDING} y1={HEIGHT - 20} x2={PADDING + scale.px} y2={HEIGHT - 20} />
-				<line x1={PADDING} y1={HEIGHT - 25} x2={PADDING} y2={HEIGHT - 15} />
-				<line x1={PADDING + scale.px} y1={HEIGHT - 25} x2={PADDING + scale.px} y2={HEIGHT - 15} />
-				<text x={PADDING + scale.px / 2} y={HEIGHT - 29} text-anchor="middle">{scale.label}</text>
+				<line x1={PADDING} y1={mapHeight - 20} x2={PADDING + scale.px} y2={mapHeight - 20} />
+				<line x1={PADDING} y1={mapHeight - 25} x2={PADDING} y2={mapHeight - 15} />
+				<line
+					x1={PADDING + scale.px}
+					y1={mapHeight - 25}
+					x2={PADDING + scale.px}
+					y2={mapHeight - 15}
+				/>
+				<text x={PADDING + scale.px / 2} y={mapHeight - 29} text-anchor="middle">{scale.label}</text
+				>
 			</g>
 		</svg>
 
@@ -548,7 +668,7 @@
 			{/if}
 		</div>
 
-		<p class="attribution">{TILE_ATTRIBUTION}</p>
+		<p class="attribution">{tiles.attribution}</p>
 
 		{#if tilesBroken}
 			<p class="tile-error" role="status">
@@ -572,6 +692,10 @@
 
 	.map-frame {
 		position: relative;
+		/* The svg fills this box and takes its viewBox from the measured size,
+		   so the frame is what decides the map's shape. On a desktop that is a
+		   fixed ratio; the mobile rule below hands it a height instead. */
+		aspect-ratio: 720 / 520;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-lg);
 		overflow: hidden;
@@ -581,9 +705,26 @@
 	.turf-map {
 		display: block;
 		width: 100%;
-		height: auto;
+		height: 100%;
 		cursor: grab;
 		touch-action: none;
+	}
+
+	/* Phone layout: the map is the first thing on the page and runs the full
+	   width of the screen. `50% - 50vw` is measured against the page column, so
+	   the frame escapes whatever padding <main> has without knowing its value.
+
+	   dvh, not vh: on mobile Safari and Chrome vh is the *largest* viewport, so
+	   a vh-sized map hides its own bottom edge behind the address bar. */
+	@media (max-width: 640px) {
+		.map-frame {
+			aspect-ratio: auto;
+			height: 58dvh;
+			min-height: 260px;
+			margin-inline: calc(50% - 50vw);
+			border-width: 0 0 1px;
+			border-radius: 0;
+		}
 	}
 
 	.turf-map.is-dragging {
@@ -711,9 +852,12 @@
 		user-select: none;
 	}
 
+	/* Hover and selection bump the turf's OWN fill rather than jumping to a
+	   fixed value. A flat 0.8 on hover would erase the door ramp exactly when
+	   the volunteer is pointing at the turf they are deciding about. */
 	.turf:hover polygon,
 	.turf:hover circle {
-		fill-opacity: 0.8;
+		fill-opacity: calc(var(--turf-fill) + 0.16);
 	}
 
 	.turf:focus-visible {
@@ -730,32 +874,81 @@
 	.turf.is-selected circle {
 		stroke: var(--color-near-black);
 		stroke-width: 4;
-		fill-opacity: 0.85;
+		fill-opacity: calc(var(--turf-fill) + 0.2);
 	}
 
-	/* Available turf is the only thing a volunteer can act on, so it is the only
-	   saturated colour; taken turf recedes into the map. Opacities run higher
-	   than they would on a blank background — there are streets underneath now,
-	   and a 0.3 fill over a basemap reads as noise. */
+	/* Hue answers "can I take this?"; fill answers "how much is left in it?".
+	   Available turf is the only thing a volunteer can act on, so it is the only
+	   colour that ramps; taken turf recedes into the map at a flat weight.
+	   Opacities run higher than they would on a blank background — there are
+	   streets underneath now, and a 0.3 fill over a basemap reads as noise. */
+	.turf {
+		/* Overridden by the shade classes below. The default is the middle of
+		   the ramp, so a turf whose shade class somehow went missing looks
+		   ordinary rather than invisible. */
+		--turf-fill: 0.46;
+	}
+
+	.turf polygon,
+	.turf circle {
+		fill-opacity: var(--turf-fill);
+	}
+
 	.turf-available polygon,
 	.turf-available circle {
 		fill: var(--color-blue);
-		fill-opacity: 0.62;
 		stroke: var(--color-navy-mid);
 	}
 
 	.turf-held-by-you polygon,
 	.turf-held-by-you circle {
 		fill: var(--color-success);
-		fill-opacity: 0.65;
 		stroke: var(--color-success);
 	}
 
 	.turf-checked-out polygon,
 	.turf-checked-out circle {
 		fill: var(--color-warm-dark);
-		fill-opacity: 0.42;
 		stroke: var(--color-warm-dark);
+	}
+
+	/* The door ramp. Four steps, far enough apart to be told apart over a
+	   street basemap — closer spacing looked like one colour with noise. */
+	.shade-full {
+		--turf-fill: 0.7;
+	}
+	.shade-high {
+		--turf-fill: 0.56;
+	}
+	.shade-medium {
+		--turf-fill: 0.42;
+	}
+	.shade-low {
+		--turf-fill: 0.28;
+	}
+
+	/* Flat, deliberately: door count is not actionable on turf someone else is
+	   walking, and ramping it would compete with the hue that says so. */
+	.shade-yours {
+		--turf-fill: 0.65;
+	}
+	.shade-taken {
+		--turf-fill: 0.42;
+	}
+
+	/* Nothing left to knock. Not a paler blue — a different kind of mark, so it
+	   cannot be mistaken for the one-door end of the ramp, which is the
+	   distinction that decides whether a walk over there is worth making. The
+	   dash carries it without relying on colour vision. */
+	.turf.shade-cleared {
+		--turf-fill: 0.1;
+	}
+
+	.shade-cleared polygon,
+	.shade-cleared circle {
+		fill: var(--color-warm-dark);
+		stroke: var(--color-warm-dark);
+		stroke-dasharray: 5 4;
 	}
 
 	.me-dot {

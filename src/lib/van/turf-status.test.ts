@@ -89,6 +89,6 @@ describe('statusLabel', () => {
 	it('gives one label to both taken states', () => {
 		expect(statusLabel('checked-out')).toBe('Checked out');
 		expect(statusLabel('available')).toBe('Available');
-		expect(statusLabel('held-by-you')).toBe('Checked out by you');
+		expect(statusLabel('held-by-you')).toBe('Yours');
 	});
 });

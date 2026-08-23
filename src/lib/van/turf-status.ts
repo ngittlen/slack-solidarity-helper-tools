@@ -92,7 +92,11 @@ export function statusLabel(status: VolunteerStatus): string {
 		case 'available':
 			return 'Available';
 		case 'held-by-you':
-			return 'Checked out by you';
+			// "Yours", not "Checked out by you": it renders as a badge beside the
+			// turf name, where the short form reads at a glance and the long one
+			// wrapped onto two lines. The distinction from "Checked out" is
+			// carried by the badge's colour as well as its text.
+			return 'Yours';
 		case 'checked-out':
 			return 'Checked out';
 	}

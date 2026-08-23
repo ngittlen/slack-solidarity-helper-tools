@@ -1,4 +1,9 @@
-// Fabricated turf data for the admin-only walkthrough at /turfs/demo.
+// Fabricated turf data for the admin-only walkthrough at /turfs?demo.
+//
+// Lives in $lib rather than beside a route because there is no longer a
+// separate demo page: /turfs renders this data instead of the database when an
+// admin passes ?demo. One page means the walkthrough cannot drift away from
+// the thing it is supposed to be previewing.
 //
 // Every number here is invented. No VAN key exists yet (see
 // specs/010-van-turf-checkout/plan.md Story 0 — the campaign is still waiting
@@ -16,15 +21,10 @@
 // "City of Cambridge Turf 01" as its Map Route example. Nobody should mistake
 // it for the campaign's real territory.
 
-import {
-	boundingBox,
-	centroid,
-	convexHull,
-	dropOutliers,
-	type BoundingBox,
-	type LatLng,
-} from '$lib/van/geometry.js';
-import { visibleTurfState, type TurfStatus, type VolunteerStatus } from '$lib/van/turf-status.js';
+import { boundingBox, centroid, convexHull, dropOutliers, type LatLng } from './geometry.js';
+import { visibleTurfState, type TurfStatus } from './turf-status.js';
+import { canClaim, type ClaimSnapshot } from './checkout.js';
+import type { TurfView } from './turf-view.js';
 
 /** A county chapter, as it appears in Solidarity and in chapter_channel_map. */
 export interface DemoChapter {
@@ -32,37 +32,42 @@ export interface DemoChapter {
 	name: string;
 }
 
-/** Mirrors the `van_turfs` row plus its derived checkout state. */
-export interface DemoTurf {
-	mapRouteId: number;
-	/** The chapter whose VAN folder this turf came from. Turfs are only ever
-	 *  served one chapter at a time — see the note on compartmentalisation in
-	 *  the page component. */
-	chapterId: number;
-	name: string;
-	regionName: string;
-	/** The MiniVAN list number — the thing this whole demo is about. */
-	printedListNumber: string;
-	savedListId: number;
-	/** People in the list. */
-	routeSize: number;
-	/** Unique doors — always ≤ routeSize, since households share a door. */
-	doorCount: number;
-	/** Doors VAN still shows as uncontacted, after the most recent refresh. */
-	doorsRemaining: number;
-	hull: LatLng[];
-	centre: LatLng;
-	bounds: BoundingBox;
-	/** Already reduced for the viewer by `visibleTurfState` — the two "taken"
-	 *  states are collapsed to `checked-out` for everyone. */
-	status: VolunteerStatus;
-	/** Who holds it. Null for non-admin viewers, always. */
-	heldBy: string | null;
-	/** Hours until an active claim lapses. Null unless it's yours, or you're
-	 *  an admin. */
-	expiresInHours: number | null;
-	/** Minutes since the last VAN map-region refresh, shown as staleness. */
-	refreshedMinutesAgo: number;
+/**
+ * Exactly the shape the real page renders — `TurfView`, aliased rather than
+ * redeclared.
+ *
+ * This is the guarantee that makes one page safe to use for both: if a field
+ * is added to what volunteers see, this fixture stops compiling until it
+ * supplies one too. A parallel interface would let the walkthrough quietly
+ * fall behind the thing it exists to preview, which is exactly how the old
+ * separate demo route drifted.
+ */
+export type DemoTurf = TurfView;
+
+/** The viewer the fixture is built for. Only ever compared against itself, so
+ *  the value is arbitrary — it just has to be stable. */
+const DEMO_VIEWER_ID = 'U_DEMO_VIEWER';
+
+/** A fixed clock. The fixture is asserted to be deterministic across calls, so
+ *  it must not read the wall clock to decide whether a claim is still live. */
+const DEMO_NOW = new Date('2026-01-01T00:00:00.000Z');
+const DEMO_CLAIM_EXPIRY = '2099-01-01T00:00:00.000Z';
+
+/** The ledger rows canClaim would find for this turf. Held turf gets one live
+ *  claim; everything else gets none. */
+function demoClaims(seed: TurfSeed): ClaimSnapshot[] {
+	if (seed.status !== 'held-by-you' && seed.status !== 'held-by-other') return [];
+	return [
+		{
+			mapRouteId: seed.mapRouteId,
+			slackUserId: seed.status === 'held-by-you' ? DEMO_VIEWER_ID : 'U_SOMEONE_ELSE',
+			slackUserName: seed.heldBy ?? 'A volunteer',
+			claimedAt: DEMO_NOW.toISOString(),
+			expiresAt: DEMO_CLAIM_EXPIRY,
+			releasedAt: null,
+			completedAt: null,
+		},
+	];
 }
 
 /** Deterministic PRNG (mulberry32) so the demo looks identical on every load.
@@ -175,6 +180,27 @@ const SEEDS: TurfSeed[] = [
 		expiresInHours: 39,
 		refreshedMinutesAgo: 42,
 		seed: 1003,
+	},
+	{
+		// Walked out. Present so the demo actually shows the "no doors left"
+		// state — a turf with nothing on it is a common sight a day into a
+		// canvass, and it is the one state a volunteer must not walk to.
+		mapRouteId: 4109,
+		chapterId: 71,
+		name: 'Ward 3 Turf 04',
+		regionName: 'Ward 3 — Riverside',
+		printedListNumber: '35536749-11204',
+		savedListId: 500114,
+		centre: { lat: 42.3652, lng: -71.1138 },
+		spread: 0.0029,
+		aspect: 1.25,
+		doors: 62,
+		doorsRemaining: 0,
+		status: 'available',
+		heldBy: null,
+		expiresInHours: null,
+		refreshedMinutesAgo: 42,
+		seed: 1009,
 	},
 	{
 		mapRouteId: 4204,
@@ -343,6 +369,26 @@ const SEEDS: TurfSeed[] = [
 
 	// --- Norfolk County -----------------------------------------------------
 	{
+		// A second one, in another chapter, so switching chapters in the demo
+		// does not make the state look like a quirk of one county.
+		mapRouteId: 5105,
+		chapterId: 72,
+		name: 'Ward 9 Turf 03',
+		regionName: 'Ward 9 — Roxbury',
+		printedListNumber: '35538814-60733',
+		savedListId: 501105,
+		centre: { lat: 42.3389, lng: -71.0702 },
+		spread: 0.0026,
+		aspect: 1.05,
+		doors: 45,
+		doorsRemaining: 0,
+		status: 'available',
+		heldBy: null,
+		expiresInHours: null,
+		refreshedMinutesAgo: 26,
+		seed: 2005,
+	},
+	{
 		mapRouteId: 6101,
 		chapterId: 73,
 		name: 'Precinct 2 Turf 01',
@@ -462,16 +508,38 @@ function buildTurf(seed: TurfSeed, viewer: { isAdmin: boolean }): DemoTurf {
 		viewer,
 	);
 
+	// Claimability comes from the REAL rule, not an approximation of it.
+	//
+	// The demo has no ledger, so the inputs are synthesised — but the decision
+	// and, more importantly, the refusal wording are canClaim's own. Every
+	// previous attempt to restate the rules here has drifted from them: the
+	// fixture handed out list numbers the real page withholds, and offered to
+	// check out turf with no doors left. Calling the function removes the
+	// opportunity.
+	const decision = canClaim(
+		{
+			mapRouteId: seed.mapRouteId,
+			printedListNumber: seed.printedListNumber,
+			retiredAt: null,
+			vanDistributedTo: seed.status === 'assigned-in-van' ? (seed.heldBy ?? 'A canvasser') : null,
+			doorCount: seed.doorsRemaining,
+		},
+		demoClaims(seed),
+		DEMO_VIEWER_ID,
+		DEMO_NOW,
+	);
+
 	return {
 		mapRouteId: seed.mapRouteId,
 		chapterId: seed.chapterId,
 		name: seed.name,
 		regionName: seed.regionName,
-		printedListNumber: seed.printedListNumber,
-		savedListId: seed.savedListId,
+		// Withheld unless you hold it, exactly as toTurfView does — the number
+		// is the credential that pulls the doors down in MiniVAN. A fixture
+		// that handed it out freely would be previewing a page we do not ship.
+		printedListNumber: visible.status === 'held-by-you' ? seed.printedListNumber : null,
 		// VAN reports routeSize (people) above doorCount (households).
 		routeSize: Math.round(seed.doors * 1.7),
-		doorCount: seed.doors,
 		doorsRemaining: seed.doorsRemaining,
 		hull: hull.map(roundPoint),
 		centre: roundPoint(centre),
@@ -485,6 +553,13 @@ function buildTurf(seed: TurfSeed, viewer: { isAdmin: boolean }): DemoTurf {
 		heldBy: visible.heldBy,
 		expiresInHours: visible.expiresInHours,
 		refreshedMinutesAgo: seed.refreshedMinutesAgo,
+		claimable: decision.ok,
+		// Omitted, never null, and only when the turf looks available —
+		// matching toTurfView exactly, so the demo's measured payload size
+		// stays representative of the real one.
+		...(decision.ok || visible.status !== 'available'
+			? {}
+			: { claimBlockedReason: decision.message }),
 	};
 }
 
@@ -562,8 +637,12 @@ function stressSeeds(): TurfSeed[] {
 			spread: 0.004 + rand() * 0.004,
 			aspect: 0.7 + rand() * 1.1,
 			doors,
-			// A realistic mix: most untouched, some part-walked, a few nearly done.
-			doorsRemaining: walked < 0.6 ? doors : Math.max(1, Math.floor(doors * rand())),
+			// A realistic mix: most untouched, some part-walked, a few nearly
+			// done, and roughly one in twenty walked out completely. That last
+			// group is what puts the "no doors left" state on the stress map at
+			// a density worth looking at.
+			doorsRemaining:
+				walked > 0.95 ? 0 : walked < 0.6 ? doors : Math.max(1, Math.floor(doors * rand())),
 			status,
 			heldBy: held ? 'A volunteer' : null,
 			// Only app claims carry a TTL; turf assigned inside VAN has none.

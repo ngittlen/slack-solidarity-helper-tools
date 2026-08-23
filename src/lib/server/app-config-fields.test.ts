@@ -40,6 +40,7 @@ describe('the table', () => {
 				'mobilizeContactPhone',
 				'slackGrowthReportRankingAlpha',
 				'doorTickerColumnsPerSecond',
+				'siteName',
 				'countdownLabel',
 				'countdownEndAt',
 				'welcomeDmMessage',
@@ -47,7 +48,7 @@ describe('the table', () => {
 				'themeTokens',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(14);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(15);
 	});
 });
 

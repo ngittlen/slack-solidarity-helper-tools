@@ -33,6 +33,7 @@ export const APP_CONFIG_SECTION_ID = 'app-config';
  *  than repeating string literals. `sections.test.ts` asserts these stay in
  *  lockstep with the `app-config` children below. */
 export const APP_CONFIG_ROW_IDS = {
+	siteName: 'cfg-site-name',
 	trackingChannel: 'cfg-tracking-channel',
 	growthReportChannel: 'cfg-growth-report-channel',
 	mobilizeSyncChannel: 'cfg-mobilize-sync-channel',
@@ -67,6 +68,7 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 		id: SECTION_IDS.appConfig,
 		label: 'App config',
 		children: [
+			{ id: APP_CONFIG_ROW_IDS.siteName, label: 'Site name' },
 			{ id: APP_CONFIG_ROW_IDS.trackingChannel, label: 'Volunteer-help tracking channel' },
 			{ id: APP_CONFIG_ROW_IDS.growthReportChannel, label: 'Weekly growth report channel' },
 			{ id: APP_CONFIG_ROW_IDS.mobilizeSyncChannel, label: 'Mobilize sync channel' },
