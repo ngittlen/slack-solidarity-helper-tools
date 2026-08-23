@@ -1,3 +1,11 @@
+/* Shared stylesheet for the turf-checkout pages: the real volunteer page
+   at /turfs and the organizer walkthrough at /turfs/demo.
+
+   Shared rather than copied per route because the demo exists precisely to
+   rehearse the real page's layout — two copies would drift, and the demo
+   would stop being a faithful preview of what volunteers get. The
+   .demo-banner rules below are the one demo-only block. */
+
 main {
 	max-width: 1200px;
 	margin: 32px auto;
@@ -152,11 +160,6 @@ main {
 
 /* Only rendered when the server actually sent a holder name, i.e. organizer
    view. The colour is a reminder that this line is not volunteer-visible. */
-.admin-only {
-	color: var(--color-warm-dark);
-	font-style: italic;
-}
-
 /* --- The turf code card (the payoff) ------------------------------------ */
 
 .my-turfs {
@@ -286,6 +289,24 @@ main {
 	}
 }
 
+/* Two-column layout: the map holds still while the page scrolls the list.
+ *
+ * This is what replaces the list's old inner scroller. The reason the list had
+ * one was to keep the map on screen while you worked down the rows — sticky
+ * gets that without a second scrollbar, and the page keeps one scroll
+ * position, which is the thing that was confusing. */
+@media (min-width: 961px) {
+	.map-col {
+		position: sticky;
+		top: 24px;
+	}
+}
+
+/* Deliberately no height cap on the sticky column. Capping it would need an
+   inner scroller, which is the thing being removed; on a viewport too short
+   for the map plus its controls, sticky simply degrades to normal scrolling.
+   That is a worse desktop layout, not a broken one. */
+
 /* Phone layout: the map leads.
  *
  * A volunteer opening this on a pavement wants to see where they are before
@@ -324,13 +345,6 @@ main {
 		   own bottom margin already. */
 		margin-bottom: 20px;
 	}
-
-	.turf-list {
-		/* Nothing to scroll beside any more, so an inner scroller here just
-		   traps the page's own scroll. Only the cap is lifted — the pane keeps
-		   its overflow clip, which is what rounds the first and last rows. */
-		max-height: none;
-	}
 }
 
 .legend {
@@ -358,8 +372,48 @@ main {
 	border: 1px solid color-mix(in srgb, var(--color-text) 15%, transparent);
 }
 
-.swatch-available {
-	background: color-mix(in srgb, var(--color-blue) 55%, transparent);
+/* The legend's ramp mirrors the map's, using the same four steps. Percentages
+   rather than opacity so the swatch reads the same over the page background as
+   the fill does over the basemap. */
+.swatch-available.shade-low {
+	background: color-mix(in srgb, var(--color-blue) 28%, transparent);
+}
+.swatch-available.shade-medium {
+	background: color-mix(in srgb, var(--color-blue) 42%, transparent);
+}
+.swatch-available.shade-high {
+	background: color-mix(in srgb, var(--color-blue) 56%, transparent);
+}
+.swatch-available.shade-full {
+	background: color-mix(in srgb, var(--color-blue) 70%, transparent);
+}
+
+/* Dashed, matching the map: a turf with nothing left has to differ from the
+   one-door end of the ramp in kind, not just in shade. */
+.swatch-cleared {
+	background: color-mix(in srgb, var(--color-warm-dark) 10%, transparent);
+	border: 1px dashed var(--color-warm-dark);
+}
+
+/* The four ramp swatches sit together as one bar, so the legend reads as a
+   scale rather than four unrelated entries, with its ends named in place. */
+.legend-ramp {
+	gap: 2px;
+}
+
+/* "few" and "many" are scale ends, not entries in their own right — smaller
+   and quieter than the item label so the eye reads the bar first. */
+.ramp-end {
+	font-size: 0.78em;
+	color: var(--color-text-faint);
+}
+
+.legend-ramp .ramp-end:first-child {
+	margin-right: 2px;
+}
+
+.legend-ramp .ramp-end:last-of-type {
+	margin: 0 4px 0 2px;
 }
 .swatch-mine {
 	background: color-mix(in srgb, var(--color-success) 60%, transparent);
@@ -403,10 +457,18 @@ main {
 	background: var(--color-surface);
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-md);
-	/* Clips the first and last rows' hover/selected fill to the rounded corner. */
+	/* Clips the first and last rows' hover/selected fill to the rounded corner.
+	   Note this is the ONLY overflow here: the pane deliberately has no height
+	   cap and no inner scroller.
+
+	   It used to cap at 560px and scroll internally, which read as one list on
+	   a desktop but as a scroll trap everywhere else — below 960px the layout
+	   is a single column, so a nested scroller sat directly inside the page's
+	   own scroll with nothing beside it to justify the split. Dragging the list
+	   moved the list; dragging a few pixels to its side moved the page. On
+	   desktop the map is sticky instead (below), which keeps it in view without
+	   giving the list a second scrollbar. */
 	overflow: hidden;
-	max-height: 560px;
-	overflow-y: auto;
 }
 
 /* The row, not the button: it wraps both the summary button and the expanded
@@ -498,14 +560,23 @@ main {
 	color: var(--color-text);
 }
 
-.card-region {
-	color: var(--color-text-faint);
-}
-
+/* Shown only to organizers — the server nulls `heldBy` for everyone else, so
+   this styles a line that a volunteer's payload cannot contain. */
 .card-note {
 	font-size: var(--font-size-xs);
 	color: var(--color-text-faint);
 	margin-top: 4px;
+}
+
+.admin-only {
+	color: var(--color-warm-dark);
+	font-style: italic;
+}
+
+/* Inline separator between meta items. `aria-hidden` in the markup, because a
+   screen reader announcing "middle dot" between every field is noise. */
+.dot {
+	color: var(--color-text-faint);
 }
 
 .badge {
@@ -526,9 +597,15 @@ main {
 	background: color-mix(in srgb, var(--color-success) 20%, transparent);
 	color: var(--color-success);
 }
+/* Amber rather than the muted grey the map uses for the same state. The two
+   media want different things: on a polygon over a street basemap, taken turf
+   should recede, and an amber fill there would both shout and sit badly on
+   the tiles. In a text chip beside a turf name it has to be *told apart* from
+   the blue one at a glance, and amber does that where grey reads as disabled
+   chrome. */
 .badge-checked-out {
-	background: var(--color-border-subtle);
-	color: var(--color-text-muted);
+	background: color-mix(in srgb, var(--color-warning) 22%, transparent);
+	color: var(--color-warning);
 }
 
 /* --- The expanded half of a selected row --------------------------------- */
@@ -549,12 +626,18 @@ main {
 	margin: 0 0 14px;
 }
 
+/* The label/value split does the work here, because the values are bare
+   numbers and a region name — without it "Doors left 42" reads as one string.
+   Three things separate them, so it survives at small sizes and in both
+   themes: case, weight, and colour. Faint was too far: these are read while
+   deciding, not skimmed past, so they sit at muted. */
 .detail-stats dt {
 	font-size: var(--font-size-xs);
+	font-weight: 600;
 	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	color: var(--color-text-faint);
-	margin-bottom: 2px;
+	letter-spacing: 0.05em;
+	color: var(--color-text-muted);
+	margin-bottom: 3px;
 }
 
 .detail-stats dd {
@@ -590,6 +673,12 @@ main {
 
 /* --- Footer ------------------------------------------------------------- */
 
+/* --- Demo footer -------------------------------------------------------- */
+
+/* Only rendered in demo mode. It exists because the banner says the data is
+   fake but not what that leaves standing — and the answer ("everything except
+   the data") is the whole reason the walkthrough is worth an organizer's
+   time. */
 .demo-footer {
 	margin-top: 40px;
 	padding-top: 16px;
@@ -606,4 +695,116 @@ main {
 .demo-footer code {
 	font-family: var(--font-mono);
 	font-size: 0.95em;
+}
+
+/* --- ZIP fallback ------------------------------------------------------- */
+
+/* The path that works when geolocation is declined, unavailable, or blocked —
+   and, being a plain GET form, when JavaScript is off entirely. It is not a
+   lesser path: on a phone with location services disabled it is the only one. */
+
+.zip-form {
+	margin-top: 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.zip-form label {
+	font-size: 0.85rem;
+	font-weight: 600;
+	color: var(--color-text-muted);
+}
+
+.zip-row {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.zip-row input {
+	flex: 0 1 8rem;
+	padding: 8px 10px;
+	font: inherit;
+	/* Tabular figures so a five-digit ZIP doesn't jitter as it's typed. */
+	font-variant-numeric: tabular-nums;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface);
+	color: var(--color-text);
+}
+
+.zip-row input:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: 1px;
+}
+
+/* --- Back to top -------------------------------------------------------- */
+
+/* The list is now as long as the chapter, so a volunteer forty rows down needs
+   a way back to the map and the chapter bar that isn't a long drag.
+   Bottom-LEFT deliberately: the right thumb zone on a phone is where browser
+   chrome and the OS back gesture live, and the map's attribution sits bottom-
+   right. */
+
+.to-top {
+	position: fixed;
+	left: 16px;
+	/* Clears the iOS home indicator and Android gesture bar. */
+	bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+	z-index: 20;
+
+	display: grid;
+	place-items: center;
+	/* 48px is the minimum comfortable touch target; this is a one-handed
+	   control used while walking. */
+	width: 48px;
+	height: 48px;
+	border-radius: 50%;
+
+	background: var(--color-action);
+	color: var(--color-action-text);
+	border: none;
+	/* --shadow-popover, not a literal: this floats above the page the way a
+	   popover does, and it has to keep working when the theme flips. */
+	box-shadow: var(--shadow-popover);
+	cursor: pointer;
+
+	/* `visibility` rather than opacity alone: a fully transparent button is
+	   still focusable, so keyboard users would tab to an invisible control at
+	   the top of the page. It is animatable, so the fade still works. */
+	opacity: 0;
+	visibility: hidden;
+	transform: translateY(8px);
+	transition:
+		opacity 0.18s ease,
+		transform 0.18s ease,
+		visibility 0.18s;
+}
+
+.to-top.is-visible {
+	opacity: 1;
+	visibility: visible;
+	transform: none;
+}
+
+.to-top:hover {
+	background: var(--color-action-hover);
+}
+
+.to-top:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: 2px;
+}
+
+.to-top svg {
+	width: 22px;
+	height: 22px;
+	display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.to-top {
+		transition: none;
+	}
 }

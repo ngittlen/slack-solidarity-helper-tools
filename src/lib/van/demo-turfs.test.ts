@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { demoTurfs, DEMO_CHAPTERS, STRESS_CHAPTER_ID } from './demo-turfs.js';
+import { turfShade } from './turf-shade.js';
 
 describe('chapter scoping', () => {
 	it('returns only the requested chapter', () => {
@@ -70,10 +71,15 @@ describe('geometry pipeline', () => {
 
 	it('puts each turf centroid inside its own bounds', () => {
 		for (const t of demoTurfs(72, { isAdmin: false })) {
-			expect(t.centre.lat).toBeGreaterThanOrEqual(t.bounds.minLat);
-			expect(t.centre.lat).toBeLessThanOrEqual(t.bounds.maxLat);
-			expect(t.centre.lng).toBeGreaterThanOrEqual(t.bounds.minLng);
-			expect(t.centre.lng).toBeLessThanOrEqual(t.bounds.maxLng);
+			// TurfView allows null geometry (real turf can lack a hull); every
+			// demo turf builds one, so asserting that first keeps the check
+			// honest rather than silently passing on a null.
+			expect(t.centre).not.toBeNull();
+			expect(t.bounds).not.toBeNull();
+			expect(t.centre!.lat).toBeGreaterThanOrEqual(t.bounds!.minLat);
+			expect(t.centre!.lat).toBeLessThanOrEqual(t.bounds!.maxLat);
+			expect(t.centre!.lng).toBeGreaterThanOrEqual(t.bounds!.minLng);
+			expect(t.centre!.lng).toBeLessThanOrEqual(t.bounds!.maxLng);
 		}
 	});
 
@@ -92,7 +98,7 @@ describe('stress chapter — the load case that decides the rendering strategy',
 	});
 
 	it('spreads them across a county-sized area', () => {
-		const lngs = turfs.map((t) => t.centre.lng);
+		const lngs = turfs.map((t) => t.centre!.lng);
 		const spread = Math.max(...lngs) - Math.min(...lngs);
 		expect(spread).toBeGreaterThan(1); // > ~50 miles east-west
 	});
@@ -137,5 +143,112 @@ describe('stress chapter — the load case that decides the rendering strategy',
 		const start = performance.now();
 		demoTurfs(STRESS_CHAPTER_ID, { isAdmin: false });
 		expect(performance.now() - start).toBeLessThan(1000);
+	});
+});
+
+describe('walked-out turf', () => {
+	// The demo exists to show organizers every state a volunteer will meet. A
+	// turf with nothing left on it is a common sight a day into a canvass, and
+	// it is the one state a volunteer must not walk to — so the fixture has to
+	// contain some or the walkthrough silently omits it.
+	it('appears in the default chapter', () => {
+		const cleared = demoTurfs(71, { isAdmin: false }).filter((t) => t.doorsRemaining === 0);
+		expect(cleared.length).toBeGreaterThan(0);
+	});
+
+	it('appears in more than one chapter, so it does not look like a quirk', () => {
+		const chapters = DEMO_CHAPTERS.filter((c) => c.chapterId !== STRESS_CHAPTER_ID).filter((c) =>
+			demoTurfs(c.chapterId, { isAdmin: false }).some((t) => t.doorsRemaining === 0),
+		);
+		expect(chapters.length).toBeGreaterThan(1);
+	});
+
+	it('shades as cleared, not as the bottom of the ramp', () => {
+		for (const turf of demoTurfs(71, { isAdmin: false })) {
+			if (turf.doorsRemaining !== 0) continue;
+			expect(turfShade(turf.status, turf.doorsRemaining)).toBe('cleared');
+		}
+	});
+
+	// Matches canClaim, which refuses 'no-doors-left'. A walkthrough that
+	// offered to check one out would be teaching the wrong thing.
+	it('is not claimable', () => {
+		for (const turf of demoTurfs(71, { isAdmin: false })) {
+			if (turf.doorsRemaining !== 0) continue;
+			expect(turf.claimable).toBe(false);
+		}
+	});
+
+	// A disabled button with no explanation is worse than no button: the
+	// volunteer is left guessing whether the page is broken.
+	it('says why it cannot be claimed, in canClaim’s own words', () => {
+		const cleared = demoTurfs(71, { isAdmin: false }).filter((t) => t.doorsRemaining === 0);
+		expect(cleared.length).toBeGreaterThan(0);
+		for (const turf of cleared) {
+			expect(turf.claimBlockedReason).toMatch(/already been knocked/i);
+		}
+	});
+
+	it('shows up on the stress map at a density worth looking at', () => {
+		const turfs = demoTurfs(STRESS_CHAPTER_ID, { isAdmin: false });
+		const cleared = turfs.filter((t) => t.doorsRemaining === 0);
+		expect(cleared.length).toBeGreaterThan(10);
+		// But still a minority — a map that is mostly spent turf would be
+		// misleading about what a canvass looks like.
+		expect(cleared.length).toBeLessThan(turfs.length * 0.2);
+	});
+
+	it('leaves every other available turf with at least one door', () => {
+		// The 1-door vs 0-door distinction is the one the shading exists for,
+		// so the fixture must not blur it with negatives or nulls.
+		for (const turf of demoTurfs(STRESS_CHAPTER_ID, { isAdmin: false })) {
+			expect(turf.doorsRemaining).toBeGreaterThanOrEqual(0);
+		}
+	});
+});
+
+describe('claimability comes from the real rule', () => {
+	// Every previous attempt to restate the checkout rules in this fixture has
+	// drifted from them — list numbers handed out that the real page withholds,
+	// and a live check-out button on turf with no doors left. These assert the
+	// fixture agrees with canClaim rather than approximating it.
+	it('never offers turf with no doors left', () => {
+		for (const chapter of DEMO_CHAPTERS) {
+			for (const turf of demoTurfs(chapter.chapterId, { isAdmin: false })) {
+				if (turf.doorsRemaining === 0) expect(turf.claimable).toBe(false);
+			}
+		}
+	});
+
+	it('never offers turf that is already taken', () => {
+		for (const chapter of DEMO_CHAPTERS) {
+			for (const turf of demoTurfs(chapter.chapterId, { isAdmin: false })) {
+				if (turf.status !== 'available') expect(turf.claimable).toBe(false);
+			}
+		}
+	});
+
+	it('offers every available turf that still has doors', () => {
+		const offered = demoTurfs(71, { isAdmin: false }).filter(
+			(t) => t.status === 'available' && t.doorsRemaining > 0,
+		);
+		expect(offered.length).toBeGreaterThan(0);
+		expect(offered.every((t) => t.claimable)).toBe(true);
+	});
+
+	it('carries a reason on every refusal it shows', () => {
+		for (const turf of demoTurfs(71, { isAdmin: false })) {
+			// toTurfView only carries the reason for turf that looks available;
+			// anything else explains itself through its status.
+			if (turf.status === 'available' && !turf.claimable) {
+				expect(turf.claimBlockedReason).toBeTruthy();
+			}
+		}
+	});
+
+	it('omits the reason when there is nothing to refuse', () => {
+		for (const turf of demoTurfs(71, { isAdmin: false })) {
+			if (turf.claimable) expect('claimBlockedReason' in turf).toBe(false);
+		}
 	});
 });

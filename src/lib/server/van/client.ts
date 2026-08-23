@@ -1,0 +1,304 @@
+// HTTP client for the NGP VAN v4 API.
+//
+// Auth is HTTP Basic with an unusual password: `{apiKey}|{databaseMode}`,
+// where mode 0 is "My Voters" and 1 is "My Campaign". Getting the mode wrong
+// does not fail loudly — it authenticates fine and returns a different, mostly
+// empty database — so van-env.ts treats it as required rather than defaulted.
+//
+// Same import discipline as door-knock/openfield/client.ts and solidarity.ts:
+// no $env or $lib/server imports, config and fetch injected, so the whole file
+// is testable without a network and reusable by scripts/van-check.ts running
+// outside the Vite bundle.
+//
+// Two deliberate conservatisms, both from plan.md Story 1.3: VAN publishes no
+// rate limit, so we cap concurrency at 2 across the whole client and back off
+// hard on 429/5xx. A canvass launch is the wrong moment to discover a limit by
+// hitting it.
+
+// Relative, not `$lib/...`: scripts/van-check.ts runs this file under tsx,
+// outside the Vite bundle, where the alias does not resolve.
+import { errMessage } from '../../err-message.js';
+import type {
+	VanExportJob,
+	VanExportJobType,
+	VanFolder,
+	VanMapRegion,
+	VanMinivanExport,
+	VanPage,
+	VanPrintedList,
+	VanSavedList,
+} from './types.js';
+
+export const VAN_BASE_URL = 'https://api.securevan.com/v4';
+
+/** 0 = My Voters, 1 = My Campaign. */
+export type VanDatabaseMode = 0 | 1;
+
+export interface VanConfig {
+	/** The Application Name EveryAction issued with the key. This is the Basic
+	 *  auth *username*, not a display string. */
+	appName: string;
+	apiKey: string;
+	databaseMode: VanDatabaseMode;
+	/** Overridable for tests and for any future sandbox host. */
+	baseUrl?: string;
+}
+
+/** An error from VAN, carrying the HTTP status and any codes from the standard
+ *  `{errors: [{code, text}]}` envelope.
+ *
+ *  Modelled on MobilizeError / describeFailure in the migrator: callers care
+ *  about the distinction between "wrong key" (401), "key lacks this tier"
+ *  (403), and "VAN is having a bad day" (5xx), and a bare Error makes each of
+ *  those look like the others at 3am. */
+export class VanError extends Error {
+	readonly status: number;
+	readonly codes: string[];
+	readonly path: string;
+
+	constructor(path: string, status: number, codes: string[], text: string) {
+		super(`VAN ${path} returned ${status}${text ? `: ${text}` : ''}`);
+		this.name = 'VanError';
+		this.status = status;
+		this.codes = codes;
+		this.path = path;
+	}
+
+	/** True for the two statuses that mean "this will never work as configured"
+	 *  — a bad key or a tier the key was not granted. Callers surface these to
+	 *  a human instead of retrying tonight. */
+	get isAuthFailure(): boolean {
+		return this.status === 401 || this.status === 403;
+	}
+}
+
+type FetchFn = typeof fetch;
+
+// Retry budget per request. VAN publishes no limit, so these are guesses on
+// the safe side: ~1s, 2s, 4s, 8s, capped by Retry-After when VAN sends one.
+const MAX_ATTEMPTS = 5;
+const BASE_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30_000;
+// Concurrency across the whole client, not per call site.
+const MAX_CONCURRENCY = 2;
+// Safety cap on a paginated walk. VAN pages at 50-200 depending on endpoint,
+// so this is far above any real folder while still bounding a server that
+// hands back a self-referencing nextPageLink.
+const MAX_PAGES = 200;
+
+export interface VanClient {
+	/** Every folder the key can see. */
+	folders(): Promise<VanFolder[]>;
+	/** Map regions in a folder, each with its routes. */
+	mapRegions(folderId: number): Promise<VanMapRegion[]>;
+	/** Printed lists, optionally scoped to folders. Cross-check and backfill
+	 *  for `mapRoutes[].printedList.number` (plan.md Story 2.3). */
+	printedLists(folderIds?: number[]): Promise<VanPrintedList[]>;
+	savedLists(folderId?: number): Promise<VanSavedList[]>;
+	/** MiniVAN exports with canvassers expanded — evidence of turf assigned by
+	 *  hand outside this app (plan.md Story 8.1). Tier 3. */
+	minivanExports(): Promise<VanMinivanExport[]>;
+	/** Ask VAN to re-cut a region against current data. Asynchronous on VAN's
+	 *  side: counts must be re-read later, never in the same request. */
+	refreshMapRegion(folderId: number, mapRegionId?: number): Promise<void>;
+	/** Export job types this key actually has. Ids are per-developer, so the
+	 *  `101` in VAN's docs is an example and hardcoding it fails. */
+	exportJobTypes(): Promise<VanExportJobType[]>;
+	createExportJob(input: {
+		savedListId: number;
+		exportJobTypeId: number;
+		webhookUrl?: string;
+	}): Promise<VanExportJob>;
+	exportJob(exportJobId: number): Promise<VanExportJob>;
+	/** Escape hatch for one-off reads (scripts/van-check.ts). */
+	get<T>(path: string): Promise<T>;
+}
+
+function authHeader(config: VanConfig): string {
+	const password = `${config.apiKey}|${config.databaseMode}`;
+	return `Basic ${Buffer.from(`${config.appName}:${password}`).toString('base64')}`;
+}
+
+/** Codes and text out of VAN's `{errors: [...]}` envelope. Never throws — a
+ *  non-JSON error body (an HTML 502 from a proxy) still has to produce a
+ *  usable message. */
+function parseErrorBody(body: string): { codes: string[]; text: string } {
+	try {
+		const parsed = JSON.parse(body) as { errors?: Array<{ code?: string; text?: string }> };
+		const errors = parsed.errors ?? [];
+		if (errors.length > 0) {
+			return {
+				codes: errors.map((e) => e.code ?? '').filter(Boolean),
+				text: errors
+					.map((e) => e.text ?? e.code ?? '')
+					.filter(Boolean)
+					.join('; '),
+			};
+		}
+	} catch {
+		// fall through to the raw body
+	}
+	return { codes: [], text: body.slice(0, 300) };
+}
+
+function backoffMs(attempt: number, retryAfter: string | null): number {
+	const parsed = parseInt(retryAfter ?? '', 10);
+	if (Number.isFinite(parsed) && parsed > 0) {
+		return Math.min(parsed * 1000, MAX_BACKOFF_MS);
+	}
+	return Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS);
+}
+
+export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): VanClient {
+	const baseUrl = (config.baseUrl ?? VAN_BASE_URL).replace(/\/+$/, '');
+	const headers = {
+		Authorization: authHeader(config),
+		Accept: 'application/json',
+	};
+
+	// Simple FIFO semaphore. Every request — paginated walks included — passes
+	// through here, so a caller that fans out over 200 turfs still only has two
+	// requests in flight.
+	let active = 0;
+	const waiting: Array<() => void> = [];
+
+	async function withSlot<T>(run: () => Promise<T>): Promise<T> {
+		if (active >= MAX_CONCURRENCY) {
+			await new Promise<void>((resolve) => waiting.push(resolve));
+		}
+		active++;
+		try {
+			return await run();
+		} finally {
+			active--;
+			waiting.shift()?.();
+		}
+	}
+
+	/** One request with retry on 429 and 5xx. 4xx other than 429 throws
+	 *  immediately — a 403 means the key lacks the tier, and retrying it four
+	 *  more times just delays the error a human needs to see. */
+	async function request(path: string, init: RequestInit = {}): Promise<Response> {
+		const url = path.startsWith('http') ? path : `${baseUrl}${path}`;
+		return withSlot(async () => {
+			let lastError: unknown = null;
+			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+				const isLast = attempt === MAX_ATTEMPTS - 1;
+				let res: Response;
+				try {
+					res = await fetchFn(url, { ...init, headers: { ...headers, ...init.headers } });
+				} catch (err) {
+					// Network-level failure (DNS, reset, timeout). Retryable.
+					lastError = err;
+					if (!isLast) await new Promise((r) => setTimeout(r, backoffMs(attempt, null)));
+					continue;
+				}
+				if (res.ok) return res;
+				if (res.status === 429 || res.status >= 500) {
+					const body = await res.text().catch(() => '');
+					lastError = new VanError(
+						path,
+						res.status,
+						parseErrorBody(body).codes,
+						body.slice(0, 300),
+					);
+					if (!isLast) {
+						const wait = backoffMs(attempt, res.headers.get('Retry-After'));
+						console.warn(`[van] ${path} ${res.status} — retrying in ${Math.round(wait / 1000)}s`);
+						await new Promise((r) => setTimeout(r, wait));
+					}
+					continue;
+				}
+				const body = await res.text().catch(() => '');
+				const { codes, text } = parseErrorBody(body);
+				throw new VanError(path, res.status, codes, text);
+			}
+			if (lastError instanceof VanError) throw lastError;
+			throw new VanError(path, 0, [], `request failed: ${errMessage(lastError)}`);
+		});
+	}
+
+	async function getJson<T>(path: string): Promise<T> {
+		const res = await request(path);
+		const body = await res.text();
+		if (!body.trim()) return undefined as T;
+		try {
+			return JSON.parse(body) as T;
+		} catch (err) {
+			throw new VanError(path, res.status, [], `non-JSON response: ${errMessage(err)}`);
+		}
+	}
+
+	/** Walk `{items, nextPageLink}` pages. `nextPageLink` is an absolute URL,
+	 *  so it is passed through `request` unchanged. */
+	async function paginate<T>(path: string): Promise<T[]> {
+		const all: T[] = [];
+		// Cycle guard. Comparing each link to the previous one is not enough —
+		// the first `next` is a relative path while `nextPageLink` is absolute,
+		// so a server pointing at itself would slip through the first check and
+		// only stop a page later. Resolving before comparing also catches
+		// longer cycles (A → B → A) that a one-step check never would.
+		const visited = new Set<string>();
+		let next: string | null = path;
+		for (let page = 0; page < MAX_PAGES && next; page++) {
+			const absolute = next.startsWith('http') ? next : `${baseUrl}${next}`;
+			if (visited.has(absolute)) break;
+			visited.add(absolute);
+			const body: VanPage<T> = await getJson<VanPage<T>>(next);
+			all.push(...(body?.items ?? []));
+			next = body?.nextPageLink ?? null;
+		}
+		return all;
+	}
+
+	function query(params: Record<string, string | number | undefined>): string {
+		const search = new URLSearchParams();
+		for (const [key, value] of Object.entries(params)) {
+			if (value !== undefined && value !== '') search.set(key, String(value));
+		}
+		const qs = search.toString();
+		return qs ? `?${qs}` : '';
+	}
+
+	return {
+		folders: () => paginate<VanFolder>('/folders'),
+
+		mapRegions: (folderId) => paginate<VanMapRegion>(`/folders/${folderId}/mapRegions`),
+
+		printedLists: (folderIds) =>
+			paginate<VanPrintedList>(
+				`/printedLists${query({ folderIds: folderIds?.join(','), $top: 200 })}`,
+			),
+
+		savedLists: (folderId) => paginate<VanSavedList>(`/savedLists${query({ folderId })}`),
+
+		minivanExports: () => paginate<VanMinivanExport>('/minivanExports?$expand=canvassers'),
+
+		async refreshMapRegion(folderId, mapRegionId) {
+			const path =
+				mapRegionId === undefined
+					? `/folders/${folderId}/mapRegions/refresh`
+					: `/folders/${folderId}/mapRegions/${mapRegionId}/refresh`;
+			await request(path, { method: 'POST' });
+		},
+
+		exportJobTypes: () => paginate<VanExportJobType>('/exportJobTypes'),
+
+		async createExportJob({ savedListId, exportJobTypeId, webhookUrl }) {
+			const res = await request('/exportJobs', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					savedListId,
+					type: exportJobTypeId,
+					...(webhookUrl ? { webhookUrl } : {}),
+				}),
+			});
+			return (await res.json()) as VanExportJob;
+		},
+
+		exportJob: (exportJobId) => getJson<VanExportJob>(`/exportJobs/${exportJobId}`),
+
+		get: <T>(path: string) => getJson<T>(path),
+	};
+}

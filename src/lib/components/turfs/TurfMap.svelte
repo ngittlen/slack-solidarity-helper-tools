@@ -39,19 +39,43 @@
 		MIN_ZOOM,
 		TILE_ATTRIBUTION,
 		TILE_SIZE,
+		TILE_URL_TEMPLATE,
 		tileUrl,
 	} from '$lib/van/tiles.js';
 	import { statusLabel, type VolunteerStatus } from '$lib/van/turf-status.js';
-	import type { DemoTurf } from './demo-turfs.js';
+	import { shadeLabel, turfShade } from '$lib/van/turf-shade.js';
+	import type { MappableTurf } from '$lib/van/turf-view.js';
 
 	interface Props {
-		turfs: DemoTurf[];
+		/** Only turf with geometry — filter with `mappableTurfs()`. Turf without
+		 *  a hull or centroid is real and claimable, it just cannot be drawn, so
+		 *  the list view carries it instead of this component inventing a
+		 *  location for it. */
+		turfs: MappableTurf[];
 		selectedId: number | null;
-		location: LatLng;
+		/** Where the volunteer is. Null when geolocation was declined or is
+		 *  unavailable — the map still works, it just frames all the turf
+		 *  instead of the nearest few, and draws no "you" marker. Declining
+		 *  location must not cost you the map. */
+		location: LatLng | null;
 		onselect: (mapRouteId: number) => void;
+		/** Basemap source. Passed in rather than imported so moving to a keyed
+		 *  account is a secret to set, not a deploy (plan.md 6.3). */
+		tiles?: { urlTemplate: string; attribution: string };
+		/** Fired when the visible area settles after a pan or zoom, so the page
+		 *  can fetch turf outside the rows it was given. Debounced by the
+		 *  caller — a drag emits one of these, not sixty. */
+		onviewport?: (bounds: BoundingBox) => void;
 	}
 
-	let { turfs, selectedId, location, onselect }: Props = $props();
+	let {
+		turfs,
+		selectedId,
+		location,
+		onselect,
+		tiles = { urlTemplate: TILE_URL_TEMPLATE, attribution: TILE_ATTRIBUTION },
+		onviewport,
+	}: Props = $props();
 
 	/** Fallback viewport, used for SSR and for the first frame before the
 	 *  element has been measured. Matches the desktop aspect ratio the
@@ -85,11 +109,23 @@
 	 *  PIN_BELOW_PX because a 20px polygon can be drawn but not labelled. */
 	const LABEL_ABOVE_PX = 34;
 
-	const nearbyBounds = $derived(padBounds(boundsForNearest(location, turfs, NEARBY_COUNT), 0.15));
+	// With a location, open on the volunteer plus the nearest few turfs: a
+	// chapter can run 150 miles across and framing the whole thing shows a
+	// scatter of dots nobody can act on. Without one, all the turf is the only
+	// honest frame.
+	const nearbyBounds = $derived.by((): BoundingBox => {
+		if (location) return padBounds(boundsForNearest(location, turfs, NEARBY_COUNT), 0.15);
+		// Every turf here is mappable by the prop's contract, so unionBounds
+		// only returns null for an empty list — which the parent does not
+		// render this component for. The fallback keeps the type honest without
+		// a cast.
+		const all = unionBounds(turfs.map((t) => t.bounds));
+		return all ? padBounds(all, 0.1) : { minLat: 0, maxLat: 0, minLng: 0, maxLng: 0 };
+	});
 
 	const allBounds = $derived.by(() => {
 		const boxes = turfs.map((t) => t.bounds);
-		boxes.push(boundingBox([location])!);
+		if (location) boxes.push(boundingBox([location])!);
 		return padBounds(unionBounds(boxes) ?? nearbyBounds, 0.1);
 	});
 
@@ -114,7 +150,26 @@
 		moved = true;
 	}
 
-	const me = $derived(view.project(location));
+	const me = $derived(location ? view.project(location) : null);
+
+	// Report the visible area after it settles, so the page can fetch turf
+	// outside the rows it was handed. The debounce lives here rather than in
+	// the caller because the natural trigger is every camera change — a single
+	// drag produces one settled viewport, not one per pointer move — and
+	// $effect's cleanup makes the trailing-edge timer a two-line affair.
+	$effect(() => {
+		if (!onviewport) return;
+		const nw = view.unproject({ x: 0, y: 0 });
+		const se = view.unproject({ x: mapWidth, y: mapHeight });
+		const bounds: BoundingBox = {
+			minLat: se.lat,
+			maxLat: nw.lat,
+			minLng: nw.lng,
+			maxLng: se.lng,
+		};
+		const timer = setTimeout(() => onviewport(bounds), 250);
+		return () => clearTimeout(timer);
+	});
 
 	/** Tiles that failed to load — a dead provider must not leave a white void
 	 *  with no explanation, so the graticule and this flag stay behind them. */
@@ -130,7 +185,7 @@
 	}
 
 	interface RenderedTurf {
-		turf: DemoTurf;
+		turf: MappableTurf;
 		/** Pin/label position — the projected door centroid. */
 		x: number;
 		y: number;
@@ -466,13 +521,26 @@
 	 *  "Show all" is meaningful. Falls out of the cull for free. */
 	const hasOffscreenTurfs = $derived(rendered.length < turfs.length);
 
-	function statusClass(turf: DemoTurf): string {
-		return `turf turf-${turf.status}${turf.mapRouteId === selectedId ? ' is-selected' : ''}`;
+	function statusClass(turf: MappableTurf): string {
+		// Two classes, doing two jobs: the status sets the hue, the shade sets
+		// how strongly it is filled. Keeping them separate is what lets the
+		// door ramp apply to available turf without touching the colours that
+		// mean "yours" and "taken".
+		const shade = turfShade(turf.status, turf.doorsRemaining);
+		const selected = turf.mapRouteId === selectedId ? ' is-selected' : '';
+		return `turf turf-${turf.status} shade-${shade}${selected}`;
 	}
 
-	function ariaLabelFor(turf: DemoTurf): string {
-		const doors = turf.status === 'available' ? `, ${turf.doorsRemaining} doors remaining` : '';
-		return `${turf.name}, ${statusLabel(turf.status as VolunteerStatus)}${doors}`;
+	function ariaLabelFor(turf: MappableTurf): string {
+		// The ramp is invisible to a screen reader, so the band is spoken. The
+		// raw count goes with it — "nearly finished" is the gist, "3 doors
+		// remaining" is the fact someone decides on.
+		const status = turf.status as VolunteerStatus;
+		const doors =
+			status === 'available'
+				? `, ${turf.doorsRemaining} doors remaining, ${shadeLabel(turfShade(status, turf.doorsRemaining))}`
+				: '';
+		return `${turf.name}, ${statusLabel(status)}${doors}`;
 	}
 </script>
 
@@ -523,7 +591,7 @@
 				<g class="basemap">
 					{#each view.tiles as tile (tile.key)}
 						<image
-							href={tileUrl(tile)}
+							href={tileUrl(tile, tiles.urlTemplate)}
 							x={tile.left}
 							y={tile.top}
 							width={TILE_SIZE}
@@ -568,8 +636,10 @@
 				{/each}
 
 				<g class="me" aria-hidden="true">
-					<circle class="me-halo" cx={me.x} cy={me.y} r="16" />
-					<circle class="me-dot" cx={me.x} cy={me.y} r="6" />
+					{#if me}
+						<circle class="me-halo" cx={me.x} cy={me.y} r="16" />
+						<circle class="me-dot" cx={me.x} cy={me.y} r="6" />
+					{/if}
 				</g>
 			</g>
 
@@ -598,7 +668,7 @@
 			{/if}
 		</div>
 
-		<p class="attribution">{TILE_ATTRIBUTION}</p>
+		<p class="attribution">{tiles.attribution}</p>
 
 		{#if tilesBroken}
 			<p class="tile-error" role="status">
@@ -782,9 +852,12 @@
 		user-select: none;
 	}
 
+	/* Hover and selection bump the turf's OWN fill rather than jumping to a
+	   fixed value. A flat 0.8 on hover would erase the door ramp exactly when
+	   the volunteer is pointing at the turf they are deciding about. */
 	.turf:hover polygon,
 	.turf:hover circle {
-		fill-opacity: 0.8;
+		fill-opacity: calc(var(--turf-fill) + 0.16);
 	}
 
 	.turf:focus-visible {
@@ -801,32 +874,81 @@
 	.turf.is-selected circle {
 		stroke: var(--color-near-black);
 		stroke-width: 4;
-		fill-opacity: 0.85;
+		fill-opacity: calc(var(--turf-fill) + 0.2);
 	}
 
-	/* Available turf is the only thing a volunteer can act on, so it is the only
-	   saturated colour; taken turf recedes into the map. Opacities run higher
-	   than they would on a blank background — there are streets underneath now,
-	   and a 0.3 fill over a basemap reads as noise. */
+	/* Hue answers "can I take this?"; fill answers "how much is left in it?".
+	   Available turf is the only thing a volunteer can act on, so it is the only
+	   colour that ramps; taken turf recedes into the map at a flat weight.
+	   Opacities run higher than they would on a blank background — there are
+	   streets underneath now, and a 0.3 fill over a basemap reads as noise. */
+	.turf {
+		/* Overridden by the shade classes below. The default is the middle of
+		   the ramp, so a turf whose shade class somehow went missing looks
+		   ordinary rather than invisible. */
+		--turf-fill: 0.46;
+	}
+
+	.turf polygon,
+	.turf circle {
+		fill-opacity: var(--turf-fill);
+	}
+
 	.turf-available polygon,
 	.turf-available circle {
 		fill: var(--color-blue);
-		fill-opacity: 0.62;
 		stroke: var(--color-navy-mid);
 	}
 
 	.turf-held-by-you polygon,
 	.turf-held-by-you circle {
 		fill: var(--color-success);
-		fill-opacity: 0.65;
 		stroke: var(--color-success);
 	}
 
 	.turf-checked-out polygon,
 	.turf-checked-out circle {
 		fill: var(--color-warm-dark);
-		fill-opacity: 0.42;
 		stroke: var(--color-warm-dark);
+	}
+
+	/* The door ramp. Four steps, far enough apart to be told apart over a
+	   street basemap — closer spacing looked like one colour with noise. */
+	.shade-full {
+		--turf-fill: 0.7;
+	}
+	.shade-high {
+		--turf-fill: 0.56;
+	}
+	.shade-medium {
+		--turf-fill: 0.42;
+	}
+	.shade-low {
+		--turf-fill: 0.28;
+	}
+
+	/* Flat, deliberately: door count is not actionable on turf someone else is
+	   walking, and ramping it would compete with the hue that says so. */
+	.shade-yours {
+		--turf-fill: 0.65;
+	}
+	.shade-taken {
+		--turf-fill: 0.42;
+	}
+
+	/* Nothing left to knock. Not a paler blue — a different kind of mark, so it
+	   cannot be mistaken for the one-door end of the ramp, which is the
+	   distinction that decides whether a walk over there is worth making. The
+	   dash carries it without relying on colour vision. */
+	.turf.shade-cleared {
+		--turf-fill: 0.1;
+	}
+
+	.shade-cleared polygon,
+	.shade-cleared circle {
+		fill: var(--color-warm-dark);
+		stroke: var(--color-warm-dark);
+		stroke-dasharray: 5 4;
 	}
 
 	.me-dot {
