@@ -135,6 +135,22 @@ describe('reconcileTimeslots', () => {
 		expect(result.orphanCount).toBe(0);
 	});
 
+	it('drops an orphan that has STARTED but not ended', () => {
+		// A long session — a week-long exhibit — is under way for days. Mobilize
+		// calls that shift past and answers 400 "Cannot modify past timeslot" for
+		// the whole PUT, so the boundary is the start, not the end.
+		const result = reconcileTimeslots(
+			plan(),
+			live([
+				{ id: 5001, start: START },
+				{ id: 4000, start: NOW - HOUR, end: NOW + 72 * HOUR },
+			]),
+			NOW,
+		);
+		expect(result.timeslots.map((s) => s.id)).toEqual([5001]);
+		expect(result.orphanCount).toBe(0);
+	});
+
 	it('matches within a minute of tolerance', () => {
 		const result = reconcileTimeslots(plan(), live([{ id: 5001, start: START + 30_000 }]), NOW);
 		expect(result.timeslots[0].id).toBe(5001);
