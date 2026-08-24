@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { POST } from './+server.js';
 import { BLOCK } from '$lib/server/slack-modal.js';
+import {
+	encodeTurfAction,
+	TURF_CLAIM_ACTION_ID,
+	TURF_PAGE_ACTION_ID,
+	TURF_RELEASE_ACTION_ID,
+} from '$lib/server/van/turf-command.js';
 
 const mockViewsOpen = vi.hoisted(() => vi.fn());
 const mockViewsUpdate = vi.hoisted(() => vi.fn());
@@ -13,6 +19,10 @@ const mockLoadSettings = vi.hoisted(() => vi.fn());
 const mockInsertNote = vi.hoisted(() => vi.fn());
 const mockRecordDmOutcome = vi.hoisted(() => vi.fn());
 const mockChannelNameToId = vi.hoisted(() => vi.fn());
+const mockClaimFromSlack = vi.hoisted(() => vi.fn());
+const mockReleaseFromSlack = vi.hoisted(() => vi.fn());
+const mockTurfListMessage = vi.hoisted(() => vi.fn());
+const mockRespondToSlack = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/slack', () => ({
 	slack: {
@@ -28,6 +38,12 @@ vi.mock('$lib/server/member-notes', () => ({
 	recordDmOutcome: mockRecordDmOutcome,
 }));
 vi.mock('$lib/server/slack-channel-names', () => ({ channelNameToId: mockChannelNameToId }));
+vi.mock('$lib/server/van/turf-slack', () => ({
+	claimFromSlack: mockClaimFromSlack,
+	releaseFromSlack: mockReleaseFromSlack,
+	turfListMessage: mockTurfListMessage,
+}));
+vi.mock('$lib/server/slack-response-url', () => ({ respondToSlack: mockRespondToSlack }));
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
@@ -649,5 +665,161 @@ describe('admin tracking channel', () => {
 		await flush();
 
 		expect(await res.json()).toEqual({});
+	});
+});
+
+describe('POST /api/slack/interactivity — turf buttons', () => {
+	const RESPONSE_URL = 'https://hooks.slack.test/response';
+
+	const buttonPress = (actionId: string, value: string, over: Record<string, unknown> = {}) =>
+		signedPayload({
+			type: 'block_actions',
+			user: { id: 'U_VOL' },
+			channel: { id: 'C_WASHTENAW' },
+			response_url: RESPONSE_URL,
+			actions: [{ action_id: actionId, value }],
+			...over,
+		});
+
+	const VALUE = encodeTurfAction({
+		mapRouteId: 100,
+		chapterId: 71,
+		offset: 0,
+		location: { lat: 42.28, lng: -83.74 },
+	});
+
+	beforeEach(() => {
+		mockClaimFromSlack.mockResolvedValue({ text: 'claimed', blocks: [] });
+		mockReleaseFromSlack.mockResolvedValue({ text: 'released', blocks: [] });
+		mockTurfListMessage.mockResolvedValue({ text: 'listed', blocks: [] });
+	});
+
+	// A turf button comes from a message, so payload.view is undefined. Before
+	// this dispatch existed the note-modal guard swallowed it silently.
+	it('reaches the turf handler despite carrying no view', async () => {
+		const res = await call(buttonPress(TURF_CLAIM_ACTION_ID, VALUE));
+		await flush();
+		expect(res.status).toBe(200);
+		expect(mockClaimFromSlack).toHaveBeenCalled();
+	});
+
+	it('claims the turf named in the button value', async () => {
+		await call(buttonPress(TURF_CLAIM_ACTION_ID, VALUE));
+		await flush();
+		expect(mockClaimFromSlack).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				slackUserId: 'U_VOL',
+				mapRouteId: 100,
+				chapterId: 71,
+				location: { lat: 42.28, lng: -83.74 },
+			}),
+		);
+		expect(mockRespondToSlack).toHaveBeenCalledWith(
+			RESPONSE_URL,
+			{ text: 'claimed', blocks: [] },
+			expect.objectContaining({ replaceOriginal: true }),
+		);
+	});
+
+	it('releases the turf named in the button value', async () => {
+		await call(buttonPress(TURF_RELEASE_ACTION_ID, VALUE));
+		await flush();
+		expect(mockReleaseFromSlack).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ mapRouteId: 100 }),
+		);
+	});
+
+	it('pages the list at the offset in the button value', async () => {
+		const value = encodeTurfAction({ chapterId: 71, offset: 5 });
+		await call(buttonPress(TURF_PAGE_ACTION_ID, value));
+		await flush();
+		expect(mockTurfListMessage).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ chapterId: 71, offset: 5 }),
+		);
+		expect(mockClaimFromSlack).not.toHaveBeenCalled();
+	});
+
+	// Replacing rather than appending: three presses of "Show next 5" must not
+	// leave three stale lists to claim from.
+	it('replaces the message in place', async () => {
+		await call(buttonPress(TURF_PAGE_ACTION_ID, encodeTurfAction({ chapterId: 71, offset: 5 })));
+		await flush();
+		expect(mockRespondToSlack).toHaveBeenCalledWith(
+			RESPONSE_URL,
+			expect.anything(),
+			expect.objectContaining({ replaceOriginal: true }),
+		);
+	});
+
+	// The value round-trips through a client, so it is untrusted input.
+	it.each([
+		['malformed', 'not json'],
+		['missing', undefined],
+		['an array', '[1,2,3]'],
+		['chapterless', '{"o":0}'],
+	])('refuses %s button state without acting', async (_label, value) => {
+		await call(buttonPress(TURF_CLAIM_ACTION_ID, value as string));
+		await flush();
+		expect(mockClaimFromSlack).not.toHaveBeenCalled();
+		expect(mockRespondToSlack).toHaveBeenCalledWith(
+			RESPONSE_URL,
+			expect.objectContaining({ text: expect.stringContaining('expired') }),
+			expect.anything(),
+		);
+	});
+
+	// A claim value with no route id would otherwise fall through to the list.
+	it('does not claim without a route id', async () => {
+		await call(buttonPress(TURF_CLAIM_ACTION_ID, encodeTurfAction({ chapterId: 71, offset: 0 })));
+		await flush();
+		expect(mockClaimFromSlack).not.toHaveBeenCalled();
+		expect(mockTurfListMessage).toHaveBeenCalled();
+	});
+
+	it('still requires a valid signature', async () => {
+		const res = await call(
+			signedPayload(
+				{
+					type: 'block_actions',
+					user: { id: 'U_VOL' },
+					response_url: RESPONSE_URL,
+					actions: [{ action_id: TURF_CLAIM_ACTION_ID, value: VALUE }],
+				},
+				{ secret: 'wrong' },
+			),
+		);
+		expect(res.status).toBe(401);
+		expect(mockClaimFromSlack).not.toHaveBeenCalled();
+	});
+
+	it('tells the volunteer when the action fails rather than going quiet', async () => {
+		const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockClaimFromSlack.mockRejectedValue(new Error('turso is down'));
+		await call(buttonPress(TURF_CLAIM_ACTION_ID, VALUE));
+		await flush();
+		expect(mockRespondToSlack).toHaveBeenCalledWith(
+			RESPONSE_URL,
+			expect.objectContaining({ text: expect.stringContaining('did not go through') }),
+			expect.anything(),
+		);
+		error.mockRestore();
+	});
+
+	it('leaves the note modal’s radio toggle alone', async () => {
+		mockLoadSettings.mockResolvedValue({ warningDmMessage: 'x' });
+		await call(
+			signedPayload({
+				type: 'block_actions',
+				user: { id: 'U_ADMIN' },
+				actions: [{ action_id: 'note_kind' }],
+				view: { id: 'V1', callback_id: 'note_modal', hash: 'h', state: { values: {} } },
+			}),
+		);
+		await flush();
+		expect(mockClaimFromSlack).not.toHaveBeenCalled();
+		expect(mockTurfListMessage).not.toHaveBeenCalled();
 	});
 });
