@@ -15,6 +15,7 @@
 	import { extractChannelNames } from '$lib/channel-tokens.js';
 	import { DEFAULT_WELCOME_DM } from '$lib/welcome-dm.js';
 	import { DEFAULT_WARNING_DM, validateWarningTemplate } from '$lib/warning-dm.js';
+	import { DEFAULT_SITE_NAME, SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
 	import {
 		DEFAULT_TICKER_COLUMNS_PER_SECOND,
 		RECOMMENDED_TICKER_RATES,
@@ -40,6 +41,7 @@
 		memberNoteChannelId: string;
 		/** Contact published on events the sync creates in Mobilize ('' when
 		 *  neither /settings nor the MOBILIZE_CONTACT_* env vars set it). */
+		siteName: string;
 		mobilizeContactName: string;
 		mobilizeContactEmail: string;
 		mobilizeContactPhone: string;
@@ -67,6 +69,7 @@
 		growthReportChannelId,
 		mobilizeSyncChannelId,
 		memberNoteChannelId,
+		siteName,
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
@@ -167,6 +170,13 @@
 	// contact on every event create and update, and Solidarity events carry no
 	// contact data of their own, so without one here the sync cannot write at all.
 
+	// Shown after every page's own name in the browser tab, and as the header
+	// title on pages that don't set one of their own.
+	const siteNameSave = createFieldAutosave<string>({
+		initial: siteName,
+		save: (value) => postAppConfig({ siteName: value }),
+	});
+
 	const contactNameSave = createFieldAutosave<string>({
 		initial: mobilizeContactName,
 		save: (value) => postAppConfig({ mobilizeContactName: value }),
@@ -258,6 +268,7 @@
 	const previewTicker = $derived(tickerEntries.length > 0 ? tickerEntries : SAMPLE_TICKER);
 
 	$effect(() => () => {
+		siteNameSave.destroy();
 		alphaSave.destroy();
 		tickerSpeedSave.destroy();
 		countdownLabelSave.destroy();
@@ -380,6 +391,27 @@
 </script>
 
 <div class="app-config-editor">
+	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.siteName}
+		label="Site name"
+		status={siteNameSave.status}
+		error={siteNameSave.error}
+		onRetry={siteNameSave.status === 'error' ? siteNameSave.retry : undefined}
+	>
+		<input
+			class="site-name-input"
+			type="text"
+			maxlength={SITE_NAME_MAX_LENGTH}
+			placeholder={DEFAULT_SITE_NAME}
+			value={siteNameSave.value}
+			oninput={siteNameSave.oninput}
+		/>
+		<p class="site-name-note">
+			Shown after each page's name in the browser tab — "Dashboard — {siteNameSave.value.trim() ||
+				DEFAULT_SITE_NAME}". Leave blank to use "{DEFAULT_SITE_NAME}".
+		</p>
+	</SettingsRow>
+
 	<SettingsRow
 		id={APP_CONFIG_ROW_IDS.trackingChannel}
 		label="Volunteer-help tracking channel"
@@ -754,7 +786,7 @@
 	}
 
 	.app-config-note {
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		font-size: 0.9em;
 		margin: 6px 0 0;
 	}
@@ -765,7 +797,7 @@
 
 	/* Advisory, not an error — an uneven rate still works. */
 	.ticker-speed-warn {
-		color: var(--color-warning, #d3951e);
+		color: var(--color-warning);
 	}
 
 	.ticker-preview {
@@ -786,16 +818,16 @@
 
 	.countdown-field-label {
 		font-size: 0.8em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.countdown-field input {
 		padding: 6px 8px;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
 		font: inherit;
-		color: var(--color-text, inherit);
-		background: var(--color-surface, #fff);
+		color: var(--color-text);
+		background: var(--color-surface);
 	}
 
 	.countdown-field input[type='text'] {
@@ -811,12 +843,12 @@
 
 	.alpha-control input[type='range'] {
 		flex: 1;
-		accent-color: var(--color-gold, #b8860b);
+		accent-color: var(--color-gold);
 	}
 
 	.alpha-end {
 		font-size: 0.8em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		white-space: nowrap;
 	}
 
@@ -828,17 +860,17 @@
 		width: 100%;
 		max-width: 560px;
 		padding: 8px 10px;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
 		font: inherit;
 		line-height: 1.5;
-		color: var(--color-text, inherit);
-		background: var(--color-surface, #fff);
+		color: var(--color-text);
+		background: var(--color-surface);
 		resize: vertical;
 	}
 
 	.welcome-dm-warning {
-		color: var(--color-danger, #c0392b);
+		color: var(--color-error);
 		font-size: 0.9em;
 		margin: 6px 0 0;
 	}
@@ -847,9 +879,9 @@
 		margin-top: 8px;
 		max-width: 560px;
 		padding: 8px 12px;
-		border-left: 3px solid var(--color-gold, #b8860b);
-		background: var(--color-surface-alt, rgba(184, 134, 11, 0.06));
-		border-radius: var(--radius-md, 6px);
+		border-left: 3px solid var(--color-gold);
+		background: var(--color-surface-alt);
+		border-radius: var(--radius-md);
 	}
 
 	.welcome-dm-preview-label {
@@ -857,7 +889,7 @@
 		font-size: 0.75em;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		margin-bottom: 4px;
 	}
 
@@ -877,16 +909,16 @@
 
 	.welcome-dm-test-btn {
 		padding: 6px 12px;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
 		font: inherit;
-		color: var(--color-text, inherit);
-		background: var(--color-surface, #fff);
+		color: var(--color-text);
+		background: var(--color-surface);
 		cursor: pointer;
 	}
 
 	.welcome-dm-test-btn:hover:not(:disabled) {
-		border-color: var(--color-gold, #b8860b);
+		border-color: var(--color-gold);
 	}
 
 	.welcome-dm-test-btn:disabled {
@@ -895,12 +927,31 @@
 	}
 
 	.welcome-dm-test-ok {
-		color: var(--color-success, #2e7d32);
+		color: var(--color-success);
 		font-size: 0.9em;
 	}
 
 	.welcome-dm-test-err {
-		color: var(--color-danger, #c0392b);
+		color: var(--color-error);
 		font-size: 0.9em;
+	}
+
+	.site-name-input {
+		width: 100%;
+		max-width: 340px;
+		padding: 6px 8px;
+		font-family: inherit;
+		font-size: var(--font-size-md);
+		color: var(--color-text);
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+	}
+
+	.site-name-note {
+		margin: 8px 0 0;
+		font-size: var(--font-size-xs);
+		color: var(--color-text-muted);
+		line-height: 1.5;
 	}
 </style>

@@ -33,6 +33,8 @@ import {
 	MOBILIZE_CONTACT_PHONE,
 } from './env.js';
 import { clampTickerColumnsPerSecond } from '../ticker-speed.js';
+import { invalidateThemeCache } from './theme.js';
+import { invalidateSiteNameCache } from './site.js';
 
 export {
 	chapterChannelMap,
@@ -114,6 +116,9 @@ export interface Settings {
 	mobilizeContactEmail: string;
 	mobilizeContactPhone: string;
 	slackGrowthReportRankingAlpha: number | undefined;
+	/** Shown after each page's own name in the browser tab. DB-only with a code
+	 *  default; '' means "use DEFAULT_SITE_NAME". */
+	siteName: string;
 	/** Header countdown. DB-only, no env fallback; '' means "not configured". */
 	countdownLabel: string;
 	/** ISO datetime the countdown ends at; '' means "no countdown". */
@@ -154,11 +159,16 @@ export type AppConfigPatch = Partial<{
 	mobilizeContactEmail: string;
 	mobilizeContactPhone: string;
 	slackGrowthReportRankingAlpha: number;
+	siteName: string;
 	countdownLabel: string;
 	countdownEndAt: string;
 	welcomeDmMessage: string;
 	warningDmMessage: string;
 	doorTickerColumnsPerSecond: number;
+	/** Theme overrides, serialised. One JSON column rather than ~60 colour
+	 *  columns — see the comment on app_config.themeTokens in schema.ts.
+	 *  Validated by themeTokensField before it ever reaches here. */
+	themeTokens: string;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -236,6 +246,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	const mobilizeContactPhone = cfg?.mobilizeContactPhone ?? MOBILIZE_CONTACT_PHONE;
 	const slackGrowthReportRankingAlpha =
 		cfg?.slackGrowthReportRankingAlpha ?? SLACK_GROWTH_REPORT_RANKING_ALPHA;
+	const siteName = cfg?.siteName ?? '';
 	const countdownLabel = cfg?.countdownLabel ?? '';
 	const countdownEndAt = cfg?.countdownEndAt ?? '';
 	const welcomeDmMessage = cfg?.welcomeDmMessage ?? '';
@@ -265,6 +276,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		mobilizeContactEmail,
 		mobilizeContactPhone,
 		slackGrowthReportRankingAlpha,
+		siteName,
 		countdownLabel,
 		countdownEndAt,
 		welcomeDmMessage,
@@ -618,11 +630,13 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'mobilizeContactEmail',
 	'mobilizeContactPhone',
 	'slackGrowthReportRankingAlpha',
+	'siteName',
 	'countdownLabel',
 	'countdownEndAt',
 	'welcomeDmMessage',
 	'warningDmMessage',
 	'doorTickerColumnsPerSecond',
+	'themeTokens',
 ]);
 
 export async function saveAppConfig(
@@ -662,6 +676,11 @@ export async function saveAppConfig(
 	};
 
 	await db.insert(appConfig).values(values).onConflictDoUpdate({ target: appConfig.id, set });
+
+	// A theme write must take effect on the next render, not when the cache TTL
+	// lapses — an admin who saves a colour and sees no change assumes it failed.
+	if ('themeTokens' in definedFields) invalidateThemeCache();
+	if ('siteName' in definedFields) invalidateSiteNameCache();
 
 	const keysSummary = Object.keys(definedFields).join(',');
 	console.log(`[settings] saved app_config patch=${keysSummary} by ${editor.id} (${editor.name})`);

@@ -2,12 +2,17 @@
 	import '../app.css';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { CHART_BAND_STYLE } from '$lib/styles/chart-colors';
 	import UserMenu, { type MenuItem } from '$lib/components/nav/UserMenu.svelte';
+	import ThemeToggle from '$lib/components/nav/ThemeToggle.svelte';
+	import { documentTitle, resolveSiteName } from '$lib/site-name.js';
 
 	let { data, children } = $props();
 
-	const pageTitle = $derived<string>(page.data.pageTitle ?? 'A4M Helper Tools');
+	// The header <h1> shows the page's own name; the browser tab shows
+	// "<page> — <site>". Both come from the same `pageTitle`, set once per route
+	// in its load function, so a route can never disagree with itself.
+	const siteName = $derived(resolveSiteName(data.siteName));
+	const pageTitle = $derived<string>(page.data.pageTitle ?? siteName);
 
 	// Back-to-dashboard arrow on every non-root page (/pending, /settings).
 	const showBackLink = $derived(page.url.pathname !== '/');
@@ -24,7 +29,14 @@
 	);
 </script>
 
-<div class="theme-vars" style={CHART_BAND_STYLE}>
+<!-- One <title> for the whole app. Individual pages used to set their own and
+     drifted: / said "Dashboard" while /pending said "A4M Slack Invite Queue"
+     and three routes set none at all, so the tab showed a URL. -->
+<svelte:head>
+	<title>{documentTitle(page.data.pageTitle, siteName)}</title>
+</svelte:head>
+
+<div class="app-shell">
 	<header class="app-header">
 		<div class="header-left">
 			{#if showBackLink}
@@ -47,6 +59,7 @@
 			<h1>{pageTitle}</h1>
 		</div>
 		<div class="user-info">
+			<ThemeToggle mode={data.themeMode} />
 			<UserMenu items={menuItems} />
 			<span class="user-greeting">
 				Logged in as <span class="user-name">{data.userName}</span>
@@ -61,7 +74,7 @@
 </div>
 
 <style>
-	.theme-vars {
+	.app-shell {
 		display: contents;
 	}
 	.app-header {
@@ -90,7 +103,7 @@
 	.back-link:hover,
 	.back-link:focus-visible {
 		opacity: 1;
-		background: rgba(255, 255, 255, 0.1);
+		background: color-mix(in srgb, var(--color-header-text) 10%, transparent);
 	}
 	.app-header h1 {
 		font-size: 1.1rem;
@@ -100,7 +113,7 @@
 	}
 	.user-info {
 		font-size: var(--font-size-base);
-		color: rgba(251, 240, 228, 0.75);
+		color: color-mix(in srgb, var(--color-header-text) 75%, transparent);
 		display: flex;
 		align-items: center;
 		gap: 14px;
@@ -117,7 +130,7 @@
 	.logout-btn {
 		background: transparent;
 		color: var(--color-header-text);
-		border: 1px solid rgba(251, 240, 228, 0.4);
+		border: 1px solid color-mix(in srgb, var(--color-header-text) 40%, transparent);
 		border-radius: var(--radius-md);
 		padding: 4px 10px;
 		font-size: var(--font-size-sm);
@@ -125,7 +138,7 @@
 		cursor: pointer;
 	}
 	.logout-btn:hover {
-		background: rgba(255, 255, 255, 0.1);
-		border-color: rgba(251, 240, 228, 0.8);
+		background: color-mix(in srgb, var(--color-header-text) 10%, transparent);
+		border-color: color-mix(in srgb, var(--color-header-text) 80%, transparent);
 	}
 </style>

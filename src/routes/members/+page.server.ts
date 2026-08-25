@@ -20,7 +20,7 @@ import {
 } from '$lib/server/member-lookup.js';
 
 export interface MembersPageData {
-	pageTitle: 'Member lookup';
+	pageTitle: 'Volunteer lookup';
 	selectedSlackUserId: string | null;
 	/** Streamed: the shell and the search box render immediately while the
 	 *  Solidarity round trips resolve. */
@@ -81,7 +81,7 @@ export const load: PageServerLoad = ({ locals, url }) => {
 	const selectedSlackUserId = url.searchParams.get('user');
 
 	return {
-		pageTitle: 'Member lookup',
+		pageTitle: 'Volunteer lookup',
 		selectedSlackUserId,
 		// Returned unawaited so SvelteKit streams it.
 		member: selectedSlackUserId ? resolveMember(deps, selectedSlackUserId) : null,

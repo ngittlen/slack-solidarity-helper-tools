@@ -11,6 +11,8 @@ const mockChannelNameToId = vi.hoisted(() => vi.fn());
 // the whole point of the info-command path: it must be the user's, not the bot's.
 const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockWebClientCtor = vi.hoisted(() => vi.fn());
+const mockTurfListMessage = vi.hoisted(() => vi.fn());
+const mockRespondToSlack = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/slack', () => ({ slack: { views: { open: mockViewsOpen } } }));
 vi.mock('$lib/server/settings', () => ({
@@ -27,6 +29,8 @@ vi.mock('@slack/web-api', () => ({
 		}
 	},
 }));
+vi.mock('$lib/server/van/turf-slack', () => ({ turfListMessage: mockTurfListMessage }));
+vi.mock('$lib/server/slack-response-url', () => ({ respondToSlack: mockRespondToSlack }));
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
@@ -75,7 +79,12 @@ beforeEach(() => {
 	mockLoadUserToken.mockResolvedValue({ ok: true, token: 'xoxp-user-token' });
 	mockChannelNameToId.mockResolvedValue(new Map([['phone-bank', 'C_PHONE']]));
 	mockPostMessage.mockResolvedValue({ ok: true });
+	mockTurfListMessage.mockResolvedValue({ text: 'Turf in Washtenaw County', blocks: [] });
 });
+
+/** The /turfs reply is posted after the handler has returned, so tests have
+ *  to let the detached promise settle before asserting on it. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('POST /api/slack/commands — signature', () => {
 	it('rejects a request signed with the wrong secret', async () => {
@@ -328,5 +337,92 @@ describe('POST /api/slack/commands — info commands', () => {
 	it('does not open the note modal', async () => {
 		await infoCall();
 		expect(mockViewsOpen).not.toHaveBeenCalled();
+	});
+});
+
+describe('POST /api/slack/commands — /turfs', () => {
+	const turfs = (fields: Record<string, string> = {}) =>
+		signedCommand({
+			command: '/turfs',
+			user_id: 'U_VOL',
+			channel_id: 'C_WASHTENAW',
+			response_url: 'https://hooks.slack.test/response',
+			...fields,
+		});
+
+	it('acknowledges inside Slack’s three-second budget', async () => {
+		// The real work — a geocode, a cold Fly boot — cannot be relied on to
+		// fit, so the ack goes first and the answer replaces it.
+		const res = await call(turfs());
+		expect(res.status).toBe(200);
+		await expect(res.json()).resolves.toMatchObject({
+			response_type: 'ephemeral',
+			text: expect.stringContaining('Finding turf'),
+		});
+	});
+
+	it('posts the turf list back through response_url, replacing the ack', async () => {
+		await call(turfs());
+		await flush();
+		expect(mockRespondToSlack).toHaveBeenCalledWith(
+			'https://hooks.slack.test/response',
+			{ text: 'Turf in Washtenaw County', blocks: [] },
+			expect.objectContaining({ replaceOriginal: true }),
+		);
+	});
+
+	it('passes the channel and the typed location through', async () => {
+		await call(turfs({ text: '100 N Main St, Ann Arbor MI' }));
+		await flush();
+		expect(mockTurfListMessage).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				slackUserId: 'U_VOL',
+				channelId: 'C_WASHTENAW',
+				argument: '100 N Main St, Ann Arbor MI',
+			}),
+		);
+	});
+
+	// This is the only slash command open to non-admins, and the gates that do
+	// apply live in turf-slack.ts. The route must not add an admin check of its
+	// own, or the feature serves nobody it was built for.
+	it('does not gate on the admin allowlist', async () => {
+		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['U_ADMIN']) });
+		await call(turfs({ user_id: 'U_RANDOM' }));
+		await flush();
+		expect(mockTurfListMessage).toHaveBeenCalled();
+		expect(mockRespondToSlack).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ text: 'Turf in Washtenaw County' }),
+			expect.anything(),
+		);
+	});
+
+	it('never reaches the info-command lookup', async () => {
+		await call(turfs());
+		await flush();
+		expect(mockFindInfoCommand).not.toHaveBeenCalled();
+	});
+
+	it('still requires a valid signature', async () => {
+		const res = await call(
+			signedCommand({ command: '/turfs', user_id: 'U_VOL' }, { secret: 'wrong' }),
+		);
+		expect(res.status).toBe(401);
+		expect(mockTurfListMessage).not.toHaveBeenCalled();
+	});
+
+	it('tells the volunteer something went wrong rather than failing silently', async () => {
+		const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockTurfListMessage.mockRejectedValue(new Error('turso is down'));
+		await call(turfs());
+		await flush();
+		expect(mockRespondToSlack).toHaveBeenCalledWith(
+			'https://hooks.slack.test/response',
+			expect.objectContaining({ text: expect.stringContaining('Could not look up turf') }),
+			expect.objectContaining({ replaceOriginal: true }),
+		);
+		error.mockRestore();
 	});
 });

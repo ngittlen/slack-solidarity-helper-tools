@@ -20,6 +20,8 @@ import { getSlackChannels } from './autocomplete-sources.js';
 import { extractChannelNames } from '../channel-tokens.js';
 import { validateWarningTemplate } from '../warning-dm.js';
 import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '../ticker-speed.js';
+import { parseOverrides } from '$lib/styles/theme-css.js';
+import { SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
 
 export interface FieldContext {
 	slack: WebClient;
@@ -168,6 +170,42 @@ const DM_TEMPLATE_MAX_LENGTH = 3000;
 
 // AppConfigPatch is a Partial, so Required<> recovers the full field set with
 // each value's real type — which is what the table is keyed against.
+/**
+ * The theme override blob.
+ *
+ * Accepts either an object or a JSON string and re-serialises it canonically,
+ * so what lands in the column is always parseable. Validation is delegated to
+ * `parseOverrides`, which is also what the renderer uses — one gate, so a value
+ * that saves is a value that renders.
+ *
+ * Rejections are reported rather than silently dropped: an admin who pastes a
+ * palette with three bad entries should be told which three, not left wondering
+ * why some colours took and others didn't.
+ */
+function themeTokensField(label: string): FieldValidator<string> {
+	return (value) => {
+		let raw: unknown = value;
+		if (typeof raw === 'string') {
+			if (raw.trim() === '') return { ok: true, value: '{}' };
+			try {
+				raw = JSON.parse(raw);
+			} catch {
+				return fail(`${label} must be valid JSON`);
+			}
+		}
+		if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+			return fail(`${label} must be an object of token overrides`);
+		}
+		const { config, rejected } = parseOverrides(raw);
+		if (rejected.length > 0) {
+			return fail(
+				`${label}: unusable ${rejected.length === 1 ? 'entry' : 'entries'} ${rejected.join(', ')}`,
+			);
+		}
+		return { ok: true, value: JSON.stringify(config) };
+	};
+}
+
 type AppConfigFields = Required<AppConfigPatch>;
 
 /**
@@ -202,7 +240,9 @@ export const APP_CONFIG_FIELDS: {
 		MIN_TICKER_COLUMNS_PER_SECOND,
 		MAX_TICKER_COLUMNS_PER_SECOND,
 	),
+	themeTokens: themeTokensField('themeTokens'),
 
+	siteName: boundedTextField('siteName', SITE_NAME_MAX_LENGTH),
 	countdownLabel: boundedTextField('countdownLabel', COUNTDOWN_LABEL_MAX_LENGTH),
 	countdownEndAt: isoDateTimeField('countdownEndAt'),
 

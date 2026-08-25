@@ -186,9 +186,9 @@
 		align-items: center;
 		gap: 4px;
 		padding: 4px;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
-		background: var(--color-bg-surface, #fff);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
 	}
 
 	.mpicker-disabled {
@@ -200,15 +200,15 @@
 		align-items: center;
 		gap: 4px;
 		padding: 2px 4px 2px 8px;
-		background: var(--color-bg-hover, rgba(0, 0, 0, 0.06));
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-sm, 4px);
+		background: var(--color-bg-hover);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
 		font-size: 0.9em;
 	}
 
 	.mpicker-chip-checkbox {
 		margin: 0;
-		accent-color: var(--color-gold, #b8860b);
+		accent-color: var(--color-gold);
 		cursor: pointer;
 	}
 
@@ -222,13 +222,13 @@
 		padding: 0 4px;
 		font: inherit;
 		line-height: 1;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		cursor: pointer;
 	}
 
 	.mpicker-chip-remove:hover:not(:disabled),
 	.mpicker-chip-remove:focus-visible {
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 	}
 
 	.mpicker-chip-locked .mpicker-chip-remove {
@@ -257,10 +257,10 @@
 	}
 
 	:global(.mpicker-content) {
-		background: var(--color-bg-surface, #fff);
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+		background: var(--color-bg-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		box-shadow: var(--shadow-popover);
 		padding: 4px;
 		max-height: 240px;
 		overflow-y: auto;
@@ -270,7 +270,7 @@
 
 	.mpicker-empty {
 		padding: 8px 10px;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		font-style: italic;
 	}
 
@@ -279,17 +279,17 @@
 		align-items: baseline;
 		gap: 6px;
 		padding: 6px 10px;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 		cursor: pointer;
 	}
 
 	:global(.mpicker-item[data-highlighted]) {
-		background: var(--color-bg-hover, rgba(0, 0, 0, 0.05));
+		background: var(--color-bg-hover);
 	}
 
 	:global(.mpicker-item[data-selected='true']) {
 		font-weight: 600;
-		color: var(--color-gold, #b8860b);
+		color: var(--color-gold);
 	}
 
 	.mpicker-item-check {
@@ -304,6 +304,6 @@
 
 	.mpicker-item-sublabel {
 		font-size: 0.85em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 </style>

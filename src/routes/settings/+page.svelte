@@ -12,6 +12,7 @@
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
 	import VanChapterFoldersEditor from '$lib/components/settings/VanChapterFoldersEditor.svelte';
 	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
+	import ThemeEditor from '$lib/components/settings/ThemeEditor.svelte';
 	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
 	import { SECTION_IDS } from '$lib/components/settings/sections.js';
 	import AppConfigEditor from '$lib/components/settings/AppConfigEditor.svelte';
@@ -122,6 +123,7 @@
 			{#if data.slackChannels}
 				<AppConfigEditor
 					channels={data.slackChannels.items}
+					siteName={data.settings.siteName}
 					trackingChannelId={data.settings.slackTrackingChannelId}
 					growthReportChannelId={data.settings.slackGrowthReportChannelId}
 					mobilizeSyncChannelId={data.settings.slackMobilizeSyncChannelId}
@@ -224,6 +226,11 @@
 				/>
 			{/if}
 		</section>
+
+		<section id={SECTION_IDS.theme} data-settings-anchor={SECTION_IDS.theme} tabindex="-1">
+			<h2>Theme</h2>
+			<ThemeEditor initialTokens={data.themeTokens} />
+		</section>
 	</main>
 </div>
 
@@ -234,7 +241,7 @@
 		gap: 16px;
 		margin-bottom: 24px;
 		padding: 12px 0;
-		border-bottom: 1px solid var(--color-border, #ddd);
+		border-bottom: 1px solid var(--color-border);
 	}
 
 	:global(.refresh-link-trigger) {
@@ -246,7 +253,7 @@
 	}
 
 	.refresh-link {
-		color: var(--color-gold, #b8860b);
+		color: var(--color-gold);
 		text-decoration: none;
 		border-bottom: 1px dashed currentColor;
 	}
@@ -258,27 +265,27 @@
 
 	.last-refreshed {
 		font-size: 0.9em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.error {
 		margin: 8px 0 0;
 		padding: 6px 10px;
-		background: rgba(198, 40, 40, 0.08);
-		border-left: 3px solid var(--color-error, #c62828);
-		color: var(--color-error, #c62828);
+		background: color-mix(in srgb, var(--color-error) 8%, transparent);
+		border-left: 3px solid var(--color-error);
+		color: var(--color-error);
 		font-size: 0.9em;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 	}
 
 	:global(.refresh-tooltip) {
-		background: var(--color-bg-surface, #fff);
-		color: var(--color-text, inherit);
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-sm, 4px);
+		background: var(--color-bg-surface);
+		color: var(--color-text);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
 		padding: 6px 10px;
 		font-size: 0.85em;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+		box-shadow: var(--shadow-popover);
 		z-index: 50;
 	}
 </style>

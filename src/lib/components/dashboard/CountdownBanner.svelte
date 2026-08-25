@@ -68,7 +68,7 @@
 		line-height: 1;
 		/* Every line on the board is the same bitmap face; the hierarchy comes
 		   from size and colour, the way it does on a real sign. */
-		font-family: 'Silkscreen', 'Courier New', monospace;
+		font-family: var(--font-led);
 	}
 
 	/* Amber: the board's own voice, shared with the ticker's caption. */
@@ -77,9 +77,9 @@
 		letter-spacing: 0.1em;
 		text-transform: uppercase;
 		text-align: center;
-		color: #ffb02e;
+		color: var(--led-amber);
 		text-shadow:
-			0 0 6px rgba(255, 176, 46, 0.7),
+			0 0 6px color-mix(in srgb, var(--led-amber) 70%, transparent),
 			0 0 18px rgba(255, 140, 20, 0.4);
 	}
 
@@ -89,9 +89,9 @@
 		font-size: calc(var(--glyph-px-clock, 5px) * 10);
 		letter-spacing: 0.02em;
 		white-space: nowrap;
-		color: #ff3b31;
+		color: var(--led-red);
 		text-shadow:
-			0 0 8px rgba(255, 59, 49, 0.85),
+			0 0 8px color-mix(in srgb, var(--led-red) 85%, transparent),
 			0 0 24px rgba(255, 40, 30, 0.45);
 	}
 	/* Whole-pixel glyph size of its own rather than an em fraction of the
@@ -108,15 +108,15 @@
 		line-height: 1.6;
 		text-align: center;
 		max-width: 60ch;
-		color: #8fa9c9;
+		color: var(--led-blue-grey);
 		text-shadow: 0 0 6px rgba(130, 165, 210, 0.45);
 	}
 	/* The doors figure in the counts' green, tying the projection to the
 	   numbers scrolling below it. */
 	.countdown__projection-value {
-		color: #3dff85;
+		color: var(--led-green);
 		text-shadow:
-			0 0 6px rgba(61, 255, 133, 0.85),
-			0 0 16px rgba(61, 255, 133, 0.4);
+			0 0 6px color-mix(in srgb, var(--led-green) 85%, transparent),
+			0 0 16px color-mix(in srgb, var(--led-green) 40%, transparent);
 	}
 </style>

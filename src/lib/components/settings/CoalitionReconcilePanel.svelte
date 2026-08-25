@@ -262,9 +262,9 @@
 	.reconcile-panel {
 		margin-top: 8px;
 		padding: 12px;
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-md, 6px);
-		background: var(--color-bg-surface, #fff);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
 	}
 
 	.reconcile-summary {
@@ -273,7 +273,7 @@
 		gap: 12px;
 		margin: 0 0 4px;
 		font-size: 0.9em;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 	}
 
 	.reconcile-refresh,
@@ -283,7 +283,7 @@
 		padding: 0;
 		font: inherit;
 		font-size: 0.9em;
-		color: var(--color-gold, #b8860b);
+		color: var(--color-gold);
 		cursor: pointer;
 		border-bottom: 1px dashed currentColor;
 	}
@@ -326,32 +326,32 @@
 	}
 
 	.reconcile-email {
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		font-size: 0.85em;
 	}
 
 	.reconcile-row-error {
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 		font-size: 0.85em;
 	}
 
 	.reconcile-muted {
 		margin: 0 0 6px;
-		color: var(--color-text-muted, #888);
+		color: var(--color-text-muted);
 		font-size: 0.9em;
 	}
 
 	.reconcile-error {
 		margin: 0 0 6px;
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 		font-size: 0.9em;
 	}
 
 	.reconcile-apply {
-		background: var(--color-gold, #b8860b);
-		color: #fff;
+		background: var(--color-gold);
+		color: var(--color-action-text);
 		border: none;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 		padding: 5px 12px;
 		font: inherit;
 		font-size: 0.9em;

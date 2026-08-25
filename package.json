@@ -17,7 +17,9 @@
 		"prepare": "git config core.hooksPath .githooks || true && svelte-kit sync",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
-		"db:seed": "node bin/seed-dev-db.js"
+		"db:seed": "node bin/seed-dev-db.js",
+		"van:check": "tsx --env-file=.env.local scripts/van-check.ts",
+		"van:sync": "tsx --env-file=.env.local scripts/van-sync-once.ts"
 	},
 	"license": "MIT",
 	"dependencies": {

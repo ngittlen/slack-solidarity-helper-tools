@@ -128,7 +128,13 @@
 		inset: 0;
 		pointer-events: none;
 		z-index: 2;
-		background: linear-gradient(90deg, #07070a 0%, transparent 6%, transparent 94%, #07070a 100%);
+		background: linear-gradient(
+			90deg,
+			var(--led-panel) 0%,
+			transparent 6%,
+			transparent 94%,
+			var(--led-panel) 100%
+		);
 	}
 
 	/* Static caption line, the way a real board holds a fixed label above the
@@ -139,7 +145,7 @@
 	.ticker__header {
 		margin: 0 0 8px;
 		text-align: center;
-		font-family: 'Silkscreen', 'Courier New', monospace;
+		font-family: var(--font-led);
 		font-size: calc(var(--glyph-px, 3px) * 10 * 0.75);
 		letter-spacing: 0.12em;
 		text-transform: uppercase;
@@ -147,9 +153,9 @@
 		   amber the day's leader burns below — shared on purpose, so the eye
 		   reads caption and leader as the board's own voice while the ordinary
 		   entries stay white-on-green. */
-		color: #ffb02e;
+		color: var(--led-amber);
 		text-shadow:
-			0 0 6px rgba(255, 176, 46, 0.6),
+			0 0 6px color-mix(in srgb, var(--led-amber) 60%, transparent),
 			0 0 16px rgba(255, 140, 20, 0.35);
 	}
 
@@ -194,7 +200,7 @@
 		white-space: nowrap;
 		/* Blocky bitmap glyphs survive being chopped into dots; a smooth
 		   typeface would come out as mush at this pitch. */
-		font-family: 'Silkscreen', 'Courier New', monospace;
+		font-family: var(--font-led);
 	}
 
 	.cell__name {
@@ -202,7 +208,7 @@
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
-		color: #eaf2ff;
+		color: var(--led-white);
 		text-shadow:
 			0 0 4px rgba(190, 220, 255, 0.85),
 			0 0 12px rgba(120, 170, 255, 0.5);
@@ -221,43 +227,43 @@
 	}
 	/* Green for the counts, matching the up-ticks on a stock board. */
 	.cell__count {
-		color: #3dff85;
+		color: var(--led-green);
 		text-shadow:
-			0 0 5px rgba(61, 255, 133, 0.9),
-			0 0 16px rgba(61, 255, 133, 0.45);
+			0 0 5px color-mix(in srgb, var(--led-green) 90%, transparent),
+			0 0 16px color-mix(in srgb, var(--led-green) 45%, transparent);
 	}
 	/* Same green, burning lower — reads as the number's unit, not as a value. */
 	.cell__unit {
 		margin-left: calc(var(--led-pitch, 3px) * 2);
-		color: #1f8a4a;
+		color: var(--led-green-dim);
 		text-shadow: 0 0 4px rgba(45, 190, 100, 0.4);
 	}
 	/* The region in the names' cool white, so the eye separates "how many"
 	   from "where" without a separator or a third row. */
 	.cell__region {
 		margin-left: calc(var(--led-pitch, 3px) * 3);
-		color: #b9cfe8;
+		color: var(--led-white-dim);
 		text-shadow: 0 0 5px rgba(150, 190, 240, 0.5);
 	}
 
 	.cell--lead .cell__count {
-		color: #ffb02e;
+		color: var(--led-amber);
 		text-shadow:
-			0 0 6px rgba(255, 176, 46, 0.95),
+			0 0 6px color-mix(in srgb, var(--led-amber) 95%, transparent),
 			0 0 18px rgba(255, 140, 20, 0.5);
 	}
 	.cell--lead .cell__unit {
-		color: #9c6a15;
+		color: var(--led-amber-dim);
 		text-shadow: 0 0 4px rgba(200, 140, 40, 0.4);
 	}
 	.cell--lead .cell__region {
-		color: #ffd98a;
+		color: var(--led-amber-lead);
 		text-shadow: 0 0 5px rgba(255, 200, 110, 0.6);
 	}
 
 	/* Day's leader burns amber, the way a board highlights the mover. */
 	.cell--lead .cell__name {
-		color: #ffd98a;
+		color: var(--led-amber-lead);
 		text-shadow:
 			0 0 4px rgba(255, 200, 110, 0.9),
 			0 0 14px rgba(255, 170, 60, 0.55);

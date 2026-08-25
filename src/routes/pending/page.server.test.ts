@@ -23,7 +23,7 @@ describe('pending +page.server load', () => {
 		const session = { slackUserId: 'U1', slackUserName: 'Admin', isAdmin: true };
 		expect(load(makeEvent(session) as never)).toEqual({
 			userName: 'Admin',
-			pageTitle: 'Pending Applicants',
+			pageTitle: 'Slack help list',
 		});
 	});
 });

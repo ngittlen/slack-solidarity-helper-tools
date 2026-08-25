@@ -40,13 +40,15 @@ describe('the table', () => {
 				'mobilizeContactPhone',
 				'slackGrowthReportRankingAlpha',
 				'doorTickerColumnsPerSecond',
+				'siteName',
 				'countdownLabel',
 				'countdownEndAt',
 				'welcomeDmMessage',
 				'warningDmMessage',
+				'themeTokens',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(13);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(15);
 	});
 });
 
@@ -261,5 +263,58 @@ describe('DM template fields', () => {
 
 	it('does not apply the {{nth}} rule to the welcome template', async () => {
 		expect(await run('welcomeDmMessage', 'Welcome, no tokens here')).toMatchObject({ ok: true });
+	});
+});
+
+describe('themeTokensField', () => {
+	const run = (v: unknown) => APP_CONFIG_FIELDS.themeTokens(v, {} as never);
+
+	it('accepts an object of valid overrides and canonicalises it', async () => {
+		// Canonical form is the layered {brand, tokens} shape, and a legacy flat
+		// blob is read into the tokens layer rather than rejected.
+		const r = await run({ 'color-bg': { light: '#ABCDEF' } });
+		expect(r).toEqual({
+			ok: true,
+			value: '{"brand":{},"tokens":{"color-bg":{"light":"#abcdef"}}}',
+		});
+	});
+
+	it('accepts and canonicalises a brand-palette override', async () => {
+		const r = await run({ brand: { primary: '#001122' }, tokens: {} });
+		expect(r).toEqual({ ok: true, value: '{"brand":{"primary":"#001122"},"tokens":{}}' });
+	});
+
+	it('rejects an unknown brand colour by name', async () => {
+		const r = await run({ brand: { chartreuse: '#7fff00' } });
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.error).toContain('brand.chartreuse');
+	});
+
+	it('accepts a JSON string', async () => {
+		const r = await run('{"color-bg":{"dark":"#123456"}}');
+		expect(r.ok).toBe(true);
+	});
+
+	it('treats an empty string as "no overrides"', async () => {
+		expect(await run('')).toEqual({ ok: true, value: '{}' });
+	});
+
+	// The injection guard: nothing free-text can reach the emitted <style>.
+	it('rejects a non-colour token and names it', async () => {
+		const r = await run({ 'shadow-card': { light: '0 0 0 red' } });
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.error).toContain('shadow-card');
+	});
+
+	it('rejects a malformed colour and names it', async () => {
+		const r = await run({ 'color-bg': { light: '#fff;}</style>' } });
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.error).toContain('color-bg.light');
+	});
+
+	it('rejects unparseable JSON and non-objects', async () => {
+		expect((await run('{not json')).ok).toBe(false);
+		expect((await run(['#fff'])).ok).toBe(false);
+		expect((await run(42)).ok).toBe(false);
 	});
 });

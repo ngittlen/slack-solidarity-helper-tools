@@ -272,7 +272,7 @@
 		width: 100%;
 		background: transparent;
 		border: none;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 		padding: 6px;
 		font: inherit;
 		font-size: var(--font-size-sm);
@@ -281,7 +281,7 @@
 	}
 
 	.settings-nav-toggle:hover {
-		background: rgba(18, 28, 80, 0.06);
+		background: color-mix(in srgb, var(--color-text) 6%, transparent);
 	}
 
 	.settings-nav-toggle:focus-visible {
@@ -310,7 +310,7 @@
 		flex: 1 1 auto;
 		display: block;
 		padding: 5px 8px;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 		color: var(--color-text);
 		text-decoration: none;
 		font-size: var(--font-size-base);
@@ -324,7 +324,7 @@
 	}
 
 	.settings-nav-link:hover {
-		background: rgba(18, 28, 80, 0.06);
+		background: color-mix(in srgb, var(--color-text) 6%, transparent);
 	}
 
 	.settings-nav-link:focus-visible {
@@ -335,7 +335,7 @@
 	.settings-nav-link[aria-current='true'] {
 		font-weight: 600;
 		color: var(--color-text);
-		background: rgba(225, 182, 130, 0.22);
+		background: color-mix(in srgb, var(--color-gold) 22%, transparent);
 		box-shadow: inset 2px 0 0 var(--color-gold);
 	}
 
@@ -352,7 +352,7 @@
 	.settings-nav-disclosure:focus-visible {
 		outline: 2px solid var(--color-gold);
 		outline-offset: 1px;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 	}
 
 	.settings-nav-disclosure svg {
@@ -415,7 +415,7 @@
 			/* Matches the bar it drops out of, so the two read as one surface. */
 			background: var(--color-cream-light);
 			border-bottom: 1px solid var(--color-border);
-			box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+			box-shadow: var(--shadow-popover);
 		}
 
 		/* Pre-hydration the SSR default is "open" (the desktop default), so hide

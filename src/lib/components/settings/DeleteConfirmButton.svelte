@@ -75,9 +75,9 @@
 
 	:global(.delete-confirm-trigger) {
 		background: transparent;
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 		border: 1px solid currentColor;
-		border-radius: var(--radius-sm, 4px);
+		border-radius: var(--radius-sm);
 		padding: 4px 10px;
 		font: inherit;
 		font-size: 0.9em;
@@ -85,7 +85,7 @@
 	}
 
 	:global(.delete-confirm-trigger:hover:not(:disabled)) {
-		background: rgba(198, 40, 40, 0.08);
+		background: color-mix(in srgb, var(--color-error) 8%, transparent);
 	}
 
 	:global(.delete-confirm-trigger:disabled) {
@@ -96,7 +96,7 @@
 	:global(.delete-confirm-overlay) {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.4);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
 
@@ -105,12 +105,12 @@
 		left: 50%;
 		top: 50%;
 		transform: translate(-50%, -50%);
-		background: var(--color-bg-surface, #fff);
-		border-radius: var(--radius-md, 6px);
+		background: var(--color-bg-surface);
+		border-radius: var(--radius-md);
 		padding: 20px 24px;
 		min-width: 320px;
 		max-width: 90vw;
-		box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+		box-shadow: var(--shadow-modal);
 		z-index: 101;
 	}
 
@@ -122,7 +122,7 @@
 
 	:global(.delete-confirm-description) {
 		margin: 0 0 16px;
-		color: var(--color-text, inherit);
+		color: var(--color-text);
 	}
 
 	.delete-confirm-actions {
@@ -133,19 +133,19 @@
 
 	:global(.delete-confirm-cancel) {
 		background: transparent;
-		color: var(--color-text, inherit);
-		border: 1px solid var(--color-border, #ccc);
-		border-radius: var(--radius-sm, 4px);
+		color: var(--color-text);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
 		padding: 4px 12px;
 		font: inherit;
 		cursor: pointer;
 	}
 
 	:global(.delete-confirm-action) {
-		background: var(--color-error, #c62828);
+		background: var(--color-error);
 		color: white;
-		border: 1px solid var(--color-error, #c62828);
-		border-radius: var(--radius-sm, 4px);
+		border: 1px solid var(--color-error);
+		border-radius: var(--radius-sm);
 		padding: 4px 12px;
 		font: inherit;
 		cursor: pointer;
@@ -158,6 +158,6 @@
 
 	.delete-confirm-error {
 		font-size: 0.85em;
-		color: var(--color-error, #c62828);
+		color: var(--color-error);
 	}
 </style>
