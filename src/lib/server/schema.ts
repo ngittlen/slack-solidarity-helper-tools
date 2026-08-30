@@ -752,6 +752,15 @@ export const vanTurfCheckouts = sqliteTable(
 		/** Doors that left the turf between claim and the post-completion
 		 *  refresh. Zero means the volunteer probably never synced MiniVAN. */
 		confirmedDoorDelta: integer('confirmed_door_delta'),
+		/** When the T-6h expiry warning DM was successfully sent.
+		 *
+		 *  The idempotency key for that DM, and the reason it is a column rather
+		 *  than a log line: the warning sweep runs every half hour for the whole
+		 *  six-hour window, so without a stamp a volunteer would be reminded
+		 *  twelve times about one turf. Stamped only on a successful send, so a
+		 *  Slack outage retries on the next tick instead of silently swallowing
+		 *  the one message that stops turf being lost. */
+		expiryWarnedAt: text('expiry_warned_at'),
 	},
 	(table) => [
 		uniqueIndex('van_turf_checkouts_one_active')

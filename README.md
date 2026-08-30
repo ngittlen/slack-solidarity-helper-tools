@@ -525,13 +525,28 @@ Stale and expired links are indistinguishable — both redirect to the domain-re
 
 ### `POST /api/internal/van-sync`
 
-Scheduler-only, every 30 minutes during waking hours. Pulls the VAN turf catalog into `van_turfs` so the turf page has something to show. Auth via `?key=<INTERNAL_CRON_SECRET>`.
+Scheduler-only, every 30 minutes during waking hours. Pulls the VAN turf catalog into `van_turfs` so the turf page has something to show, and does the ledger housekeeping described below. Auth via `?key=<INTERNAL_CRON_SECRET>`.
 
 For each chapter mapped under **Settings → Chapter → VAN folders**, it reads `GET /folders/{id}/mapRegions`, matches each Map Route to its MiniVAN printed-list number, and upserts a row per route. Runs take a `sync_locks` lock and are idempotent — an overlapping or delayed run is a no-op, so a skipped cron is harmless.
 
 **The chapter → folder mapping is an input, not something the sync discovers.** A chapter with no folder mapped has no turf, and the first sync is a no-op until an admin fills it in. Run `npm run van:check` to list the folder ids the key can see.
 
 **Retirement is scoped to folders that actually synced.** A folder that errors — a 403 on an ungranted tier, a VAN outage — is skipped, and its turf is left exactly as it was. Retiring turf the sync merely failed to look at would release live checkouts under volunteers already standing on the doorstep. When a route genuinely disappears it is stamped `retiredAt` (never deleted, so a live checkout still renders) and any active claim on it is released with `releaseReason = 'retired'`.
+
+#### Ledger housekeeping: expiry sweep and warning DMs
+
+Two jobs run at the top of every tick, **before** the VAN key is even checked, because neither needs VAN and a key rotated badly on a Friday must not stop volunteers being looked after for the whole weekend. A missing key still returns 500 so the workflow run goes red — it just does the housekeeping first.
+
+1. **Expiry sweep.** Claims past their TTL are stamped `releaseReason = 'expired'`. Reads never needed this (an expired claim already reads as free), but without it the ledger cannot tell "gave the turf back" from "let it run out".
+2. **Expiry warning DM**, six hours before a claim lapses. One message, once per claim: _"Your turf expires in about 4 hours"_, the turf and its door count, the deadline in campaign-local time, and both next steps — mark it done, or give it back. It closes by saying what happens if they do nothing, because a reminder that reads as a telling-off gets muted.
+
+The sweep runs first, so nobody is warned about turf that lapsed moments ago.
+
+**One warning per claim, ever.** `van_turf_checkouts.expiry_warned_at` is the idempotency key. This endpoint runs every half hour across the whole six-hour window, so without the stamp a volunteer would be reminded twelve times about one turf. It is written **only after the DM actually lands** — a Slack outage leaves the row unstamped and the next tick retries, rather than burning the one message that stops turf being lost quietly.
+
+**The MiniVAN list number is deliberately not in the DM.** The recipient is the holder so it would be permissible, but the number is issued at claim time and shown on the turf page; a second place it gets sent is a second place to get wrong. The DM links to the page instead.
+
+A volunteer whose whole TTL is shorter than six hours is warned immediately. That is intended — "expires in two hours" is true and useful, and staying silent because we could not warn early enough is how someone loses turf they meant to walk.
 
 **Missing tiers degrade rather than fail.** `/printedLists` (Tier 2) and `/minivanExports` + `/savedLists` (Tier 3) are each optional: without them the catalog still lands, with no list-number backfill and no flagging of turf an organizer distributed by hand. This is what makes a sandbox or demo key useful before the EveryAction security review clears. Anything skipped is reported in `degraded` and posted to the tracking channel.
 
@@ -564,7 +579,7 @@ Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` pr
 
 ### `GET /turfs`
 
-The volunteer turf page. Any signed-in Slack member may use it, minus the block list at **Settings → Blocked from turf checkout**.
+The volunteer turf page. Any signed-in Slack member may use it, minus the block list at **Settings → Blocked from turf checkout**. Organizers get the history of what was claimed and walked at [`GET /turfs/activity`](#get-turfsactivity-admin).
 
 Four gates, all server-side: session, block list, chapter, and a rate limit on switching chapters. The chapter filter runs in the load function _before serialising_ — shipping every chapter and filtering in the browser would make the compartment cosmetic, because the payload is the boundary. Before a chapter is chosen the page returns no turf at all.
 
@@ -599,6 +614,24 @@ Both are shared deliberately: when the chapter limiter was module state inside t
 | `MAP_TILE_ATTRIBUTION`  | © OpenStreetMap contributors © CARTO | Rendered on the map; a condition of use |
 
 **Move to a keyed tile account before real volunteer traffic.** The default is CARTO's keyless endpoint, which is courtesy rather than an SLA, and a canvass launch is the worst moment to discover a rate limit. Both vars are secrets, so the swap is a `fly secrets set`, not a deploy. A failed tile load degrades to a graticule and a "street map unavailable" notice rather than a white void.
+
+### `GET /turfs/activity` (admin)
+
+Turf checkout history, for organizers. Every claim, completion, hand-back, expiry and forced release, newest first, grouped by campaign-local day.
+
+Two dropdowns in one GET form: **chapter** (all, or one) and **period** (24 hours / 7 days / 30 days / all time). Both submit together, so changing one keeps the other, and the form works with JavaScript off — the `onchange` auto-submit is enhancement, not the mechanism.
+
+**The volunteer compartment rules deliberately do not apply here.** `/turfs` refuses an all-chapters view and hides holder names, because a volunteer cannot act on either and has no reason to learn who is knocking which block. This page is the organizer side of that line: it is admin-gated, names holders, and defaults to every chapter. Non-admins and signed-out users get a bare 302 to `/`.
+
+**Still withheld, from admins too: the MiniVAN list number.** It is the credential issued to whoever holds the turf, and an admin is not the holder. The query never selects it, so it cannot reach the payload by omission — a test asserts that on the rendered payload rather than on the template.
+
+**Events, not rows.** A checkout claimed at 09:10 and completed at 09:30 is two things that happened and appears twice; the same row in a one-day window shows only the completion. The three involuntary endings — expired, released by a block, released because the turf was retired — are labelled separately rather than folded into "given back", so an organizer chasing a flaky volunteer isn't chasing the nightly sweep.
+
+**Counts come from SQL, the list from a capped query**, so "Showing the most recent 500 of 1,240" is exact on both halves even though only 500 rows were fetched. Fetching 500 rows is enough for 500 events because rows are ordered by their own newest stamp and each yields at least one event.
+
+Empty states distinguish **"no activity in this period"** from **"no turf has been loaded yet"** — with no VAN key the catalog is empty, and reading that as a quiet week would send someone looking for volunteers instead of an API key.
+
+Nothing is written by this page, and nothing is posted to Slack: it reads `van_turf_checkouts`, which already records every event.
 
 ### `POST /api/turfs/{mapRouteId}`
 
