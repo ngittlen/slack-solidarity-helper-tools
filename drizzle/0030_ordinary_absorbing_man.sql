@@ -1,0 +1,1 @@
+ALTER TABLE `van_turf_checkouts` ADD `expiry_warned_at` text;

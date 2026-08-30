@@ -151,8 +151,14 @@ export interface TimeslotPlan {
  * leaving a stale one behind.
  *
  * Past shifts are the exception: the v1 endpoint does not modify them at all,
- * so re-sending them is at best noise and at worst rejected. They are left out
- * entirely, and `now` is a parameter so tests can pin the boundary.
+ * so re-sending them is at best noise and at worst rejected outright. They are
+ * left out entirely, and `now` is a parameter so tests can pin the boundary.
+ *
+ * "Past" here means STARTED, not ended — Mobilize answers 400 "Cannot modify
+ * past timeslot" for a shift that is merely under way, and a long session (a
+ * week-long exhibit, say) is under way for days. Omitting it is safe for the
+ * same reason the whole rule exists: the endpoint cannot delete a past shift
+ * either, so leaving it out of the PUT cannot take its signups with it.
  */
 export function reconcileTimeslots(
 	plan: PlannedEvent,
@@ -194,8 +200,11 @@ export function reconcileTimeslots(
 		}
 	});
 
-	// Only upcoming orphans need preserving; past ones are immune to the PUT.
-	const orphans = liveSlots.filter((slot) => !consumed.has(slot.id) && slot.end_date * 1000 > now);
+	// Only orphans that have not started yet need preserving; once a shift is
+	// under way Mobilize rejects the whole PUT rather than ignoring that row.
+	const orphans = liveSlots.filter(
+		(slot) => !consumed.has(slot.id) && slot.start_date * 1000 > now,
+	);
 	for (const orphan of orphans) {
 		timeslots.push({
 			id: orphan.id,

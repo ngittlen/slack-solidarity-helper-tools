@@ -90,7 +90,7 @@ describe('findExistingUser', () => {
 
 		const result = await findExistingUser(TOKEN, person);
 
-		expect(result).toEqual({ user: { id: 42 }, method: 'phone' });
+		expect(result).toEqual({ outcome: 'matched', user: { id: 42 }, method: 'phone' });
 		const phoneCall = spy.mock.calls.map((c) => String(c[0])).find((u) => u.includes('phone'));
 		expect(phoneCall).toContain('phone_number=');
 		expect(phoneCall).not.toMatch(/[?&]phone=/);
@@ -101,7 +101,7 @@ describe('findExistingUser', () => {
 
 		const result = await findExistingUser(TOKEN, person);
 
-		expect(result).toEqual({ user: { id: 7 }, method: 'email' });
+		expect(result).toEqual({ outcome: 'matched', user: { id: 7 }, method: 'email' });
 		expect(spy.mock.calls).toHaveLength(1);
 		expect(String(spy.mock.calls[0]![0])).toContain('email=');
 	});
@@ -124,7 +124,23 @@ describe('findExistingUser', () => {
 		// else's RSVP against a real member.
 		mockFetch(() => ({ body: { data: [{ id: 1 }, { id: 2 }] } }));
 
-		expect(await findExistingUser(TOKEN, person)).toBeNull();
+		expect(await findExistingUser(TOKEN, person)).toEqual({ outcome: 'ambiguous' });
+	});
+
+	it('reports ambiguous separately from never-seen', async () => {
+		// The two are what tell a genuine signup surge apart from a lookup that
+		// has stopped filtering, so they must not collapse into one "no match".
+		mockFetch(() => ({ body: { data: [] } }));
+
+		expect(await findExistingUser(TOKEN, person)).toEqual({ outcome: 'none' });
+	});
+
+	it('reports ambiguous when only the phone lookup is the ambiguous one', async () => {
+		mockFetch((url) =>
+			url.includes('email=') ? { body: { data: [] } } : { body: { data: [{ id: 1 }, { id: 2 }] } },
+		);
+
+		expect(await findExistingUser(TOKEN, person)).toEqual({ outcome: 'ambiguous' });
 	});
 
 	it('skips lookups entirely when there is nothing to match on', async () => {
@@ -138,7 +154,7 @@ describe('findExistingUser', () => {
 			zipcode: null,
 		});
 
-		expect(result).toBeNull();
+		expect(result).toEqual({ outcome: 'none' });
 		expect(spy).not.toHaveBeenCalled();
 	});
 });

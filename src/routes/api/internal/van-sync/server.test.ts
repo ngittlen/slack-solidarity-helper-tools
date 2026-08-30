@@ -7,6 +7,7 @@ const mockAcquire = vi.hoisted(() => vi.fn());
 const mockRelease = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockSweep = vi.hoisted(() => vi.fn());
+const mockWarn = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
@@ -26,6 +27,7 @@ vi.mock('$lib/server/sync-lock.js', () => ({
 vi.mock('$lib/server/van-env.js', () => ({ vanClient: mockVanClient }));
 vi.mock('$lib/server/van/sync.js', () => ({ runCatalogSync: mockRunCatalogSync }));
 vi.mock('$lib/server/van/checkout-store.js', () => ({ sweepExpiredClaims: mockSweep }));
+vi.mock('$lib/server/van/expiry-warning-store.js', () => ({ sendExpiryWarnings: mockWarn }));
 vi.mock('$lib/server/env.js', () => ({
 	get INTERNAL_CRON_SECRET() {
 		return mockEnv.INTERNAL_CRON_SECRET;
@@ -57,6 +59,7 @@ describe('POST /api/internal/van-sync', () => {
 		mockAcquire.mockResolvedValue('lock-token');
 		mockRunCatalogSync.mockResolvedValue(result);
 		mockSweep.mockResolvedValue(0);
+		mockWarn.mockResolvedValue({ sent: 0, failed: 0 });
 	});
 
 	it('returns 401 for a wrong key', async () => {
@@ -74,15 +77,68 @@ describe('POST /api/internal/van-sync', () => {
 
 	it('returns 500 with the reason when VAN is not configured', async () => {
 		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
+		mockSweep.mockResolvedValue(2);
+		mockWarn.mockResolvedValue({ sent: 3, failed: 1 });
 		const res = await POST(event());
 		expect(res.status).toBe(500);
-		expect(await res.json()).toEqual({ error: 'VAN_API_KEY is not set' });
+		// Same housekeeping fields as the success path, so a monitor parsing this
+		// does not have to cope with keys that appear and disappear.
+		expect(await res.json()).toEqual({
+			error: 'VAN_API_KEY is not set',
+			claimsExpired: 2,
+			expiryWarningsSent: 3,
+			expiryWarningsFailed: 1,
+		});
+	});
+
+	// Ledger housekeeping does not need VAN, and a key rotated badly on a Friday
+	// must not stop volunteers being warned about turf they are already holding.
+	it('still sweeps and warns when VAN is not configured', async () => {
+		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
+		await POST(event());
+		expect(mockSweep).toHaveBeenCalled();
+		expect(mockWarn).toHaveBeenCalled();
+		expect(mockRunCatalogSync).not.toHaveBeenCalled();
+	});
+
+	it('releases the lock even when VAN is not configured', async () => {
+		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
+		await POST(event());
+		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+	});
+
+	// Sweep first, then warn: nobody should be told that turf which lapsed
+	// moments ago is about to lapse.
+	it('sweeps before it warns, against the same clock', async () => {
+		const order: string[] = [];
+		mockSweep.mockImplementation(async () => {
+			order.push('sweep');
+			return 0;
+		});
+		mockWarn.mockImplementation(async () => {
+			order.push('warn');
+			return { sent: 0, failed: 0 };
+		});
+		await POST(event());
+		expect(order).toEqual(['sweep', 'warn']);
+		expect(mockWarn.mock.calls[0]![1]).toBe(mockSweep.mock.calls[0]![1]);
+	});
+
+	it('reports what the warning sweep did', async () => {
+		mockWarn.mockResolvedValue({ sent: 4, failed: 1 });
+		const body = await (await POST(event())).json();
+		expect(body).toMatchObject({ expiryWarningsSent: 4, expiryWarningsFailed: 1 });
 	});
 
 	it('runs the sync with the configured chapter mapping', async () => {
 		const res = await POST(event());
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ ...result, claimsExpired: 0 });
+		expect(await res.json()).toEqual({
+			...result,
+			claimsExpired: 0,
+			expiryWarningsSent: 0,
+			expiryWarningsFailed: 0,
+		});
 		expect(mockRunCatalogSync).toHaveBeenCalledWith({}, {}, [
 			{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] },
 		]);

@@ -1,0 +1,256 @@
+main {
+	max-width: 1200px;
+	margin: 32px auto;
+	padding: 0 24px;
+}
+
+/* --- Filters -------------------------------------------------------------- */
+
+.filters {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: var(--space-4);
+	margin-bottom: var(--space-5);
+}
+
+.filter {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-1);
+}
+
+.filter label {
+	font-size: var(--font-size-sm);
+	font-weight: 600;
+	color: var(--color-blue);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.filter select {
+	padding: var(--space-2) var(--space-3);
+	font: inherit;
+	font-size: var(--font-size-base);
+	color: var(--color-text);
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	min-width: 180px;
+}
+
+.filter select:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: 1px;
+}
+
+/* The submit button is what makes the form work with JavaScript off, so it is
+   always rendered rather than hidden once the onchange handler is attached. */
+.filter-go {
+	padding: var(--space-2) var(--space-4);
+	font: inherit;
+	font-size: var(--font-size-base);
+	font-weight: 600;
+	color: var(--color-action-text);
+	background: var(--color-action);
+	border: none;
+	border-radius: var(--radius-md);
+	cursor: pointer;
+}
+
+.filter-go:hover {
+	background: var(--color-action-hover);
+}
+
+/* --- Summary counts ------------------------------------------------------- */
+
+.summary {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-5);
+	margin: 0 0 var(--space-5);
+	padding: 0;
+	list-style: none;
+}
+
+.summary-item {
+	display: flex;
+	align-items: baseline;
+	gap: var(--space-2);
+}
+
+.summary-count {
+	font-size: 1.4rem;
+	font-weight: 700;
+	line-height: 1;
+	color: var(--color-navy-mid);
+}
+
+.summary-label {
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+}
+
+/* --- Day sections --------------------------------------------------------- */
+
+.day {
+	margin-bottom: var(--space-6);
+}
+
+.day-heading {
+	margin: 0 0 var(--space-3);
+	font-size: var(--font-size-lg);
+	font-weight: 700;
+	color: var(--color-text);
+}
+
+/* --- Table ---------------------------------------------------------------- */
+
+.table-wrap {
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	overflow-x: auto;
+}
+
+table {
+	width: 100%;
+	border-collapse: collapse;
+}
+
+thead {
+	background: var(--color-bg);
+	border-bottom: 1px solid var(--color-border);
+}
+
+th {
+	text-align: left;
+	font-size: var(--font-size-sm);
+	font-weight: 600;
+	color: var(--color-blue);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	padding: 10px 16px;
+	white-space: nowrap;
+}
+
+td {
+	padding: 12px 16px;
+	font-size: var(--font-size-base);
+	vertical-align: middle;
+	border-bottom: 1px solid var(--color-border-subtle);
+}
+
+tr:last-child td {
+	border-bottom: none;
+}
+
+tr:hover td {
+	background: var(--color-bg-hover);
+}
+
+.col-time {
+	white-space: nowrap;
+	width: 1%;
+}
+
+.col-what {
+	width: 1%;
+}
+
+.time {
+	display: block;
+	font-variant-numeric: tabular-nums;
+}
+
+.time-ago {
+	display: block;
+	font-size: var(--font-size-xs);
+	color: var(--color-text-faint);
+}
+
+.turf-name {
+	display: block;
+	font-weight: 600;
+}
+
+.turf-region,
+.turf-doors {
+	display: block;
+	font-size: var(--font-size-xs);
+	color: var(--color-text-muted);
+}
+
+/* --- Badges ---------------------------------------------------------------
+   Colour carries the same meaning it does on the turf page: blue for turf
+   going out, green for work finished, amber for a hand-back, and grey for the
+   three ways a claim ends without anyone deciding to end it. That last group
+   is deliberately the quietest — they are the rows an organizer scans past,
+   not the ones they act on. */
+
+.badge {
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	padding: 3px 8px;
+	border-radius: 999px;
+	white-space: nowrap;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+
+.badge-claimed {
+	background: color-mix(in srgb, var(--color-blue) 18%, transparent);
+	color: var(--color-navy-mid);
+}
+
+.badge-completed {
+	background: color-mix(in srgb, var(--color-success) 20%, transparent);
+	color: var(--color-success);
+}
+
+.badge-given-back {
+	background: color-mix(in srgb, var(--color-warning) 22%, transparent);
+	color: var(--color-warning);
+}
+
+.badge-expired,
+.badge-blocked,
+.badge-retired {
+	background: color-mix(in srgb, var(--color-text-faint) 18%, transparent);
+	color: var(--color-text-muted);
+}
+
+/* --- Notices -------------------------------------------------------------- */
+
+.empty,
+.cap-note {
+	margin: var(--space-5) 0;
+	font-size: var(--font-size-base);
+	color: var(--color-text-muted);
+	line-height: 1.5;
+}
+
+.cap-note {
+	font-size: var(--font-size-sm);
+}
+
+@media (max-width: 700px) {
+	main {
+		margin: 20px auto;
+		padding: 0 var(--space-4);
+	}
+
+	.filters {
+		gap: var(--space-3);
+	}
+
+	.filter,
+	.filter select {
+		min-width: 0;
+		flex: 1 1 140px;
+	}
+
+	.summary {
+		gap: var(--space-4);
+	}
+}

@@ -53,6 +53,11 @@ const PHONE_REJECTED = {
 function mockApis(options: {
 	attendances: MobilizeAttendance[];
 	userFound?: boolean;
+	/**
+	 * Answer every user lookup with more than one row — what a filter that has
+	 * stopped filtering looks like, since it returns the unfiltered list.
+	 */
+	userLookupAmbiguous?: boolean;
 	/** Refuse any user create that carries a phone, the way Solidarity does. */
 	rejectPhoneOnCreate?: boolean;
 }) {
@@ -80,7 +85,8 @@ function mockApis(options: {
 		} else if (href.includes('/v1/event_rsvps')) {
 			body = { data: [] };
 		} else if (href.includes('/v1/users')) {
-			body = { data: options.userFound ? [{ id: 999 }] : [] };
+			if (options.userLookupAmbiguous) body = { data: [{ id: 998 }, { id: 999 }] };
+			else body = { data: options.userFound ? [{ id: 999 }] : [] };
 		}
 		return {
 			ok: true,
@@ -435,5 +441,65 @@ describe('runAttendeeSync rsvp payload', () => {
 		const body = JSON.parse(String((create![1] as RequestInit).body));
 		expect(body.agent_user_id).toBe(999);
 		expect(body.user_id).toBe(999);
+	});
+});
+
+describe('runAttendeeSync match-health counters', () => {
+	it('counts one lookup per person resolved, and none for ledgered rows', async () => {
+		// The match rate divides by this, so a run that skips the API entirely
+		// must not report a 0% match rate.
+		mockApis({ attendances: [attendance({ id: 1 })] });
+		const ledger = ledgerWith([
+			{
+				mobilizeAttendanceId: 1,
+				solidarityRsvpId: 500,
+				solidarityUserId: 999,
+				solidaritySessionId: LINK.solidaritySessionId,
+				status: 'REGISTERED',
+				attended: false,
+				modifiedDate: 1785000000,
+			},
+		]);
+
+		const report = await run(ledger);
+
+		expect(report.unchanged).toBe(1);
+		expect(report.lookupsPerformed).toBe(0);
+		expect(report.lookupsAmbiguous).toBe(0);
+	});
+
+	it('counts a match without counting it ambiguous', async () => {
+		mockApis({ attendances: [attendance()], userFound: true });
+
+		const report = await run(ledgerWith());
+
+		expect(report.lookupsPerformed).toBe(1);
+		expect(report.matchedByEmail).toBe(1);
+		expect(report.lookupsAmbiguous).toBe(0);
+	});
+
+	it('counts a never-seen person as a lookup but not as ambiguous', async () => {
+		// The genuine-surge shape: misses, but clean ones.
+		mockApis({ attendances: [attendance()] });
+
+		const report = await run(ledgerWith());
+
+		expect(report.lookupsPerformed).toBe(1);
+		expect(report.lookupsAmbiguous).toBe(0);
+		expect(report.profilesCreated).toBe(1);
+	});
+
+	it('counts an ambiguous lookup and still creates the profile', async () => {
+		// Deliberate: skipping would lose the RSVP and report nothing wrong. The
+		// counter is what surfaces it, and maxNewProfiles still caps the damage.
+		mockApis({ attendances: [attendance()], userLookupAmbiguous: true });
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.lookupsPerformed).toBe(1);
+		expect(report.lookupsAmbiguous).toBe(1);
+		expect(report.matchedByEmail).toBe(0);
+		expect(report.matchedByPhone).toBe(0);
+		expect(report.profilesCreated).toBe(1);
 	});
 });
