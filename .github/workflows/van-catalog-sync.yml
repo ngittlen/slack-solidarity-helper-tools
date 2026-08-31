@@ -5,13 +5,25 @@ name: VAN turf catalog sync
 # get generated during the day, and a volunteer who cannot see turf an
 # organizer just published has no way to know it exists.
 #
+# THE OVERNIGHT TICKS ARE NOT ABOUT THE CATALOG — do not trim them as waste.
+# The same endpoint sends the six-hour turf expiry warning (Story 7.3), and a
+# volunteer only gets that warning if a run happens inside the six hours before
+# their claim lapses. This schedule used to stop at 03:07 and resume at 11:07,
+# an eight-hour hole, so any claim expiring between 09:08 and 11:07 UTC was
+# swept away without its holder ever being told. Hourly overnight closes it and
+# leaves five hours of slack, so several missed runs in a row still warn in
+# time.
+#
+# Rule of thumb for anyone editing this: no two consecutive runs may be more
+# than six hours apart, and the tighter the better.
+#
 # Runs are idempotent — the endpoint upserts by mapRouteId and takes a
 # sync_locks lock, so an overlapping or delayed run is a no-op rather than a
 # double write. GitHub cron is best-effort and skipping one is harmless.
 on:
   schedule:
     - cron: '7,37 11-23 * * *'
-    - cron: '7 0-3 * * *'
+    - cron: '7 0-10 * * *'
   workflow_dispatch:
 
 jobs:
