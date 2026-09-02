@@ -5,9 +5,14 @@ const mockBlockedIds = vi.hoisted(() => vi.fn());
 const mockClaim = vi.hoisted(() => vi.fn());
 const mockEndClaim = vi.hoisted(() => vi.fn());
 
+const mockLoadSettings = vi.hoisted(() => vi.fn());
+
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/env.js', () => ({ SLACK_SUPERUSER_ID: 'U_SUPER' }));
-vi.mock('$lib/server/settings.js', () => ({ loadVanBlockedIds: mockBlockedIds }));
+vi.mock('$lib/server/settings.js', () => ({
+	loadVanBlockedIds: mockBlockedIds,
+	loadSettings: mockLoadSettings,
+}));
 vi.mock('$lib/server/van/checkout-store.js', () => ({
 	claimTurf: mockClaim,
 	endClaim: mockEndClaim,
@@ -25,6 +30,10 @@ const event = (session: unknown, body: unknown, mapRouteId = '100') =>
 describe('POST /api/turfs/[mapRouteId]', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockLoadSettings.mockResolvedValue({
+			vanTurfClaimTtlHours: 48,
+			vanTurfMaxConcurrentClaims: 2,
+		});
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		mockBlockedIds.mockResolvedValue(new Set<string>());
 		mockClaim.mockResolvedValue({
@@ -141,5 +150,59 @@ describe('POST /api/turfs/[mapRouteId]', () => {
 			} as unknown as Request,
 		} as never);
 		expect(res.status).toBe(400);
+	});
+});
+
+// Story 7.4. The page greys out a turf it thinks is unclaimable, but canClaim
+// inside claimTurf is what actually refuses — so the enforcing side has to be
+// handed the admin's numbers, not checkout.ts's defaults.
+describe('POST /api/turfs/[mapRouteId] — configured claim options', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		mockBlockedIds.mockResolvedValue(new Set<string>());
+		mockClaim.mockResolvedValue({
+			ok: true,
+			expiresAt: '2026-08-24T09:00:00.000Z',
+			printedListNumber: '35536745-88712',
+		});
+		mockEndClaim.mockResolvedValue({ ok: true });
+		mockLoadSettings.mockResolvedValue({
+			vanTurfClaimTtlHours: 48,
+			vanTurfMaxConcurrentClaims: 2,
+		});
+	});
+
+	it('passes the settings TTL and cap to claimTurf', async () => {
+		mockLoadSettings.mockResolvedValue({
+			vanTurfClaimTtlHours: 12,
+			vanTurfMaxConcurrentClaims: 5,
+		});
+
+		await POST(event(VOLUNTEER, { action: 'claim' }));
+
+		expect(mockClaim).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ options: { ttlHours: 12, maxConcurrentClaims: 5 } }),
+		);
+	});
+
+	it('does not fall back to the built-in defaults once configured', async () => {
+		mockLoadSettings.mockResolvedValue({
+			vanTurfClaimTtlHours: 1,
+			vanTurfMaxConcurrentClaims: 1,
+		});
+
+		await POST(event(VOLUNTEER, { action: 'claim' }));
+
+		const options = mockClaim.mock.calls[0]![1].options as Record<string, number>;
+		expect(options).toEqual({ ttlHours: 1, maxConcurrentClaims: 1 });
+	});
+
+	// Release and complete carry no TTL and no cap, so they must not pay for a
+	// settings read on every call.
+	it.each([['release'], ['complete']])('does not read settings to %s', async (action) => {
+		await POST(event(VOLUNTEER, { action }));
+		expect(mockLoadSettings).not.toHaveBeenCalled();
 	});
 });

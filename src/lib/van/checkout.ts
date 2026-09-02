@@ -44,6 +44,69 @@ export interface ClaimSnapshot {
 export const DEFAULT_CLAIM_TTL_HOURS = 48;
 export const DEFAULT_MAX_CONCURRENT_CLAIMS = 2;
 
+// Bounds for the admin-tunable versions of the two above (Story 7.4). They sit
+// here rather than in a settings module for the same reason ticker-speed.ts
+// keeps its own: this file is outside $lib/server, so the settings editor, the
+// volunteer page and the claim route can all import them without dragging
+// drizzle into the client bundle.
+
+/** Below an hour nobody can walk a turf before it lapses, which makes the whole
+ *  checkout pointless rather than merely strict. */
+export const MIN_CLAIM_TTL_HOURS = 1;
+/** A week. Past this a claim stops being a checkout and becomes an assignment
+ *  nobody revisits — and the turf sits out of the pool that whole time. */
+export const MAX_CLAIM_TTL_HOURS = 168;
+
+/** Zero would mean nobody may claim anything, which is a way to break turf
+ *  checkout by typing in a settings box rather than a setting anyone wants. */
+export const MIN_CONCURRENT_CLAIMS = 1;
+/** Generous. The cap exists so one volunteer cannot take a neighbourhood; past
+ *  ten it is not capping anything. */
+export const MAX_CONCURRENT_CLAIMS = 10;
+
+/**
+ * Turn the admin-configured values into options `canClaim` can use.
+ *
+ * Every caller of `canClaim` and `claimTurf` goes through this, so the page,
+ * the map's viewport endpoint and the claim route cannot disagree about how
+ * long a claim lasts or how many a volunteer may hold. That mattered before it
+ * was configurable too — the page passed `{}` while the viewport endpoint
+ * passed nothing at all — but with real settings a disagreement becomes
+ * visible: turf that shows claimable on the map and refuses on click.
+ *
+ * Clamps rather than rejects. These arrive from a validated settings write, so
+ * an out-of-range value means a row predating the bounds or hand-edited SQL,
+ * and neither is worth failing a volunteer's page load over.
+ */
+export function resolveClaimOptions(
+	config: { ttlHours?: number | null; maxConcurrentClaims?: number | null } = {},
+): Required<ClaimOptions> {
+	return {
+		ttlHours: clamp(
+			config.ttlHours,
+			MIN_CLAIM_TTL_HOURS,
+			MAX_CLAIM_TTL_HOURS,
+			DEFAULT_CLAIM_TTL_HOURS,
+		),
+		maxConcurrentClaims: clamp(
+			config.maxConcurrentClaims,
+			MIN_CONCURRENT_CLAIMS,
+			MAX_CONCURRENT_CLAIMS,
+			DEFAULT_MAX_CONCURRENT_CLAIMS,
+		),
+	};
+}
+
+function clamp(
+	value: number | null | undefined,
+	min: number,
+	max: number,
+	fallback: number,
+): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+	return Math.min(max, Math.max(min, value));
+}
+
 function toTime(iso: string): number {
 	const t = Date.parse(iso);
 	// An unparseable timestamp must not read as "not yet expired" — that would

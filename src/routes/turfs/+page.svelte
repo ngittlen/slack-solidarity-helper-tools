@@ -15,7 +15,6 @@
 	import { invalidateAll } from '$app/navigation';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
 	import { statusLabel } from '$lib/van/turf-status.js';
-	import { DEFAULT_CLAIM_TTL_HOURS } from '$lib/van/checkout.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
 	import { mappableTurfs, type TurfView } from '$lib/van/turf-view.js';
 
@@ -680,8 +679,8 @@
 											     long you keep it are the two things someone wants to
 											     know before committing to walk somewhere. -->
 											<p class="claim-note">
-												You'll get a MiniVAN list number and {DEFAULT_CLAIM_TTL_HOURS} hours to walk it.
-												Nobody else can take it in the meantime.
+												You'll get a MiniVAN list number and {data.claimTtlHours} hours to walk it. Nobody
+												else can take it in the meantime.
 											</p>
 										{:else if turf.claimBlockedReason}
 											<p class="claim-note">{turf.claimBlockedReason}</p>

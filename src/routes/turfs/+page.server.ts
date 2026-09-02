@@ -15,6 +15,7 @@ import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js'
 import { chapterVisits, pruneRateLimitStores } from '$lib/server/van/rate-limit-store.js';
 import { selectNearest, TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
 import { toTurfView, type TurfView } from '$lib/van/turf-view.js';
+import { DEFAULT_CLAIM_TTL_HOURS } from '$lib/van/checkout.js';
 import { demoTurfs, DEMO_CHAPTERS, DEMO_LOCATIONS } from '$lib/van/demo-turfs.js';
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE } from '$lib/van/tiles.js';
 import type { ClaimSnapshot } from '$lib/van/checkout.js';
@@ -91,10 +92,25 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			location: demoLocation,
 			zip: null as string | null,
 			tiles,
+			// The built-in default, not the configured one: this branch returns
+			// before any database access on purpose (see above), and the walkthrough
+			// runs on fabricated turf nobody can actually claim.
+			claimTtlHours: DEFAULT_CLAIM_TTL_HOURS,
 		};
 	}
 
 	const [blockedIds, settings] = await Promise.all([loadVanBlockedIds(db), loadSettings(db)]);
+
+	// The admin-tunable TTL and per-volunteer cap (Story 7.4), already resolved
+	// and clamped by loadSettings. Computed here rather than beside the claim
+	// logic so every branch below ships the SAME number: a payload that told a
+	// volunteer "48 hours" on one code path and 72 on another would be lying on
+	// one of them, and which branch renders the claim copy is a fact about the
+	// markup that can change without anyone thinking about this file.
+	const options = {
+		ttlHours: settings.vanTurfClaimTtlHours,
+		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+	};
 
 	const access = turfAccess(
 		{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
@@ -118,6 +134,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			location: null as LatLng | null,
 			zip: null as string | null,
 			tiles,
+			claimTtlHours: options.ttlHours,
 		};
 	}
 
@@ -145,6 +162,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		location: null as LatLng | null,
 		zip: null as string | null,
 		tiles,
+		claimTtlHours: options.ttlHours,
 	};
 
 	if (!chapter) return empty;
@@ -245,10 +263,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const asOf = new Date();
 	const viewer = { slackUserId: session.slackUserId, isAdmin: session.isAdmin };
-	// TTL and the per-volunteer claim cap use checkout.ts's defaults (48h, 2).
-	// Making them admin-tunable through app_config is Story 7.4; this is the
-	// one place that would pass them, so that change lands here.
-	const options = {};
+	// Passed to toTurfView so `claimable` and the at-the-limit message reflect
+	// what the claim route will actually enforce — the map and the button must
+	// not disagree with the thing they lead to.
 
 	return {
 		pageTitle: `Turf checkout — ${chapter.name}`,
@@ -270,5 +287,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		location,
 		zip: location ? zip : null,
 		tiles,
+		// What the page tells a volunteer they are getting. Sourced from the same
+		// setting the claim route enforces, so the promise on the button and the
+		// expiry actually written to the ledger cannot drift apart. The branches
+		// above never reach a claim, so they keep the built-in default.
+		claimTtlHours: options.ttlHours,
 	};
 };

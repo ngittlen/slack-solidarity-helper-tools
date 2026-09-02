@@ -33,6 +33,7 @@ import {
 	MOBILIZE_CONTACT_PHONE,
 } from './env.js';
 import { clampTickerColumnsPerSecond } from '../ticker-speed.js';
+import { resolveClaimOptions } from '../van/checkout.js';
 import { invalidateThemeCache } from './theme.js';
 import { invalidateSiteNameCache } from './site.js';
 
@@ -140,6 +141,11 @@ export interface Settings {
 	 *  always resolved to a usable number (see clampTickerColumnsPerSecond),
 	 *  never undefined. */
 	doorTickerColumnsPerSecond: number;
+	/** Hours a turf claim lasts before it lapses. Resolved and clamped, so the
+	 *  turf routes can use it without re-deciding what a NULL means. */
+	vanTurfClaimTtlHours: number;
+	/** Turfs one volunteer may hold at once. */
+	vanTurfMaxConcurrentClaims: number;
 }
 
 export interface Editor {
@@ -165,6 +171,8 @@ export type AppConfigPatch = Partial<{
 	welcomeDmMessage: string;
 	warningDmMessage: string;
 	doorTickerColumnsPerSecond: number;
+	vanTurfClaimTtlHours: number;
+	vanTurfMaxConcurrentClaims: number;
 	/** Theme overrides, serialised. One JSON column rather than ~60 colour
 	 *  columns — see the comment on app_config.themeTokens in schema.ts.
 	 *  Validated by themeTokensField before it ever reaches here. */
@@ -255,6 +263,12 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	// preference, not deployment config. Clamped on read so a hand-edited row
 	// can't hand the board an unusable rate.
 	const doorTickerColumnsPerSecond = clampTickerColumnsPerSecond(cfg?.doorTickerColumnsPerSecond);
+	// Clamped on read as well as on write: a row written before the bounds
+	// existed, or edited by hand, must not hand a volunteer a one-minute claim.
+	const claimOptions = resolveClaimOptions({
+		ttlHours: cfg?.vanTurfClaimTtlHours,
+		maxConcurrentClaims: cfg?.vanTurfMaxConcurrentClaims,
+	});
 
 	// Sorted here rather than in SQL so the order is part of the contract the
 	// settings page and its tests can rely on.
@@ -283,6 +297,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		warningDmMessage,
 		infoCommands: infoCommandList,
 		doorTickerColumnsPerSecond,
+		vanTurfClaimTtlHours: claimOptions.ttlHours,
+		vanTurfMaxConcurrentClaims: claimOptions.maxConcurrentClaims,
 	};
 }
 
@@ -636,6 +652,8 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'welcomeDmMessage',
 	'warningDmMessage',
 	'doorTickerColumnsPerSecond',
+	'vanTurfClaimTtlHours',
+	'vanTurfMaxConcurrentClaims',
 	'themeTokens',
 ]);
 

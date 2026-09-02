@@ -79,7 +79,11 @@ describe('/turfs load', () => {
 		vi.clearAllMocks();
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		mockBlockedIds.mockResolvedValue(new Set<string>());
-		mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: CHAPTERS,
+			vanTurfClaimTtlHours: 48,
+			vanTurfMaxConcurrentClaims: 2,
+		});
 		mockZipLookup.mockResolvedValue(null);
 		stubQueries([turfRow()]);
 	});
@@ -417,5 +421,96 @@ describe('/turfs load', () => {
 			// One line carries the whole picture, rather than a run of them.
 			expect(lines).toContain('seen=');
 		});
+	});
+});
+
+// Story 7.4. The page promises a volunteer a number of hours and the claim
+// route writes an expiry; both now come from /settings, and they have to be the
+// same number. This shipped wrong once: every branch but the last returned the
+// built-in 48 regardless of what an admin had configured.
+describe('/turfs load — configured claim options', () => {
+	// A fresh Slack id per test. The chapter rate limiter is process-wide module
+	// state and earlier tests in this file deliberately exhaust it, so reusing
+	// VOLUNTEER here would land on the rate-limited branch and return no turf at
+	// all — which looks exactly like a broken payload.
+	let viewer: { slackUserId: string; slackUserName: string; isAdmin: boolean };
+	let seq = 0;
+
+	beforeEach(() => {
+		viewer = { slackUserId: `U_CFG_${++seq}`, slackUserName: 'Dana', isAdmin: false };
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: CHAPTERS,
+			vanTurfClaimTtlHours: 72,
+			vanTurfMaxConcurrentClaims: 4,
+		});
+	});
+
+	it.each([
+		['with no chapter chosen', undefined],
+		['on a chapter', 'chapter=71'],
+	])('ships the configured TTL %s', async (_label, query) => {
+		const data = await run(event(viewer, query));
+		expect(data.claimTtlHours).toBe(72);
+	});
+
+	it('ships it on the blocked branch too', async () => {
+		mockBlockedIds.mockResolvedValue(new Set([viewer.slackUserId]));
+		const data = await run(event(viewer));
+		expect(data.blocked).toBeTruthy();
+		expect(data.claimTtlHours).toBe(72);
+	});
+
+	// Every branch has to agree: which one renders the claim copy is a fact
+	// about the markup, and markup moves.
+	it('never mixes the configured value with the built-in default', async () => {
+		const seen = await Promise.all(
+			[undefined, 'chapter=71', 'chapter=9999'].map(
+				async (q) => (await run(event(viewer, q))).claimTtlHours,
+			),
+		);
+		expect(new Set(seen)).toEqual(new Set([72]));
+	});
+
+	// The demo returns before any database access on purpose, so it has no
+	// settings to read and correctly falls back.
+	it('leaves the demo walkthrough on the built-in default', async () => {
+		const data = await run(event({ ...viewer, isAdmin: true }, 'demo&chapter=1'));
+		expect(data.demo).toBe(true);
+		expect(data.claimTtlHours).toBe(48);
+	});
+
+	// The cap has to reach toTurfView, not just travel in the payload: the page
+	// greys the button out, and it must grey it out on the same rule the claim
+	// route refuses on.
+	it('greys out a turf once the volunteer is at the configured cap', async () => {
+		const heldElsewhere = {
+			mapRouteId: 900,
+			slackUserId: viewer.slackUserId,
+			slackUserName: viewer.slackUserName,
+			claimedAt: '2026-08-24T09:00:00.000Z',
+			expiresAt: '2099-01-01T00:00:00.000Z',
+			releasedAt: null,
+			completedAt: null,
+		};
+
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: CHAPTERS,
+			vanTurfClaimTtlHours: 72,
+			vanTurfMaxConcurrentClaims: 1,
+		});
+		stubQueries([turfRow()], [heldElsewhere]);
+		const atLimit = await run(event(viewer, 'chapter=71'));
+		expect(atLimit.turfs[0]!.claimable).toBe(false);
+		expect(atLimit.turfs[0]!.claimBlockedReason).toContain('1 turf');
+
+		// Same ledger, a roomier cap: now claimable.
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: CHAPTERS,
+			vanTurfClaimTtlHours: 72,
+			vanTurfMaxConcurrentClaims: 5,
+		});
+		stubQueries([turfRow()], [heldElsewhere]);
+		const roomy = await run(event(viewer, 'chapter=71'));
+		expect(roomy.turfs[0]!.claimable).toBe(true);
 	});
 });
