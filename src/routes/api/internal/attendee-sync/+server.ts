@@ -3,7 +3,16 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { runSolidarityAttendeeSync } from '$lib/server/attendee-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
-import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
+import {
+	ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE,
+	ATTENDEE_SYNC_MATCH_RATE_MIN_SAMPLE,
+	ATTENDEE_SYNC_MAX_AMBIGUOUS_RATE,
+	ATTENDEE_SYNC_MIN_MATCH_RATE,
+	INTERNAL_CRON_SECRET,
+	MOBILIZE_API_KEY,
+	SOLIDARITY_API_TOKEN,
+} from '$lib/server/env.js';
+import { assessMatchHealth } from '$lib/server/attendee-sync-health.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
 
 const SYNC_LOCK_NAME = 'attendee-sync';
@@ -100,6 +109,20 @@ export const POST: RequestHandler = async ({ url }) => {
 				`failed ${result.failed}`,
 		);
 
+		// Logged every run, alert or not, so a match rate that slides over weeks is
+		// visible in history rather than only at the moment it trips a threshold.
+		const health = assessMatchHealth(result, {
+			minMatchRate: ATTENDEE_SYNC_MIN_MATCH_RATE,
+			matchRateMinSample: ATTENDEE_SYNC_MATCH_RATE_MIN_SAMPLE,
+			maxAmbiguousRate: ATTENDEE_SYNC_MAX_AMBIGUOUS_RATE,
+			ambiguousMinSample: ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE,
+		});
+		console.log(
+			`[attendee-sync] match health: lookups ${result.lookupsPerformed}, ` +
+				`match rate ${health.matchRate === null ? 'n/a' : `${Math.round(health.matchRate * 100)}%`}, ` +
+				`ambiguous ${result.lookupsAmbiguous}`,
+		);
+
 		if (result.authFailed) {
 			await alert(
 				':rotating_light: *Attendee sync stopped — Mobilize rejected the API key.*\n' +
@@ -113,7 +136,23 @@ export const POST: RequestHandler = async ({ url }) => {
 			await alert(
 				`:busts_in_silhouette: Attendee sync: ${result.rsvpsCreated} new RSVP(s), ` +
 					`${result.rsvpsUpdated} updated, ${result.profilesCreated} new Solidarity profile(s) ` +
-					`across ${result.timeslots} shift(s).`,
+					`across ${result.timeslots} shift(s).` +
+					(health.matchRate === null
+						? ''
+						: ` ${Math.round(health.matchRate * 100)}% of signups matched an existing profile.`),
+			);
+		}
+
+		// Matching health is reported even on an aborted or dry run: a dry run is
+		// exactly where someone looks after an abort, and the ambiguity signal is
+		// the thing that says whether the abort was a real surge or a broken
+		// lookup. Posted after the abort notice above so the cause follows the
+		// symptom.
+		for (const finding of health.findings) {
+			await alert(
+				finding.kind === 'degraded-matching'
+					? `:rotating_light: *Attendee sync — matching looks broken.* ${finding.message}`
+					: `:mag: *Attendee sync — low match rate.* ${finding.message}`,
 			);
 		}
 

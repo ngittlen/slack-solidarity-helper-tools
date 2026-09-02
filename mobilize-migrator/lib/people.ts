@@ -72,11 +72,9 @@ export function normalizeEmail(raw: string | null | undefined): string | null {
 	return trimmed && trimmed.includes('@') ? trimmed : null;
 }
 
-async function search(
-	token: string,
-	query: string,
-	label: string,
-): Promise<SolidarityPerson | null> {
+/** The rows Solidarity returned for one identifier. `_limit=2` is enough: the
+ *  only thing the caller needs to tell apart is none / exactly one / more. */
+async function search(token: string, query: string, label: string): Promise<SolidarityPerson[]> {
 	const res = await fetchWithRetry(
 		`${API}/users?_limit=2&${query}`,
 		{ headers: { Authorization: `Bearer ${token}` } },
@@ -86,14 +84,34 @@ async function search(
 	);
 	if (!res.ok) throw new Error(`Solidarity user lookup returned ${res.status}`);
 	const body = (await res.json()) as { data?: SolidarityPerson[] };
-	const rows = body.data ?? [];
-	// More than one hit means the identifier isn't unique in the CRM; refusing to
-	// choose is safer than filing an RSVP against the wrong person.
-	return rows.length === 1 ? rows[0]! : null;
+	return body.data ?? [];
 }
 
 /**
+ * What a lookup concluded about the person behind a signup.
+ *
+ * `ambiguous` is kept apart from `none` deliberately. Both leave the caller
+ * without a user id, but they mean opposite things: `none` is someone the CRM
+ * has never seen, and creating them is right; `ambiguous` is someone the CRM
+ * already has more than one row for, so creating them adds a third.
+ *
+ * The distinction is also the only reliable way to tell the two spike causes
+ * apart. A genuine surge of new signups is a run full of `none`; a lookup that
+ * has stopped filtering (see the DANGER note below) returns the unfiltered user
+ * list for everyone, which is a run full of `ambiguous`. The attendee sync
+ * counts both and alerts on the second.
+ */
+export type UserLookup =
+	| { outcome: 'matched'; user: SolidarityPerson; method: 'email' | 'phone' }
+	| { outcome: 'ambiguous' }
+	| { outcome: 'none' };
+
+/**
  * Look up by email, then phone.
+ *
+ * More than one hit on an identifier is reported rather than resolved: picking
+ * "the first one" files an RSVP against whichever duplicate sorted first, which
+ * is how someone else's attendance ends up on a real member's record.
  *
  * DANGER: the query parameter is `phone_number`. Solidarity accepts `phone=`
  * and *silently ignores it*, returning an unfiltered user list — matching on
@@ -101,31 +119,28 @@ async function search(
  * API: `?phone=15550000000` returned rows, `?phone_number=15550000000` returned
  * none. Do not "simplify" this parameter name.
  */
-export async function findExistingUser(
-	token: string,
-	input: PersonInput,
-): Promise<{ user: SolidarityPerson; method: 'email' | 'phone' } | null> {
+export async function findExistingUser(token: string, input: PersonInput): Promise<UserLookup> {
+	let ambiguous = false;
+
 	const email = normalizeEmail(input.email);
 	if (email) {
-		const byEmail = await search(
-			token,
-			`email=${encodeURIComponent(email)}`,
-			'attendee email lookup',
-		);
-		if (byEmail) return { user: byEmail, method: 'email' };
+		const rows = await search(token, `email=${encodeURIComponent(email)}`, 'attendee email lookup');
+		if (rows.length === 1) return { outcome: 'matched', user: rows[0]!, method: 'email' };
+		if (rows.length > 1) ambiguous = true;
 	}
 
 	const phone = normalizePhone(input.phone);
 	if (phone) {
-		const byPhone = await search(
+		const rows = await search(
 			token,
 			`phone_number=${encodeURIComponent(phone)}`,
 			'attendee phone lookup',
 		);
-		if (byPhone) return { user: byPhone, method: 'phone' };
+		if (rows.length === 1) return { outcome: 'matched', user: rows[0]!, method: 'phone' };
+		if (rows.length > 1) ambiguous = true;
 	}
 
-	return null;
+	return ambiguous ? { outcome: 'ambiguous' } : { outcome: 'none' };
 }
 
 export interface CreateUserResult {

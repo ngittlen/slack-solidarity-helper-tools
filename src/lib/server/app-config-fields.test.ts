@@ -39,6 +39,8 @@ describe('the table', () => {
 				'mobilizeContactEmail',
 				'mobilizeContactPhone',
 				'slackGrowthReportRankingAlpha',
+				'vanTurfClaimTtlHours',
+				'vanTurfMaxConcurrentClaims',
 				'doorTickerColumnsPerSecond',
 				'siteName',
 				'countdownLabel',
@@ -48,7 +50,7 @@ describe('the table', () => {
 				'themeTokens',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(15);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(17);
 	});
 });
 

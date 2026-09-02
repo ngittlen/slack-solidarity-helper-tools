@@ -93,6 +93,25 @@ export interface AttendeeSyncReport {
 	profilesCreatedWithoutPhone: number;
 	matchedByEmail: number;
 	matchedByPhone: number;
+	/**
+	 * People who went through a Solidarity lookup — matched, ambiguous or new.
+	 * The denominator for the match rate, and a truer one than
+	 * matched + profilesCreated: a create that fails still consumed a lookup.
+	 *
+	 * Dry runs inflate it slightly. Nothing is created, so someone signed up for
+	 * several shifts is looked up once per shift and misses every time, where an
+	 * applying run matches them from the second shift on.
+	 */
+	lookupsPerformed: number;
+	/**
+	 * Lookups refused because an identifier matched more than one CRM profile.
+	 *
+	 * Near zero normally — it takes an existing duplicate to produce one. A run
+	 * where these dominate is the signature of a lookup that has stopped
+	 * filtering and is returning the unfiltered user list for everybody, which is
+	 * the failure mode that fills the CRM with duplicates. See UserLookup.
+	 */
+	lookupsAmbiguous: number;
 	unchanged: number;
 	/** No email and no phone — nothing to match or create on. */
 	skippedNoContact: number;
@@ -123,6 +142,8 @@ function emptyReport(): AttendeeSyncReport {
 		profilesCreatedWithoutPhone: 0,
 		matchedByEmail: 0,
 		matchedByPhone: 0,
+		lookupsPerformed: 0,
+		lookupsAmbiguous: 0,
 		unchanged: 0,
 		skippedNoContact: 0,
 		skippedInvalidPhone: 0,
@@ -269,18 +290,27 @@ export async function runAttendeeSync(
 			let userId = priorRecord?.solidarityUserId ?? null;
 
 			if (userId === null) {
-				const match = await findExistingUser(config.solidarityToken, {
+				const lookup = await findExistingUser(config.solidarityToken, {
 					firstName: participation.firstName,
 					lastName: participation.lastName,
 					email: participation.email,
 					phone: participation.phone,
 					zipcode: participation.zipcode,
 				});
-				if (match) {
-					userId = match.user.id;
-					if (match.method === 'email') report.matchedByEmail++;
+				report.lookupsPerformed++;
+				if (lookup.outcome === 'ambiguous') report.lookupsAmbiguous++;
+
+				if (lookup.outcome === 'matched') {
+					userId = lookup.user.id;
+					if (lookup.method === 'email') report.matchedByEmail++;
 					else report.matchedByPhone++;
 				} else {
+					// Ambiguous falls through to create alongside genuinely new
+					// people. Creating a third row for someone the CRM already has
+					// twice is bad, but skipping means their RSVP never lands and
+					// the run reports nothing amiss. Counted and alerted on
+					// instead, and the maxNewProfiles guardrail still caps the
+					// damage if it ever becomes the common case.
 					projectedNewProfiles++;
 					if (projectedNewProfiles > config.maxNewProfiles) {
 						report.abortedReason =

@@ -17,14 +17,18 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 
-import { sessions, vanTurfCheckouts } from '../schema.js';
+import { sessions, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { saveVanBlockedUser, deleteVanBlockedUser, type Editor } from '../settings.js';
 
 type Database = ReturnType<typeof drizzle>;
 
 export interface BlockResult {
-	/** Turf ids freed by the block, for the notice posted to Slack. */
-	releasedMapRouteIds: number[];
+	/** Turf freed by the block, for the notice posted to Slack and the DM to
+	 *  the person it was taken from. Names come from the join rather than the
+	 *  caller looking them up afterwards: this function is the only thing that
+	 *  knows which rows it released, and by the time it returns they are no
+	 *  longer distinguishable as "the ones this block freed". */
+	released: { mapRouteId: number; name: string }[];
 	/** Sessions invalidated, so the block lands on their next request. */
 	sessionsRevoked: number;
 }
@@ -78,8 +82,16 @@ export async function blockFromTurfCheckout(
 
 	const releasedAt = new Date().toISOString();
 	const active = await db
-		.select({ id: vanTurfCheckouts.id, mapRouteId: vanTurfCheckouts.mapRouteId })
+		.select({
+			id: vanTurfCheckouts.id,
+			mapRouteId: vanTurfCheckouts.mapRouteId,
+			name: vanTurfs.name,
+		})
 		.from(vanTurfCheckouts)
+		// Inner join: a checkout whose turf row has vanished cannot be named in a
+		// DM, and a message listing a blank is worse than one turf fewer. It is
+		// still released by the update below — the loop runs over `active`.
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
 		.where(
 			and(
 				eq(vanTurfCheckouts.slackUserId, target.slackUserId),
@@ -101,7 +113,10 @@ export async function blockFromTurfCheckout(
 		`[van] blocked ${target.slackUserId}: released ${active.length} turf(s), revoked ${sessionsRevoked} session(s) by ${editor.id} (${editor.name})`,
 	);
 
-	return { releasedMapRouteIds: active.map((r) => r.mapRouteId), sessionsRevoked };
+	return {
+		released: active.map((r) => ({ mapRouteId: r.mapRouteId, name: r.name })),
+		sessionsRevoked,
+	};
 }
 
 /**

@@ -162,7 +162,16 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const viewer = { slackUserId: session.slackUserId, isAdmin: session.isAdmin };
 
 	return json({
-		turfs: selected.map((row) => toTurfView(row, claims, viewer, new Date(now))),
+		// Same claim options as the page load. Before 7.4 both used the built-in
+		// defaults and agreed by accident; now that they are configurable, an
+		// endpoint that skipped them would mark turf claimable on pan that the
+		// page had greyed out — and the claim would then be refused on click.
+		turfs: selected.map((row) =>
+			toTurfView(row, claims, viewer, new Date(now), {
+				ttlHours: settings.vanTurfClaimTtlHours,
+				maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+			}),
+		),
 		// The chapter's total, matching the page load. A per-viewport remainder
 		// would disagree with the figure the page already showed the moment the
 		// volunteer panned.

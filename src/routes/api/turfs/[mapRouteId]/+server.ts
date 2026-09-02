@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
-import { loadVanBlockedIds } from '$lib/server/settings.js';
+import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
 import { turfAccess } from '$lib/van/access.js';
 import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
 import { recordRequest } from '$lib/van/request-budget.js';
@@ -66,11 +66,20 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	}
 
 	if (action === 'claim') {
+		// The TTL and the per-volunteer cap come from /settings (Story 7.4). This
+		// is the enforcing side: the page greys out a turf it thinks is
+		// unclaimable, but `canClaim` inside claimTurf is what actually refuses,
+		// so both have to be handed the same numbers.
+		const settings = await loadSettings(db);
 		const result = await claimTurf(db, {
 			mapRouteId,
 			slackUserId: session.slackUserId,
 			slackUserName: session.slackUserName,
 			now: new Date(now),
+			options: {
+				ttlHours: settings.vanTurfClaimTtlHours,
+				maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+			},
 		});
 		if (!result.ok) return json({ error: result.message }, { status: result.status });
 		return json({

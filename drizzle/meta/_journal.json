@@ -211,6 +211,20 @@
       "when": 1787278853836,
       "tag": "0029_high_sandman",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1787883507110,
+      "tag": "0030_ordinary_absorbing_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1788135519579,
+      "tag": "0031_wealthy_marvex",
+      "breakpoints": true
     }
   ]
 }

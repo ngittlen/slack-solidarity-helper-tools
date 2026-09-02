@@ -10,6 +10,7 @@
 	import AllowedUsersEditor from '$lib/components/settings/AllowedUsersEditor.svelte';
 	import InfoCommandsEditor from '$lib/components/settings/InfoCommandsEditor.svelte';
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
+	import VanTurfCheckoutEditor from '$lib/components/settings/VanTurfCheckoutEditor.svelte';
 	import VanChapterFoldersEditor from '$lib/components/settings/VanChapterFoldersEditor.svelte';
 	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
 	import ThemeEditor from '$lib/components/settings/ThemeEditor.svelte';
@@ -185,6 +186,18 @@
 					excludedIds={[...data.settings.reportExcludedChapterIds]}
 				/>
 			{/if}
+		</section>
+
+		<section
+			id={SECTION_IDS.vanTurfCheckout}
+			data-settings-anchor={SECTION_IDS.vanTurfCheckout}
+			tabindex="-1"
+		>
+			<h2>Turf checkout</h2>
+			<VanTurfCheckoutEditor
+				ttlHours={data.settings.vanTurfClaimTtlHours}
+				maxConcurrentClaims={data.settings.vanTurfMaxConcurrentClaims}
+			/>
 		</section>
 
 		<section

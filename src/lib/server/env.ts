@@ -104,6 +104,28 @@ export const ATTENDEE_SYNC_MAX_NEW_PROFILES = parseInt(
 	10,
 );
 
+// Match-health thresholds (see attendee-sync-health.ts). These alert; they never
+// stop a run — ATTENDEE_SYNC_MAX_NEW_PROFILES above is the only thing that does.
+//
+// Defaults come from measured runs rather than intuition. Real passes matched
+// 18% and 27% of signups, so the 10% floor sits below anything observed and
+// warns only on a genuine collapse. Ambiguous lookups measured 0 of 111, which
+// is why a quarter of them is already an alarm.
+export const ATTENDEE_SYNC_MIN_MATCH_RATE = parseFloat(
+	get('ATTENDEE_SYNC_MIN_MATCH_RATE') || '0.10',
+);
+export const ATTENDEE_SYNC_MATCH_RATE_MIN_SAMPLE = parseInt(
+	get('ATTENDEE_SYNC_MATCH_RATE_MIN_SAMPLE') || '25',
+	10,
+);
+export const ATTENDEE_SYNC_MAX_AMBIGUOUS_RATE = parseFloat(
+	get('ATTENDEE_SYNC_MAX_AMBIGUOUS_RATE') || '0.25',
+);
+export const ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE = parseInt(
+	get('ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE') || '8',
+	10,
+);
+
 // Shared secret for internal cron-triggered endpoints (e.g. nightly snapshot).
 // Callers pass it as ?key=<value>.
 export const INTERNAL_CRON_SECRET = get('INTERNAL_CRON_SECRET');

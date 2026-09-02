@@ -177,6 +177,9 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			// DB-only with a code default, so it resolves even with no env and
 			// no row — unlike the env-backed fields above.
 			doorTickerColumnsPerSecond: DEFAULT_TICKER_COLUMNS_PER_SECOND,
+			// Built-in defaults from $lib/van/checkout.ts when app_config is empty.
+			vanTurfClaimTtlHours: 48,
+			vanTurfMaxConcurrentClaims: 2,
 		});
 
 		// Restore the module-level mock for subsequent tests.
@@ -432,6 +435,8 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'warningDmMessage',
 				'infoCommands',
 				'doorTickerColumnsPerSecond',
+				'vanTurfClaimTtlHours',
+				'vanTurfMaxConcurrentClaims',
 			].sort(),
 		);
 	});
