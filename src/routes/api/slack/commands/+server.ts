@@ -11,13 +11,23 @@ import { buildNoteModal, parseCommandTarget } from '$lib/server/slack-modal.js';
 import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { loadUserToken, type TokenLookupFailure } from '$lib/server/user-tokens.js';
 import { normalizeCommandName, renderInfoMessage } from '$lib/info-command.js';
+import { respondToSlack } from '$lib/server/slack-response-url.js';
+import { turfListMessage } from '$lib/server/van/turf-slack.js';
 import { errMessage } from '$lib/err-message.js';
 
-// Slash commands. Two kinds:
+// Slash commands. Three kinds:
 //
 //   /member-note          — opens the note/warning modal (see slack-modal.ts)
+//   /turfs                — nearest available turf, claimable in place
+//                           (see van/turf-slack.ts)
 //   anything else         — looked up in `info_commands`, the admin-defined
 //                           blurbs, and posted **as the person who typed it**
+//
+// /turfs is the ONLY command here open to non-admins, and deliberately so: it
+// serves the same data the /turfs web page serves, and that page is open to any
+// signed-in workspace member minus the turf blocklist. A Slack workspace member
+// is the same bar as a Slack-OAuth session, so this grants nothing new. Its
+// gates are van/turf-slack.ts's, not this file's.
 //
 // Two things differ from the events route: Slack sends slash commands as
 // `application/x-www-form-urlencoded` (so the body is parsed with
@@ -26,6 +36,7 @@ import { errMessage } from '$lib/err-message.js';
 // src/lib/server/csrf.ts. The signature verification below is what replaces it.
 
 const LOG = '[info-command]';
+const TURF_LOG = '[van]';
 
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.text();
@@ -40,13 +51,62 @@ export const POST: RequestHandler = async ({ request }) => {
 	const triggerId = form.get('trigger_id') ?? '';
 	const channelId = form.get('channel_id');
 	const commandText = form.get('text') ?? '';
+	const responseUrl = form.get('response_url');
 
 	if (command === '/member-note') {
 		return handleMemberNote({ slackUserId, triggerId, channelId, commandText });
 	}
 
+	if (command === '/turfs') {
+		return handleTurfs({ slackUserId, channelId, commandText, responseUrl });
+	}
+
 	return handleInfoCommand({ command, slackUserId, channelId });
 };
+
+// ---------------------------------------------------------------------------
+// /turfs
+// ---------------------------------------------------------------------------
+
+/**
+ * Acknowledge now, answer in a moment.
+ *
+ * Unlike /member-note this cannot be done inside Slack's three seconds. A cold
+ * geocode is up to four on its own (zip-centroid.ts), and fly.toml still has
+ * min_machines_running = 0, so a boot can land on top of it.
+ *
+ * The follow-up asks to replace the ack rather than sit below it. Slack's
+ * support for `replace_original` on a slash command's first ephemeral is not
+ * something to bet on, so the failure mode is deliberately benign: if it does
+ * not take, the answer simply appears under "Finding turf near you…" instead
+ * of over it.
+ */
+function handleTurfs(args: {
+	slackUserId: string;
+	channelId: string | null;
+	commandText: string;
+	responseUrl: string | null;
+}): Response {
+	const { slackUserId, channelId, commandText, responseUrl } = args;
+
+	void (async () => {
+		const message = await turfListMessage(db, {
+			slackUserId,
+			channelId,
+			argument: commandText,
+		});
+		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
+	})().catch((err) => {
+		console.error(`${TURF_LOG} /turfs failed for ${slackUserId}:`, errMessage(err));
+		respondToSlack(
+			responseUrl,
+			{ text: 'Could not look up turf just now. Please try again.' },
+			{ replaceOriginal: true, logTag: TURF_LOG },
+		);
+	});
+
+	return ephemeral(commandText.trim() ? 'Finding turf near you…' : 'Finding turf…');
+}
 
 // ---------------------------------------------------------------------------
 // /member-note

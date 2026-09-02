@@ -26,7 +26,7 @@ export const INFO_COMMAND_MAX_LENGTH = 32;
  * `/member-note` here would shadow the moderation modal with a blurb, which is
  * both surprising and hard to diagnose from the Slack side.
  */
-export const RESERVED_COMMANDS = new Set(['/member-note']);
+export const RESERVED_COMMANDS = new Set(['/member-note', '/turfs']);
 
 const COMMAND_RE = /^\/[a-z0-9][a-z0-9_-]*$/;
 

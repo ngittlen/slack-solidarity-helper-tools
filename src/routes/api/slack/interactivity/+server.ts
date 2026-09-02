@@ -23,6 +23,15 @@ import {
 	VIEW_RECORD_SHORTCUT_CALLBACK_ID,
 	type NoteSubmission,
 } from '$lib/server/slack-modal.js';
+import { displayName } from '$lib/server/slack-display-name.js';
+import { respondToSlack } from '$lib/server/slack-response-url.js';
+import {
+	decodeTurfAction,
+	TURF_CLAIM_ACTION_ID,
+	TURF_PAGE_ACTION_ID,
+	TURF_RELEASE_ACTION_ID,
+} from '$lib/server/van/turf-command.js';
+import { claimFromSlack, releaseFromSlack, turfListMessage } from '$lib/server/van/turf-slack.js';
 import { errMessage } from '$lib/err-message.js';
 
 // Everything Slack sends back from an interactive surface:
@@ -37,6 +46,7 @@ import { errMessage } from '$lib/err-message.js';
 // src/lib/server/csrf.ts).
 
 const LOG = '[member-note]';
+const TURF_LOG = '[van]';
 
 interface SlackPayload {
 	type?: string;
@@ -47,7 +57,7 @@ interface SlackPayload {
 	team?: { domain?: string };
 	channel?: { id?: string };
 	message?: { user?: string; bot_id?: string; ts?: string; thread_ts?: string };
-	actions?: { action_id?: string }[];
+	actions?: { action_id?: string; value?: string }[];
 	view?: { id?: string; hash?: string; callback_id?: string };
 }
 
@@ -172,6 +182,17 @@ async function openMemberRecord(payload: SlackPayload): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 async function handleBlockActions(payload: SlackPayload): Promise<Response> {
+	// Turf buttons are checked FIRST and by action_id, because they come from a
+	// message rather than a modal: `payload.view` is undefined for them, so the
+	// note-modal guard below would swallow them silently.
+	const turfAction = payload.actions?.find(
+		(a) =>
+			a.action_id === TURF_CLAIM_ACTION_ID ||
+			a.action_id === TURF_RELEASE_ACTION_ID ||
+			a.action_id === TURF_PAGE_ACTION_ID,
+	);
+	if (turfAction) return handleTurfAction(payload, turfAction);
+
 	const changedKind = payload.actions?.some((a) => a.action_id === KIND_ACTION_ID);
 	if (!changedKind || payload.view?.callback_id !== NOTE_MODAL_CALLBACK_ID) return ok();
 
@@ -195,6 +216,74 @@ async function handleBlockActions(payload: SlackPayload): Promise<Response> {
 	} catch (err) {
 		console.error(`${LOG} views.update failed:`, errMessage(err));
 	}
+	return ok();
+}
+
+// ---------------------------------------------------------------------------
+// Turf checkout buttons
+// ---------------------------------------------------------------------------
+
+/**
+ * Claim, give back, or page the turf list.
+ *
+ * Every gate the /turfs command applies is applied again inside
+ * van/turf-slack.ts, against the same shared counters. That is not belt and
+ * braces: these buttons are reachable without ever running the command — a
+ * value can be replayed, and a message stays interactive for thirty minutes —
+ * so inheriting the command's gates is not something they can do.
+ *
+ * Acknowledged immediately and answered through response_url, because a claim
+ * is several database round trips and Slack's budget is three seconds.
+ */
+function handleTurfAction(
+	payload: SlackPayload,
+	action: { action_id?: string; value?: string },
+): Response {
+	const slackUserId = payload.user?.id ?? '';
+	const responseUrl = payload.response_url;
+	// The value round-tripped through a client, so it is untrusted input.
+	// decodeTurfAction validates it; turf-slack re-checks the chapter against
+	// settings regardless.
+	const decoded = decodeTurfAction(action.value);
+
+	if (!slackUserId || !decoded) {
+		respondToSlack(
+			responseUrl,
+			{ text: 'That button has expired. Run `/turfs` again.' },
+			{ replaceOriginal: true, logTag: TURF_LOG },
+		);
+		return ok();
+	}
+
+	void (async () => {
+		const ctx = {
+			slackUserId,
+			channelId: payload.channel?.id ?? null,
+			chapterId: decoded.chapterId,
+			offset: decoded.offset,
+			location: decoded.location ?? null,
+		};
+
+		const message =
+			action.action_id === TURF_CLAIM_ACTION_ID && decoded.mapRouteId !== undefined
+				? await claimFromSlack(db, { ...ctx, mapRouteId: decoded.mapRouteId })
+				: action.action_id === TURF_RELEASE_ACTION_ID && decoded.mapRouteId !== undefined
+					? await releaseFromSlack(db, { ...ctx, mapRouteId: decoded.mapRouteId })
+					: await turfListMessage(db, ctx);
+
+		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
+	})().catch((err) => {
+		console.error(
+			`${TURF_LOG} turf action ${action.action_id} failed for ${slackUserId}:`,
+			errMessage(err),
+		);
+		respondToSlack(
+			responseUrl,
+			{ text: 'That did not go through. Run `/turfs` again.' },
+			{ replaceOriginal: true, logTag: TURF_LOG },
+		);
+	});
+
 	return ok();
 }
 
@@ -393,18 +482,6 @@ async function announceToAdmins(
 		});
 	} catch (err) {
 		console.error(`${LOG} could not post to the admin channel:`, errMessage(err));
-	}
-}
-
-/** Best-effort display name for the audit trail; falls back to the id. */
-async function displayName(slackUserId: string): Promise<string> {
-	try {
-		const info = await slack.users.info({ user: slackUserId });
-		const profile = (info.user as { profile?: { display_name?: string; real_name?: string } })
-			?.profile;
-		return profile?.display_name?.trim() || profile?.real_name?.trim() || slackUserId;
-	} catch {
-		return slackUserId;
 	}
 }
 

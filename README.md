@@ -73,6 +73,47 @@ Slash commands that post a set message **as the admin who runs them** — not as
 
 Because the token is captured at login, and only admins can log in, these commands are admin-only. An admin who has never signed in to the web app gets an ephemeral prompt with the link, rather than a failed post.
 
+### The `/turfs` command
+
+Turf checkout without opening a browser. `/turfs` replies with the five nearest available
+turfs, each claimable from the message itself.
+
+Three ways to say where you are, resolved in that order:
+
+| You type                             | County comes from                       | Sorted by         |
+| ------------------------------------ | --------------------------------------- | ----------------- |
+| `/turfs` in a county channel         | the chapter → channel map               | turf name         |
+| `/turfs 48104`                       | the ZIP → chapter map, else the channel | distance from ZIP |
+| `/turfs 100 N Main St, Ann Arbor MI` | the matched ZIP, else the channel       | distance          |
+
+If none of them resolve, the reply is a list of counties to pick from — the same gate the
+web page applies, where no county means no turf rather than a default one.
+
+**Anyone in the workspace can run it**, minus the block list at **Settings → Blocked from
+turf checkout**. This is the only slash command in the app that is not admin-only, and it
+grants nothing new: a Slack workspace member is the same bar as a Slack-OAuth session, and
+the `/turfs` web page is already open to exactly these people.
+
+**Claim, Give back and Show next 5** are buttons on the reply. They re-run every gate the
+command does, against the same counters — they are reachable without the command, since a
+Slack message stays interactive for thirty minutes, so inheriting its gates is not
+something they can do. Each press replaces the message rather than adding one, so pressing
+"Show next 5" three times does not leave three stale lists to claim from.
+
+**The MiniVAN list number is shown only to whoever claimed the turf**, in an ephemeral
+message — which has exactly one recipient by construction. It is never posted to a
+channel, never DMed, and deliberately kept out of the notification fallback text, which is
+the one thing that renders on a locked phone.
+
+**A typed address is never stored and never logged.** It is geocoded in memory, used to
+sort, and dropped; only the ZIP the geocoder matched it to is cached, in
+`van_zip_centroids`. Coordinates that ride along in a button value are rounded to three
+decimals (~100 m) — enough to re-sort a list, not a location trace.
+
+The reply is deferred: Slack allows three seconds, a cold geocode takes up to four, and
+`min_machines_running = 0` can add a boot on top. So the command acknowledges immediately
+and posts the real answer to `response_url`, replacing the acknowledgement.
+
 ## Setup
 
 ### 1. Configure the Slack App
@@ -115,17 +156,22 @@ Because the token is captured at login, and only admins can log in, these comman
     - Request URL: `https://your-app.fly.dev/api/slack/commands`
     - Usage hint: `[@member]`
     - **Turn ON "Escape channels, users, and links"** — without it the command text has no user id to prefill the modal with
-11. Under **Slash Commands**, create one command per row you add on `/settings` → **Info commands**, e.g. `/info-phone`:
+11. Under **Slash Commands**, create `/turfs`:
+    - Request URL: `https://your-app.fly.dev/api/slack/commands` (the same URL as `/member-note`)
+    - Usage hint: `[zip or address]`
+    - Leave "Escape channels, users, and links" off — the argument is a place, not a mention
+
+12. Under **Slash Commands**, create one command per row you add on `/settings` → **Info commands**, e.g. `/info-phone`:
     - Request URL: `https://your-app.fly.dev/api/slack/commands` (the same URL as `/member-note`)
     - Leave "Escape channels, users, and links" off — these commands take no arguments
 
     This step is not optional and not automatic: Slack will not route a command it has no registration for, so a command that exists only on `/settings` silently does nothing. Deleting a command is likewise two steps — remove the row on `/settings` **and** the registration here.
 
-12. Under **Interactivity & Shortcuts**, enable interactivity and set the Request URL to:
+13. Under **Interactivity & Shortcuts**, enable interactivity and set the Request URL to:
     ```
     https://your-app.fly.dev/api/slack/interactivity
     ```
-13. Under **Interactivity & Shortcuts → Shortcuts**, create two **message** shortcuts (the callback IDs must match exactly):
+14. Under **Interactivity & Shortcuts → Shortcuts**, create two **message** shortcuts (the callback IDs must match exactly):
     - "Log member note" — callback ID `log_member_note`
     - "View member record" — callback ID `view_member_record`
 
@@ -336,16 +382,28 @@ The `team_join` handler does nothing if the member's email is not found in solid
 
 ### `POST /api/slack/commands`
 
-Slash commands (`/member-note`). Verifies the Slack signature over the raw body, then
-parses it as form-encoded. Restricted to the admin allowlist — non-admins get an
-ephemeral refusal. Opens the note modal via `views.open`.
+Slash commands. Verifies the Slack signature over the raw body, then parses it as
+form-encoded.
+
+- `/member-note` opens the note modal via `views.open`. Admin-only.
+- `/turfs` lists the nearest available turf — see [The `/turfs` command](#the-turfs-command).
+  **The only command here open to non-admins**, deliberately: it serves the same data as
+  the `/turfs` web page, which is already open to any signed-in member minus the turf
+  block list. Its gates are `$lib/server/van/turf-slack.ts`'s.
+- Anything else is looked up in `info_commands` and posted as the admin who ran it.
+  Admin-only.
 
 ### `POST /api/slack/interactivity`
 
 Handles `message_action` (both message shortcuts), `block_actions` (the Note/Warning
-toggle, which re-renders the modal via `views.update`) and `view_submission` (saving the
-note). Same signature verification. On submit the note row is written first, the modal is
-closed, and the warning DM is sent detached — so a DM failure never loses the note.
+toggle, which re-renders the modal via `views.update`; and the turf Claim / Give back /
+Show next 5 buttons) and `view_submission` (saving the note). Same signature
+verification. On submit the note row is written first, the modal is closed, and the
+warning DM is sent detached — so a DM failure never loses the note.
+
+Turf buttons are dispatched by `action_id` **before** the note-modal guard, because they
+come from a message rather than a modal and so carry no `view` — the modal guard would
+otherwise swallow them silently.
 
 ### `GET /members` (admin)
 
@@ -636,6 +694,103 @@ Two dropdowns in one GET form: **chapter** (all, or one) and **period** (24 hour
 Empty states distinguish **"no activity in this period"** from **"no turf has been loaded yet"** — with no VAN key the catalog is empty, and reading that as a quiet week would send someone looking for volunteers instead of an API key.
 
 Nothing is written by this page, and nothing is posted to Slack: it reads `van_turf_checkouts`, which already records every event.
+
+### `POST /api/turfs/{mapRouteId}`
+
+Claim, release, or complete a turf, via `{"action": "claim" | "release" | "complete"}`. 401 unauthenticated, 403 blocked, 409 with a volunteer-readable reason when the rules refuse.
+
+Two simultaneous claims resolve to exactly one winner at the storage layer, not in application code: a partial unique index on `van_turf_checkouts (map_route_id) WHERE released_at IS NULL AND completed_at IS NULL`. `canClaim` in `$lib/van/checkout.ts` is the friendly layer that refuses with a reason someone can act on.
+
+Release and complete are scoped to the caller's own active claim, so posting someone else's route id does nothing.
+
+**Retired turf** — a route VAN no longer returns — is excluded from the page, **except when the viewer still holds a claim on it**. `schema.ts` keeps those rows for exactly that reason: dropping them would take a volunteer's turf and its MiniVAN list number off their own page while they were out walking it. Such turf is flagged `retired` and the page warns that the list number may stop working. The catalog sync releases these claims with `releaseReason = 'retired'`, but not before its next run.
+
+**Expired claims** are swept by `/api/internal/van-sync` before it talks to VAN, so ledger housekeeping happens whether or not the catalog fetch succeeds. Reads never needed it — `isActive` ignores a lapsed claim — but without the sweep the table can't tell "gave the turf back" from "let it run out", which is what the drift report and per-canvasser attribution read.
+
+#### What organizers must do in VAN
+
+The app never cuts turf — VAN's API cannot create MiniVAN exports (`/minivanExports` is GET-only). Our app publishes what already exists and owns the checkout ledger. So after every turf cut:
+
+- **Generate the printed list.** A route with no `printedList.number` has no MiniVAN list number, so it is not claimable. The sync posts a single summary warning naming the turfs in this state.
+- **Cut map regions against a "not yet contacted" filter.** This is what makes `doorCount` shrink as doors get knocked — the entire remaining-doors mechanism. A region cut without it never shrinks, and every doors-cleared number derived from it is zero.
+- **Bulk-export turf to MiniVAN ahead of time**, once per cut rather than once per volunteer.
+
+### `POST /api/internal/van-sync`
+
+Scheduler-only, every 30 minutes during waking hours. Pulls the VAN turf catalog into `van_turfs` so the turf page has something to show. Auth via `?key=<INTERNAL_CRON_SECRET>`.
+
+For each chapter mapped under **Settings → Chapter → VAN folders**, it reads `GET /folders/{id}/mapRegions`, matches each Map Route to its MiniVAN printed-list number, and upserts a row per route. Runs take a `sync_locks` lock and are idempotent — an overlapping or delayed run is a no-op, so a skipped cron is harmless.
+
+**The chapter → folder mapping is an input, not something the sync discovers.** A chapter with no folder mapped has no turf, and the first sync is a no-op until an admin fills it in. Run `npm run van:check` to list the folder ids the key can see.
+
+**Retirement is scoped to folders that actually synced.** A folder that errors — a 403 on an ungranted tier, a VAN outage — is skipped, and its turf is left exactly as it was. Retiring turf the sync merely failed to look at would release live checkouts under volunteers already standing on the doorstep. When a route genuinely disappears it is stamped `retiredAt` (never deleted, so a live checkout still renders) and any active claim on it is released with `releaseReason = 'retired'`.
+
+**Missing tiers degrade rather than fail.** `/printedLists` (Tier 2) and `/minivanExports` + `/savedLists` (Tier 3) are each optional: without them the catalog still lands, with no list-number backfill and no flagging of turf an organizer distributed by hand. This is what makes a sandbox or demo key useful before the EveryAction security review clears. Anything skipped is reported in `degraded` and posted to the tracking channel.
+
+#### Setting up a VAN key
+
+1. Put the credentials in Fly secrets (or `.env.local` for dev):
+
+   ```
+   VAN_APP_NAME=…      # the Application Name EveryAction issued — this is the Basic auth username
+   VAN_API_KEY=…
+   VAN_DATABASE_MODE=0 # 0 = My Voters, 1 = My Campaign
+   ```
+
+   There is deliberately no default for `VAN_DATABASE_MODE`. The wrong mode authenticates successfully and returns a different, mostly empty database — a failure that reads as "the campaign has no turf" rather than as a misconfiguration.
+
+2. Verify the key and see what it can reach:
+
+   ```bash
+   npm run van:check              # probes each tier, lists folders and export job types
+   npm run van:check -- --folder 1152   # dump one folder's regions and routes
+   ```
+
+   This is read-only. It never writes to VAN or to the database.
+
+3. Map the folder ids it printed to chapters under **Settings → Chapter → VAN folders**.
+
+4. Trigger a sync: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET"`.
+
+Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` prints — pick the type that can export `VAddressLatitude` / `VAddressLongitude`. EveryAction issues these ids per developer, so the `101` in VAN's docs is an example and hardcoding it produces a 400. The catalog sync runs fine without it; only hull geometry is blocked.
+
+### `GET /turfs`
+
+The volunteer turf page. Any signed-in Slack member may use it, minus the block list at **Settings → Blocked from turf checkout**. The `/turfs` slash command serves the same data over Slack, through the same gates — see [The `/turfs` command](#the-turfs-command).
+
+Four gates, all server-side: session, block list, chapter, and a rate limit on switching chapters. The chapter filter runs in the load function _before serialising_ — shipping every chapter and filtering in the browser would make the compartment cosmetic, because the payload is the boundary. Before a chapter is chosen the page returns no turf at all.
+
+**The MiniVAN list number is only sent for turf you currently hold.** It is the credential — it is what pulls the doors down in MiniVAN — so serialising it for every turf on the map would let anyone load any turf regardless of who holds it, making the checkout ledger advisory. It is issued by the claim response and withdrawn on release, expiry, or completion.
+
+**Payload budget.** A 1,000-turf chapter serialises to ~800 KB, so a page load sends at most the 150 nearest turfs plus the chapter's total, and the map fetches more by viewport from `GET /api/turfs?chapter=&bbox=minLat,minLng,maxLat,maxLng`. That endpoint re-applies every gate the page load does — it returns the same data, so a weaker guard on it would just be the way around the page's guard. `?demo` pages the same way against fabricated data, so the walkthrough exercises the real request path.
+
+A **total** is reported rather than a remainder. "Showing 150 of 1,000" keeps both halves describing the same set; "840 more" drifts the moment someone pans, because the loaded count grows while the remainder describes whichever viewport answered last.
+
+**`?demo` renders the same page against fabricated data** (admin-only). It replaced a separate `/turfs/demo` route, which had drifted from the real page in three ways — its own copy of the layout, its own claim handling, and its own turf type. The old URL 308s to `/turfs?demo`.
+
+The demo branch is the first thing the load function does and returns _before any database access_, so demo mode cannot read real turf even if a later gate were wrong — a structural property rather than a flag checked correctly in several places. Claim actions mutate component state and never reach the network. `DemoTurf` is now an alias of `TurfView`, so adding a field to what volunteers see breaks the fixture until it supplies one too. `?demo&view=admin` previews the organizer payload — it feeds `visibleTurfState` server-side, so the wire format genuinely differs.
+
+**Rate limits are shared between the page and the API**, in `$lib/server/van/rate-limit-store.ts`. Two of them, doing different jobs:
+
+| Limit             | Budget          | Covers                                                                 |
+| ----------------- | --------------- | ---------------------------------------------------------------------- |
+| Distinct chapters | 8 / hour / user | Sweeping chapters. Re-opening one you've already looked at is free.    |
+| Turf API requests | 60 / min / user | Walking the bbox grid, and probing route ids at `POST /api/turfs/{id}` |
+
+Both are shared deliberately: when the chapter limiter was module state inside the page load, a loop over `GET /api/turfs?chapter=` bypassed it entirely. The budget has to follow the user, not the URL. Refusals return `429` with `Retry-After`.
+
+**Chapter views are logged only above a threshold** — 4 distinct chapters in an hour — and the one line names every chapter seen. Logging every view produced a line each time a volunteer reopened their own county, which buried the entries that meant something. Someone pacing under the threshold browses without a log line; the rate limit still caps them at eight an hour.
+
+**Distance sorting** uses browser geolocation when granted. When it is declined or unavailable, a ZIP box resolves through the Census geocoder (cached in `van_zip_centroids`) and the server sorts before serialising. It is a plain GET form, so it works with JavaScript off. Every failure path returns an unsorted list rather than an error — losing distance sorting must never cost someone the turf list.
+
+**The map is optional.** Turf with no hull and no centroid — which is all of it on a key without export-job access — is listed but not drawn. The list view is the accessible path, the data-saving path, and the one that works when the tile provider is down.
+
+| Env var                 | Default                              | Purpose                                 |
+| ----------------------- | ------------------------------------ | --------------------------------------- |
+| `MAP_TILE_URL_TEMPLATE` | CARTO Positron                       | Basemap tiles, `{z}/{x}/{y}`            |
+| `MAP_TILE_ATTRIBUTION`  | © OpenStreetMap contributors © CARTO | Rendered on the map; a condition of use |
+
+**Move to a keyed tile account before real volunteer traffic.** The default is CARTO's keyless endpoint, which is courtesy rather than an SLA, and a canvass launch is the worst moment to discover a rate limit. Both vars are secrets, so the swap is a `fly secrets set`, not a deploy. A failed tile load degrades to a graticule and a "street map unavailable" notice rather than a white void.
 
 ### `POST /api/turfs/{mapRouteId}`
 

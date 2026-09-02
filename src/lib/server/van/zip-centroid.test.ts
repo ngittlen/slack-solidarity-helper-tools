@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { geocodeZip, lookupZipCentroid, normalizeZip } from './zip-centroid.js';
+import {
+	geocodeAddress,
+	geocodeZip,
+	lookupZipCentroid,
+	normalizeZip,
+	resolveLocation,
+} from './zip-centroid.js';
 
 function res(status: number, body: unknown): Response {
 	return {
@@ -170,5 +176,162 @@ describe('lookupZipCentroid', () => {
 		const fetchFn = vi.fn().mockResolvedValue(res(200, { result: { addressMatches: [] } }));
 		expect(await lookupZipCentroid(db, '48104', fetchFn as never)).toBeNull();
 		expect(written).toHaveLength(0);
+	});
+});
+
+// The /turfs Slack command lets a volunteer type a street address. Two rules
+// hold everywhere below: the address is never written to a column, and it never
+// appears in a log line.
+const ADDRESS = '1600 Pennsylvania Ave NW, Washington DC';
+
+const ADDRESS_MATCH = {
+	result: {
+		addressMatches: [
+			{ coordinates: { x: -77.0365, y: 38.8977 }, addressComponents: { zip: '20500' } },
+		],
+	},
+};
+
+describe('geocodeAddress', () => {
+	it('returns the point and the matched ZIP', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ADDRESS_MATCH));
+		await expect(geocodeAddress(ADDRESS, fetchFn as never)).resolves.toEqual({
+			point: { lat: 38.8977, lng: -77.0365 },
+			zip: '20500',
+		});
+	});
+
+	it('sends the address to the one-line endpoint', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ADDRESS_MATCH));
+		await geocodeAddress(ADDRESS, fetchFn as never);
+		const url = new URL(fetchFn.mock.calls[0]![0] as string);
+		expect(url.pathname).toContain('onelineaddress');
+		expect(url.searchParams.get('address')).toBe(ADDRESS);
+	});
+
+	// The coordinates are still good without one, so this is not a failure — it
+	// just means the chapter has to be resolved some other way.
+	it('returns a null zip when the match carries no usable one', async () => {
+		const body = {
+			result: { addressMatches: [{ coordinates: { x: -77.03, y: 38.89 }, addressComponents: {} }] },
+		};
+		const fetchFn = vi.fn().mockResolvedValue(res(200, body));
+		const out = await geocodeAddress(ADDRESS, fetchFn as never);
+		expect(out?.point).toEqual({ lat: 38.89, lng: -77.03 });
+		expect(out?.zip).toBeNull();
+	});
+
+	it.each([
+		['no match', { result: { addressMatches: [] } }],
+		['null island', { result: { addressMatches: [{ coordinates: { x: 0, y: 0 } }] } }],
+		['junk coordinates', { result: { addressMatches: [{ coordinates: { x: 'x', y: 'y' } }] } }],
+	])('returns null on %s', async (_label, body) => {
+		const fetchFn = vi.fn().mockResolvedValue(res(200, body));
+		await expect(geocodeAddress(ADDRESS, fetchFn as never)).resolves.toBeNull();
+	});
+
+	it.each([
+		['an error status', () => Promise.resolve(res(500, {}))],
+		['a timeout', () => Promise.reject(Object.assign(new Error('x'), { name: 'TimeoutError' }))],
+	])('returns null rather than throwing on %s', async (_label, outcome) => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const fetchFn = vi.fn().mockImplementation(outcome);
+		await expect(geocodeAddress(ADDRESS, fetchFn as never)).resolves.toBeNull();
+		warn.mockRestore();
+	});
+
+	it('does not call the geocoder for an empty query', async () => {
+		const fetchFn = vi.fn();
+		await expect(geocodeAddress('   ', fetchFn as never)).resolves.toBeNull();
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	// The rule that makes an address safe to accept at all. A warn line carrying
+	// someone's home address outlives the request by however long the log
+	// aggregator keeps it.
+	it('never puts the address in a log line', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const outcomes = [
+			() => Promise.resolve(res(500, {})),
+			() => Promise.reject(new Error(`fetch failed for ${ADDRESS}`)),
+		];
+		for (const outcome of outcomes) {
+			await geocodeAddress(ADDRESS, vi.fn().mockImplementation(outcome) as never);
+		}
+		const logged = warn.mock.calls.flat().join(' ');
+		expect(logged).not.toContain('Pennsylvania');
+		expect(logged).not.toContain(ADDRESS);
+		warn.mockRestore();
+	});
+});
+
+describe('resolveLocation', () => {
+	it('takes the cached ZIP path for a bare ZIP', async () => {
+		const { db } = makeDb([{ zip: '48104', lat: 42.28, lng: -83.74 }]);
+		const fetchFn = vi.fn();
+		await expect(resolveLocation(db, '48104', fetchFn as never)).resolves.toEqual({
+			point: { lat: 42.28, lng: -83.74 },
+			zip: '48104',
+		});
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it('geocodes anything that is not a ZIP as an address', async () => {
+		const { db } = makeDb();
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ADDRESS_MATCH));
+		await expect(resolveLocation(db, ADDRESS, fetchFn as never)).resolves.toEqual({
+			point: { lat: 38.8977, lng: -77.0365 },
+			zip: '20500',
+		});
+	});
+
+	// The whole data-handling posture in one assertion: an address goes in, and
+	// only a ZIP centroid comes out the other side into a column.
+	it('caches the matched ZIP and never the address', async () => {
+		const { db, written } = makeDb();
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ADDRESS_MATCH));
+		await resolveLocation(db, ADDRESS, fetchFn as never);
+		expect(written).toEqual([
+			{ zip: '20500', lat: 38.8977, lng: -77.0365, fetchedAt: expect.any(String) },
+		]);
+		expect(JSON.stringify(written)).not.toContain('Pennsylvania');
+	});
+
+	it('writes nothing when the match carries no ZIP', async () => {
+		const { db, written } = makeDb();
+		const body = {
+			result: { addressMatches: [{ coordinates: { x: -77.03, y: 38.89 }, addressComponents: {} }] },
+		};
+		const fetchFn = vi.fn().mockResolvedValue(res(200, body));
+		await resolveLocation(db, ADDRESS, fetchFn as never);
+		expect(written).toEqual([]);
+	});
+
+	it.each([
+		['null', null],
+		['undefined', undefined],
+		['blank', '   '],
+	])('returns null for %s input without calling the geocoder', async (_label, raw) => {
+		const { db } = makeDb();
+		const fetchFn = vi.fn();
+		await expect(resolveLocation(db, raw, fetchFn as never)).resolves.toBeNull();
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it('returns null when the address does not match', async () => {
+		const { db } = makeDb();
+		const fetchFn = vi.fn().mockResolvedValue(res(200, { result: { addressMatches: [] } }));
+		await expect(resolveLocation(db, ADDRESS, fetchFn as never)).resolves.toBeNull();
+	});
+
+	it('survives a cache write failure', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { db } = makeDb([], { writeThrows: true });
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ADDRESS_MATCH));
+		await expect(resolveLocation(db, ADDRESS, fetchFn as never)).resolves.toEqual({
+			point: { lat: 38.8977, lng: -77.0365 },
+			zip: '20500',
+		});
+		warn.mockRestore();
 	});
 });
