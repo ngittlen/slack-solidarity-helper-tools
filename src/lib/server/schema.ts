@@ -276,6 +276,14 @@ export const appConfig = sqliteTable(
 		// Door-knock ticker scroll speed in LED columns per second. DB-only,
 		// no env fallback; NULL means DEFAULT_TICKER_COLUMNS_PER_SECOND.
 		doorTickerColumnsPerSecond: real('door_ticker_columns_per_second'),
+		// Turf checkout tunables (Story 7.4). DB-only, no env fallback; NULL means
+		// the built-in default in $lib/van/checkout.ts. Bounds are enforced on
+		// write by app-config-fields.ts and clamped again on read by
+		// resolveClaimOptions, because a row written before the bounds existed
+		// must degrade to something sane rather than hand a volunteer a claim
+		// that lapses in a minute.
+		vanTurfClaimTtlHours: integer('van_turf_claim_ttl_hours'),
+		vanTurfMaxConcurrentClaims: integer('van_turf_max_concurrent_claims'),
 		// Theme overrides as JSON: {"color-bg":{"light":"#fbf0e4"}}. One column
 		// rather than ~60, because adding a field to this table is a nine-step
 		// checklist across six files and a palette would be unmaintainable that

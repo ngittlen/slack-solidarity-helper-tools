@@ -2,12 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
 
 const mockBlock = vi.hoisted(() => vi.fn());
+const mockSendDm = vi.hoisted(() => vi.fn());
+const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockUnblock = vi.hoisted(() => vi.fn());
 const mockLoadSettings = vi.hoisted(() => vi.fn());
 const mockValidateSlackUser = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({ db: {} }));
-vi.mock('$lib/server/slack', () => ({ slack: {} }));
+vi.mock('$lib/server/slack', () => ({ slack: { chat: { postMessage: mockPostMessage } } }));
+vi.mock('$lib/server/slack-dm', () => ({ sendDm: mockSendDm }));
 vi.mock('$lib/server/env', () => ({ SLACK_SUPERUSER_ID: 'U_SUPER' }));
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
 vi.mock('$lib/server/settings-validation', () => ({ validateSlackUser: mockValidateSlackUser }));
@@ -33,7 +36,12 @@ describe('POST /api/settings/van-blocklist', () => {
 		vi.clearAllMocks();
 		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['U_ADMIN']) });
 		mockValidateSlackUser.mockResolvedValue({ ok: true, displayName: 'Bob' });
-		mockBlock.mockResolvedValue({ releasedMapRouteIds: [4101], sessionsRevoked: 2 });
+		mockBlock.mockResolvedValue({
+			released: [{ mapRouteId: 4101, name: 'Turf 01' }],
+			sessionsRevoked: 2,
+		});
+		mockSendDm.mockResolvedValue(true);
+		mockPostMessage.mockResolvedValue({ ok: true });
 		mockUnblock.mockResolvedValue(undefined);
 	});
 

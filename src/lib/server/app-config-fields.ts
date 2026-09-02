@@ -20,6 +20,12 @@ import { getSlackChannels } from './autocomplete-sources.js';
 import { extractChannelNames } from '../channel-tokens.js';
 import { validateWarningTemplate } from '../warning-dm.js';
 import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '../ticker-speed.js';
+import {
+	MAX_CLAIM_TTL_HOURS,
+	MAX_CONCURRENT_CLAIMS,
+	MIN_CLAIM_TTL_HOURS,
+	MIN_CONCURRENT_CLAIMS,
+} from '../van/checkout.js';
 import { parseOverrides } from '$lib/styles/theme-css.js';
 import { SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
 
@@ -240,6 +246,20 @@ export const APP_CONFIG_FIELDS: {
 		MIN_TICKER_COLUMNS_PER_SECOND,
 		MAX_TICKER_COLUMNS_PER_SECOND,
 	),
+	// Turf checkout (Story 7.4). Bounds live with the defaults in
+	// $lib/van/checkout.ts, so the editor's slider, this validator and the
+	// read-side clamp all cite the same numbers.
+	vanTurfClaimTtlHours: numberInRangeField(
+		'vanTurfClaimTtlHours',
+		MIN_CLAIM_TTL_HOURS,
+		MAX_CLAIM_TTL_HOURS,
+	),
+	vanTurfMaxConcurrentClaims: numberInRangeField(
+		'vanTurfMaxConcurrentClaims',
+		MIN_CONCURRENT_CLAIMS,
+		MAX_CONCURRENT_CLAIMS,
+	),
+
 	themeTokens: themeTokensField('themeTokens'),
 
 	siteName: boundedTextField('siteName', SITE_NAME_MAX_LENGTH),

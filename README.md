@@ -579,7 +579,11 @@ Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` pr
 
 ### `GET /turfs`
 
-The volunteer turf page. Any signed-in Slack member may use it, minus the block list at **Settings → Blocked from turf checkout**. Organizers get the history of what was claimed and walked at [`GET /turfs/activity`](#get-turfsactivity-admin).
+The volunteer turf page. Any signed-in Slack member may use it, minus the block list at **Settings → Blocked from turf checkout**.
+
+**Blocking is announced and the volunteer is told.** A block posts a `[van]` line to the member notes channel — the same private admin channel moderation already logs to, because cutting someone off from turf is moderation, and without a trace two organizers undo each other. If the block took turf off them, the volunteer gets a DM naming it and saying not to head out; someone walking to a block that is no longer theirs is the failure this prevents. The DM does not relay the reason the admin typed: that is a note about a person written for other organizers, and repeating it turns a routine notice into an argument the DM cannot hold. A block that freed nothing sends no DM.
+
+**Two numbers are tunable at Settings → Turf checkout**: how long a claim lasts (default 48 hours) and how many turfs one volunteer may hold at once (default 2). Both are read wherever they matter — the page's claim button, the map's viewport endpoint, the claim route that enforces them, and the copy telling a volunteer how long they've got — so the greyed-out button, the promise on it and the expiry written to the ledger cannot drift apart. Out-of-range values are refused on write and clamped again on read, so a row predating the bounds degrades to something sane rather than handing someone a claim that lapses in a minute. Organizers get the history of what was claimed and walked at [`GET /turfs/activity`](#get-turfsactivity-admin).
 
 Four gates, all server-side: session, block list, chapter, and a rate limit on switching chapters. The chapter filter runs in the load function _before serialising_ — shipping every chapter and filtering in the browser would make the compartment cosmetic, because the payload is the boundary. Before a chapter is chosen the page returns no turf at all.
 

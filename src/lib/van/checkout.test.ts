@@ -3,10 +3,17 @@ import {
 	activeClaimFor,
 	activeClaimsFor,
 	canClaim,
+	DEFAULT_CLAIM_TTL_HOURS,
+	DEFAULT_MAX_CONCURRENT_CLAIMS,
 	expiryFor,
 	hoursRemaining,
 	isActive,
 	lapsedClaims,
+	MAX_CLAIM_TTL_HOURS,
+	MAX_CONCURRENT_CLAIMS,
+	MIN_CLAIM_TTL_HOURS,
+	MIN_CONCURRENT_CLAIMS,
+	resolveClaimOptions,
 	turfStatus,
 	type ClaimSnapshot,
 	type TurfSnapshot,
@@ -238,5 +245,112 @@ describe('activeClaimsFor / lapsedClaims / hoursRemaining', () => {
 describe('expiryFor', () => {
 	it('defaults to 48 hours', () => {
 		expect(expiryFor(NOW)).toBe('2026-08-18T12:00:00.000Z');
+	});
+});
+
+// Story 7.4 made the TTL and the per-volunteer cap admin-tunable. This is the
+// one place that turns a nullable settings row into numbers canClaim can use,
+// so it is also the one place a bad row can be caught.
+describe('resolveClaimOptions', () => {
+	it('uses the built-in defaults when nothing is configured', () => {
+		expect(resolveClaimOptions()).toEqual({
+			ttlHours: DEFAULT_CLAIM_TTL_HOURS,
+			maxConcurrentClaims: DEFAULT_MAX_CONCURRENT_CLAIMS,
+		});
+	});
+
+	it.each([
+		['null', null],
+		['undefined', undefined],
+	])('falls back for a %s column', (_label, value) => {
+		expect(resolveClaimOptions({ ttlHours: value, maxConcurrentClaims: value })).toEqual({
+			ttlHours: DEFAULT_CLAIM_TTL_HOURS,
+			maxConcurrentClaims: DEFAULT_MAX_CONCURRENT_CLAIMS,
+		});
+	});
+
+	it('passes configured values through', () => {
+		expect(resolveClaimOptions({ ttlHours: 24, maxConcurrentClaims: 5 })).toEqual({
+			ttlHours: 24,
+			maxConcurrentClaims: 5,
+		});
+	});
+
+	// Clamped rather than rejected: an out-of-range value means a row written
+	// before the bounds existed or edited by hand, and neither is worth failing
+	// a volunteer's page load over.
+	it.each([
+		[
+			'below the floor',
+			{ ttlHours: 0, maxConcurrentClaims: 0 },
+			MIN_CLAIM_TTL_HOURS,
+			MIN_CONCURRENT_CLAIMS,
+		],
+		[
+			'above the ceiling',
+			{ ttlHours: 10_000, maxConcurrentClaims: 99 },
+			MAX_CLAIM_TTL_HOURS,
+			MAX_CONCURRENT_CLAIMS,
+		],
+		[
+			'negative',
+			{ ttlHours: -5, maxConcurrentClaims: -1 },
+			MIN_CLAIM_TTL_HOURS,
+			MIN_CONCURRENT_CLAIMS,
+		],
+	])('clamps a value %s', (_label, config, ttl, cap) => {
+		expect(resolveClaimOptions(config)).toEqual({ ttlHours: ttl, maxConcurrentClaims: cap });
+	});
+
+	it.each([
+		['NaN', Number.NaN],
+		['Infinity', Number.POSITIVE_INFINITY],
+	])('falls back rather than clamping %s', (_label, value) => {
+		expect(resolveClaimOptions({ ttlHours: value }).ttlHours).toBe(DEFAULT_CLAIM_TTL_HOURS);
+	});
+
+	// The bounds are the contract the settings validator and the editor's number
+	// inputs both cite, so a change here has to be deliberate.
+	it('keeps the defaults inside the bounds it enforces', () => {
+		expect(DEFAULT_CLAIM_TTL_HOURS).toBeGreaterThanOrEqual(MIN_CLAIM_TTL_HOURS);
+		expect(DEFAULT_CLAIM_TTL_HOURS).toBeLessThanOrEqual(MAX_CLAIM_TTL_HOURS);
+		expect(DEFAULT_MAX_CONCURRENT_CLAIMS).toBeGreaterThanOrEqual(MIN_CONCURRENT_CLAIMS);
+		expect(DEFAULT_MAX_CONCURRENT_CLAIMS).toBeLessThanOrEqual(MAX_CONCURRENT_CLAIMS);
+	});
+
+	// What the settings are actually for: the resolved numbers have to change
+	// what canClaim decides, not just travel alongside it.
+	it('feeds a cap that canClaim then enforces', () => {
+		const now = new Date('2026-08-30T12:00:00.000Z');
+		const held = (mapRouteId: number) => ({
+			mapRouteId,
+			slackUserId: 'U_VOL',
+			slackUserName: 'Dana',
+			claimedAt: '2026-08-30T09:00:00.000Z',
+			expiresAt: '2099-01-01T00:00:00.000Z',
+			releasedAt: null,
+			completedAt: null,
+		});
+		const turf = {
+			mapRouteId: 900,
+			printedListNumber: '123-456',
+			retiredAt: null,
+			vanDistributedTo: null,
+			doorCount: 100,
+		};
+		const claims = [held(1), held(2)];
+
+		expect(
+			canClaim(turf, claims, 'U_VOL', now, resolveClaimOptions({ maxConcurrentClaims: 2 })).ok,
+		).toBe(false);
+		expect(
+			canClaim(turf, claims, 'U_VOL', now, resolveClaimOptions({ maxConcurrentClaims: 3 })).ok,
+		).toBe(true);
+	});
+
+	it('feeds a TTL that expiryFor then uses', () => {
+		const now = new Date('2026-08-30T12:00:00.000Z');
+		const { ttlHours } = resolveClaimOptions({ ttlHours: 6 });
+		expect(expiryFor(now, ttlHours)).toBe('2026-08-30T18:00:00.000Z');
 	});
 });

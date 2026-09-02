@@ -61,6 +61,8 @@ const settingsFixture = {
 	warningDmMessage: '',
 	infoCommands: [],
 	doorTickerColumnsPerSecond: 30,
+	vanTurfClaimTtlHours: 48,
+	vanTurfMaxConcurrentClaims: 2,
 };
 
 function makeEvent(overrides: {
