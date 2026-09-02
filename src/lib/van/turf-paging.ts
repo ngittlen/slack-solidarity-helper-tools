@@ -49,7 +49,11 @@ export interface Selection<T> {
 	/** How many rows the chapter holds that this payload leaves out. Shown to
 	 *  the volunteer, because a list that silently stops at 150 of 1,000 reads
 	 *  as "there is no more turf" — the most misleading thing this page could
-	 *  say. */
+	 *  say.
+	 *
+	 *  With an `offset`, this counts only what follows the page — it is what the
+	 *  Slack command's "show more" reads to decide whether there is a next page
+	 *  at all. */
 	omitted: number;
 }
 
@@ -69,12 +73,28 @@ function pointOf(row: Locatable): LatLng | null {
  * Turf with no centroid sorts last rather than being dropped. It cannot be
  * mapped and its distance is unknowable, but it is real, claimable turf, and
  * on a key without export-job access it is *all* the turf there is.
+ *
+ * `offset` walks further down that same ordering, for the Slack command's
+ * paging. It lives here rather than in the caller because this function is the
+ * one place that decides what "the nearest N" means: the map pages by viewport
+ * and the command pages by offset, and if the two disagreed about the ordering
+ * they would hand a volunteer the same turf twice, or skip one. The sort is
+ * deterministic (distance, then name) precisely so paging is stable between
+ * presses.
  */
 export function selectNearest<T extends Locatable>(
 	rows: readonly T[],
-	options: { location?: LatLng | null; limit?: number } = {},
+	options: { location?: LatLng | null; limit?: number; offset?: number } = {},
 ): Selection<T> {
 	const { location = null, limit = TURFS_PER_PAYLOAD } = options;
+	// Negative, fractional and NaN offsets all reach this from a Slack button
+	// value, which round-trips through the client and is therefore untrusted.
+	// Normalised here so every caller gets the same treatment. NaN is checked
+	// explicitly: Math.max(0, NaN) is NaN, and slice(NaN, NaN) silently returns
+	// nothing — an empty page that reads as "no turf here" rather than a bad
+	// request.
+	const rawOffset = options.offset ?? 0;
+	const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
 
 	const ordered = [...rows];
 	if (location) {
@@ -92,7 +112,10 @@ export function selectNearest<T extends Locatable>(
 		ordered.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
-	return { selected: ordered.slice(0, limit), omitted: Math.max(0, ordered.length - limit) };
+	return {
+		selected: ordered.slice(offset, offset + limit),
+		omitted: Math.max(0, ordered.length - (offset + limit)),
+	};
 }
 
 /** Rows whose centroid falls inside `box`. Turf without a centroid is excluded
