@@ -810,6 +810,29 @@ export const vanGeometryQueue = sqliteTable(
 	(table) => [index('van_geometry_queue_status').on(table.status)],
 );
 
+// What the last catalog sync could actually see, so a read can tell "VAN says
+// nothing is distributed" apart from "we could not ask VAN".
+//
+// `/minivanExports` is Tier 3 and 403s on a demo key. When it fails the sync
+// writes `van_turfs.van_distributed_to = NULL` for every turf — deliberately,
+// since stale distribution data is worse than none — which leaves the column
+// meaning two opposite things. The drift report (Story 8.2) is the one reader
+// that cannot live with that ambiguity, so the sync records the answer here.
+//
+// Singleton, in the shape of door_knock_refresh.
+export const vanSyncState = sqliteTable(
+	'van_sync_state',
+	{
+		id: integer('id').primaryKey(),
+		/** ISO timestamp of the last non-dry-run catalog sync. */
+		lastSyncAt: text('last_sync_at').notNull(),
+		/** Whether /minivanExports answered on that run. NULL only before the
+		 *  first sync has ever completed. */
+		minivanExportsOk: integer('minivan_exports_ok', { mode: 'boolean' }),
+	},
+	(table) => [check('van_sync_state_singleton', sql`${table.id} = 1`)],
+);
+
 // zip -> lat/lng cache for the "no geolocation" fallback. Deliberately shaped
 // like mobilize_geocoded_zips, including the never-throw contract of the
 // geocoder that fills it: a lookup failure yields no row, never an exception.
@@ -831,6 +854,8 @@ export type NewVanTurfCheckoutRow = typeof vanTurfCheckouts.$inferInsert;
 
 export type VanBlockedUserRow = typeof vanBlockedUsers.$inferSelect;
 export type NewVanBlockedUserRow = typeof vanBlockedUsers.$inferInsert;
+
+export type VanSyncStateRow = typeof vanSyncState.$inferSelect;
 
 export type VanGeometryQueueRow = typeof vanGeometryQueue.$inferSelect;
 export type NewVanGeometryQueueRow = typeof vanGeometryQueue.$inferInsert;

@@ -1,0 +1,116 @@
+// Reading what turf is out right now, and which completions look unsynced.
+//
+// The present-tense sibling of activity-store.ts. That one filters on the
+// terminal stamps to reconstruct history; this one filters on their ABSENCE —
+// `released_at IS NULL AND completed_at IS NULL` is the definition of a live
+// claim, and it is the same predicate the partial unique index on
+// van_turf_checkouts enforces.
+//
+// As there, the chapter filter IS the join: the ledger has no chapter column,
+// so every query joins van_turfs and filters on the denormalised one.
+//
+// Live claims are not capped. The cap on the history page exists because a
+// season's ledger is unbounded; the set of claims outstanding at one moment is
+// bounded by how many volunteers are out, which is a number an organizer wants
+// to see all of. If a campaign ever has more live turf than fits a page, that
+// is worth knowing rather than truncating.
+
+import { and, desc, eq, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import type { drizzle } from 'drizzle-orm/libsql';
+import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import type { CompletionRow, HoldingRow } from '../../van/turf-holdings.js';
+
+type Db = ReturnType<typeof drizzle>;
+
+/** How many recent completions to examine for a missing sync. Bounded because
+ *  completions accumulate forever, and a month-old unsynced turf is not
+ *  something anyone is going to chase. */
+export const COMPLETION_LOOKBACK = 200;
+
+export interface HoldingsQuery {
+	/** Null means every chapter. Admin-only page, so unscoped is the intended
+	 *  default rather than a leak. */
+	chapterId: number | null;
+}
+
+function chapterFilter(chapterId: number | null): SQL | undefined {
+	return chapterId === null ? undefined : eq(vanTurfs.chapterId, chapterId);
+}
+
+/**
+ * Every claim currently outstanding.
+ *
+ * "Outstanding" here means only that the ledger has not closed the row — a
+ * claim whose TTL has passed but which the sweep has not yet stamped still
+ * comes back, and `currentHoldings` drops it via `isActive`. That split is
+ * deliberate: the sweep runs on a cron, so between ticks the database and the
+ * truth disagree, and the pure rule is the one that should win. Filtering
+ * expiry in SQL as well would mean two definitions of "live" that drift.
+ */
+export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise<HoldingRow[]> {
+	return db
+		.select({
+			checkoutId: vanTurfCheckouts.id,
+			mapRouteId: vanTurfCheckouts.mapRouteId,
+			slackUserId: vanTurfCheckouts.slackUserId,
+			slackUserName: vanTurfCheckouts.slackUserName,
+			claimedAt: vanTurfCheckouts.claimedAt,
+			expiresAt: vanTurfCheckouts.expiresAt,
+			releasedAt: vanTurfCheckouts.releasedAt,
+			completedAt: vanTurfCheckouts.completedAt,
+			expiryWarnedAt: vanTurfCheckouts.expiryWarnedAt,
+			turfName: vanTurfs.name,
+			regionName: vanTurfs.regionName,
+			chapterId: vanTurfs.chapterId,
+			chapterName: vanTurfs.chapterName,
+			doorCount: vanTurfs.doorCount,
+			// Not selected, deliberately: printedListNumber is the credential
+			// issued to the holder, and an organizer looking at a board is not the
+			// holder.
+		})
+		.from(vanTurfCheckouts)
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.where(
+			and(
+				isNull(vanTurfCheckouts.releasedAt),
+				isNull(vanTurfCheckouts.completedAt),
+				chapterFilter(query.chapterId),
+			),
+		);
+}
+
+/**
+ * Recent completions, for the missed-sync check.
+ *
+ * Returns rows whose delta is still null as well as measured ones, because the
+ * page has to tell "nothing to worry about" apart from "nothing has been
+ * checked" — and with Story 5.6 still blocked on the VAN key, every row is
+ * currently the latter.
+ */
+export async function loadRecentCompletions(
+	db: Db,
+	query: HoldingsQuery & { limit?: number },
+): Promise<CompletionRow[]> {
+	const rows = await db
+		.select({
+			checkoutId: vanTurfCheckouts.id,
+			mapRouteId: vanTurfCheckouts.mapRouteId,
+			slackUserId: vanTurfCheckouts.slackUserId,
+			slackUserName: vanTurfCheckouts.slackUserName,
+			completedAt: vanTurfCheckouts.completedAt,
+			confirmedDoorDelta: vanTurfCheckouts.confirmedDoorDelta,
+			turfName: vanTurfs.name,
+			regionName: vanTurfs.regionName,
+			chapterId: vanTurfs.chapterId,
+			chapterName: vanTurfs.chapterName,
+		})
+		.from(vanTurfCheckouts)
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.where(and(isNotNull(vanTurfCheckouts.completedAt), chapterFilter(query.chapterId)))
+		.orderBy(desc(vanTurfCheckouts.completedAt))
+		.limit(query.limit ?? COMPLETION_LOOKBACK);
+
+	// `completedAt` is non-null by the WHERE above, but drizzle types it from the
+	// column, which is nullable. Narrowed here rather than asserted at every use.
+	return rows.map((r) => ({ ...r, completedAt: r.completedAt ?? '' }));
+}

@@ -23,6 +23,7 @@
 					{ href: '/pending', label: 'Pending applicants' },
 					{ href: '/members', label: 'Member lookup' },
 					{ href: '/turfs/demo', label: 'Turf checkout (demo)' },
+					{ href: '/turfs/organizer', label: 'Turf right now' },
 					{ href: '/turfs/activity', label: 'Turf activity' },
 					{ href: '/settings', label: 'Settings' },
 				]

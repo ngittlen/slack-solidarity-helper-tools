@@ -17,7 +17,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 // Relative, not `$lib/...`: scripts/van-sync-once.ts runs this under tsx,
 // outside the Vite bundle, where the alias does not resolve.
 import { errMessage } from '../../err-message.js';
-import { vanGeometryQueue, vanTurfs, vanTurfCheckouts } from '../schema.js';
+import { vanGeometryQueue, vanTurfs, vanTurfCheckouts, vanSyncState } from '../schema.js';
 import { planCatalogSync, type CatalogFolder, type CatalogPlan } from './catalog.js';
 import { chunked } from './sql-chunk.js';
 import { VanError, type VanClient } from './client.js';
@@ -157,9 +157,16 @@ export async function runCatalogSync(
 	}
 
 	let minivanExports: VanMinivanExport[] = [];
+	// Recorded, not just logged: when this fails the plan below writes
+	// van_distributed_to = NULL for every turf, so afterwards the column cannot
+	// say whether VAN reported nothing or was never asked. The drift report
+	// (Story 8.2) needs that difference, and this is the only moment anyone
+	// knows it.
+	let minivanExportsOk = true;
 	try {
 		minivanExports = await client.minivanExports();
 	} catch (err) {
+		minivanExportsOk = false;
 		degraded.push(
 			`/minivanExports unavailable (${errMessage(err)}) — turf assigned by hand in VAN will not be flagged`,
 		);
@@ -235,6 +242,17 @@ export async function runCatalogSync(
 			})
 			.onConflictDoNothing({ target: vanGeometryQueue.mapRouteId });
 	}
+
+	// Written last, and only on a real run: a dry run reports what WOULD happen,
+	// so recording it as what the catalog now reflects would make the drift
+	// report trust a comparison that never took place.
+	await db
+		.insert(vanSyncState)
+		.values({ id: 1, lastSyncAt: now.toISOString(), minivanExportsOk })
+		.onConflictDoUpdate({
+			target: vanSyncState.id,
+			set: { lastSyncAt: now.toISOString(), minivanExportsOk },
+		});
 
 	return {
 		foldersSynced: folders.length,
