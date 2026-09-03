@@ -123,3 +123,62 @@ describe('parseBounds', () => {
 		expect(parseBounds(raw)).toBeNull();
 	});
 });
+
+// The Slack command's paging walks this offset. What has to hold is that the
+// ordering never reshuffles between presses — otherwise a volunteer is handed
+// the same turf twice, or one is skipped and never seen.
+describe('selectNearest paging', () => {
+	const rows = Array.from({ length: 12 }, (_, i) =>
+		turf(i, `Turf ${String(i).padStart(2, '0')}`, 42 + i / 1000, -83),
+	);
+
+	it('returns the page after the offset', () => {
+		const page1 = selectNearest(rows, { location: HERE, limit: 5 });
+		const page2 = selectNearest(rows, { location: HERE, limit: 5, offset: 5 });
+		const names1 = page1.selected.map((t) => t.name);
+		const names2 = page2.selected.map((t) => t.name);
+		expect(names1).toHaveLength(5);
+		expect(names2).toHaveLength(5);
+		expect(names1.some((n) => names2.includes(n))).toBe(false);
+	});
+
+	// The property that makes paging safe: two pages of five are exactly one
+	// page of ten, so nothing is duplicated and nothing falls between them.
+	it('is equivalent to one larger page', () => {
+		const paged = [
+			...selectNearest(rows, { location: HERE, limit: 5 }).selected,
+			...selectNearest(rows, { location: HERE, limit: 5, offset: 5 }).selected,
+		];
+		const single = selectNearest(rows, { location: HERE, limit: 10 }).selected;
+		expect(paged.map((t) => t.mapRouteId)).toEqual(single.map((t) => t.mapRouteId));
+	});
+
+	it('counts only what follows the page as omitted', () => {
+		expect(selectNearest(rows, { limit: 5 }).omitted).toBe(7);
+		expect(selectNearest(rows, { limit: 5, offset: 5 }).omitted).toBe(2);
+		expect(selectNearest(rows, { limit: 5, offset: 10 }).omitted).toBe(0);
+	});
+
+	it('yields an empty page past the end rather than throwing', () => {
+		const { selected, omitted } = selectNearest(rows, { limit: 5, offset: 500 });
+		expect(selected).toEqual([]);
+		expect(omitted).toBe(0);
+	});
+
+	// The offset arrives in a Slack button value, which round-trips through the
+	// client. A negative, fractional or NaN one must not read backwards off the
+	// array or silently return nothing.
+	it.each([
+		['negative', -5, 0],
+		['fractional', 2.7, 2],
+		['not a number', Number.NaN, 0],
+	])('clamps a %s offset', (_label, offset, expectedIndex) => {
+		const { selected } = selectNearest(rows, { location: HERE, limit: 5, offset });
+		const all = selectNearest(rows, { location: HERE, limit: 12 }).selected;
+		expect(selected[0]!.mapRouteId).toBe(all[expectedIndex]!.mapRouteId);
+	});
+
+	it('leaves the default behaviour untouched', () => {
+		expect(selectNearest(rows, { limit: 5 })).toEqual(selectNearest(rows, { limit: 5, offset: 0 }));
+	});
+});
