@@ -1,0 +1,318 @@
+main {
+	max-width: 1200px;
+	margin: 32px auto;
+	padding: 0 24px;
+}
+
+/* --- Filters -------------------------------------------------------------- */
+
+.filters {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: var(--space-4);
+	margin-bottom: var(--space-5);
+}
+
+.filter {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-1);
+}
+
+.filter label {
+	font-size: var(--font-size-sm);
+	font-weight: 600;
+	color: var(--color-blue);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.filter select {
+	padding: var(--space-2) var(--space-3);
+	font: inherit;
+	font-size: var(--font-size-base);
+	color: var(--color-text);
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	min-width: 180px;
+}
+
+.filter select:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: 1px;
+}
+
+/* The submit button is what makes the form work with JavaScript off, so it is
+   always rendered rather than hidden once the onchange handler is attached. */
+.filter-go {
+	padding: var(--space-2) var(--space-4);
+	font: inherit;
+	font-size: var(--font-size-base);
+	font-weight: 600;
+	color: var(--color-action-text);
+	background: var(--color-action);
+	border: none;
+	border-radius: var(--radius-md);
+	cursor: pointer;
+}
+
+.filter-go:hover {
+	background: var(--color-action-hover);
+}
+
+/* --- Summary counts ------------------------------------------------------- */
+
+.summary {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-5);
+	margin: 0 0 var(--space-5);
+	padding: 0;
+	list-style: none;
+}
+
+.summary-item {
+	display: flex;
+	align-items: baseline;
+	gap: var(--space-2);
+}
+
+.summary-count {
+	font-size: 1.4rem;
+	font-weight: 700;
+	line-height: 1;
+	color: var(--color-navy-mid);
+}
+
+.summary-label {
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+}
+
+.summary-item.is-alert .summary-count {
+	color: var(--color-red);
+}
+
+/* --- Sections ------------------------------------------------------------- */
+
+.board {
+	margin-bottom: var(--space-6);
+}
+
+.board h2 {
+	margin: 0 0 var(--space-3);
+	font-size: var(--font-size-lg);
+	font-weight: 700;
+	color: var(--color-text);
+}
+
+.section-note {
+	margin: 0 0 var(--space-3);
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+	line-height: 1.5;
+}
+
+/* A link out to the history page. The two are one surface split in two, and
+   an organizer who lands on the wrong half should see the way across. */
+.cross-link {
+	margin-left: auto;
+	align-self: center;
+	font-size: var(--font-size-sm);
+	color: var(--color-action);
+}
+
+/* --- Table ---------------------------------------------------------------- */
+
+.table-wrap {
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	overflow-x: auto;
+}
+
+table {
+	width: 100%;
+	border-collapse: collapse;
+}
+
+thead {
+	background: var(--color-bg);
+	border-bottom: 1px solid var(--color-border);
+}
+
+th {
+	text-align: left;
+	font-size: var(--font-size-sm);
+	font-weight: 600;
+	color: var(--color-blue);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	padding: 10px 16px;
+	white-space: nowrap;
+}
+
+td {
+	padding: 12px 16px;
+	font-size: var(--font-size-base);
+	vertical-align: middle;
+	border-bottom: 1px solid var(--color-border-subtle);
+}
+
+tr:last-child td {
+	border-bottom: none;
+}
+
+tr:hover td {
+	background: var(--color-bg-hover);
+}
+
+.col-num {
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
+
+.turf-name {
+	display: block;
+	font-weight: 600;
+}
+
+.turf-sub {
+	display: block;
+	font-size: var(--font-size-xs);
+	color: var(--color-text-muted);
+}
+
+/* --- Row urgency and badges ----------------------------------------------- */
+
+/* Urgency is carried by a left border rather than a row fill: the table is
+   scanned top-to-bottom for the rows that need chasing, and a full-width tint
+   behind text hurts contrast in both themes for no extra signal. */
+.urgency-expiring td:first-child {
+	box-shadow: inset 3px 0 0 var(--color-red);
+}
+
+.urgency-due-soon td:first-child {
+	box-shadow: inset 3px 0 0 var(--color-warning);
+}
+
+.expires-in {
+	display: block;
+	font-weight: 600;
+}
+
+.urgency-expiring .expires-in {
+	color: var(--color-red);
+}
+
+.col-flag {
+	width: 1%;
+	white-space: nowrap;
+}
+
+.badge {
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	padding: 3px 8px;
+	border-radius: 999px;
+	white-space: nowrap;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+
+/* The row that needs a human: about to lapse, and the automatic reminder has
+   not reached them. */
+.badge-unwarned {
+	background: color-mix(in srgb, var(--color-red) 18%, transparent);
+	color: var(--color-red);
+}
+
+.badge-warned {
+	background: color-mix(in srgb, var(--color-success) 20%, transparent);
+	color: var(--color-success);
+}
+
+.badge-none {
+	color: var(--color-text-faint);
+}
+
+/* The callout above the board, for the one count that means someone has to
+   act personally rather than wait for the cron. */
+.callout {
+	margin: 0 0 var(--space-5);
+	padding: var(--space-3) var(--space-4);
+	font-size: var(--font-size-base);
+	line-height: 1.5;
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+	border-left: 3px solid var(--color-warning);
+	border-radius: var(--radius-md);
+}
+
+/* --- Notices -------------------------------------------------------------- */
+
+.empty,
+.cap-note {
+	margin: var(--space-5) 0;
+	font-size: var(--font-size-base);
+	color: var(--color-text-muted);
+	line-height: 1.5;
+}
+
+.cap-note {
+	font-size: var(--font-size-sm);
+}
+
+@media (max-width: 700px) {
+	main {
+		margin: 20px auto;
+		padding: 0 var(--space-4);
+	}
+
+	.filters {
+		gap: var(--space-3);
+	}
+
+	.filter,
+	.filter select {
+		min-width: 0;
+		flex: 1 1 140px;
+	}
+
+	.summary {
+		gap: var(--space-4);
+	}
+}
+
+/* --- Drift ---------------------------------------------------------------
+   Two problems, ranked by consequence rather than by symmetry: turf out in
+   MiniVAN but free here can be claimed twice, which is the failure the whole
+   feature exists to prevent; turf claimed here but never exported costs one
+   volunteer a wasted morning. Red and amber accordingly. */
+
+.drift-in-minivan-not-claimed td:first-child {
+	box-shadow: inset 3px 0 0 var(--color-red);
+}
+
+.drift-claimed-not-in-minivan td:first-child {
+	box-shadow: inset 3px 0 0 var(--color-warning);
+}
+
+.badge-in-minivan-not-claimed {
+	background: color-mix(in srgb, var(--color-red) 18%, transparent);
+	color: var(--color-red);
+}
+
+.badge-claimed-not-in-minivan {
+	background: color-mix(in srgb, var(--color-warning) 22%, transparent);
+	color: var(--color-warning);
+}
+
+.drift-advice {
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+	line-height: 1.4;
+	max-width: 34ch;
+}

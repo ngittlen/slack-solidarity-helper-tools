@@ -194,4 +194,15 @@ describe('createVanClient', () => {
 		expect(fetchFn.mock.calls[0]![0]).toBe(`${VAN_BASE_URL}/folders/5/mapRegions/refresh`);
 		expect(fetchFn.mock.calls[1]![0]).toBe(`${VAN_BASE_URL}/folders/5/mapRegions/77/refresh`);
 	});
+
+	// The verb is the whole meaning of this call — a refresh issued as a GET
+	// would read the region rather than re-cut it, and every door count derived
+	// from it would silently stay stale. VAN documents no body, so none is sent.
+	it('issues the refresh as a POST with no body', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ''));
+		await createVanClient(config, fetchFn as never).refreshMapRegion(5, 77);
+		const [, init] = fetchFn.mock.calls[0]!;
+		expect(init.method).toBe('POST');
+		expect(init.body).toBeUndefined();
+	});
 });
