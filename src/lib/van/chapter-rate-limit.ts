@@ -70,11 +70,28 @@ export interface RateLimitDecision {
  * limiter that counted page views would throttle the one person using the
  * feature properly while barely inconveniencing a script.
  */
+export interface ChapterViewOptions {
+	/** Never refuse this viewer. Admins are exempt, because the compartment
+	 *  this enforces does not apply to them: `/turfs/organizer` and the drift
+	 *  report already show every chapter at once, by design and without a
+	 *  limiter. Capping the map at eight counties an hour therefore withheld
+	 *  nothing an admin could not read on the next page over, while breaking
+	 *  the one job — checking turf across a state on launch night — that needs
+	 *  to move faster than a volunteer ever would.
+	 *
+	 *  Views are still RECORDED and still cross `CHAPTER_LOG_THRESHOLD`, so an
+	 *  admin sweeping every county remains visible in the log. Removing the
+	 *  throttle is not the same as removing the audit trail, and an insider is
+	 *  exactly who that line is for. */
+	exempt?: boolean;
+}
+
 export function recordChapterView(
 	log: VisitLog,
 	slackUserId: string,
 	chapterId: number,
 	now: number,
+	options: ChapterViewOptions = {},
 ): RateLimitDecision {
 	const cutoff = now - WINDOW_MS;
 	const recent = (log.get(slackUserId) ?? []).filter((v) => v.at > cutoff);
@@ -95,7 +112,10 @@ export function recordChapterView(
 		};
 	}
 
-	if (recent.length >= MAX_CHAPTER_SWITCHES) {
+	// Exempt viewers fall through to the push below, so their visit is counted
+	// and `distinctChapters` keeps climbing — which is what makes the
+	// wide-browsing log line still fire for an admin.
+	if (!options.exempt && recent.length >= MAX_CHAPTER_SWITCHES) {
 		log.set(slackUserId, recent);
 		const oldest = Math.min(...recent.map((v) => v.at));
 		return {

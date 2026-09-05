@@ -37,12 +37,30 @@ export interface BudgetDecision {
 	used: number;
 }
 
+export interface BudgetOptions {
+	/** Never refuse this caller. Admins are exempt: the budget exists to make
+	 *  bulk enumeration of turf slow for ordinary members, and an admin can
+	 *  already read every chapter at once through the organizer and drift
+	 *  pages, so throttling them protects nothing and does break real work —
+	 *  an organizer moving through a launch does exactly what the limiter is
+	 *  shaped to catch.
+	 *
+	 *  Requests are still RECORDED, so `used` stays truthful and the log keeps
+	 *  its audit value. Only the refusal is skipped. */
+	exempt?: boolean;
+}
+
 /** Record a request and say whether it fits in the budget. */
-export function recordRequest(log: RequestLog, key: string, now: number): BudgetDecision {
+export function recordRequest(
+	log: RequestLog,
+	key: string,
+	now: number,
+	options: BudgetOptions = {},
+): BudgetDecision {
 	const cutoff = now - REQUEST_WINDOW_MS;
 	const recent = (log.get(key) ?? []).filter((t) => t > cutoff);
 
-	if (recent.length >= MAX_REQUESTS) {
+	if (!options.exempt && recent.length >= MAX_REQUESTS) {
 		log.set(key, recent);
 		const oldest = Math.min(...recent);
 		return {

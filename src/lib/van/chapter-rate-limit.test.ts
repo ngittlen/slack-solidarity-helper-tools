@@ -166,3 +166,50 @@ describe('pruneVisitLog', () => {
 		expect(log.get('U1')).toHaveLength(1);
 	});
 });
+
+// Admins are exempt: /turfs/organizer and the drift report already show every
+// chapter at once, so capping the map at eight counties an hour withheld
+// nothing while breaking launch-night work.
+describe('admin exemption', () => {
+	function fill(log: VisitLog, user: string, count: number, now: number) {
+		for (let i = 0; i < count; i++) recordChapterView(log, user, 100 + i, now);
+	}
+
+	it('refuses a volunteer past the cap', () => {
+		const log: VisitLog = new Map();
+		const now = Date.now();
+		fill(log, 'U1', MAX_CHAPTER_SWITCHES, now);
+		expect(recordChapterView(log, 'U1', 999, now).allowed).toBe(false);
+	});
+
+	it('never refuses an exempt viewer, however many chapters they open', () => {
+		const log: VisitLog = new Map();
+		const now = Date.now();
+		fill(log, 'U1', MAX_CHAPTER_SWITCHES, now);
+		for (let i = 0; i < 40; i++) {
+			const decision = recordChapterView(log, 'U1', 900 + i, now, { exempt: true });
+			expect(decision.allowed).toBe(true);
+		}
+	});
+
+	// Removing the throttle is not the same as removing the audit trail — an
+	// admin sweeping every county must still show up in the log.
+	it('still counts the view and still flags wide browsing', () => {
+		const log: VisitLog = new Map();
+		const now = Date.now();
+		fill(log, 'U1', MAX_CHAPTER_SWITCHES, now);
+
+		const decision = recordChapterView(log, 'U1', 999, now, { exempt: true });
+		expect(decision.distinctChapters).toBe(MAX_CHAPTER_SWITCHES + 1);
+		expect(decision.shouldLog).toBe(true);
+	});
+
+	it('leaves re-opening a chapter free for an exempt viewer too', () => {
+		const log: VisitLog = new Map();
+		const now = Date.now();
+		recordChapterView(log, 'U1', 71, now, { exempt: true });
+		const again = recordChapterView(log, 'U1', 71, now + 1000, { exempt: true });
+		expect(again.distinctChapters).toBe(1);
+		expect(again.shouldLog).toBe(false);
+	});
+});

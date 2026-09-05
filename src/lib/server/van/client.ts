@@ -81,6 +81,18 @@ const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 // Concurrency across the whole client, not per call site.
 const MAX_CONCURRENCY = 2;
+// VAN's documented maximum $top for /printedLists. Other endpoints allow more,
+// but this one 400s rather than clamping.
+const PRINTED_LISTS_PAGE_SIZE = 50;
+// /minivanExports caps $top at 50 too — verified: 100 and above 400 with
+// INVALID_PARAMETER. Its DEFAULT is 10, which is what made the naive forward
+// walk cost 200 requests to cover 2,000 of 30,261 records.
+const MINIVAN_EXPORTS_PAGE_SIZE = 50;
+// How far back to walk from the newest export. 20 pages = the 1,000 most
+// recent, ~20 requests and a few seconds, against 606 pages and minutes for the
+// whole table. See the note on `minivanExports` for why recency is the right
+// axis rather than a bigger cap.
+const MAX_RECENT_EXPORT_PAGES = 20;
 // Safety cap on a paginated walk. VAN pages at 50-200 depending on endpoint,
 // so this is far above any real folder while still bounding a server that
 // hands back a self-referencing nextPageLink.
@@ -95,8 +107,12 @@ export interface VanClient {
 	 *  for `mapRoutes[].printedList.number` (plan.md Story 2.3). */
 	printedLists(folderIds?: number[]): Promise<VanPrintedList[]>;
 	savedLists(folderId?: number): Promise<VanSavedList[]>;
-	/** MiniVAN exports with canvassers expanded — evidence of turf assigned by
-	 *  hand outside this app (plan.md Story 8.1). Tier 3. */
+	/** The most recent MiniVAN exports, canvassers expanded — evidence of turf
+	 *  assigned by hand outside this app (plan.md Story 8.1). Tier 3.
+	 *
+	 *  Returns the newest ~1,000, oldest-first, NOT the whole table. See the
+	 *  implementation for why the full walk is neither affordable nor
+	 *  desirable. */
 	minivanExports(): Promise<VanMinivanExport[]>;
 	/** Ask VAN to re-cut a region against current data. Asynchronous on VAN's
 	 *  side: counts must be re-read later, never in the same request. */
@@ -104,10 +120,14 @@ export interface VanClient {
 	/** Export job types this key actually has. Ids are per-developer, so the
 	 *  `101` in VAN's docs is an example and hardcoding it fails. */
 	exportJobTypes(): Promise<VanExportJobType[]>;
+	/** `webhookUrl` is REQUIRED by VAN, not optional as the docs imply — a POST
+	 *  without it 400s with three INVALID_PARAMETER errors. It must be HTTPS,
+	 *  and VAN posts the finished job envelope (downloadUrl included) to it, so
+	 *  it has to be a host we control. */
 	createExportJob(input: {
 		savedListId: number;
 		exportJobTypeId: number;
-		webhookUrl?: string;
+		webhookUrl: string;
 	}): Promise<VanExportJob>;
 	exportJob(exportJobId: number): Promise<VanExportJob>;
 	/** Escape hatch for one-off reads (scripts/van-check.ts). */
@@ -267,12 +287,105 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 
 		printedLists: (folderIds) =>
 			paginate<VanPrintedList>(
-				`/printedLists${query({ folderIds: folderIds?.join(','), $top: 200 })}`,
+				// $top is capped at 50 on this endpoint — asking for more is a
+				// 400 (INVALID_PARAMETER), not a silent clamp. `paginate` walks
+				// nextPageLink, so the only cost of the smaller page is more
+				// round trips.
+				//
+				// folderIds is DEDUPLICATED because a repeated id makes VAN
+				// return 500. Verified against the live API: `folderIds=2731`
+				// answers 200, `folderIds=2731,2731` answers 500 — one duplicate
+				// is enough, and the id itself is perfectly valid.
+				//
+				// Callers hit this without doing anything obviously wrong. The
+				// catalog sync builds the list from the chapter → folder
+				// mapping, and mapping two chapters to one folder (a shared
+				// county folder, or a half-finished edit in /settings) yields
+				// the same id twice. It presents as VAN being down: a 500 that
+				// burns the whole retry budget before degrading, ~15 seconds of
+				// backoff for a request that could never have succeeded.
+				//
+				// Deduplicated here rather than in sync.ts so every caller is
+				// covered — this is a property of the endpoint, and the next
+				// caller should not have to rediscover it. A Set keeps first-seen
+				// order, so the URL stays stable across runs.
+				`/printedLists${query({
+					folderIds: folderIds && [...new Set(folderIds)].join(','),
+					$top: PRINTED_LISTS_PAGE_SIZE,
+				})}`,
 			),
 
 		savedLists: (folderId) => paginate<VanSavedList>(`/savedLists${query({ folderId })}`),
 
-		minivanExports: () => paginate<VanMinivanExport>('/minivanExports?$expand=canvassers'),
+		/**
+		 * Walk /minivanExports from the END of the table backwards.
+		 *
+		 * The forward walk this replaces was wrong in a way that did not look
+		 * like an error. Measured against the live API: the endpoint defaults to
+		 * 10 records a page and reports `count: 30261`, so `paginate` spent 200
+		 * requests and 48 seconds to collect 2,000 records — and then stopped,
+		 * silently, on MAX_PAGES. That is 6.6% of the table, and the oldest
+		 * 6.6%: records come back oldest-first, so the forward walk returned
+		 * exports from 2010 and never reached this year's. Everything the
+		 * distribution index is for was in the part we never read, which made
+		 * `van_distributed_to` null for turf VAN really had distributed and the
+		 * drift report (Story 8.2) call it "not distributed".
+		 *
+		 * There is no filter to lean on. Verified: `createdAfter`,
+		 * `createdSince` and `folderId` are all accepted and then IGNORED —
+		 * `count` is unchanged and page one is identical. `$orderby` is refused
+		 * outright ("There are no valid orderby column"). `$skip` is the only
+		 * lever that works, and since the order is ascending by creation date,
+		 * skipping to `count - pageSize` lands on the newest records.
+		 *
+		 * Recency is also the right answer on the merits, not just the
+		 * affordable one. The index maps turf NAME to canvasser, and turf names
+		 * are reused across sixteen years of exports, so an export from 2010
+		 * matching a name cut last week would attribute a stranger to today's
+		 * turf. A bounded recent window is more correct than the complete
+		 * history, not a lossy approximation of it.
+		 */
+		async minivanExports() {
+			const base = `/minivanExports?$expand=canvassers&$top=${MINIVAN_EXPORTS_PAGE_SIZE}`;
+			const first = await getJson<VanPage<VanMinivanExport>>(base);
+			const count = first?.count ?? 0;
+			// Small tables need no walk — one page already holds everything.
+			if (count <= MINIVAN_EXPORTS_PAGE_SIZE) return first?.items ?? [];
+
+			// Pages are collected newest-first and reversed at the end, so the
+			// result stays oldest-first like every other paginated call here.
+			const pages: VanMinivanExport[][] = [];
+			const seen = new Set<number>();
+			let skip = Math.max(0, count - MINIVAN_EXPORTS_PAGE_SIZE);
+
+			for (let page = 0; page < MAX_RECENT_EXPORT_PAGES; page++) {
+				const body = await getJson<VanPage<VanMinivanExport>>(`${base}&$skip=${skip}`);
+				const items = body?.items ?? [];
+				if (items.length === 0) break;
+				// De-duplicated because `count` can grow between requests when
+				// someone exports turf mid-sync, which shifts every later page
+				// by one and would otherwise double-count the boundary records.
+				const fresh = items.filter((item) => {
+					const id = item.minivanExportId;
+					if (typeof id !== 'number') return true;
+					if (seen.has(id)) return false;
+					seen.add(id);
+					return true;
+				});
+				pages.push(fresh);
+				if (skip === 0) break;
+				skip = Math.max(0, skip - MINIVAN_EXPORTS_PAGE_SIZE);
+			}
+
+			const collected = pages.reverse().flat();
+			if (count > collected.length) {
+				console.warn(
+					`[van] /minivanExports: read the ${collected.length} most recent of ${count} ` +
+						`export(s); older ones are deliberately not walked`,
+				);
+			}
+			return collected;
+		},
 
 		async refreshMapRegion(folderId, mapRegionId) {
 			const path =
@@ -288,11 +401,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 			const res = await request('/exportJobs', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					savedListId,
-					type: exportJobTypeId,
-					...(webhookUrl ? { webhookUrl } : {}),
-				}),
+				body: JSON.stringify({ savedListId, type: exportJobTypeId, webhookUrl }),
 			});
 			return (await res.json()) as VanExportJob;
 		},

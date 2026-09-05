@@ -8,8 +8,10 @@ import {
 	MAX_ZOOM,
 	MIN_ZOOM,
 	TILE_SIZE,
+	TILE_URL_TEMPLATE,
 	tileUrl,
 	toWorld,
+	withTileApiKey,
 } from './tiles.js';
 import type { BoundingBox } from './geometry.js';
 
@@ -227,5 +229,43 @@ describe('tileUrl', () => {
 			'https://example.test/{z}/{x}/{y}.png',
 		);
 		expect(url).toBe('https://example.test/5/1/2.png');
+	});
+});
+
+describe('withTileApiKey', () => {
+	it('appends the key to the CARTO template', () => {
+		expect(withTileApiKey(TILE_URL_TEMPLATE, 'abc123')).toBe(
+			'https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png?key=abc123',
+		);
+	});
+
+	it('joins with & when the template already has a query string', () => {
+		expect(withTileApiKey('https://basemaps.cartocdn.com/t/{z}/{x}/{y}.png?r=2', 'abc')).toBe(
+			'https://basemaps.cartocdn.com/t/{z}/{x}/{y}.png?r=2&key=abc',
+		);
+	});
+
+	it('leaves the template alone when no key is set', () => {
+		expect(withTileApiKey(TILE_URL_TEMPLATE, '')).toBe(TILE_URL_TEMPLATE);
+		expect(withTileApiKey(TILE_URL_TEMPLATE, '   ')).toBe(TILE_URL_TEMPLATE);
+	});
+
+	it('never sends the key to a non-CARTO host', () => {
+		const other = 'https://tiles.stadiamaps.test/{z}/{x}/{y}.png';
+		expect(withTileApiKey(other, 'abc123')).toBe(other);
+		// A lookalike host is not CARTO either.
+		const lookalike = 'https://cartocdn.com.evil.test/{z}/{x}/{y}.png';
+		expect(withTileApiKey(lookalike, 'abc123')).toBe(lookalike);
+	});
+
+	it('leaves an unparseable template alone', () => {
+		expect(withTileApiKey('/local/{z}/{x}/{y}.png', 'abc123')).toBe('/local/{z}/{x}/{y}.png');
+	});
+
+	it('produces a fetchable url once z/x/y are substituted', () => {
+		const template = withTileApiKey(TILE_URL_TEMPLATE, 'a b&c');
+		expect(tileUrl({ z: 13, x: 2482, y: 3040, left: 0, top: 0, key: 'k' }, template)).toBe(
+			'https://basemaps.cartocdn.com/light_all/13/2482/3040@2x.png?key=a%20b%26c',
+		);
 	});
 });

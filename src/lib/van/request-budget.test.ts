@@ -77,3 +77,45 @@ describe('pruneRequestLog', () => {
 		expect(log.get('U1')).toHaveLength(1);
 	});
 });
+
+// Admins are exempt — the budget makes bulk enumeration slow for ordinary
+// members, and an admin can already read every chapter through the organizer
+// and drift pages.
+describe('admin exemption', () => {
+	function spend(log: RequestLog, user: string, count: number, now: number) {
+		for (let i = 0; i < count; i++) recordRequest(log, user, now);
+	}
+
+	it('refuses a volunteer past the budget', () => {
+		const log: RequestLog = new Map();
+		spend(log, 'U1', MAX_REQUESTS, T0);
+		expect(recordRequest(log, 'U1', T0).allowed).toBe(false);
+	});
+
+	it('never refuses an exempt caller', () => {
+		const log: RequestLog = new Map();
+		spend(log, 'U1', MAX_REQUESTS, T0);
+		for (let i = 0; i < 50; i++) {
+			expect(recordRequest(log, 'U1', T0, { exempt: true }).allowed).toBe(true);
+		}
+	});
+
+	// Still recorded, so `used` stays truthful and the log keeps its value.
+	it("still counts an exempt caller's requests", () => {
+		const log: RequestLog = new Map();
+		spend(log, 'U1', MAX_REQUESTS, T0);
+		const decision = recordRequest(log, 'U1', T0, { exempt: true });
+		expect(decision.used).toBe(MAX_REQUESTS + 1);
+		expect(decision.retryAfterSeconds).toBe(0);
+	});
+
+	// The exemption is per-call, not sticky: one admin request must not raise
+	// the ceiling for a volunteer sharing the store.
+	it('does not exempt a different user', () => {
+		const log: RequestLog = new Map();
+		spend(log, 'U1', MAX_REQUESTS, T0);
+		recordRequest(log, 'U1', T0, { exempt: true });
+		spend(log, 'U2', MAX_REQUESTS, T0);
+		expect(recordRequest(log, 'U2', T0).allowed).toBe(false);
+	});
+});

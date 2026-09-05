@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
 
 const mockRunCatalogSync = vi.hoisted(() => vi.fn());
+const mockRunGeometryQueue = vi.hoisted(() => vi.fn());
 const mockVanClient = vi.hoisted(() => vi.fn());
+const mockExportJobTypeId = vi.hoisted(() => vi.fn());
+const mockAlertFor = vi.hoisted(() => vi.fn(() => async () => undefined));
 const mockAcquire = vi.hoisted(() => vi.fn());
 const mockRelease = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
@@ -13,6 +16,7 @@ const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/slack.js', () => ({
 	slack: { chat: { postMessage: mockPostMessage } },
+	alertFor: mockAlertFor,
 }));
 vi.mock('$lib/server/settings.js', () => ({
 	loadSettings: async () => ({ slackTrackingChannelId: 'C_TRACK' }),
@@ -24,7 +28,13 @@ vi.mock('$lib/server/sync-lock.js', () => ({
 	acquireSyncLock: mockAcquire,
 	releaseSyncLock: mockRelease,
 }));
-vi.mock('$lib/server/van-env.js', () => ({ vanClient: mockVanClient }));
+vi.mock('$lib/server/van-env.js', () => ({
+	vanClient: mockVanClient,
+	vanExportJobTypeId: mockExportJobTypeId,
+}));
+vi.mock('$lib/server/van/geometry-worker.js', () => ({
+	runGeometryQueue: mockRunGeometryQueue,
+}));
 vi.mock('$lib/server/van/sync.js', () => ({ runCatalogSync: mockRunCatalogSync }));
 vi.mock('$lib/server/van/checkout-store.js', () => ({ sweepExpiredClaims: mockSweep }));
 vi.mock('$lib/server/van/expiry-warning-store.js', () => ({ sendExpiryWarnings: mockWarn }));
@@ -32,6 +42,7 @@ vi.mock('$lib/server/env.js', () => ({
 	get INTERNAL_CRON_SECRET() {
 		return mockEnv.INTERNAL_CRON_SECRET;
 	},
+	APP_URL: 'https://app.example',
 }));
 
 const result = {
@@ -43,6 +54,20 @@ const result = {
 	geometryQueued: 3,
 	claimsReleased: 0,
 	degraded: [],
+	warnings: [],
+};
+
+const geometryResult = {
+	attempted: 3,
+	hullsStored: 3,
+	centroidsOnly: 0,
+	noGeometry: 0,
+	geocodedFromAddress: 0,
+	retried: 0,
+	deadLettered: 0,
+	deadLetters: [],
+	stillRunning: 0,
+	budgetLapsed: false,
 	warnings: [],
 };
 
@@ -58,6 +83,8 @@ describe('POST /api/internal/van-sync', () => {
 		mockVanClient.mockReturnValue({ ok: true, client: {} });
 		mockAcquire.mockResolvedValue('lock-token');
 		mockRunCatalogSync.mockResolvedValue(result);
+		mockExportJobTypeId.mockReturnValue(5);
+		mockRunGeometryQueue.mockResolvedValue(geometryResult);
 		mockSweep.mockResolvedValue(0);
 		mockWarn.mockResolvedValue({ sent: 0, failed: 0 });
 	});
@@ -135,13 +162,19 @@ describe('POST /api/internal/van-sync', () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({
 			...result,
+			geometry: geometryResult,
 			claimsExpired: 0,
 			expiryWarningsSent: 0,
 			expiryWarningsFailed: 0,
 		});
-		expect(mockRunCatalogSync).toHaveBeenCalledWith({}, {}, [
-			{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] },
-		]);
+		expect(mockRunCatalogSync).toHaveBeenCalledWith(
+			{},
+			{},
+			[{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] }],
+			// The catalog is capped below the workflow's `curl --max-time 300`
+			// so geometry has room to run inside the same request.
+			{ timeBudgetMs: 3 * 60 * 1000 },
+		);
 		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
 	});
 
@@ -194,5 +227,109 @@ describe('POST /api/internal/van-sync', () => {
 		expect(res.status).toBe(500);
 		expect(await res.json()).toEqual({ error: 'VAN /folders returned 500' });
 		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+	});
+
+	describe('geometry', () => {
+		it('drains the queue after the catalog and reports what it did', async () => {
+			const res = await POST(event());
+			const body = await res.json();
+
+			expect(mockRunGeometryQueue).toHaveBeenCalledOnce();
+			expect(body.geometry.hullsStored).toBe(3);
+			// The catalog must be written before geometry runs — a turf cut
+			// minutes ago should get its shape on this run, not the next.
+			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(
+				mockRunGeometryQueue.mock.invocationCallOrder[0],
+			);
+		});
+
+		// VAN stores this URL against the export job and echoes it back on every
+		// later read, so what it carries is a disclosure decision. It must be a
+		// per-turf HMAC and NEVER INTERNAL_CRON_SECRET, which also opens the
+		// catalog sync, both snapshots, the mobilize sync, the invite audit and
+		// the growth report.
+		it('registers a per-turf webhook url on our own host, without the cron key', async () => {
+			await POST(event());
+			const options = mockRunGeometryQueue.mock.calls[0]![2];
+			const url = new URL(options.webhookUrlFor(100));
+
+			expect(url.origin).toBe('https://app.example');
+			expect(url.pathname).toBe('/api/internal/van-export-callback');
+			expect(url.searchParams.get('turf')).toBe('100');
+			expect(url.searchParams.get('token')).toMatch(/^[0-9a-f]{32}$/);
+			expect(url.searchParams.get('key')).toBeNull();
+			expect(options.webhookUrlFor(100)).not.toContain('cron-secret');
+			// A token that did not depend on the turf would be a shared secret
+			// wearing a different name.
+			expect(options.webhookUrlFor(101)).not.toBe(options.webhookUrlFor(100));
+			expect(options.exportJobTypeId).toBe(5);
+		});
+
+		// The route deliberately says nothing about geocoding: the worker
+		// defaults to the Census geocoder, and passing an explicit `null` here
+		// would silently disable it for the scheduled sync only.
+		it('leaves the geocoder to the worker default', async () => {
+			await POST(event());
+			expect(mockRunGeometryQueue.mock.calls[0]![2]).not.toHaveProperty('geocode');
+		});
+
+		it('skips geometry, but still syncs the catalog, with no export job type set', async () => {
+			mockExportJobTypeId.mockReturnValue(null);
+			const res = await POST(event());
+			const body = await res.json();
+
+			expect(mockRunGeometryQueue).not.toHaveBeenCalled();
+			// Null rather than zeros, so "not configured" stays distinguishable
+			// from "ran and found nothing to do".
+			expect(body.geometry).toBeNull();
+			expect(body.turfsUpserted).toBe(3);
+			expect(res.status).toBe(200);
+		});
+
+		// Geometry is decoration; the catalog rows are already written and
+		// correct by the time it runs.
+		it('still returns the catalog result when the geometry queue throws', async () => {
+			mockRunGeometryQueue.mockRejectedValue(new Error('VAN is down'));
+			const res = await POST(event());
+			const body = await res.json();
+
+			expect(res.status).toBe(200);
+			expect(body.turfsUpserted).toBe(3);
+			expect(body.geometry).toBeNull();
+		});
+
+		// The worker posts dead letters itself, through the `alert` this route
+		// hands it. Repeating them in the notices message put every one of them
+		// in the channel twice.
+		it('posts advisory geometry warnings but leaves dead letters to the worker alert', async () => {
+			mockRunGeometryQueue.mockResolvedValue({
+				...geometryResult,
+				deadLettered: 1,
+				deadLetters: ['Turf 100 geometry gave up after 4 attempt(s): boom'],
+				warnings: ['Turf 101: addresses span ~58 km, far past a walkable turf.'],
+			});
+			await POST(event());
+
+			expect(mockPostMessage).toHaveBeenCalledOnce();
+			const text = mockPostMessage.mock.calls[0]![0].text;
+			expect(text).toContain('far past a walkable turf');
+			expect(text).not.toContain('gave up after');
+		});
+
+		// The workflow calls this with `curl --max-time 300`. Taking the deadline
+		// after the ledger housekeeping would let the request run for that
+		// housekeeping PLUS the whole budget.
+		it('starts the request budget before the ledger housekeeping, not after', async () => {
+			const SWEEP_MS = 40;
+			mockSweep.mockImplementation(
+				async () => new Promise((r) => setTimeout(() => r(0), SWEEP_MS)),
+			);
+			await POST(event());
+
+			const { timeBudgetMs } = mockRunGeometryQueue.mock.calls[0]![2];
+			// A budget stamped after the sweep would still be the full 4m30s.
+			// Stamped before it, the sweep has already come out of it.
+			expect(timeBudgetMs).toBeLessThanOrEqual(4 * 60 * 1000 + 30 * 1000 - SWEEP_MS / 2);
+		});
 	});
 });
