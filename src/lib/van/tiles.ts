@@ -207,3 +207,36 @@ export function tileUrl(tile: TilePlacement, template = TILE_URL_TEMPLATE): stri
 		.replace('{x}', String(tile.x))
 		.replace('{y}', String(tile.y));
 }
+
+/**
+ * Appends a CARTO basemaps API key to a tile URL template.
+ *
+ * CARTO's keyed endpoints take the key as a `key` query parameter on the same
+ * cartocdn.com URL the keyless ones use, so upgrading an account is a query
+ * string away rather than a different template.
+ *
+ * The key is only ever appended to a cartocdn.com host. MAP_TILE_URL_TEMPLATE
+ * can point anywhere — Stadia, Protomaps, a self-hosted box — and a browser
+ * fetching tiles would hand the key straight to whoever that is. Silently
+ * dropping it there is the safe failure: a missing key shows unkeyed tiles,
+ * a leaked one is somebody else's bill.
+ *
+ * Tile requests come from the browser, so this key is public by construction.
+ * That is how CARTO's are meant to work (restrict them by domain in the CARTO
+ * dashboard); never put a key that needs to stay secret here.
+ */
+export function withTileApiKey(template: string, apiKey: string): string {
+	const key = apiKey.trim();
+	if (!key) return template;
+
+	let host: string;
+	try {
+		host = new URL(template).hostname;
+	} catch {
+		return template;
+	}
+	if (host !== 'cartocdn.com' && !host.endsWith('.cartocdn.com')) return template;
+
+	const separator = template.includes('?') ? '&' : '?';
+	return `${template}${separator}key=${encodeURIComponent(key)}`;
+}

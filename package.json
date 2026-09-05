@@ -14,7 +14,7 @@
 		"format": "prettier --write .",
 		"check": "svelte-check --tsconfig ./tsconfig.json && npm run check:migrator",
 		"check:migrator": "tsc -p tsconfig.migrator.json",
-		"prepare": "git config core.hooksPath .githooks || true && svelte-kit sync",
+		"prepare": "svelte-kit sync",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
 		"db:seed": "node bin/seed-dev-db.js",
@@ -28,7 +28,8 @@
 		"bits-ui": "^2.18.1",
 		"drizzle-orm": "^0.45.2",
 		"layerchart": "^2.0.0",
-		"libphonenumber-js": "^1.12.41"
+		"libphonenumber-js": "^1.12.41",
+		"marked": "^18.0.11"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

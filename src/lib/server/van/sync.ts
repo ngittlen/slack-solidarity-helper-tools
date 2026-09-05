@@ -12,7 +12,7 @@
 // we skipped — a partial sync is safe because retirement is scoped to the
 // folders actually fetched (see planCatalogSync).
 
-import { and, inArray, isNull } from 'drizzle-orm';
+import { and, inArray, isNull, ne } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 // Relative, not `$lib/...`: scripts/van-sync-once.ts runs this under tsx,
 // outside the Vite bundle, where the alias does not resolve.
@@ -229,8 +229,32 @@ export async function runCatalogSync(
 	// set `retiredAt: null` on every route VAN returned. It is reported because
 	// a route coming back from retirement is worth seeing in the log.
 
-	// Queue geometry work. `onConflictDoNothing` so a turf already queued (or
-	// mid-flight) is not reset to pending under the worker's feet.
+	// Queue geometry work.
+	//
+	// This was `onConflictDoNothing`, to keep a turf that is queued or
+	// mid-flight from being reset to pending under the worker's feet. That
+	// protected the right thing and broke re-cut detection while doing it: the
+	// row is keyed by mapRouteId, so once a turf had ANY queue row, a later
+	// sync could never correct it. A re-cut turf keeps its mapRouteId and gets
+	// a NEW savedListId (observed live: "Orlando Turf 01" moved from 585052 to
+	// 585484 when the demo region was re-cut), so the stale row kept pointing
+	// at a saved list VAN now rejects with `'savedListId' must be a valid saved
+	// list ID in this context`. Story 2.5's whole re-cut path — invalidate the
+	// hull, queue a fresh export — stopped at the queue.
+	//
+	// So: re-arm the row, but ONLY when the saved list actually changed. That
+	// is the signal that this is genuinely new work rather than the same job
+	// coming round again, and gating on it matters more than it looks. A turf
+	// with no hull is queued by `needsGeometry` on EVERY sync (it has no
+	// hullJson, so there is nothing to compare), and this endpoint runs 37
+	// times a day. Re-arming unconditionally would submit an export job per
+	// turf per run, forever, for exactly the turf least likely to ever produce
+	// a hull — the demo database, for instance, populates Address and ZipCode
+	// but leaves VAddressLatitude/VAddressLongitude empty on every row, so no
+	// amount of retrying will geocode it.
+	//
+	// A settled row therefore stays settled until VAN re-cuts the turf, and
+	// clearing a `failed` row by hand is the deliberate way to force a retry.
 	for (const item of plan.geometryQueue) {
 		await db
 			.insert(vanGeometryQueue)
@@ -240,7 +264,23 @@ export async function runCatalogSync(
 				status: 'pending',
 				attempts: 0,
 			})
-			.onConflictDoNothing({ target: vanGeometryQueue.mapRouteId });
+			.onConflictDoUpdate({
+				target: vanGeometryQueue.mapRouteId,
+				set: {
+					savedListId: item.savedListId,
+					status: 'pending',
+					attempts: 0,
+					// Cleared together: a job id, error or timestamp from the
+					// previous saved list describes work that no longer exists.
+					exportJobId: null,
+					lastError: null,
+					requestedAt: null,
+					completedAt: null,
+				},
+				// Refers to the EXISTING row, so this is "the stored saved list
+				// differs from the one VAN just reported".
+				where: ne(vanGeometryQueue.savedListId, item.savedListId),
+			});
 	}
 
 	// Written last, and only on a real run: a dry run reports what WOULD happen,

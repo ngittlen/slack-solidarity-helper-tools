@@ -9,6 +9,11 @@ A Slack bot and webhook server for solidarity.tech organisations. It does four t
 - **Track notes and warnings** — admins log notes or rule-breaking warnings from Slack with `/member-note` or the message shortcut. Warnings DM the member a numbered, configurable message the admin can edit before sending, and everything is visible at `/members`.
 - **Post a weekly growth report** — a scheduled internal endpoint computes per-chapter Slack-signup growth for the previous week and posts a Slack message highlighting the top performers.
 
+[PRIVACY.md](PRIVACY.md) describes what the app collects about volunteers and how long it
+keeps it; [SECURITY.md](SECURITY.md) covers how it is protected and how to report a
+vulnerability privately. Both are served to the public at [`/policies`](#get-policies) — the
+only page outside the auth guard.
+
 ## How it works
 
 ### New member welcome
@@ -257,6 +262,8 @@ PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 
 `INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 
+The one exception is `/api/internal/van-export-callback`, which VAN calls. VAN **requires** a `webhookUrl` on every export job, stores it, and echoes it back on every later read of that job — so the URL it holds carries a per-turf HMAC (`?turf=&token=`) keyed by `INTERNAL_CRON_SECRET` rather than the secret itself. A leak of one of those tokens buys a queue drain for one turf and nothing else; the secret would have opened all seven internal endpoints. Rotating `INTERNAL_CRON_SECRET` invalidates outstanding tokens, so in-flight export jobs fall back to being collected by the next scheduled `van-sync` run.
+
 The `OPENFIELD_*`/`DOOR_KNOCK_*` vars enable the nightly door-knock snapshot (`/api/internal/door-knock-snapshot`), which records each turf's doors-knocked total for the day. The dashboard's "Doors knocked" chart appears once the first snapshot lands.
 
 `DOOR_KNOCK_PROVIDER` picks which canvassing tool the numbers come from; it defaults to `openfield`, so an existing deployment needs no new variable. The Openfield provider reads conversation codes from the door-knocking channel's "Conversation Codes" canvas (requires the `files:read` bot scope), logs into Openfield with the service account, and pulls each code's leaderboard. Everything tool-specific lives behind the `DoorKnockProvider` interface in `src/lib/server/door-knock-provider.ts` — adding another canvassing tool (MiniVAN, say) means implementing `dateFor` + `collect` under `src/lib/server/door-knock/<tool>/` and registering it in `src/lib/server/door-knock-env.ts`; the snapshot writer, the refresh throttle, the schema, and the charts are unaffected.
@@ -476,11 +483,11 @@ The underlying JSON is also available at `GET /api/pending`:
 - `status` is one of `uncontacted`, `contacted`, or `verified_in_slack`. Rows with `verified_in_slack` are excluded from `total_pending`.
 - `lastEditedByName` / `lastEditedById` record which admin last updated the row.
 
-Admins can add a comment or change a row's status directly on the page. Changes are saved automatically and pushed live to all connected users via Server-Sent Events (`GET /api/events`).
+Admins can add a comment or change a row's status directly on the page. Changes are saved automatically and pushed live to all connected admins via Server-Sent Events (`GET /api/events`).
 
 ### `POST /api/comment`
 
-Saves a comment for a request. Requires an active Slack OAuth session. Passing a blank string clears the comment.
+Saves a comment for a request. Admin-only (`403` for a signed-in non-admin). Passing a blank string clears the comment.
 
 ```json
 { "id": 1, "comment": "Left a voicemail, waiting to hear back." }
@@ -488,7 +495,7 @@ Saves a comment for a request. Requires an active Slack OAuth session. Passing a
 
 ### `POST /api/helped`
 
-Updates the status of a request. Requires an active Slack OAuth session. `status` must be one of `uncontacted`, `contacted`, or `verified_in_slack`.
+Updates the status of a request. Admin-only (`403` for a signed-in non-admin). `status` must be one of `uncontacted`, `contacted`, or `verified_in_slack`.
 
 ```json
 { "id": 1, "status": "verified_in_slack" }
@@ -589,6 +596,8 @@ Scheduler-only — every 30 minutes during waking hours, hourly overnight. Pulls
 
 For each chapter mapped under **Settings → Chapter → VAN folders**, it reads `GET /folders/{id}/mapRegions`, matches each Map Route to its MiniVAN printed-list number, and upserts a row per route. Runs take a `sync_locks` lock and are idempotent — an overlapping or delayed run is a no-op, so a skipped cron is harmless.
 
+Whatever time is left in the request budget after the catalog then goes to draining `van_geometry_queue` — one VAN export job per turf, reduced to a hull (`src/lib/server/van/geometry-worker.ts`). `POST /api/internal/van-export-callback` is the same drain, woken by VAN when a job finishes; it takes the **same** lock under the same name, because the queue has no per-row claim and two drainers racing would submit duplicate export jobs for the same turf.
+
 **The chapter → folder mapping is an input, not something the sync discovers.** A chapter with no folder mapped has no turf, and the first sync is a no-op until an admin fills it in. Run `npm run van:check` to list the folder ids the key can see.
 
 **Retirement is scoped to folders that actually synced.** A folder that errors — a 403 on an ungranted tier, a VAN outage — is skipped, and its turf is left exactly as it was. Retiring turf the sync merely failed to look at would release live checkouts under volunteers already standing on the doorstep. When a route genuinely disappears it is stamped `retiredAt` (never deleted, so a live checkout still renders) and any active claim on it is released with `releaseReason = 'retired'`.
@@ -676,8 +685,9 @@ Both are shared deliberately: when the chapter limiter was module state inside t
 | ----------------------- | ------------------------------------ | --------------------------------------- |
 | `MAP_TILE_URL_TEMPLATE` | CARTO Positron                       | Basemap tiles, `{z}/{x}/{y}`            |
 | `MAP_TILE_ATTRIBUTION`  | © OpenStreetMap contributors © CARTO | Rendered on the map; a condition of use |
+| `MAP_TILE_API_KEY`      | _(none)_                             | CARTO basemaps key, appended as `?key=` |
 
-**Move to a keyed tile account before real volunteer traffic.** The default is CARTO's keyless endpoint, which is courtesy rather than an SLA, and a canvass launch is the worst moment to discover a rate limit. Both vars are secrets, so the swap is a `fly secrets set`, not a deploy. A failed tile load degrades to a graticule and a "street map unavailable" notice rather than a white void.
+**Move to a keyed tile account before real volunteer traffic.** The default is CARTO's keyless endpoint, which is courtesy rather than an SLA, and a canvass launch is the worst moment to discover a rate limit. With a CARTO account, `MAP_TILE_API_KEY` alone is enough — the keyed and keyless CARTO URLs are otherwise identical, so the template stays as it is. The key is appended **only** when the template points at `cartocdn.com`; a template aimed at Stadia, Protomaps or a self-hosted box gets no key rather than someone else's. Because the browser fetches the tiles, this key is public by construction — that is how CARTO's are designed, so restrict it by domain in the CARTO dashboard and never put a key here that has to stay secret. All three vars are secrets to `fly secrets set`, not a deploy. A failed tile load degrades to a graticule and a "street map unavailable" notice rather than a white void.
 
 ### `GET /turfs/organizer` (admin)
 
@@ -738,6 +748,28 @@ The app never cuts turf — VAN's API cannot create MiniVAN exports (`/minivanEx
 - **Cut map regions against a "not yet contacted" filter.** This is what makes `doorCount` shrink as doors get knocked — the entire remaining-doors mechanism. A region cut without it never shrinks, and every doors-cleared number derived from it is zero.
 - **Bulk-export turf to MiniVAN ahead of time**, once per cut rather than once per volunteer.
 
+### `GET /policies`
+
+The privacy and security policies, rendered from `PRIVACY.md` and `SECURITY.md` in the
+repository root — one page, two sections, anchored at `#privacy` and `#security`.
+`/privacy` and `/security` are 308 redirects to those anchors, so the conventional URL
+works wherever it gets pasted.
+
+**This is the only page outside the auth guard.** A privacy policy that only signed-in
+workspace members can read fails the one job it has: it is written for the volunteer
+deciding whether to hand over a phone number, and it is the URL a Slack app listing has to
+point at. The allowlist is `src/lib/server/public-paths.ts` — three prefixes, prefix-matched,
+consulted by the root layout's load, and nothing behind them reads the session. (`/privacy`
+and `/security` are endpoints rather than pages, so no layout load runs for them at all;
+they are in the list as the record of what is public, not as the mechanism.)
+
+The markdown is the source of truth and is inlined at build time by Vite's `?raw`, so the
+page cannot drift from what a reviewer diffs, and the Docker image needs no `.md` files at
+runtime. Rendering is `src/lib/server/policy-docs.ts`: headings are demoted one level (the
+layout already owns the page's `<h1>`), heading ids are namespaced per document so the two
+files cannot collide, and links between and inside the documents are rewritten to in-page
+anchors. A test asserts every anchor the documents link to actually exists on the page.
+
 ### `GET /coalition-invite`
 
 Invites an existing Slack user to a coalition channel. Useful for solidarity.tech automations that route members to interest-based channels (labor, housing, etc.) after onboarding.
@@ -752,7 +784,9 @@ Returns `{ "success": true }` on a successful invite, `{ "success": true, "alrea
 
 ### `GET /api/events`
 
-Server-Sent Events stream. Requires an active Slack OAuth session. Pushes three event types:
+Server-Sent Events stream. Admin-only: unauthenticated requests are redirected to sign in and
+non-admins get `403`. The payload carries volunteers' names, emails and phone numbers, so it is
+gated exactly as `/pending` is. Pushes three event types:
 
 | `type`        | Payload                  | Meaning                            |
 | ------------- | ------------------------ | ---------------------------------- |

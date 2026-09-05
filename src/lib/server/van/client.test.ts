@@ -168,6 +168,121 @@ describe('createVanClient', () => {
 		expect(fetchFn).toHaveBeenCalledTimes(6);
 	});
 
+	// The forward walk this replaces read the OLDEST 6.6% of a 30,261-record
+	// table in 200 requests and then stopped silently on MAX_PAGES, which is
+	// precisely the data the distribution index does not want.
+	// A repeated folder id makes VAN answer 500 — verified live: `folderIds=2731`
+	// is 200, `folderIds=2731,2731` is 500. The catalog sync produces duplicates
+	// whenever two chapters map to one folder, which is a legitimate thing for
+	// an admin to configure.
+	describe('printedLists folder ids', () => {
+		// Typed with fetch's own parameters so `mock.calls` carries the URL.
+		function capture() {
+			return vi.fn(async (...args: [RequestInfo | URL, RequestInit?]) => {
+				void args;
+				return res(200, { items: [], nextPageLink: null });
+			});
+		}
+
+		it('deduplicates repeated folder ids', async () => {
+			const fetchFn = capture();
+			await createVanClient(config, fetchFn as never).printedLists([2731, 2731, 2731]);
+			const url = new URL(String(fetchFn.mock.calls[0]![0]));
+			expect(url.searchParams.get('folderIds')).toBe('2731');
+		});
+
+		it('keeps distinct ids, in first-seen order', async () => {
+			const fetchFn = capture();
+			await createVanClient(config, fetchFn as never).printedLists([9, 4, 9, 7, 4]);
+			const url = new URL(String(fetchFn.mock.calls[0]![0]));
+			expect(url.searchParams.get('folderIds')).toBe('9,4,7');
+		});
+
+		it('omits the parameter entirely when no folders are given', async () => {
+			const fetchFn = capture();
+			await createVanClient(config, fetchFn as never).printedLists();
+			const url = new URL(String(fetchFn.mock.calls[0]![0]));
+			expect(url.searchParams.has('folderIds')).toBe(false);
+			expect(url.searchParams.get('$top')).toBe('50');
+		});
+	});
+
+	describe('minivanExports', () => {
+		/** A fake table of `total` exports, served oldest-first, honouring
+		 *  $top/$skip the way the live endpoint does. */
+		function tableOf(total: number) {
+			return vi.fn(async (url: string) => {
+				const parsed = new URL(url);
+				const top = Number(parsed.searchParams.get('$top') ?? 10);
+				const skip = Number(parsed.searchParams.get('$skip') ?? 0);
+				const items = Array.from({ length: Math.max(0, Math.min(top, total - skip)) }, (_, i) => ({
+					minivanExportId: skip + i,
+					name: `Turf ${skip + i}`,
+					dateCreated: new Date(2010, 0, 1 + skip + i).toISOString(),
+					canvassers: [{ name: `Canvasser ${skip + i}` }],
+					createdBy: null,
+					databaseMode: 'MyVoters',
+				}));
+				return res(200, { items, count: total, nextPageLink: null });
+			});
+		}
+
+		it('asks for the maximum page size, not the default of 10', async () => {
+			const fetchFn = tableOf(20);
+			await createVanClient(config, fetchFn as never).minivanExports();
+			expect(String(fetchFn.mock.calls[0]![0])).toContain('$top=50');
+		});
+
+		it('returns a single page without skipping when the table is small', async () => {
+			const fetchFn = tableOf(20);
+			const exports = await createVanClient(config, fetchFn as never).minivanExports();
+			expect(exports).toHaveLength(20);
+			expect(fetchFn).toHaveBeenCalledTimes(1);
+			expect(String(fetchFn.mock.calls[0]![0])).not.toContain('$skip');
+		});
+
+		it('skips to the tail and walks backwards, returning the NEWEST records', async () => {
+			const fetchFn = tableOf(30_261);
+			const exports = await createVanClient(config, fetchFn as never).minivanExports();
+
+			// One probe for `count`, then 20 pages of 50.
+			expect(fetchFn).toHaveBeenCalledTimes(21);
+			expect(exports).toHaveLength(1000);
+
+			// The last record of the table, which the forward walk never reached.
+			expect(exports.at(-1)!.minivanExportId).toBe(30_260);
+			// Oldest-first within the result, like every other paginated call.
+			expect(exports[0]!.minivanExportId).toBe(29_261);
+
+			const skips = fetchFn.mock.calls
+				.slice(1)
+				.map((c) => Number(new URL(String(c[0])).searchParams.get('$skip')));
+			expect(skips[0]).toBe(30_211);
+			expect(skips[1]).toBe(30_161);
+		});
+
+		it('stops at the start of the table rather than skipping past zero', async () => {
+			const fetchFn = tableOf(120);
+			const exports = await createVanClient(config, fetchFn as never).minivanExports();
+			expect(exports).toHaveLength(120);
+			expect(exports[0]!.minivanExportId).toBe(0);
+			const skips = fetchFn.mock.calls
+				.slice(1)
+				.map((c) => Number(new URL(String(c[0])).searchParams.get('$skip')));
+			expect(skips).toEqual([70, 20, 0]);
+		});
+
+		// `count` grows when someone exports turf mid-walk, which shifts every
+		// later page by one and re-serves records already collected.
+		it('de-duplicates records that a growing table serves twice', async () => {
+			const fetchFn = tableOf(200);
+			const client = createVanClient(config, fetchFn as never);
+			const exports = await client.minivanExports();
+			const ids = exports.map((e) => e.minivanExportId);
+			expect(new Set(ids).size).toBe(ids.length);
+		});
+	});
+
 	it('posts an export job with the discovered type id', async () => {
 		const fetchFn = vi.fn().mockResolvedValue(res(200, { exportJobId: 99, status: 'Pending' }));
 		const job = await createVanClient(config, fetchFn as never).createExportJob({

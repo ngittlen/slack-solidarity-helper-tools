@@ -34,7 +34,9 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	const now = Date.now();
 	pruneRateLimitStores(now);
 
-	const budget = recordRequest(turfRequests, session.slackUserId, now);
+	const budget = recordRequest(turfRequests, session.slackUserId, now, {
+		exempt: session.isAdmin,
+	});
 	if (!budget.allowed) {
 		console.warn(`[van] turf API request budget exhausted: user=${session.slackUserId}`);
 		return json(

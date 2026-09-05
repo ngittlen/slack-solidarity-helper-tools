@@ -178,6 +178,14 @@ export const VAN_EXPORT_JOB_TYPE_ID = parseInt(get('VAN_EXPORT_JOB_TYPE_ID') || 
 // for every provider worth using; change both together.
 export const MAP_TILE_URL_TEMPLATE = get('MAP_TILE_URL_TEMPLATE');
 export const MAP_TILE_ATTRIBUTION = get('MAP_TILE_ATTRIBUTION');
+// CARTO basemaps API key, appended to the tile URL as `?key=` (see
+// van/tiles.ts). Set it to move off the keyless endpoint without touching the
+// template — the keyed and keyless CARTO URLs are otherwise identical.
+//
+// Only ever sent to cartocdn.com, even if MAP_TILE_URL_TEMPLATE points
+// somewhere else; and public by construction, because the browser is what
+// fetches the tiles. Restrict it by domain in the CARTO dashboard.
+export const MAP_TILE_API_KEY = get('MAP_TILE_API_KEY');
 
 export interface ChapterEntry {
 	chapterId: number;
