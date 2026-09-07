@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The volunteer turf-checkout page.
 	//
-	// The organizer walkthrough at /turfs/demo is the same layout over
+	// The organizer walkthrough at /turfs?demo is the same layout over
 	// fabricated data; both share turf-page.css and TurfMap so the demo stays a
 	// faithful preview rather than drifting into a separate design.
 	//

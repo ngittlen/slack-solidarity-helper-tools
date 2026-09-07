@@ -94,13 +94,22 @@ export interface VanExportJobType {
 
 export interface VanExportJob {
 	exportJobId: number;
-	exportJobTypeId: number | null;
+	/** The export job type, echoed back as `type` — NOT `exportJobTypeId`,
+	 *  which is the name only the *request* uses. Verified against the live
+	 *  API: neither POST /exportJobs nor GET /exportJobs/{id} returns a field
+	 *  called `exportJobTypeId`, so reading one gets `undefined` forever. */
+	type: number | null;
 	savedListId: number | null;
 	/** 'Pending' | 'InProcess' | 'Completed' | 'Error' (VAN's casing varies by
-	 *  endpoint; compare case-insensitively). */
+	 *  endpoint; compare case-insensitively). Small lists come back already
+	 *  'Completed' from the POST, with `downloadUrl` populated — the poll loop
+	 *  must handle a job that is done before it is first read. */
 	status: string | null;
 	downloadUrl: string | null;
-	/** When `downloadUrl` stops working. */
+	/** When `downloadUrl` stops working — advisory only. POST and GET disagree
+	 *  about it on the same job (POST said +3h, GET said a timestamp already in
+	 *  the past), so treat the URL as short-lived and download immediately
+	 *  rather than scheduling against this value. */
 	dateExpired: string | null;
 	errorCode: string | null;
 }
