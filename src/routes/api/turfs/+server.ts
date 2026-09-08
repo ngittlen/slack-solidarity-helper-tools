@@ -68,7 +68,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const now = Date.now();
 	pruneRateLimitStores(now);
 
-	const budget = recordRequest(turfRequests, session.slackUserId, now);
+	const budget = recordRequest(turfRequests, session.slackUserId, now, {
+		exempt: session.isAdmin,
+	});
 	if (!budget.allowed) {
 		console.warn(`[van] turf API request budget exhausted: user=${session.slackUserId}`);
 		return json(
@@ -100,7 +102,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// Counted against the SAME budget as the page. Panning within one chapter is
 	// free (a repeat chapter never costs a slot), so this only bites someone
 	// sweeping chapters through the API.
-	const limit = recordChapterView(chapterVisits, session.slackUserId, chapterId, now);
+	const limit = recordChapterView(chapterVisits, session.slackUserId, chapterId, now, {
+		exempt: session.isAdmin,
+	});
 	if (!limit.allowed) {
 		console.warn(
 			`[van] chapter switch rate-limited (api): user=${session.slackUserId} ` +

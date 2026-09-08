@@ -3,6 +3,7 @@ import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import {
+	MAP_TILE_API_KEY,
 	MAP_TILE_ATTRIBUTION,
 	MAP_TILE_URL_TEMPLATE,
 	SLACK_SUPERUSER_ID,
@@ -17,7 +18,7 @@ import { selectNearest, TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
 import { toTurfView, type TurfView } from '$lib/van/turf-view.js';
 import { DEFAULT_CLAIM_TTL_HOURS } from '$lib/van/checkout.js';
 import { demoTurfs, DEMO_CHAPTERS, DEMO_LOCATIONS } from '$lib/van/demo-turfs.js';
-import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE } from '$lib/van/tiles.js';
+import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
 import type { ClaimSnapshot } from '$lib/van/checkout.js';
 import type { LatLng } from '$lib/van/geometry.js';
 
@@ -46,7 +47,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	if (!session) redirect(302, '/');
 
 	const tiles = {
-		urlTemplate: MAP_TILE_URL_TEMPLATE || TILE_URL_TEMPLATE,
+		urlTemplate: withTileApiKey(MAP_TILE_URL_TEMPLATE || TILE_URL_TEMPLATE, MAP_TILE_API_KEY),
 		attribution: MAP_TILE_ATTRIBUTION || TILE_ATTRIBUTION,
 	};
 
@@ -142,9 +143,21 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// the chapters that have turf. Listing only the latter would be a
 	// cross-chapter aggregate: one request revealing where the field operation
 	// is running, which is exactly what the compartment exists to prevent.
-	const chapters = settings.chapterChannelMap
-		.map((entry) => ({ chapterId: entry.chapterId, name: entry.name }))
-		.sort((a, b) => a.name.localeCompare(b.name));
+	// Deduplicated by chapterId, because chapter_channel_map is keyed by
+	// CHANNEL, not by chapter — a chapter with two Slack channels has two rows
+	// and was rendering as two identical buttons. Observed live: 64 rows, 32
+	// chapters, every one of them listed twice.
+	//
+	// First row wins on the name. They agree in practice, and picking
+	// arbitrarily between two spellings of the same chapter would make the
+	// picker's order jitter between requests for no gain.
+	const byChapterId = new Map<number, { chapterId: number; name: string }>();
+	for (const entry of settings.chapterChannelMap) {
+		if (!byChapterId.has(entry.chapterId)) {
+			byChapterId.set(entry.chapterId, { chapterId: entry.chapterId, name: entry.name });
+		}
+	}
+	const chapters = [...byChapterId.values()].sort((a, b) => a.name.localeCompare(b.name));
 
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
@@ -171,7 +184,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	pruneRateLimitStores(now);
 	// Shared with /api/turfs, so the budget follows the user rather than the
 	// URL — see rate-limit-store.ts for why that matters.
-	const limit = recordChapterView(chapterVisits, session.slackUserId, chapter.chapterId, now);
+	const limit = recordChapterView(chapterVisits, session.slackUserId, chapter.chapterId, now, {
+		exempt: session.isAdmin,
+	});
 	if (!limit.allowed) {
 		console.warn(
 			`[van] chapter switch rate-limited: user=${session.slackUserId} ` +

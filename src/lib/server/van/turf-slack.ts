@@ -231,9 +231,22 @@ type GateResult =
 async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<GateResult> {
 	pruneRateLimitStores(now);
 
+	// Admin status is resolved BEFORE the budget check, not after it as it used
+	// to be. Admins are exempt from the budget, and a check that ran first could
+	// only have refused them before knowing they were exempt. The cost is that a
+	// request already over budget now does three lookups before being turned
+	// away — cheap, and only on the path that is already being throttled.
+	const [isAdmin, blockedIds, settings] = await Promise.all([
+		isSlackAdmin(ctx.slackUserId),
+		loadVanBlockedIds(db),
+		loadSettings(db),
+	]);
+	const viewer = { slackUserId: ctx.slackUserId, isAdmin };
+
 	// Counted against the same store the web API spends, so the budget follows
-	// the user rather than the surface they came in through.
-	const budget = recordRequest(turfRequests, ctx.slackUserId, now);
+	// the user rather than the surface they came in through — and so does the
+	// exemption, or an organizer would be throttled in Slack but not on the web.
+	const budget = recordRequest(turfRequests, ctx.slackUserId, now, { exempt: isAdmin });
 	if (!budget.allowed) {
 		console.warn(`${LOG} turf request budget exhausted (slack): user=${ctx.slackUserId}`);
 		return {
@@ -241,13 +254,6 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 			message: plainMessage('That is a lot of requests. Give it a minute and try again.'),
 		};
 	}
-
-	const [isAdmin, blockedIds, settings] = await Promise.all([
-		isSlackAdmin(ctx.slackUserId),
-		loadVanBlockedIds(db),
-		loadSettings(db),
-	]);
-	const viewer = { slackUserId: ctx.slackUserId, isAdmin };
 
 	const access = turfAccess(viewer, blockedIds, SLACK_SUPERUSER_ID);
 	if (!access.allowed) return { ok: false, message: plainMessage(access.message) };
@@ -283,7 +289,9 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 
 	// Same counter the page spends. Re-opening a chapter already seen this hour
 	// is free, so paging and claiming within one county cost nothing.
-	const limit = recordChapterView(chapterVisits, ctx.slackUserId, chapter.chapterId, now);
+	const limit = recordChapterView(chapterVisits, ctx.slackUserId, chapter.chapterId, now, {
+		exempt: isAdmin,
+	});
 	if (!limit.allowed) {
 		console.warn(
 			`${LOG} chapter switch rate-limited (slack): user=${ctx.slackUserId} ` +

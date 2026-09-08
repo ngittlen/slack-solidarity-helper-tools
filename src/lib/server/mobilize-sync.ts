@@ -16,6 +16,8 @@ import { fetchPageDescriptions } from '../../../mobilize-migrator/lib/pages.js';
 import { loadMobilizeApi } from './mobilize-api.js';
 import { TursoLedger } from './mobilize-ledger.js';
 import { fetchAllEvents } from '../../../mobilize-migrator/lib/solidarity.js';
+import { listSessionRsvps } from '../../../mobilize-migrator/lib/rsvp.js';
+import { countSeats, type SeatCount } from '../../../mobilize-migrator/lib/seats.js';
 import { runSync, type SyncReport } from '../../../mobilize-migrator/lib/sync.js';
 import { planMigration } from '../../../mobilize-migrator/lib/transform.js';
 import { loadSettings } from './settings.js';
@@ -39,6 +41,36 @@ type Db = ReturnType<typeof drizzle>;
  */
 const DEFAULT_BUDGET_MS = 120_000;
 
+/** Solidarity allows 60 requests / 30s; one capped shift costs one read. */
+const SEAT_COUNT_PAUSE_MS = 550;
+
+/**
+ * Seats each capped session has already spent, split by which system the signup
+ * came from, so the event sync can hand Mobilize only what is left and let it
+ * enforce the cap itself.
+ *
+ * The Mobilize-origin split is the whole trick — see lib/seats.ts. Counting
+ * every RSVP against the cap would charge each Mobilize signup twice, once
+ * against Mobilize's own tally and once by shrinking the cap we give it, and the
+ * shift would close at half capacity. Those same mirrored rows are what says how
+ * many signups Mobilize is holding, which is the floor under any cap we push.
+ *
+ * A session whose read fails is simply left out of the map, which the sync reads
+ * as "no adjustment" rather than as a full or empty shift.
+ */
+async function countSeatsTaken(sessionIds: number[]): Promise<Map<number, SeatCount>> {
+	const seats = new Map<number, SeatCount>();
+	for (const [index, sessionId] of sessionIds.entries()) {
+		if (index > 0) await new Promise((r) => setTimeout(r, SEAT_COUNT_PAUSE_MS));
+		try {
+			seats.set(sessionId, countSeats(await listSessionRsvps(SOLIDARITY_API_TOKEN, sessionId)));
+		} catch (err) {
+			console.warn(`[mobilize-sync] seat count failed for session ${sessionId}:`, err);
+		}
+	}
+	return seats;
+}
+
 export interface MobilizeSyncOptions {
 	/** When false, plan and report without writing anything. */
 	apply?: boolean;
@@ -55,6 +87,14 @@ export interface MobilizeSyncResult extends SyncReport {
 	/** Of those, the ones already published to Mobilize by an earlier run. The
 	 *  tag stops further updates; it does not delete what is already live. */
 	excludedStillLive: number;
+	/**
+	 * Sessions left out because another session at the same venue covers the same
+	 * start and end. Mobilize refuses a payload carrying both, so this is the
+	 * difference between an event syncing and failing outright — but it is also a
+	 * duplicate somebody probably entered by accident, so it is counted and named
+	 * rather than dropped in silence.
+	 */
+	duplicateSessions: { title: string; sessionId: number; keptSessionId: number }[];
 	dryRun: boolean;
 }
 
@@ -82,7 +122,18 @@ export async function runMobilizeSync(
 		fetchPageDescriptions(SOLIDARITY_API_TOKEN),
 		loadSettings(db),
 	]);
-	const { planned, skipped, excludedByTag } = planMigration(events, Date.now(), pageDescriptions);
+	const { planned, skipped, excludedByTag, duplicateSessions } = planMigration(
+		events,
+		Date.now(),
+		pageDescriptions,
+	);
+	for (const duplicate of duplicateSessions) {
+		console.warn(
+			`[mobilize-sync] "${duplicate.title}": session ${duplicate.sessionId} repeats the exact ` +
+				`start and end of session ${duplicate.keptSessionId} — left out, since Mobilize rejects ` +
+				'an event carrying both',
+		);
+	}
 
 	// The v1 API rejects a create or update with no contact, so stop here with a
 	// message naming the fix rather than letting every event fail one by one.
@@ -106,6 +157,7 @@ export async function runMobilizeSync(
 			maxCreatesPerRun: options.maxCreates ?? MOBILIZE_SYNC_MAX_CREATES,
 			apply,
 			writeDeadline,
+			seatsTaken: countSeatsTaken,
 			log: (message) => console.log(`[mobilize-sync] ${message}`),
 		},
 		ledger,
@@ -129,6 +181,11 @@ export async function runMobilizeSync(
 		skippedNoAddress: skipped.length,
 		excludedByTag: excludedByTag.length,
 		excludedStillLive,
+		duplicateSessions: duplicateSessions.map(({ title, sessionId, keptSessionId }) => ({
+			title,
+			sessionId,
+			keptSessionId,
+		})),
 		dryRun: !apply,
 	};
 }

@@ -3,11 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MobilizeApiConfig, MobilizeEvent } from './mobilize.js';
 import {
 	describeChanges,
+	findOpenZeroCaps,
+	raiseCapsToFloors,
 	reconcileTimeslots,
 	runSync,
 	type Ledger,
 	type LedgerRecord,
+	type PushedCap,
 } from './sync.js';
+import { MobilizeError } from './mobilize.js';
+import type { SeatCount } from './seats.js';
 import type { EventContact } from './payload.js';
 import type { PlannedEvent } from './transform.js';
 
@@ -197,6 +202,78 @@ describe('reconcileTimeslots', () => {
 	});
 });
 
+describe('reconcileTimeslots capacity', () => {
+	const capped = (cap: number | null) =>
+		plan({
+			timeslots: [
+				{
+					startDate: Math.floor(START / 1000),
+					endDate: Math.floor((START + 2 * HOUR) / 1000),
+					maxAttendees: cap,
+				},
+			],
+		});
+
+	it('flags a cap that differs from the one last pushed', () => {
+		const result = reconcileTimeslots(
+			capped(12),
+			live([{ id: 5001, start: START }]),
+			NOW,
+			new Map([[5001, 20]]),
+		);
+		expect(result.capacityChanged).toBe(true);
+		expect(result.timeslots[0]!.maxAttendees).toBe(12);
+	});
+
+	it('leaves a cap alone when it matches what was last pushed', () => {
+		const result = reconcileTimeslots(
+			capped(12),
+			live([{ id: 5001, start: START }]),
+			NOW,
+			new Map([[5001, 12]]),
+		);
+		expect(result.capacityChanged).toBe(false);
+	});
+
+	it('treats zero as a real cap, not as "no record"', () => {
+		// A full shift is pushed as 0. Confusing it with null would re-open it.
+		const result = reconcileTimeslots(
+			capped(0),
+			live([{ id: 5001, start: START }]),
+			NOW,
+			new Map([[5001, 0]]),
+		);
+		expect(result.capacityChanged).toBe(false);
+	});
+
+	it('establishes a cap on a shift that has no record of one', () => {
+		const result = reconcileTimeslots(capped(12), live([{ id: 5001, start: START }]), NOW);
+		expect(result.capacityChanged).toBe(true);
+	});
+
+	it('stays quiet when there is no record and no cap is wanted', () => {
+		const result = reconcileTimeslots(capped(null), live([{ id: 5001, start: START }]), NOW);
+		expect(result.capacityChanged).toBe(false);
+	});
+
+	it('re-sends an orphan with the cap it was last given, not null', () => {
+		// Every PUT carries every upcoming slot, so sending null here silently
+		// un-capped orphaned shifts on every unrelated edit.
+		const result = reconcileTimeslots(
+			plan(),
+			live([
+				{ id: 5001, start: START },
+				{ id: 5002, start: START + 3 * HOUR },
+			]),
+			NOW,
+			new Map([[5002, 8]]),
+		);
+		const orphan = result.timeslots.find((slot) => slot.id === 5002);
+		expect(result.orphanCount).toBe(1);
+		expect(orphan!.maxAttendees).toBe(8);
+	});
+});
+
 describe('describeChanges', () => {
 	it('reports nothing when everything matches', () => {
 		expect(describeChanges(plan(), live([{ id: 1, start: START }]), false, false)).toEqual([]);
@@ -248,6 +325,13 @@ describe('describeChanges', () => {
 	it('does not ask for an update when we have no zip to offer either', () => {
 		const noZip = live([{ id: 1, start: START }], { location: { locality: 'Detroit' } });
 		expect(describeChanges(plan({ zipcode: '' }), noZip, false, false)).toEqual([]);
+	});
+});
+
+describe('describeChanges capacity', () => {
+	it('names capacity apart from timeslots', () => {
+		const changes = describeChanges(plan(), live([{ id: 5001, start: START }]), false, false, true);
+		expect(changes).toEqual(['capacity']);
 	});
 });
 
@@ -724,5 +808,446 @@ describe('runSync write budget', () => {
 		expect(report.updated).toBeLessThan(3);
 		expect(report.updated + report.pending).toBe(3);
 		expect(report.unchanged).toBe(0);
+	});
+});
+
+describe('runSync capacity push', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 1 };
+	const CONTACT: EventContact = {
+		name: 'Field Team',
+		emailAddress: 'field@example.org',
+		phoneNumber: '',
+	};
+
+	/** A capped shift already mirrored to Mobilize, with a cap recorded as pushed. */
+	function setup(options: {
+		pushedCap: number | null;
+		seatsTaken: SeatCount;
+		/** Reject the first PUT the way Mobilize rejects a cap under its own count. */
+		rejectFirstPutBelow?: number;
+		/** What the live read says about the shift. Omit for a read that is silent. */
+		isFull?: boolean;
+		/** Shift start, ms. Defaults to a fixed past date; the stuck-open check only
+		 *  looks at upcoming shifts, so those tests pass a future one. */
+		startsAt?: number;
+	}) {
+		const start = options.startsAt ?? START;
+		const planned = plan({
+			startInstants: [start],
+			endInstants: [start + 2 * HOUR],
+			timeslots: [
+				{
+					startDate: Math.floor(start / 1000),
+					endDate: Math.floor((start + 2 * HOUR) / 1000),
+					maxAttendees: 20,
+				},
+			],
+		});
+		const body = JSON.stringify({
+			data: [
+				{
+					id: 900,
+					title: planned.title,
+					event_type: 'COMMUNITY_CANVASS',
+					description: planned.description,
+					timeslots: [
+						{
+							id: 5001,
+							start_date: Math.floor(start / 1000),
+							end_date: Math.floor((start + 2 * HOUR) / 1000),
+							...(options.isFull === undefined ? {} : { is_full: options.isFull }),
+						},
+					],
+					location: { locality: 'Detroit', postal_code: '48202' },
+				},
+			],
+			next: null,
+		});
+		const puts: Record<string, unknown>[] = [];
+		vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+			if (init?.method === 'PUT') {
+				const sent = JSON.parse(String(init.body)) as {
+					timeslots: { max_attendees: number | null }[];
+				};
+				puts.push(sent);
+				const floor = options.rejectFirstPutBelow;
+				if (floor !== undefined && (sent.timeslots[0]!.max_attendees ?? Infinity) < floor) {
+					// Verbatim shape of a live rejection, padding entry and all.
+					return {
+						ok: false,
+						status: 400,
+						text: async () =>
+							JSON.stringify({
+								data: null,
+								error: {
+									timeslots: [
+										{
+											non_field_errors: [
+												`Timeslot capacity cannot be less than ${floor} (current attendees)`,
+											],
+										},
+										{},
+									],
+								},
+							}),
+						headers: new Headers(),
+					};
+				}
+			}
+			return { ok: true, status: 200, text: async () => body, headers: new Headers() };
+		});
+
+		const recordedCaps: PushedCap[] = [];
+		const ledger: Ledger = {
+			async all() {
+				return [{ key: planned.key, mobilizeEventId: 900, title: planned.title }];
+			},
+			async record() {},
+			async imageFor() {
+				return null;
+			},
+			async recordImage() {},
+			async zipFor() {
+				return null;
+			},
+			async recordZip() {},
+			async recordTimeslots() {},
+			async pushedCaps() {
+				return new Map([[5001, options.pushedCap]]);
+			},
+			async recordPushedCaps(entries) {
+				recordedCaps.push(...entries);
+			},
+		};
+
+		const asked: number[][] = [];
+		const seatsTaken = async (ids: number[]) => {
+			asked.push(ids);
+			return new Map(ids.map((id) => [id, options.seatsTaken]));
+		};
+
+		return { planned, ledger, puts, recordedCaps, asked, seatsTaken, body };
+	}
+
+	const run = (fixture: ReturnType<typeof setup>) =>
+		runSync(
+			[fixture.planned],
+			{
+				api: API,
+				contact: CONTACT,
+				maxCreatesPerRun: 10,
+				apply: true,
+				pauseMs: 0,
+				seatsTaken: fixture.seatsTaken,
+			},
+			fixture.ledger,
+			() => null,
+		);
+
+	it('hands Mobilize the cap minus the seats Solidarity already spent', async () => {
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
+
+		const report = await run(fixture);
+
+		expect(report.updated).toBe(1);
+		expect(report.updatedTitles[0]).toContain('capacity');
+		expect(fixture.puts[0]).toMatchObject({ timeslots: [{ id: 5001, max_attendees: 13 }] });
+	});
+
+	it('records the cap only once the PUT has landed', async () => {
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
+
+		await run(fixture);
+
+		expect(fixture.recordedCaps).toEqual([{ mobilizeTimeslotId: 5001, maxAttendees: 13 }]);
+	});
+
+	it('leaves the event alone when the cap has not moved', async () => {
+		// Nothing else differs, so without this the seat count would trigger a PUT
+		// on every capped event on every pass.
+		const fixture = setup({ pushedCap: 13, seatsTaken: { solidarity: 7, mobilize: 0 } });
+
+		const report = await run(fixture);
+
+		expect(report.unchanged).toBe(1);
+		expect(fixture.puts).toEqual([]);
+	});
+
+	it('asks only about sessions whose shift carries a cap', async () => {
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
+
+		await run(fixture);
+
+		expect(fixture.asked).toEqual([[10]]);
+	});
+
+	it('pushes the cap unadjusted when the seat count fails', async () => {
+		const fixture = setup({ pushedCap: null, seatsTaken: { solidarity: 0, mobilize: 0 } });
+		fixture.seatsTaken = async () => {
+			throw new Error('Solidarity rsvp list returned 500');
+		};
+
+		const report = await run(fixture);
+
+		expect(fixture.puts[0]).toMatchObject({ timeslots: [{ id: 5001, max_attendees: 20 }] });
+		expect(report.errors[0]).toContain('seat count');
+	});
+
+	it('never caps a shift below the signups Mobilize already holds', async () => {
+		// 15 spent in Solidarity leaves 5 of the cap of 20, but Mobilize has taken 6
+		// of its own. Sending 5 is the 400 this arithmetic exists to avoid.
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 15, mobilize: 6 } });
+
+		const report = await run(fixture);
+
+		expect(report.failed).toBe(0);
+		expect(fixture.puts).toHaveLength(1);
+		expect(fixture.puts[0]).toMatchObject({ timeslots: [{ id: 5001, max_attendees: 6 }] });
+	});
+
+	it('retries at the count Mobilize names when its signups outran the seat count', async () => {
+		// The mirrored count is a run behind by nature: someone can sign up in
+		// Mobilize between the seat read and the PUT. Mobilize names its own count
+		// in the rejection, so the event lands rather than failing over two people.
+		const fixture = setup({
+			pushedCap: 20,
+			seatsTaken: { solidarity: 15, mobilize: 6 },
+			rejectFirstPutBelow: 8,
+		});
+
+		const report = await run(fixture);
+
+		expect(report.failed).toBe(0);
+		expect(report.updated).toBe(1);
+		expect(
+			fixture.puts.map(
+				(put) => (put as { timeslots: { max_attendees: number }[] }).timeslots[0]!.max_attendees,
+			),
+		).toEqual([6, 8]);
+	});
+
+	it('records the raised cap, not the one Mobilize refused', async () => {
+		// Record the refused 6 and the next run sees no change to push, leaving
+		// Mobilize capped at a number it never accepted.
+		const fixture = setup({
+			pushedCap: 20,
+			seatsTaken: { solidarity: 15, mobilize: 6 },
+			rejectFirstPutBelow: 8,
+		});
+
+		await run(fixture);
+
+		expect(fixture.recordedCaps).toEqual([{ mobilizeTimeslotId: 5001, maxAttendees: 8 }]);
+	});
+
+	it('reports an upcoming shift capped at 0 that Mobilize still calls open', async () => {
+		// The cap is already recorded as pushed and nothing else differs, so this
+		// event needs no PUT at all — which is exactly the path the check has to
+		// survive, since a stuck shift is usually one nobody is editing.
+		const fixture = setup({
+			pushedCap: 0,
+			seatsTaken: { solidarity: 20, mobilize: 0 },
+			isFull: false,
+			startsAt: Date.now() + 14 * 24 * HOUR,
+		});
+
+		const report = await run(fixture);
+
+		expect(report.unchanged).toBe(1);
+		expect(fixture.puts).toEqual([]);
+		expect(report.zeroCapStillOpen).toEqual([
+			{
+				title: 'Detroit Canvass',
+				mobilizeEventId: 900,
+				mobilizeTimeslotId: 5001,
+				startDate: Math.floor((Date.now() + 14 * 24 * HOUR) / 1000),
+				browserUrl: null,
+			},
+		]);
+	});
+
+	it('stays quiet when Mobilize agrees the 0-capped shift is full', async () => {
+		const fixture = setup({
+			pushedCap: 0,
+			seatsTaken: { solidarity: 20, mobilize: 0 },
+			isFull: true,
+			startsAt: Date.now() + 14 * 24 * HOUR,
+		});
+
+		const report = await run(fixture);
+
+		expect(report.zeroCapStillOpen).toEqual([]);
+	});
+
+	it('reports a 400 that is not about capacity instead of retrying it', async () => {
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
+		vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+			if (init?.method === 'PUT') {
+				return {
+					ok: false,
+					status: 400,
+					text: async () =>
+						JSON.stringify({ error: { description: ['This field may not be blank.'] } }),
+					headers: new Headers(),
+				};
+			}
+			return { ok: true, status: 200, text: async () => fixture.body, headers: new Headers() };
+		});
+
+		const report = await run(fixture);
+
+		expect(report.failed).toBe(1);
+		expect(report.errors[0]).toContain('This field may not be blank');
+	});
+});
+
+describe('findOpenZeroCaps', () => {
+	const FUTURE = Math.floor((NOW + 7 * 24 * HOUR) / 1000);
+	const PAST = Math.floor((NOW - 7 * 24 * HOUR) / 1000);
+
+	function live(timeslots: MobilizeEvent['timeslots']): MobilizeEvent {
+		return {
+			id: 900,
+			title: 'Detroit Canvass',
+			event_type: 'COMMUNITY_CANVASS',
+			browser_url: 'https://www.mobilize.us/org/event/900/',
+			timeslots,
+			location: null,
+		};
+	}
+
+	it('reports a shift capped at zero that Mobilize still calls open', async () => {
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: false }]),
+			'Detroit Canvass',
+			new Map([[5001, 0]]),
+			NOW,
+		);
+
+		expect(found).toEqual([
+			{
+				title: 'Detroit Canvass',
+				mobilizeEventId: 900,
+				mobilizeTimeslotId: 5001,
+				startDate: FUTURE,
+				browserUrl: 'https://www.mobilize.us/org/event/900/',
+			},
+		]);
+	});
+
+	it('says nothing when Mobilize agrees the shift is full', () => {
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: true }]),
+			'Detroit Canvass',
+			new Map([[5001, 0]]),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('treats a missing is_full as "Mobilize did not say", not as open', () => {
+		// An absent field is the read telling us nothing. Reporting it as a stuck
+		// shift would cry wolf on every event the day Mobilize drops the field.
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600 }]),
+			'Detroit Canvass',
+			new Map([[5001, 0]]),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('ignores a shift capped at anything but zero', () => {
+		// Any positive cap can honestly be not-full; only zero is a contradiction.
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: false }]),
+			'Detroit Canvass',
+			new Map([[5001, 4]]),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('ignores a shift we have never capped', () => {
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: false }]),
+			'Detroit Canvass',
+			new Map(),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('leaves past shifts out — their signups are settled', () => {
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: PAST, end_date: PAST + 3600, is_full: false }]),
+			'Detroit Canvass',
+			new Map([[5001, 0]]),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('carries a null link when the read gave no browser_url', () => {
+		const event = live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: false }]);
+		delete event.browser_url;
+
+		const found = findOpenZeroCaps(event, 'Detroit Canvass', new Map([[5001, 0]]), NOW);
+
+		expect(found[0]!.browserUrl).toBeNull();
+	});
+});
+
+describe('raiseCapsToFloors', () => {
+	const slots = [
+		{ id: 1, startDate: 0, endDate: 1, maxAttendees: 5 },
+		{ id: 2, startDate: 2, endDate: 3, maxAttendees: 4 },
+	];
+
+	function rejection(timeslots: unknown[]): MobilizeError {
+		const body = JSON.stringify({ data: null, error: { timeslots } });
+		return new MobilizeError('returned 400', 400, body);
+	}
+
+	it('raises only the shift Mobilize named, by its position in what we sent', () => {
+		const raised = raiseCapsToFloors(
+			slots,
+			rejection([
+				{},
+				{ non_field_errors: ['Timeslot capacity cannot be less than 10 (current attendees)'] },
+			]),
+		);
+
+		expect(raised?.map((slot) => slot.maxAttendees)).toEqual([5, 10]);
+	});
+
+	it('leaves an uncapped shift uncapped even if it is named', () => {
+		// Mobilize cannot have rejected a cap it was not given, and inventing one
+		// here would be worse than the failure.
+		const raised = raiseCapsToFloors(
+			[{ id: 1, startDate: 0, endDate: 1, maxAttendees: null }],
+			rejection([
+				{ non_field_errors: ['Timeslot capacity cannot be less than 3 (current attendees)'] },
+			]),
+		);
+
+		expect(raised).toBeNull();
+	});
+
+	it('declines any other rejection so the caller reports it', () => {
+		expect(
+			raiseCapsToFloors(slots, rejection([{ start_date: ['Cannot modify past timeslot'] }])),
+		).toBeNull();
+		expect(raiseCapsToFloors(slots, new MobilizeError('nope', 403, ''))).toBeNull();
+		expect(raiseCapsToFloors(slots, new Error('network'))).toBeNull();
 	});
 });

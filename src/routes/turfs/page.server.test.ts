@@ -11,6 +11,7 @@ vi.mock('$lib/server/env.js', () => ({
 	SLACK_SUPERUSER_ID: 'U_SUPER',
 	MAP_TILE_URL_TEMPLATE: '',
 	MAP_TILE_ATTRIBUTION: '',
+	MAP_TILE_API_KEY: '',
 }));
 vi.mock('$lib/server/van/zip-centroid.js', () => ({ lookupZipCentroid: mockZipLookup }));
 vi.mock('$lib/server/settings.js', () => ({
@@ -86,6 +87,28 @@ describe('/turfs load', () => {
 		});
 		mockZipLookup.mockResolvedValue(null);
 		stubQueries([turfRow()]);
+	});
+
+	// chapter_channel_map is keyed by CHANNEL, so a chapter with two Slack
+	// channels has two rows. Observed live: 64 rows, 32 chapters, and the picker
+	// rendered every one of them twice.
+	it('lists a chapter once even when it has several Slack channels', async () => {
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: [
+				{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' },
+				{ chapterId: 71, channelId: 'C1b', name: 'Washtenaw County' },
+				{ chapterId: 72, channelId: 'C2', name: 'Wayne County' },
+				{ chapterId: 72, channelId: 'C2b', name: 'Wayne County' },
+			],
+			vanTurfClaimTtlHours: 48,
+			vanTurfMaxConcurrentClaims: 2,
+		});
+
+		const data = await run(event({ slackUserId: 'U1', isAdmin: false }) as never);
+		expect(data.chapters).toEqual([
+			{ chapterId: 71, name: 'Washtenaw County' },
+			{ chapterId: 72, name: 'Wayne County' },
+		]);
 	});
 
 	it('redirects an unauthenticated request', async () => {
@@ -258,6 +281,28 @@ describe('/turfs load', () => {
 			// wait, not a refusal.
 			expect(stopped.blocked).toBeNull();
 			expect(stopped.chapters.length).toBeGreaterThan(0);
+		});
+
+		// An organizer checking turf across a state on launch night does exactly
+		// what this limiter is shaped to catch, and already sees every chapter at
+		// once on /turfs/organizer — so the cap protected nothing and broke real
+		// work.
+		it('never rate-limits an admin, however many chapters they open', async () => {
+			const many = Array.from({ length: 20 }, (_, i) => ({
+				chapterId: 700 + i,
+				channelId: `C${i}`,
+				name: `Chapter ${i}`,
+			}));
+			mockSettings.mockResolvedValue({ chapterChannelMap: many });
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const organizer = { slackUserId: 'U_ORGANIZER', isAdmin: true };
+
+			for (const chapter of many) {
+				stubQueries([turfRow({ chapterId: chapter.chapterId })]);
+				const result = await run(event(organizer, `chapter=${chapter.chapterId}`));
+				expect(result.rateLimited).toBe(0);
+				expect(result.turfs.length).toBeGreaterThan(0);
+			}
 		});
 
 		it('never rate-limits re-opening the same chapter', async () => {

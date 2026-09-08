@@ -44,6 +44,57 @@ export class MobilizeError extends Error {
 	}
 }
 
+/**
+ * How much of a rejection body to keep on the error. The message carries a
+ * short human summary; `body` is kept long enough to stay valid JSON, because
+ * parseTimeslotCapacityFloors reads it — an event with a dozen shifts answers
+ * with a dozen padded entries, and a body truncated mid-array parses as nothing.
+ */
+const MAX_ERROR_BODY = 4_000;
+
+/**
+ * Floors Mobilize named when it refused to cap a timeslot below the signups it
+ * is already holding, keyed by that slot's INDEX in the timeslots we sent:
+ *
+ *   {"error":{"timeslots":[{"non_field_errors":["Timeslot capacity cannot be
+ *     less than 6 (current attendees)"]},{}]}}
+ *
+ * The array is index-aligned with the request and pads with `{}` for the slots
+ * that were fine, which is the only thing that says WHICH shift is over — the
+ * message names no id. Anything else, including any other 400, yields an empty
+ * map, so a caller can tell "not this problem" from "this problem, and here is
+ * the number to use".
+ */
+export function parseTimeslotCapacityFloors(err: unknown): Map<number, number> {
+	const floors = new Map<number, number>();
+	if (!(err instanceof MobilizeError) || err.status !== 400) return floors;
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(err.body);
+	} catch {
+		return floors;
+	}
+	const slots = (parsed as { error?: { timeslots?: unknown } } | null)?.error?.timeslots;
+	if (!Array.isArray(slots)) return floors;
+
+	slots.forEach((slot, index) => {
+		const messages = (slot as { non_field_errors?: unknown } | null)?.non_field_errors;
+		if (!Array.isArray(messages)) return;
+		for (const message of messages) {
+			// Matched loosely on purpose: the wording is Mobilize's to change, and a
+			// missed match costs one reported failure rather than a wrong cap.
+			const found =
+				typeof message === 'string' && /capacity cannot be less than (\d+)/i.exec(message);
+			if (found) {
+				floors.set(index, Number(found[1]));
+				return;
+			}
+		}
+	});
+	return floors;
+}
+
 interface Envelope<T> {
 	data?: T;
 	error?: unknown;
@@ -106,7 +157,11 @@ async function callJson<T>(
 	const res = await request(config, url, init);
 	const text = await res.text();
 	if (!res.ok) {
-		throw new MobilizeError(describeFailure(res.status, url, text), res.status, text.slice(0, 500));
+		throw new MobilizeError(
+			describeFailure(res.status, url, text),
+			res.status,
+			text.slice(0, MAX_ERROR_BODY),
+		);
 	}
 	// 204s and the odd empty write response are legitimate.
 	if (!text.trim()) return {};
@@ -121,7 +176,7 @@ async function callJson<T>(
 		throw new MobilizeError(
 			`${url.replace(BASE, '')}: ${JSON.stringify(body.error).slice(0, 300)}`,
 			res.status,
-			text.slice(0, 500),
+			text.slice(0, MAX_ERROR_BODY),
 		);
 	}
 	return body;
@@ -164,7 +219,14 @@ export interface MobilizeEvent {
 		email_address?: string | null;
 		phone_number?: string | null;
 	} | null;
-	timeslots: { id: number; start_date: number; end_date: number }[];
+	/**
+	 * `max_attendees` is documented as part of this shape but is NOT returned —
+	 * verified against the live feed — which is why the ledger records what we
+	 * pushed. `is_full` IS returned, and is the only live word on whether a shift
+	 * is still taking signups. Optional so an absent field reads as "Mobilize did
+	 * not say", never as "open".
+	 */
+	timeslots: { id: number; start_date: number; end_date: number; is_full?: boolean }[];
 	location: {
 		venue?: string | null;
 		locality?: string | null;

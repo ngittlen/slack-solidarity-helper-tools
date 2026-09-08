@@ -27,8 +27,8 @@ jobs:
           cache: 'npm'
 
       # `npm ci` on Linux matches how package-lock.json is expected to be
-      # generated (see .githooks/pre-commit) and fails loudly if it has drifted
-      # out of sync with package.json.
+      # generated and fails loudly if it has drifted out of sync with
+      # package.json.
       - name: Install
         id: install
         run: npm ci

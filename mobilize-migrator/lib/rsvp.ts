@@ -30,6 +30,14 @@ export interface ExistingRsvp {
 	user_id: number;
 	event_session_id: number;
 	is_attending: string;
+	/**
+	 * Where the RSVP came from — `mobilize` for the ones this sync writes, and
+	 * `web`, `mobile`, `dashboard` and friends for everything else. Load-bearing
+	 * for the capacity math: see countSeats in seats.ts, which must not charge a
+	 * Mobilize signup against the cap it hands back to Mobilize — and reads these
+	 * same rows for how many signups Mobilize is already holding.
+	 */
+	source_system?: string | null;
 }
 
 /**

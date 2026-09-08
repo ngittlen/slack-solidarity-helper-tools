@@ -225,6 +225,20 @@
       "when": 1788135519579,
       "tag": "0031_wealthy_marvex",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1788439029797,
+      "tag": "0032_fancy_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1788736601468,
+      "tag": "0033_tricky_nuke",
+      "breakpoints": true
     }
   ]
 }
