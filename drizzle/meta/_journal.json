@@ -253,6 +253,34 @@
       "when": 1788998769692,
       "tag": "0035_keen_lilith",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1789017500626,
+      "tag": "0036_early_sentry",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1789199777925,
+      "tag": "0037_nosy_goblin_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1789202486474,
+      "tag": "0038_unusual_husk",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1789338410349,
+      "tag": "0039_true_roland_deschain",
+      "breakpoints": true
     }
   ]
 }
