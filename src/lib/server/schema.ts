@@ -240,6 +240,11 @@ export const appConfig = sqliteTable(
 		// "wherever the growth report goes" — the fallback these alerts had
 		// before this column existed. No env var of its own.
 		slackMobilizeSyncChannelId: text('slack_mobilize_sync_channel_id'),
+		// Where the VAN turf catalog sync and the geometry worker post their
+		// alerts. NULL means "wherever the volunteer-help tracking channel
+		// points" — the fallback these alerts had before this column existed. No
+		// env var of its own.
+		slackTurfChannelId: text('slack_turf_channel_id'),
 		// Admin channel that gets a line every time a member note or warning is
 		// logged, so moderation stays visible to the whole admin group rather
 		// than only to whoever filed it. NULL means "don't post" — the feature
@@ -728,6 +733,17 @@ export const vanTurfs = sqliteTable(
 		/** Canvassers VAN reports for this turf via /minivanExports, when an
 		 *  organizer distributed it outside this app. Null = not distributed. */
 		vanDistributedTo: text('van_distributed_to'),
+		/** When the turf channel was last told this turf was drifting, and which
+		 *  direction it was drifting in.
+		 *
+		 *  The idempotency key for the drift alert, and a pair rather than a lone
+		 *  flag for the reason in drift-alert.ts: a route can stop drifting one way
+		 *  and start drifting the other, and the second direction is the dangerous
+		 *  one. Cleared when the turf stops drifting, so a recurrence is audible.
+		 *  Stamped only after Slack accepted the message. */
+		driftAlertedAt: text('drift_alerted_at'),
+		/** 'claimed-not-in-minivan' | 'in-minivan-not-claimed' */
+		driftAlertedKind: text('drift_alerted_kind'),
 		firstSeenAt: text('first_seen_at').notNull(),
 		lastSeenAt: text('last_seen_at').notNull(),
 		lastRefreshedAt: text('last_refreshed_at'),
