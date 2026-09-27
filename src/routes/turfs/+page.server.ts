@@ -1,7 +1,8 @@
-import { redirect } from '@sveltejs/kit';
-import type { PageServerLoad } from './$types';
+import { fail } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import {
+	FLY_APP_NAME,
 	MAP_TILE_API_KEY,
 	MAP_TILE_ATTRIBUTION,
 	MAP_TILE_URL_TEMPLATE,
@@ -9,12 +10,21 @@ import {
 } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
 import { chaptersFromChannelMap } from '$lib/chapter-list.js';
-import { lookupZipCentroid } from '$lib/server/van/zip-centroid.js';
+import { lookupZipCentroid, normalizeZip, resolveLocation } from '$lib/server/van/zip-centroid.js';
+import {
+	loadNearbySummary,
+	loadTurfCentre,
+	type NearbySummary,
+} from '$lib/server/van/nearby-summary.js';
+import { parseCoordinates, type NearbyPlace } from '$lib/van/nearby-summary.js';
+import { loginRedirectPath } from '$lib/server/post-login-redirect.js';
+import { visitorAddress } from '$lib/server/visitor-address.js';
 import { turfAccess } from '$lib/van/access.js';
 import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js';
-import { recordRequest } from '$lib/van/request-budget.js';
+import { PUBLIC_LOOKUPS_PER_MINUTE, recordRequest } from '$lib/van/request-budget.js';
 import {
 	chapterVisits,
+	publicLookups,
 	pruneRateLimitStores,
 	turfRequests,
 } from '$lib/server/van/rate-limit-store.js';
@@ -26,7 +36,14 @@ import type { LatLng } from '$lib/van/geometry.js';
 
 // The volunteer turf page.
 //
-// Four gates, in order, all server-side:
+// Signed out, it is a teaser for people who might canvass: a blurred map and
+// three coarse numbers about the turf near a point they give us (the `nearby`
+// action below), plus links to join the Slack or sign in. That branch returns
+// before any of the gates that follow and reads nothing but the join link and
+// the tile source — no chapter, no turf rows, no claims. /turfs is public by
+// exact path for this reason only; see server/public-paths.ts.
+//
+// Signed in, four gates, in order, all server-side:
 //
 //   1. Session. Checked here rather than leaning on +layout.server.ts, because
 //      layout and page loads run CONCURRENTLY — an unauthenticated request
@@ -52,14 +69,37 @@ import type { LatLng } from '$lib/van/geometry.js';
  *  chapter limiter clears for chapters already seen, the budget does not. */
 export type RateLimitReason = 'chapters' | 'requests';
 
-export const load: PageServerLoad = async ({ locals, url }) => {
-	const session = locals.session;
-	if (!session) redirect(302, '/');
+/** Longest address we will pass to the geocoder. */
+const MAX_QUERY_LENGTH = 200;
 
-	const tiles = {
+export type PublicNearby = NearbySummary & { place: NearbyPlace };
+
+function tileSource() {
+	return {
 		urlTemplate: withTileApiKey(MAP_TILE_URL_TEMPLATE || TILE_URL_TEMPLATE, MAP_TILE_API_KEY),
 		attribution: MAP_TILE_ATTRIBUTION || TILE_ATTRIBUTION,
 	};
+}
+
+export const load: PageServerLoad = async ({ locals, url }) => {
+	const session = locals.session;
+	const tiles = tileSource();
+
+	if (!session) {
+		const [{ publicJoinUrl }, turfCentre] = await Promise.all([
+			loadSettings(db),
+			loadTurfCentre(db),
+		]);
+		return {
+			mode: 'public' as const,
+			pageTitle: 'Canvass near you',
+			tiles,
+			turfCentre,
+			joinUrl: publicJoinUrl || null,
+			// Carries /turfs through OAuth, so signing in lands on the real map.
+			signInHref: loginRedirectPath(url),
+		};
+	}
 
 	const [blockedIds, settings] = await Promise.all([loadVanBlockedIds(db), loadSettings(db)]);
 
@@ -84,6 +124,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// than thrown so the page can render it calmly — and with no turf data
 		// alongside it.
 		return {
+			mode: 'member' as const,
 			pageTitle: 'Turf checkout',
 			blocked: access.message,
 			rateLimited: 0,
@@ -112,6 +153,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
 
 	const empty = {
+		mode: 'member' as const,
 		pageTitle: 'Turf checkout',
 		blocked: null,
 		rateLimited: 0,
@@ -204,6 +246,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	});
 
 	return {
+		mode: 'member' as const,
 		pageTitle: `Turf checkout — ${chapter.name}`,
 		blocked: null,
 		rateLimited: 0,
@@ -227,4 +270,63 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// built.
 		claimTtlHours: options.ttlHours,
 	};
+};
+
+export const actions: Actions = {
+	/**
+	 * The signed-out teaser's lookup: an address or ZIP (`q`), or device
+	 * coordinates (`lat`, `lng`), in; coarse aggregates out.
+	 *
+	 * A POST rather than query parameters so a typed street address never lands
+	 * in a URL, and with it in browser history, a shared link or an access log.
+	 * Open to signed-in users too; nothing here is more than the teaser shows.
+	 */
+	nearby: async ({ request, getClientAddress }) => {
+		const form = await request.formData();
+		const rawQuery = form.get('q');
+		const query = typeof rawQuery === 'string' ? rawQuery.trim() : '';
+		const coords = parseCoordinates(form.get('lat'), form.get('lng'));
+
+		if (!coords && query === '') {
+			return fail(400, { error: 'Enter an address or ZIP code, or use your location.' });
+		}
+		if (!coords && query.length > MAX_QUERY_LENGTH) {
+			return fail(400, { error: 'That address is too long. Try just the street and ZIP code.' });
+		}
+
+		const now = Date.now();
+		pruneRateLimitStores(now);
+		const budget = recordRequest(
+			publicLookups,
+			visitorAddress(request, getClientAddress, FLY_APP_NAME !== ''),
+			now,
+			{ max: PUBLIC_LOOKUPS_PER_MINUTE },
+		);
+		if (!budget.allowed) {
+			return fail(429, {
+				error: `That's a lot of lookups. Try again in ${budget.retryAfterSeconds} seconds.`,
+			});
+		}
+
+		let point: LatLng;
+		let place: NearbyPlace;
+		if (coords) {
+			point = coords;
+			place = { kind: 'here' };
+		} else {
+			// Never throws, never logs or stores the address — see zip-centroid.ts.
+			const resolved = await resolveLocation(db, query);
+			if (!resolved) {
+				return fail(422, {
+					error: "We couldn't find that place. Try a five-digit ZIP code or a full street address.",
+				});
+			}
+			point = resolved.point;
+			const zip = normalizeZip(query);
+			place = zip ? { kind: 'zip', zip } : { kind: 'address' };
+		}
+
+		const summary = await loadNearbySummary(db, point, new Date(now));
+		return { nearby: { ...summary, place } satisfies PublicNearby };
+	},
 };

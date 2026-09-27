@@ -6,6 +6,7 @@ import { env } from '$env/dynamic/private';
 import { OAUTH_REDIRECT_COOKIE, sanitizeRedirectTarget } from '$lib/server/post-login-redirect.js';
 import { POST_AS_USER_SCOPE } from '$lib/server/user-tokens.js';
 import { signState } from '$lib/server/oauth-state.js';
+import { workspaceTeamId } from '$lib/server/slack-team.js';
 
 const OAUTH_STATE_COOKIE = 'oauth_state';
 
@@ -75,6 +76,11 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		redirect_uri: REDIRECT_URI,
 		state,
 	});
+	// Skips Slack's "enter your workspace" page for someone who is not signed in
+	// to Slack in this browser yet. Left off when the lookup fails; see
+	// server/slack-team.ts.
+	const team = await workspaceTeamId();
+	if (team) params.set('team', team);
 
 	redirect(302, `https://slack.com/oauth/v2/authorize?${params}`);
 };

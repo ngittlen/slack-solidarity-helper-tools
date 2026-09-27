@@ -213,6 +213,8 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			// Off with no row: a re-cut can leave turf unclaimable.
 			vanRegionRefreshEnabled: false,
 			vanSheetTabName: 'Packet Tracker',
+			// DB-only; no row means no "Join our chat" button.
+			publicJoinUrl: '',
 		});
 
 		// Restore the module-level mock for subsequent tests.
@@ -513,6 +515,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'vanTurfMaxConcurrentClaims',
 				'vanRegionRefreshEnabled',
 				'vanSheetTabName',
+				'publicJoinUrl',
 			].sort(),
 		);
 	});

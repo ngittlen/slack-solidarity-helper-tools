@@ -367,6 +367,11 @@ export const appConfig = sqliteTable(
 		// again on read (src/lib/styles/theme-css.ts) — a corrupt blob degrades
 		// to defaults rather than taking the site's styling down.
 		themeTokens: text('theme_tokens'),
+		// Where the signed-out /turfs page's "Join our chat" button goes — the
+		// Solidarity sign-up page that gets someone into the Slack. DB-only, no
+		// env fallback; NULL or '' hides the button rather than showing a dead
+		// link.
+		publicJoinUrl: text('public_join_url'),
 		lastEditedBy: text('last_edited_by').notNull(),
 		lastEditedByName: text('last_edited_by_name').notNull(),
 		lastEditedAt: text('last_edited_at').notNull(),

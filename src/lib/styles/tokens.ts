@@ -185,6 +185,13 @@ const TOKEN_DEFS = {
 		dark: '@highlight',
 	},
 	'color-red': { label: 'Red', group: 'accent', light: '@danger', dark: '@highlight' },
+	'color-on-accent': {
+		label: 'Text on Coral / Beige',
+		group: 'accent',
+		light: '@primary',
+		dark: '@primary',
+		note: 'Deep Blue in both themes: the coral and beige buttons keep their colour in dark mode, so the text on them must too.',
+	},
 
 	// --- Effects ----------------------------------------------------------
 	'color-scrim': {

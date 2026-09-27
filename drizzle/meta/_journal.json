@@ -337,6 +337,13 @@
       "when": 1790314819783,
       "tag": "0047_reopen_taken_packets",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1790392841362,
+      "tag": "0048_public_join_url",
+      "breakpoints": true
     }
   ]
 }

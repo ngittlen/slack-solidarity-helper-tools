@@ -209,6 +209,11 @@ export const MAP_TILE_ATTRIBUTION = get('MAP_TILE_ATTRIBUTION');
 // fetches the tiles. Restrict it by domain in the CARTO dashboard.
 export const MAP_TILE_API_KEY = get('MAP_TILE_API_KEY');
 
+// Set by Fly on every machine. Read here only to decide whether the
+// Fly-Client-IP header can be trusted (see server/visitor-address.ts): Fly's
+// proxy overwrites it, but anywhere else it is whatever the client sent.
+export const FLY_APP_NAME = get('FLY_APP_NAME');
+
 export interface ChapterEntry {
 	chapterId: number;
 	channelId: string;

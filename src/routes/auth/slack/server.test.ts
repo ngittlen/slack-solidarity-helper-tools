@@ -20,6 +20,9 @@ vi.mock('$lib/server/env', () => ({
 	REDIRECT_URI: 'http://localhost/auth/slack/callback',
 }));
 
+const mockTeamId = vi.hoisted(() => vi.fn());
+vi.mock('$lib/server/slack-team.js', () => ({ workspaceTeamId: mockTeamId }));
+
 import { GET } from './+server.js';
 import { verifyState } from '$lib/server/oauth-state.js';
 
@@ -48,6 +51,7 @@ describe('GET /auth/slack', () => {
 		vi.clearAllMocks();
 		mockAppEnv.dev = false;
 		mockPrivateEnv.env = {};
+		mockTeamId.mockResolvedValue(null);
 	});
 
 	it('stashes the requested page in a cookie for the callback to read', async () => {
@@ -165,5 +169,37 @@ describe('GET /auth/slack', () => {
 		const userScope = new URL(redirect).searchParams.get('user_scope');
 
 		expect(userScope?.split(',')).toEqual(['chat:write']);
+	});
+});
+
+describe('GET /auth/slack workspace pre-fill', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockAppEnv.dev = false;
+		mockPrivateEnv.env = {};
+	});
+
+	async function authorizeUrl(): Promise<URL> {
+		const location = await Promise.resolve(GET(makeEvent() as never)).then(
+			() => {
+				throw new Error('expected a redirect to Slack');
+			},
+			(e: { location: string }) => e.location,
+		);
+		return new URL(location);
+	}
+
+	// Skips Slack's "enter your workspace" page on a browser that has never
+	// signed in to this Slack.
+	it('names the workspace on the authorize URL', async () => {
+		mockTeamId.mockResolvedValue('T0123ABCD');
+		expect((await authorizeUrl()).searchParams.get('team')).toBe('T0123ABCD');
+	});
+
+	it('still sends people to Slack when the workspace is unknown', async () => {
+		mockTeamId.mockResolvedValue(null);
+		const url = await authorizeUrl();
+		expect(url.origin + url.pathname).toBe('https://slack.com/oauth/v2/authorize');
+		expect(url.searchParams.has('team')).toBe(false);
 	});
 });

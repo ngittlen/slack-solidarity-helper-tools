@@ -22,6 +22,22 @@ describe('isPublicPath', () => {
 		expect(isPublicPath('/securityaudit')).toBe(false);
 	});
 
+	// /turfs has a signed-out teaser. The organizer tools under it do not, and
+	// must not become public because they share its first path segment.
+	it('admits /turfs itself and nothing below it', () => {
+		expect(isPublicPath('/turfs')).toBe(true);
+		expect(isPublicPath('/turfs/')).toBe(true);
+		for (const path of [
+			'/turfs/organizer',
+			'/turfs/activity',
+			'/turfs/folder-map',
+			'/turfs/sheet-map',
+			'/turfsy',
+		]) {
+			expect(isPublicPath(path), path).toBe(false);
+		}
+	});
+
 	it('keeps every real page behind the guard', () => {
 		for (const path of [
 			'/',
@@ -29,7 +45,6 @@ describe('isPublicPath', () => {
 			'/members',
 			'/members/U123',
 			'/settings',
-			'/turfs',
 			'/turfs/organizer',
 			'/turfs/activity',
 			'/dashboard/slack',

@@ -26,6 +26,11 @@
 export const MAX_REQUESTS = 60;
 export const REQUEST_WINDOW_MS = 60_000;
 
+/** Signed-out /turfs lookups one visitor may make per window. Each can cost a
+ *  Census geocode, and a person trying a few addresses needs a handful, not
+ *  sixty. */
+export const PUBLIC_LOOKUPS_PER_MINUTE = 10;
+
 export type RequestLog = Map<string, number[]>;
 
 export interface BudgetDecision {
@@ -48,6 +53,11 @@ export interface BudgetOptions {
 	 *  Requests are still RECORDED, so `used` stays truthful and the log keeps
 	 *  its audit value. Only the refusal is skipped. */
 	exempt?: boolean;
+	/** Requests allowed per window. Defaults to MAX_REQUESTS; the signed-out
+	 *  /turfs lookup sets a much lower one, because each of its requests can
+	 *  cost a third-party geocode and nobody browses a teaser sixty times a
+	 *  minute. */
+	max?: number;
 }
 
 /** Record a request and say whether it fits in the budget. */
@@ -60,7 +70,7 @@ export function recordRequest(
 	const cutoff = now - REQUEST_WINDOW_MS;
 	const recent = (log.get(key) ?? []).filter((t) => t > cutoff);
 
-	if (!options.exempt && recent.length >= MAX_REQUESTS) {
+	if (!options.exempt && recent.length >= (options.max ?? MAX_REQUESTS)) {
 		log.set(key, recent);
 		const oldest = Math.min(...recent);
 		return {
