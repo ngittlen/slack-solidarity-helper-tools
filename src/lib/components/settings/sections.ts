@@ -34,6 +34,7 @@ export const APP_CONFIG_SECTION_ID = 'app-config';
  *  lockstep with the `app-config` children below. */
 export const APP_CONFIG_ROW_IDS = {
 	siteName: 'cfg-site-name',
+	publicJoinUrl: 'cfg-public-join-url',
 	trackingChannel: 'cfg-tracking-channel',
 	growthReportChannel: 'cfg-growth-report-channel',
 	mobilizeSyncChannel: 'cfg-mobilize-sync-channel',
@@ -73,6 +74,7 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 		label: 'App config',
 		children: [
 			{ id: APP_CONFIG_ROW_IDS.siteName, label: 'Site name' },
+			{ id: APP_CONFIG_ROW_IDS.publicJoinUrl, label: 'Public “Join our chat” link' },
 			{ id: APP_CONFIG_ROW_IDS.trackingChannel, label: 'Volunteer-help tracking channel' },
 			{ id: APP_CONFIG_ROW_IDS.growthReportChannel, label: 'Weekly growth report channel' },
 			{ id: APP_CONFIG_ROW_IDS.mobilizeSyncChannel, label: 'Mobilize sync channel' },

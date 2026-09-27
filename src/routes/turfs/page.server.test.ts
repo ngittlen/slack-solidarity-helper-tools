@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { load } from './+page.server.js';
+import { actions, load } from './+page.server.js';
+import { PUBLIC_LOOKUPS_PER_MINUTE } from '$lib/van/request-budget.js';
 import { TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
 
 const mockBlockedIds = vi.hoisted(() => vi.fn());
 const mockSettings = vi.hoisted(() => vi.fn());
 const mockSelect = vi.hoisted(() => vi.fn());
 const mockZipLookup = vi.hoisted(() => vi.fn());
+const mockResolveLocation = vi.hoisted(() => vi.fn());
+const mockNearby = vi.hoisted(() => vi.fn());
+const mockTurfCentre = vi.hoisted(() => vi.fn());
 
 // Walk reports have their own tests on real SQLite (checkout-store.test.ts);
 // the stubbed db here answers only the chains this module's tests script.
@@ -16,8 +20,19 @@ vi.mock('$lib/server/env.js', () => ({
 	MAP_TILE_URL_TEMPLATE: '',
 	MAP_TILE_ATTRIBUTION: '',
 	MAP_TILE_API_KEY: '',
+	FLY_APP_NAME: '',
 }));
-vi.mock('$lib/server/van/zip-centroid.js', () => ({ lookupZipCentroid: mockZipLookup }));
+vi.mock('$lib/server/van/zip-centroid.js', async (importOriginal) => ({
+	normalizeZip: (await importOriginal<typeof import('$lib/server/van/zip-centroid.js')>())
+		.normalizeZip,
+	lookupZipCentroid: mockZipLookup,
+	resolveLocation: mockResolveLocation,
+}));
+// The query has its own tests on real SQLite (nearby-summary.test.ts).
+vi.mock('$lib/server/van/nearby-summary.js', () => ({
+	loadNearbySummary: mockNearby,
+	loadTurfCentre: mockTurfCentre,
+}));
 // Partial: the turf query still needs the real visibleToChapter. The folder
 // lookup is stubbed so it does not take a turn in stubQueries' ordered script;
 // a folder per chapter keeps every new chapter charged, as before.
@@ -77,12 +92,18 @@ const event = (session: unknown, query?: string) =>
 
 const VOLUNTEER = { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false };
 
-/** `load` is typed `void | PageData` because the unauthenticated path
- *  redirects (which throws). Every caller below expects data, so narrow once
- *  here rather than asserting non-null at each use. */
+/** `load` returns either the member page or the signed-out teaser. Every
+ *  caller below expects the member page, so narrow once here rather than at
+ *  each use. */
 async function run(ev: never) {
 	const result = await load(ev);
-	if (!result) throw new Error('expected the load function to return data');
+	if (!result || result.mode !== 'member') throw new Error('expected the member page');
+	return result;
+}
+
+async function runPublic(ev: never) {
+	const result = await load(ev);
+	if (!result || result.mode !== 'public') throw new Error('expected the signed-out teaser');
 	return result;
 }
 
@@ -122,10 +143,41 @@ describe('/turfs load', () => {
 		]);
 	});
 
-	it('redirects an unauthenticated request', async () => {
-		// The layout guard is not enough: layout and page loads run
-		// concurrently, so this function is reached either way.
-		await expect(load(event(null))).rejects.toMatchObject({ status: 302 });
+	describe('signed out', () => {
+		beforeEach(() => {
+			mockSettings.mockResolvedValue({
+				chapterChannelMap: CHAPTERS,
+				publicJoinUrl: 'https://join.example/slack',
+			});
+			mockTurfCentre.mockResolvedValue({ lat: 42.3, lng: -83.7 });
+		});
+
+		it('serves the teaser instead of redirecting', async () => {
+			const data = await runPublic(event(null));
+			expect(data.joinUrl).toBe('https://join.example/slack');
+			expect(data.turfCentre).toEqual({ lat: 42.3, lng: -83.7 });
+		});
+
+		it('sends sign-in back to /turfs', async () => {
+			const data = await runPublic(event(null));
+			expect(data.signInHref).toBe('/auth/slack?redirectTo=%2Fturfs');
+		});
+
+		it('hides the join button when no link is configured', async () => {
+			mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS, publicJoinUrl: '' });
+			const data = await runPublic(event(null));
+			expect(data.joinUrl).toBeNull();
+		});
+
+		// The member gates never run for a visitor, and nothing from them ships.
+		it('reads no turf, claims, blocklist or chapter list', async () => {
+			const data = await runPublic(event(null, 'chapter=71'));
+			expect(mockSelect).not.toHaveBeenCalled();
+			expect(mockBlockedIds).not.toHaveBeenCalled();
+			expect(Object.keys(data).sort()).toEqual(
+				['joinUrl', 'mode', 'pageTitle', 'signInHref', 'tiles', 'turfCentre'].sort(),
+			);
+		});
 	});
 
 	it('returns no turf data before a chapter is picked', async () => {
@@ -567,5 +619,86 @@ describe('/turfs load — configured claim options', () => {
 		stubQueries([turfRow()], [heldElsewhere]);
 		const roomy = await run(event(viewer, 'chapter=71'));
 		expect(roomy.turfs[0]!.claimable).toBe(true);
+	});
+});
+
+describe('/turfs nearby action', () => {
+	const SUMMARY = {
+		centre: { lat: 42.281, lng: -83.743 },
+		doors: { kind: 'over', atLeast: 350 },
+		canvassers: 2,
+		cells: [{ lat: 42.28, lng: -83.74, w: 3 }],
+	};
+	// The public limiter is process-wide, so each test gets its own address.
+	let ip = 0;
+	let address: string;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		address = `198.51.100.${++ip}`;
+		mockNearby.mockResolvedValue(SUMMARY);
+		mockResolveLocation.mockResolvedValue({ point: { lat: 42.2808, lng: -83.743 }, zip: '48104' });
+	});
+
+	function post(fields: Record<string, string>) {
+		const body = new FormData();
+		for (const [k, v] of Object.entries(fields)) body.set(k, v);
+		return {
+			request: new Request('https://app.example/turfs?/nearby', { method: 'POST', body }),
+			getClientAddress: () => address,
+		} as never;
+	}
+
+	it('answers a ZIP with the summary and names the ZIP', async () => {
+		const result = await actions.nearby(post({ q: '48104' }));
+		expect(result).toEqual({ nearby: { ...SUMMARY, place: { kind: 'zip', zip: '48104' } } });
+	});
+
+	it('never echoes a street address back', async () => {
+		const result = await actions.nearby(post({ q: '123 Main St, Ann Arbor MI' }));
+		expect(result).toMatchObject({ nearby: { place: { kind: 'address' } } });
+		expect(JSON.stringify(result)).not.toContain('Main St');
+	});
+
+	it('uses device coordinates without geocoding, rounded', async () => {
+		const result = await actions.nearby(post({ lat: '42.280812', lng: '-83.743038' }));
+		expect(mockResolveLocation).not.toHaveBeenCalled();
+		expect(mockNearby).toHaveBeenCalledWith(
+			expect.anything(),
+			{ lat: 42.281, lng: -83.743 },
+			expect.any(Date),
+		);
+		expect(result).toMatchObject({ nearby: { place: { kind: 'here' } } });
+	});
+
+	it('asks for input when given none', async () => {
+		const result = await actions.nearby(post({ q: '  ' }));
+		expect(result).toMatchObject({ status: 400 });
+		expect(mockNearby).not.toHaveBeenCalled();
+	});
+
+	it('says so when the place cannot be found', async () => {
+		mockResolveLocation.mockResolvedValue(null);
+		const result = await actions.nearby(post({ q: 'nowhere at all' }));
+		expect(result).toMatchObject({ status: 422 });
+		expect(mockNearby).not.toHaveBeenCalled();
+	});
+
+	it('refuses an overlong query before geocoding it', async () => {
+		const result = await actions.nearby(post({ q: 'x'.repeat(201) }));
+		expect(result).toMatchObject({ status: 400 });
+		expect(mockResolveLocation).not.toHaveBeenCalled();
+	});
+
+	it('rate-limits one visitor without touching another', async () => {
+		for (let i = 0; i < PUBLIC_LOOKUPS_PER_MINUTE; i++) {
+			await actions.nearby(post({ q: '48104' }));
+		}
+		const refused = await actions.nearby(post({ q: '48104' }));
+		expect(refused).toMatchObject({ status: 429 });
+		expect(mockResolveLocation).toHaveBeenCalledTimes(PUBLIC_LOOKUPS_PER_MINUTE);
+
+		address = '203.0.113.200';
+		expect(await actions.nearby(post({ q: '48104' }))).toHaveProperty('nearby');
 	});
 });

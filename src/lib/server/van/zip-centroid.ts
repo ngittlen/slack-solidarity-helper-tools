@@ -20,9 +20,10 @@
 // The street address is the most sensitive string this feature handles, so two
 // rules apply to it and are enforced below rather than left to callers:
 //
-//   1. It is NEVER persisted. Only the ZIP the geocoder reports back is written
-//      to van_zip_centroids — a ZIP centroid is not personal data, and caching
-//      it means an address lookup warms the same cache a ZIP lookup reads.
+//   1. It is NEVER persisted, and neither is where it resolved to. An address
+//      lookup writes nothing at all: van_zip_centroids holds only the Census
+//      point for each ZIP, filled by ZIP lookups. Storing the address's point
+//      under its ZIP would make that ZIP answer with one person's street.
 //   2. It is NEVER logged. The ZIP path logs the ZIP it failed on, which is fine;
 //      the address path logs a redacted marker instead, because a warn line
 //      carrying someone's home address outlives the request by however long the
@@ -170,20 +171,18 @@ export async function lookupZipCentroid(
 	return point;
 }
 
-/** Write a ZIP's centroid to the cache. Shared by the ZIP and address paths so
- *  there is one place that decides what gets stored — which is what keeps a
- *  street address from ever reaching a column. Never throws: having the answer
- *  and failing to store it is strictly better than failing the lookup. */
+/** Write a ZIP's Census point to the cache. Never throws: having the answer
+ *  and failing to store it is strictly better than failing the lookup.
+ *
+ *  Fill only, never overwrite: once a ZIP has a point it keeps it, so two
+ *  lookups racing on the same ZIP cannot leave it moving between answers. */
 async function cacheCentroid(db: Db, zip: string, point: LatLng): Promise<void> {
 	const fetchedAt = new Date().toISOString();
 	try {
 		await db
 			.insert(vanZipCentroids)
 			.values({ zip, lat: point.lat, lng: point.lng, fetchedAt })
-			.onConflictDoUpdate({
-				target: vanZipCentroids.zip,
-				set: { lat: point.lat, lng: point.lng, fetchedAt },
-			});
+			.onConflictDoNothing({ target: vanZipCentroids.zip });
 	} catch (err) {
 		console.warn('[van] zip cache write failed:', err instanceof Error ? err.message : err);
 	}
@@ -193,7 +192,8 @@ async function cacheCentroid(db: Db, zip: string, point: LatLng): Promise<void> 
  * Where a free-text address is, plus the ZIP the geocoder matched it to.
  *
  * The ZIP is the interesting half for everything except distance sorting: it is
- * what gets cached, and it is what resolves the volunteer's chapter. It can
+ * what resolves the volunteer's chapter. It is not cached — see rule 1 in the
+ * header. It can
  * legitimately come back null — the geocoder matches some addresses without a
  * usable ZIP component — and the caller has to cope rather than treat it as a
  * failure, because the coordinates are still good.
@@ -267,11 +267,6 @@ export async function resolveLocation(
 		return point ? { point, zip } : null;
 	}
 
-	const match = await geocodeAddress(trimmed, fetchFn);
-	if (!match) return null;
-
-	// Cache under the matched ZIP, so the street address leaves no trace but the
-	// next person who types that ZIP gets a free answer.
-	if (match.zip) await cacheCentroid(db, match.zip, match.point);
-	return match;
+	// Nothing is cached from an address — see rule 1 in the header.
+	return geocodeAddress(trimmed, fetchFn);
 }

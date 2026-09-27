@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `public_join_url` text;

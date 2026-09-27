@@ -40,7 +40,7 @@ function makeDb(
 			}),
 			insert: () => ({
 				values: (row: unknown) => ({
-					onConflictDoUpdate: async () => {
+					onConflictDoNothing: async () => {
 						if (opts.writeThrows) throw new Error('db down');
 						written.push(row);
 					},
@@ -336,24 +336,13 @@ describe('resolveLocation', () => {
 	});
 
 	// The whole data-handling posture in one assertion: an address goes in, and
-	// only a ZIP centroid comes out the other side into a column.
-	it('caches the matched ZIP and never the address', async () => {
+	// nothing comes out the other side into a column — not the address, and not
+	// the point it resolved to, which would otherwise become its ZIP's location.
+	it('writes nothing to the cache', async () => {
 		const { db, written } = makeDb();
 		const fetchFn = vi.fn().mockResolvedValue(res(200, ADDRESS_MATCH));
-		await resolveLocation(db, ADDRESS, fetchFn as never);
-		expect(written).toEqual([
-			{ zip: '20500', lat: 38.8977, lng: -77.0365, fetchedAt: expect.any(String) },
-		]);
-		expect(JSON.stringify(written)).not.toContain('Pennsylvania');
-	});
-
-	it('writes nothing when the match carries no ZIP', async () => {
-		const { db, written } = makeDb();
-		const body = {
-			result: { addressMatches: [{ coordinates: { x: -77.03, y: 38.89 }, addressComponents: {} }] },
-		};
-		const fetchFn = vi.fn().mockResolvedValue(res(200, body));
-		await resolveLocation(db, ADDRESS, fetchFn as never);
+		const result = await resolveLocation(db, ADDRESS, fetchFn as never);
+		expect(result).toEqual({ point: { lat: 38.8977, lng: -77.0365 }, zip: '20500' });
 		expect(written).toEqual([]);
 	});
 
@@ -383,5 +372,46 @@ describe('resolveLocation', () => {
 			zip: '20500',
 		});
 		warn.mockRestore();
+	});
+});
+
+// End to end on real SQLite: a ZIP keeps its Census point however many
+// addresses are looked up inside it.
+describe('the ZIP cache on a real database', () => {
+	it('keeps the Census point for a ZIP rather than an address in it', async () => {
+		const { createClient } = await import('@libsql/client');
+		const { drizzle } = await import('drizzle-orm/libsql');
+		const { migrate } = await import('drizzle-orm/libsql/migrator');
+		const db = drizzle(createClient({ url: ':memory:' }));
+		await migrate(db, { migrationsFolder: 'drizzle' });
+
+		const zcta = vi.fn(async () => new Response(JSON.stringify(ZCTA)));
+		expect(await lookupZipCentroid(db, '48104', zcta)).toEqual({
+			lat: 42.2620394,
+			lng: -83.7166908,
+		});
+
+		// Someone types a street address downtown, in the same ZIP.
+		const geocoder = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						result: {
+							addressMatches: [
+								{ coordinates: { x: -83.749, y: 42.282 }, addressComponents: { zip: '48104' } },
+							],
+						},
+					}),
+				),
+		);
+		await resolveLocation(db, '301 E Liberty St, Ann Arbor, MI', geocoder);
+
+		// The ZIP still answers with its own point, from the cache.
+		const unused = vi.fn();
+		expect(await lookupZipCentroid(db, '48104', unused)).toEqual({
+			lat: 42.2620394,
+			lng: -83.7166908,
+		});
+		expect(unused).not.toHaveBeenCalled();
 	});
 });

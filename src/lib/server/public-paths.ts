@@ -24,10 +24,23 @@
  *  `/policies?print=1` are covered too. */
 const PUBLIC_PREFIXES = ['/policies', '/privacy', '/security'];
 
+/**
+ * Page routes served without a session at exactly this path, and NOT below it.
+ *
+ * `/turfs` is here because its load has a signed-out branch: a teaser for
+ * people who might canvass, built from coarse aggregates only (see
+ * $lib/server/van/nearby-summary.ts). It cannot be a prefix — `/turfs/organizer`,
+ * `/turfs/activity` and the map pages under it are organizer tools, and a
+ * prefix match would publish them. The signed-in branch of the same load keeps
+ * its own session check, as every turf route does.
+ */
+const PUBLIC_EXACT = ['/turfs'];
+
 /** True when `path` is readable without signing in. */
 export function isPublicPath(path: string): boolean {
 	// Normalise a trailing slash so `/policies/` matches `/policies`.
 	const normalized = path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
+	if (PUBLIC_EXACT.includes(normalized)) return true;
 	return PUBLIC_PREFIXES.some(
 		(prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`),
 	);

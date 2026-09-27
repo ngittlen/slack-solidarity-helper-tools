@@ -132,7 +132,10 @@ function toTime(iso: string): number {
 
 /** True when a claim is still holding the turf at `now`: not released, not
  *  completed, not lapsed. */
-export function isActive(claim: ClaimSnapshot, now: Date): boolean {
+export function isActive<T extends Pick<ClaimSnapshot, 'expiresAt' | 'releasedAt' | 'completedAt'>>(
+	claim: T,
+	now: Date,
+): boolean {
 	if (claim.releasedAt !== null || claim.completedAt !== null) return false;
 	return toTime(claim.expiresAt) > now.getTime();
 }

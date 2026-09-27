@@ -141,6 +141,32 @@ function sheetTabNameField(label: string): FieldValidator<string> {
 	};
 }
 
+/**
+ * A link shown to the public. `''` clears it.
+ *
+ * https only: this is rendered as a button on a page anyone can open, and a
+ * `javascript:` or `data:` URL there would run in our origin for every visitor.
+ * Plain http is refused too — a sign-up page should not be sent in the clear.
+ */
+function publicUrlField(label: string, maxLength: number): FieldValidator<string> {
+	return (value) => {
+		if (typeof value !== 'string') return fail(`${label} must be a string`);
+		const trimmed = value.trim();
+		if (trimmed === '') return { ok: true, value: '' };
+		if (trimmed.length > maxLength) {
+			return fail(`${label} must be ${maxLength} characters or fewer`);
+		}
+		let parsed: URL;
+		try {
+			parsed = new URL(trimmed);
+		} catch {
+			return fail(`${label} must be a full link, starting with https://`);
+		}
+		if (parsed.protocol !== 'https:') return fail(`${label} must start with https://`);
+		return { ok: true, value: parsed.toString() };
+	};
+}
+
 /** ISO datetime, re-serialized to canonical form so every reader gets the same
  *  format. `''` clears the countdown. */
 function isoDateTimeField(label: string): FieldValidator<string> {
@@ -210,6 +236,7 @@ const SHEET_TAB_NAME_MAX_LENGTH = 100;
 // Slack renders a section block's text up to 3000 chars; keep the stored
 // template within that so a saved message can never be rejected at send time.
 const DM_TEMPLATE_MAX_LENGTH = 3000;
+const PUBLIC_URL_MAX_LENGTH = 500;
 
 // AppConfigPatch is a Partial, so Required<> recovers the full field set with
 // each value's real type — which is what the table is keyed against.
@@ -301,6 +328,8 @@ export const APP_CONFIG_FIELDS: {
 	vanSheetTabName: sheetTabNameField('vanSheetTabName'),
 
 	themeTokens: themeTokensField('themeTokens'),
+
+	publicJoinUrl: publicUrlField('publicJoinUrl', PUBLIC_URL_MAX_LENGTH),
 
 	siteName: boundedTextField('siteName', SITE_NAME_MAX_LENGTH),
 	countdownLabel: boundedTextField('countdownLabel', COUNTDOWN_LABEL_MAX_LENGTH),

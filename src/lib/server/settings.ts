@@ -174,6 +174,9 @@ export interface Settings {
 	 *  campaign's spreadsheets. Resolved, so callers never re-decide what a
 	 *  NULL means. */
 	vanSheetTabName: string;
+	/** Where the signed-out /turfs page's "Join our chat" button goes. DB-only;
+	 *  '' means "no button". */
+	publicJoinUrl: string;
 }
 
 export interface Editor {
@@ -211,6 +214,8 @@ export type AppConfigPatch = Partial<{
 	 *  columns — see the comment on app_config.themeTokens in schema.ts.
 	 *  Validated by themeTokensField before it ever reaches here. */
 	themeTokens: string;
+	/** "Join our chat" link on the signed-out /turfs page. '' hides it. */
+	publicJoinUrl: string;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -358,6 +363,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		// NULL and '' both mean the built-in name. Resolved here so the drain
 		// and the settings page cannot disagree about which tab is "the" tab.
 		vanSheetTabName: cfg?.vanSheetTabName?.trim() || DEFAULT_SHEET_TAB_NAME,
+		publicJoinUrl: cfg?.publicJoinUrl?.trim() ?? '',
 	};
 }
 
@@ -810,6 +816,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'vanRegionRefreshEnabled',
 	'vanSheetTabName',
 	'themeTokens',
+	'publicJoinUrl',
 ]);
 
 export async function saveAppConfig(

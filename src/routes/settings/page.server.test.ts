@@ -76,6 +76,7 @@ const settingsFixture = {
 	vanTurfMaxConcurrentClaims: 2,
 	vanRegionRefreshEnabled: false,
 	vanSheetTabName: 'Packet Tracker',
+	publicJoinUrl: '',
 };
 
 function makeEvent(overrides: {

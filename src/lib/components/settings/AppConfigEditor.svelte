@@ -45,6 +45,8 @@
 		/** Contact published on events the sync creates in Mobilize ('' when
 		 *  neither /settings nor the MOBILIZE_CONTACT_* env vars set it). */
 		siteName: string;
+		/** "Join our chat" link on the signed-out /turfs page ('' = hidden). */
+		publicJoinUrl: string;
 		mobilizeContactName: string;
 		mobilizeContactEmail: string;
 		mobilizeContactPhone: string;
@@ -74,6 +76,7 @@
 		turfChannelId,
 		memberNoteChannelId,
 		siteName,
+		publicJoinUrl,
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
@@ -187,6 +190,12 @@
 		save: (value) => postAppConfig({ siteName: value }),
 	});
 
+	// The signed-out /turfs page's sign-up button. Blank hides the button.
+	const publicJoinUrlSave = createFieldAutosave<string>({
+		initial: publicJoinUrl,
+		save: (value) => postAppConfig({ publicJoinUrl: value }),
+	});
+
 	const contactNameSave = createFieldAutosave<string>({
 		initial: mobilizeContactName,
 		save: (value) => postAppConfig({ mobilizeContactName: value }),
@@ -281,6 +290,7 @@
 
 	$effect(() => () => {
 		siteNameSave.destroy();
+		publicJoinUrlSave.destroy();
 		alphaSave.destroy();
 		tickerSpeedSave.destroy();
 		countdownLabelSave.destroy();
@@ -421,6 +431,27 @@
 		<p class="site-name-note">
 			Shown after each page's name in the browser tab — "Dashboard — {siteNameSave.value.trim() ||
 				DEFAULT_SITE_NAME}". Leave blank to use "{DEFAULT_SITE_NAME}".
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.publicJoinUrl}
+		label="Public “Join our chat” link"
+		status={publicJoinUrlSave.status}
+		error={publicJoinUrlSave.error}
+		onRetry={publicJoinUrlSave.status === 'error' ? publicJoinUrlSave.retry : undefined}
+	>
+		<input
+			class="site-name-input"
+			type="url"
+			inputmode="url"
+			placeholder="https://"
+			value={publicJoinUrlSave.value}
+			oninput={publicJoinUrlSave.oninput}
+		/>
+		<p class="site-name-note">
+			Where the "Want to get involved? Join our chat" button goes on the turf page people see before
+			signing in, usually the Solidarity sign-up page. Leave blank to hide the button.
 		</p>
 	</SettingsRow>
 

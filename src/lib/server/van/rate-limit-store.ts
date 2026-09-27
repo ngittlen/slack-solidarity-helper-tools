@@ -23,7 +23,12 @@ export const chapterVisits: VisitLog = new Map();
 /** Turf API requests each user has made in the current minute. */
 export const turfRequests: RequestLog = new Map();
 
-// Both logs are self-trimming on read for the user being looked at, so this is
+/** Signed-out /turfs lookups per visitor IP in the current minute. Keyed by
+ *  address rather than user, since there is no user. Kept apart from
+ *  `turfRequests` so an IP can never spend a member's budget or the reverse. */
+export const publicLookups: RequestLog = new Map();
+
+// Every log is self-trimming on read for the key being looked at, so this is
 // only about users who stopped visiting entirely — without it a long-lived
 // machine accumulates one entry per person who ever opened the page. Cheap
 // enough to run inline rather than on a timer, which keeps it out of the way
@@ -37,4 +42,5 @@ export function pruneRateLimitStores(now: number): void {
 	lastPrune = now;
 	pruneVisitLog(chapterVisits, now);
 	pruneRequestLog(turfRequests, now);
+	pruneRequestLog(publicLookups, now);
 }

@@ -127,6 +127,7 @@
 				<AppConfigEditor
 					channels={data.slackChannels.items}
 					siteName={data.settings.siteName}
+					publicJoinUrl={data.settings.publicJoinUrl}
 					trackingChannelId={data.settings.slackTrackingChannelId}
 					growthReportChannelId={data.settings.slackGrowthReportChannelId}
 					mobilizeSyncChannelId={data.settings.slackMobilizeSyncChannelId}

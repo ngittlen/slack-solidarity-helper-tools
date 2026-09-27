@@ -51,9 +51,43 @@ describe('the table', () => {
 				'welcomeDmMessage',
 				'warningDmMessage',
 				'themeTokens',
+				'publicJoinUrl',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(20);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(21);
+	});
+});
+
+describe('publicJoinUrl', () => {
+	const run = (v: unknown) => APP_CONFIG_FIELDS.publicJoinUrl(v, ctx);
+
+	it('accepts an https link, trimmed', () => {
+		expect(run('  https://solidarity.example/join  ')).toEqual({
+			ok: true,
+			value: 'https://solidarity.example/join',
+		});
+	});
+
+	it('clears on an empty string', () => {
+		expect(run('')).toEqual({ ok: true, value: '' });
+		expect(run('   ')).toEqual({ ok: true, value: '' });
+	});
+
+	// Rendered as a button on a page anyone can open.
+	it('refuses anything but https', () => {
+		for (const bad of [
+			'javascript:alert(1)',
+			'data:text/html,hi',
+			'http://solidarity.example/join',
+			'solidarity.example/join',
+		]) {
+			expect(run(bad), bad).toMatchObject({ ok: false, status: 400 });
+		}
+	});
+
+	it('refuses a non-string and an overlong link', () => {
+		expect(run(42)).toMatchObject({ ok: false });
+		expect(run(`https://x.example/${'a'.repeat(500)}`)).toMatchObject({ ok: false });
 	});
 });
 
