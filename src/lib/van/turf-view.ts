@@ -118,6 +118,18 @@ export interface TurfView {
 	 */
 	updating?: true;
 	/**
+	 * True when the turf looks available but has no MiniVAN list number, so
+	 * nobody can take it until an organizer generates one.
+	 *
+	 * Says only that the number is missing, never what it is, so it sits
+	 * outside the access rule on `printedListNumber`. The list sinks these
+	 * below turf that can be claimed and paints them as an alert, because a
+	 * volunteer who opens one needs to go to an organizer rather than walk.
+	 *
+	 * Omitted rather than false when it does not apply, like `updating`.
+	 */
+	noListNumber?: true;
+	/**
 	 * True when VAN no longer has this route — an organizer re-cut the area.
 	 *
 	 * Retired turf is normally filtered out of the payload entirely. It reaches
@@ -295,6 +307,9 @@ export function toTurfView(
 			? {}
 			: { claimBlockedReason: decision.message }),
 		...(options.refreshingRegions?.has(row.mapRegionId) ? { updating: true as const } : {}),
+		...(visible.status === 'available' && !decision.ok && decision.reason === 'no-list-number'
+			? { noListNumber: true as const }
+			: {}),
 		...(row.retiredAt ? { retired: true as const } : {}),
 		...(report
 			? { walkReport: { percent: report.percent, dayLabel: campaignDayLabel(report.at) } }

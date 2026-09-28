@@ -120,6 +120,42 @@ describe('link', () => {
 		expect(mockInsert).not.toHaveBeenCalled();
 	});
 
+	// A blocking read would join an in-flight roster walk and hang the save
+	// for minutes.
+	it('never blocks on a roster refresh', async () => {
+		await call({ action: 'link', slackUserId: 'U0TARGET1', solidarityUserId: 500 });
+
+		expect(mockGetSolidarityMembers).toHaveBeenCalledWith('tok', { staleWhileRevalidate: true });
+	});
+
+	it('links against the previous roster while a refresh runs', async () => {
+		mockGetSolidarityMembers.mockResolvedValue({
+			items: [{ id: 500, name: 'Jordan Rivera', email: 'jordan@example.org', otherEmails: [] }],
+			stale: false,
+			fetchedAt: 1,
+			refreshing: true,
+		});
+
+		const res = await call({ action: 'link', slackUserId: 'U0TARGET1', solidarityUserId: 500 });
+
+		expect(res.status).toBe(200);
+		expect(mockInsert).toHaveBeenCalled();
+	});
+
+	it('503s rather than "no longer exists" when the id is missing from a list still being fetched', async () => {
+		mockGetSolidarityMembers.mockResolvedValue({
+			items: [],
+			stale: false,
+			fetchedAt: 0,
+			refreshing: true,
+		});
+
+		const res = await call({ action: 'link', slackUserId: 'U0TARGET1', solidarityUserId: 500 });
+
+		expect(res.status).toBe(503);
+		expect(mockInsert).not.toHaveBeenCalled();
+	});
+
 	it('503s when the roster is unavailable, so the admin can retry', async () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		mockGetSolidarityMembers.mockRejectedValue(new Error('cold and failing'));
