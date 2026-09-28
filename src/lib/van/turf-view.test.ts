@@ -211,6 +211,19 @@ describe('toTurfView — freshness and claimability', () => {
 		expect('updating' in view).toBe(false);
 	});
 
+	it('flags available turf that has no list number, and says who to ask', () => {
+		const view = toTurfView(row({ printedListNumber: null }), [], VOLUNTEER, NOW);
+		expect(view.noListNumber).toBe(true);
+		expect(view.claimable).toBe(false);
+		expect(view.claimBlockedReason).toMatch(/organizer/);
+	});
+
+	it('omits the no-list-number flag on turf that has one, or that is taken', () => {
+		expect('noListNumber' in toTurfView(row(), [], VOLUNTEER, NOW)).toBe(false);
+		const taken = row({ printedListNumber: null, vanDistributedTo: 'Sam Ito' });
+		expect('noListNumber' in toTurfView(taken, [], VOLUNTEER, NOW)).toBe(false);
+	});
+
 	it('is claimable when available with a list number and doors left', () => {
 		const view = toTurfView(row(), [], VOLUNTEER, NOW);
 		expect(view.claimable).toBe(true);

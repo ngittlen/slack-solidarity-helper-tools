@@ -674,7 +674,8 @@
 		// mean "yours" and "taken".
 		const shade = turfShade(turf.status, turf.doorsRemaining);
 		const selected = turf.mapRouteId === selectedId ? ' is-selected' : '';
-		return `turf turf-${turf.status} shade-${shade}${selected}`;
+		const noList = turf.noListNumber ? ' is-no-list' : '';
+		return `turf turf-${turf.status} shade-${shade}${noList}${selected}`;
 	}
 
 	function ariaLabelFor(turf: MappableTurf): string {
@@ -686,7 +687,8 @@
 			status === 'available'
 				? `, ${turf.doorsRemaining} doors remaining, ${shadeLabel(turfShade(status, turf.doorsRemaining))}`
 				: '';
-		return `${turf.name}, ${statusLabel(status)}${doors}`;
+		const noList = turf.noListNumber ? ', no list number yet' : '';
+		return `${turf.name}, ${statusLabel(status)}${noList}${doors}`;
 	}
 </script>
 
@@ -1167,6 +1169,17 @@
 		fill: var(--color-warm-dark);
 		stroke: var(--color-warm-dark);
 		stroke-dasharray: 5 4;
+	}
+
+	/* Looks available but has no list number, so nobody can take it until an
+	   organizer generates one. An outline rather than a fill: the fill still
+	   says how many doors are waiting, and the red says who to ask first.
+	   Selection and focus keep their own stroke, so the red steps aside while
+	   a turf is picked. */
+	.turf.is-no-list:not(.is-selected):not(:focus-visible) polygon,
+	.turf.is-no-list:not(.is-selected):not(:focus-visible) circle {
+		stroke: var(--color-error);
+		stroke-width: 3;
 	}
 
 	.me-dot {

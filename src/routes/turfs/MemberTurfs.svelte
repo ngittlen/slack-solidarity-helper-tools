@@ -188,13 +188,15 @@
 		return out;
 	});
 
-	// Yours first, then available, then everything else; within a band, nearest
-	// first when we know where you are. A volunteer opening this wants the
-	// closest thing they can actually take.
+	// Yours first, then available, then turf still waiting on a list number,
+	// then everything else; within a band, nearest first when we know where you
+	// are. A volunteer opening this wants the closest thing they can actually
+	// take, and a turf with no list number cannot be taken until an organizer
+	// steps in.
 	const sortedTurfs = $derived(
 		[...turfs].sort((a, b) => {
 			const rank = (t: TurfView) =>
-				t.status === 'held-by-you' ? 0 : t.status === 'available' ? 1 : 2;
+				t.status === 'held-by-you' ? 0 : t.noListNumber ? 2 : t.status === 'available' ? 1 : 3;
 			return (
 				rank(a) - rank(b) ||
 				(distances[a.mapRouteId] ?? Infinity) - (distances[b.mapRouteId] ?? Infinity) ||
@@ -445,7 +447,13 @@
 
 					<ol class="steps">
 						<li>Open <strong>MiniVAN</strong> on your phone and sign in.</li>
-						<li>Choose <strong>Enter List Number</strong> and type the number above.</li>
+						<!-- MiniVAN's Scan reads the digits off a screen by OCR, so the
+						     number as printed above is all it needs; no barcode. -->
+						<li>
+							Choose <strong>Enter List Number</strong> and type the number above. Or, if this page
+							is on another screen, tap <strong>Scan</strong> and point your phone's camera at the number
+							to fill it in automatically.
+						</li>
 						<li>Knock the doors, then hit <strong>Sync</strong> before you close the app.</li>
 					</ol>
 					<p class="sync-reminder">
@@ -561,6 +569,7 @@
 							Doors left
 						</li>
 						<li><span class="swatch swatch-cleared"></span> None left</li>
+						<li><span class="swatch swatch-no-list"></span> No list number</li>
 						<li><span class="swatch swatch-mine"></span> Yours</li>
 						<li><span class="swatch swatch-other"></span> Checked out</li>
 						{#if location}<li><span class="swatch swatch-me"></span> You</li>{/if}
@@ -665,6 +674,7 @@
 							class:is-selected={expanded}
 							class:is-mine={turf.status === 'held-by-you'}
 							class:is-unavailable={turf.status === 'checked-out'}
+							class:is-no-list={turf.noListNumber}
 						>
 							<button
 								type="button"
@@ -676,7 +686,11 @@
 								<!-- First in the DOM as well as on screen, so what a screen
 								     reader hears matches what the eye lands on, and both lead
 								     with the field the list is scanned for. -->
-								<span class="door-tile shade-{turfShade(turf.status, turf.doorsRemaining)}">
+								<span
+									class="door-tile shade-{turf.noListNumber
+										? 'no-list'
+										: turfShade(turf.status, turf.doorsRemaining)}"
+								>
 									<span class="door-count">{turf.doorsRemaining}</span>
 									<span class="door-label">doors left</span>
 									{#if expanded}
@@ -787,6 +801,7 @@
 										<button
 											type="button"
 											class="claim-btn"
+											class:is-no-list={turf.noListNumber}
 											disabled={!turf.claimable || busy[turf.mapRouteId]}
 											onclick={() => act(turf, 'claim')}
 										>

@@ -475,6 +475,12 @@ main {
 	border: 1px dashed var(--color-warm-dark);
 }
 
+/* Matching the map's red outline on turf with no list number yet. */
+.swatch-no-list {
+	background: color-mix(in srgb, var(--color-blue) 42%, transparent);
+	border: 2px solid var(--color-error);
+}
+
 /* The four ramp swatches sit together as one bar, so the legend reads as a
    scale rather than four unrelated entries, with its ends named in place. */
 .legend-ramp {
@@ -601,6 +607,10 @@ main {
    reads through the background tint. */
 .turf-row.is-mine {
 	border-left-color: var(--color-success);
+}
+
+.turf-row.is-no-list {
+	border-left-color: var(--color-error);
 }
 
 /* On the summary only. A turf someone else is walking is dimmed in the list,
@@ -835,6 +845,15 @@ main {
 	border: 1px dashed var(--color-warm-dark);
 }
 
+/* Available on paper, but with no list number nobody can take it until an
+   organizer generates one. Red, and outlined as well as tinted, so it reads as
+   something to act on rather than the pale end of the blue ramp. The text
+   stays --color-text, like the chips, for contrast in both themes. */
+.door-tile.shade-no-list {
+	background: color-mix(in srgb, var(--color-error) 18%, transparent);
+	border: 1px solid var(--color-error);
+}
+
 /* Shown only to organizers — the server nulls `heldBy` for everyone else, so
    this styles a line that a volunteer's payload cannot contain. The colour
    comes from .admin-only below, which it is always worn with. */
@@ -933,6 +952,17 @@ main {
 
 .claim-btn:hover {
 	background: var(--color-action-hover);
+}
+
+/* A turf with no list number cannot be checked out until an organizer makes
+   one, and the button has to say so before anyone taps it. Red, with the
+   surface colour as text: the same pair the theme editor checks for
+   contrast, the other way round. Hover leaves it red, since it is disabled. */
+.claim-btn.is-no-list,
+.claim-btn.is-no-list:hover {
+	background: var(--color-error);
+	color: var(--color-surface);
+	cursor: not-allowed;
 }
 
 .claim-note {

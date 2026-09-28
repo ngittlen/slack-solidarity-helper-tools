@@ -247,7 +247,8 @@ export function canClaim(
 		return {
 			ok: false,
 			reason: 'no-list-number',
-			message: "This turf doesn't have a MiniVAN list number yet. An organizer needs to export it.",
+			message:
+				"This turf doesn't have a MiniVAN list number yet. Reach out to an organizer to get one for it.",
 		};
 	}
 
