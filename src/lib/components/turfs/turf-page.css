@@ -423,20 +423,17 @@ main {
 	border: 1px solid color-mix(in srgb, var(--color-text) 15%, transparent);
 }
 
-/* The legend's ramp mirrors the map's, using the same four steps. Percentages
-   rather than opacity so the swatch reads the same over the page background as
-   the fill does over the basemap. */
-.swatch-available.shade-low {
-	background: color-mix(in srgb, var(--color-blue) 28%, transparent);
-}
-.swatch-available.shade-medium {
-	background: color-mix(in srgb, var(--color-blue) 42%, transparent);
-}
-.swatch-available.shade-high {
-	background: color-mix(in srgb, var(--color-blue) 56%, transparent);
-}
-.swatch-available.shade-full {
-	background: color-mix(in srgb, var(--color-blue) 70%, transparent);
+/* The legend's ramp mirrors the map's: one bar running the same continuous
+   scale, light blue at 30% to deep purple-blue at 90% (the map's --turf-fill
+   at t = 0 and t = 1). Percentages rather than opacity so the bar reads the
+   same over the page background as the fill does over the basemap. */
+.swatch-ramp {
+	width: 64px;
+	background: linear-gradient(
+		to right,
+		color-mix(in srgb, var(--color-turf-light) 30%, transparent),
+		color-mix(in srgb, var(--color-turf-deep) 90%, transparent)
+	);
 }
 
 /* Dashed, matching the map: a turf with nothing left has to differ from the
@@ -452,8 +449,7 @@ main {
 	border: 2px solid var(--color-error);
 }
 
-/* The four ramp swatches sit together as one bar, so the legend reads as a
-   scale rather than four unrelated entries, with its ends named in place. */
+/* The ramp bar sits between its named ends, so the legend reads as a scale. */
 .legend-ramp {
 	gap: 2px;
 }
@@ -778,26 +774,28 @@ main {
 	color: var(--color-text);
 }
 
-/* The map's four door bands (turf-shade.ts), so a turf that looks heavy on the
+/* The map's door ramp (doorRamp in turf-shade.ts), so a turf that looks heavy on the
    map reads heavy in the list.
 
-   Lighter than the legend's 28/42/56/70 of the same blue, and deliberately: a
+   The same continuous scale as the map and legend (--turf-t, set inline per
+   row), deep purple-blue to light blue, but fainter, and deliberately: a
    legend swatch is 14 square pixels of colour, while this one has two lines of
-   text on it. On the legend's ramp the label runs 3.64:1 at the top band in
-   dark mode and 4.46 at the one below it, both under AA. Capped at 46% the
-   worst case is 5.20, and four steps ten points apart stay well above a
-   just-noticeable difference. */
-.door-tile.shade-low {
-	background: color-mix(in srgb, var(--color-blue) 16%, transparent);
-}
-.door-tile.shade-medium {
-	background: color-mix(in srgb, var(--color-blue) 26%, transparent);
-}
-.door-tile.shade-high {
-	background: color-mix(in srgb, var(--color-blue) 36%, transparent);
-}
+   text on it. Strength runs 6% to 46%; at 46% the label's worst case is 6.1:1
+   in light mode and 5.3:1 in dark (AA is 4.5). */
+.door-tile.shade-low,
+.door-tile.shade-medium,
+.door-tile.shade-high,
 .door-tile.shade-full {
-	background: color-mix(in srgb, var(--color-blue) 46%, transparent);
+	background: color-mix(
+		in srgb,
+		color-mix(
+				in srgb,
+				var(--color-turf-deep) calc(var(--turf-t, 0.5) * 100%),
+				var(--color-turf-light)
+			)
+			calc(6% + 40% * var(--turf-t, 0.5)),
+		transparent
+	);
 }
 
 /* Hue, not the ramp, for the two states where the count is not the question:
@@ -923,6 +921,22 @@ main {
 
 .claim-btn:hover {
 	background: var(--color-action-hover);
+}
+
+/* Disabled has to read as disabled at a glance — "Check out this turf" on a
+   turf with no doors left, "I walked this turf" before "I synced MiniVAN" is
+   ticked. Without this a disabled button kept its full action colour and
+   looked like it was simply not responding. Flat, faint and dashed rather than
+   just paler, so it survives both themes and a phone in sunlight; hover does
+   nothing, since there is nothing to press. */
+.claim-btn:disabled,
+.claim-btn:disabled:hover,
+.ghost-btn:disabled,
+.ghost-btn:disabled:hover {
+	background: var(--color-surface-alt);
+	color: var(--color-text-faint);
+	border: 1px dashed var(--color-border);
+	cursor: not-allowed;
 }
 
 /* A turf with no list number cannot be checked out until an organizer makes

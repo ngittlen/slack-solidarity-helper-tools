@@ -28,8 +28,14 @@ const FILES = walk('src').filter((f) => !f.endsWith('app.css'));
 const LED_FILES = /dashboard\/(LedBoard|DoorTicker|CountdownBanner)\.svelte$/;
 
 /** Set at runtime rather than in a stylesheet — by bits-ui, or by an inline
- *  style attribute the ticker computes. */
-const RUNTIME_LOCALS = new Set(['bits-combobox-anchor-width', 'ticker-duration', 'ticker-steps']);
+ *  style attribute the ticker computes, or per turf by rampStyle
+ *  (turf-shade.ts) for the continuous doors-left colour. */
+const RUNTIME_LOCALS = new Set([
+	'bits-combobox-anchor-width',
+	'ticker-duration',
+	'ticker-steps',
+	'turf-t',
+]);
 
 const STATIC_KEYS = (() => {
 	const src = readFileSync('src/lib/styles/tokens.ts', 'utf8');
