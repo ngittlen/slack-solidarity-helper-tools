@@ -248,6 +248,20 @@ describe('geometry queue roster re-arming', () => {
 		expect((await queueRow())!.status).toBe('failed');
 	});
 
+	// The worker leaves why on the row (an export with no VanID); asking again
+	// would fail the same way on every turf, every run.
+	it('does not re-arm a done row that says why it has no roster', async () => {
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await markDone(585052);
+		await client.execute(
+			`UPDATE van_geometry_queue SET last_error='export CSV has no VanID column' WHERE map_route_id=56456`,
+		);
+
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, ROSTER);
+
+		expect((await queueRow())!.status).toBe('done');
+	});
+
 	it('queues nothing for rosters when the feature is off', async () => {
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
 		await markDone(585052);

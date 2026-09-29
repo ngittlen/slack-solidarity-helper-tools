@@ -98,10 +98,15 @@ export function doorsLeft(row: CountedRow): number {
 	return currentUncontacted(row) ?? row.doorCount;
 }
 
-/** When `doorsLeft` was last true: the count's own timestamp, else VAN's. */
-function doorsLeftAsOf(row: TurfRowInput): string | null {
+/**
+ * When `doorsLeft` was last true. For the count, how far ContactHistory has
+ * been read (`contactsThrough`) — not when it was last recomputed, which runs
+ * even when the pull is failing and would call days-old data fresh. VAN's own
+ * refresh time otherwise.
+ */
+function doorsLeftAsOf(row: TurfRowInput, contactsThrough: string | null): string | null {
 	return currentUncontacted(row) != null
-		? (row.uncontactedDoorsAt ?? row.lastRefreshedAt)
+		? (contactsThrough ?? row.lastRefreshedAt)
 		: row.lastRefreshedAt;
 }
 
@@ -217,6 +222,9 @@ export interface TurfView {
 export interface WalkReportInput {
 	percent: number | null;
 	at: string;
+	/** The count has not caught up with this completion yet; see WalkReport
+	 *  in checkout-store.ts. Optional so fixtures predating it need not name it. */
+	awaitingCount?: boolean;
 }
 
 /** Claim rules, plus the state that is about the turf rather than about the
@@ -227,6 +235,9 @@ export type TurfViewOptions = ClaimOptions & {
 	refreshingRegions?: ReadonlySet<number>;
 	/** Latest walk report per route id. See `TurfView.walkReport`. */
 	walkReports?: ReadonlyMap<number, WalkReportInput>;
+	/** How far ContactHistory has been read: the "as of" for any turf showing
+	 *  its uncontacted count. Null or omitted when the pull has never run. */
+	contactsThrough?: string | null;
 };
 
 /** A turf that can actually be drawn. */
@@ -314,6 +325,7 @@ export function turfSnapshot(
 		uncontactedDoors: currentUncontacted(row),
 		reportedPercent: walkReports?.get(row.mapRouteId)?.percent ?? null,
 		walked: walkReports?.has(row.mapRouteId) ?? false,
+		walkAwaitingCount: walkReports?.get(row.mapRouteId)?.awaitingCount ?? false,
 	};
 }
 
@@ -364,7 +376,7 @@ export function toTurfView(
 		status: visible.status,
 		heldBy: visible.heldBy,
 		expiresInHours: visible.expiresInHours,
-		refreshedMinutesAgo: minutesSince(doorsLeftAsOf(row), now),
+		refreshedMinutesAgo: minutesSince(doorsLeftAsOf(row, options.contactsThrough ?? null), now),
 		claimable: decision.ok,
 		...(decision.ok || visible.status !== 'available'
 			? {}

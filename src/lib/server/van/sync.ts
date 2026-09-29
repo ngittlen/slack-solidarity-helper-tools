@@ -488,7 +488,9 @@ export async function runCatalogSync(
 	// current saved list (the uncontacted-door count's first pass, or a turf
 	// hulled before rosters existed). Only `done` — a `failed` row stays failed
 	// for the reason above, and a pending or running one will build the roster
-	// anyway. Once the worker writes the roster the planner stops asking.
+	// anyway. Once the worker writes the roster the planner stops asking. And
+	// only a `done` row with no error: one that says why no roster could be
+	// built (the wrong export type) would fail the same way every run.
 	// Batched for the same reason as the upserts above: one queue row per turf
 	// is another round trip per turf, on the same hot path.
 	for (const items of chunked(plan.geometryQueue, WRITE_BATCH_SIZE)) {
@@ -519,7 +521,7 @@ export async function runCatalogSync(
 					where: item.roster
 						? or(
 								ne(vanGeometryQueue.savedListId, item.savedListId),
-								eq(vanGeometryQueue.status, 'done'),
+								and(eq(vanGeometryQueue.status, 'done'), isNull(vanGeometryQueue.lastError)),
 							)
 						: ne(vanGeometryQueue.savedListId, item.savedListId),
 				}),

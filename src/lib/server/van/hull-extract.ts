@@ -180,6 +180,9 @@ export interface HullExtractResult {
 	/** One entry per person, as keyed digests — present only when a roster
 	 *  hasher was supplied. The raw VanID and address never appear here. */
 	roster: RosterEntry[] | null;
+	/** Why a roster was asked for and not built (the export has no VanID
+	 *  column), or null. The hull is unaffected. */
+	rosterUnavailable: string | null;
 }
 
 export interface RosterEntry {
@@ -360,7 +363,8 @@ export async function extractHull(
 	let header: string[] | null = null;
 	const geocode = options.geocode ?? null;
 	const hasher = options.roster ?? null;
-	const roster: RosterEntry[] | null = hasher ? [] : null;
+	let roster: RosterEntry[] | null = hasher ? [] : null;
+	let rosterUnavailable: string | null = null;
 
 	// Row 0 is read in full to locate the columns; every later row is masked to
 	// the ones we found. Returning the set lazily per row is what lets the mask
@@ -408,21 +412,23 @@ export async function extractHull(
 			addressIndexes = geocode
 				? ADDRESS_COLUMNS.map((name) => columnIndex(header!, name)).filter((i) => i >= 0)
 				: [];
-			// Unlike the address columns, a roster without VanID is not a roster
-			// at all — it is the wrong export type, and a turf whose count
-			// silently never appears is worse than a loud failure.
+			// A roster without VanID is not a roster at all — it is the wrong
+			// export type. Reported rather than thrown: the hull does not need
+			// VanID, and one misconfigured env var should not cost every turf
+			// its shape. The caller surfaces the reason.
 			if (hasher) {
 				vanIdIndex = columnIndex(header, 'VanID');
 				addressLineIndex = columnIndex(header, 'Address');
 				zipIndex = columnIndex(header, 'ZipCode');
 				if (vanIdIndex < 0) {
-					throw new HullExtractError(
+					roster = null;
+					rosterUnavailable =
 						'export CSV has no VanID column — the uncontacted-door count needs export job ' +
-							'type 5 (VoterCircle)',
-					);
+						'type 5 (VoterCircle)';
 				}
 			}
-			const hashed = hasher ? [vanIdIndex, addressLineIndex, zipIndex].filter((i) => i >= 0) : [];
+			const hashed =
+				hasher && roster ? [vanIdIndex, addressLineIndex, zipIndex].filter((i) => i >= 0) : [];
 			dataRowKeep = new Set([latIndex, lngIndex, ...addressIndexes, ...hashed]);
 			continue;
 		}
@@ -514,6 +520,7 @@ export async function extractHull(
 		hullExtentMeters: hullExtentMeters === null ? null : Math.round(hullExtentMeters),
 		hullTooLarge,
 		roster,
+		rosterUnavailable,
 	};
 }
 

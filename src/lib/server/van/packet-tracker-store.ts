@@ -51,6 +51,7 @@ import {
 	type PacketCheckout,
 } from '../../van/packet-tracker.js';
 import { matchSheetTarget, orderSheetTargets, type SheetTarget } from '../../van/sheet-routing.js';
+import { sheetBlocksClaim } from '../../van/turf-view.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -161,7 +162,14 @@ export interface TrackerOptions {
 	onlyMapRouteId?: number;
 }
 
-type Candidate = PacketCheckout & { sheetState: string | null };
+/** The count columns are for `sheetBlocksClaim`: whether someone else's
+ *  entry in the sheet is still an organizer's problem. */
+type Candidate = PacketCheckout & {
+	sheetState: string | null;
+	uncontactedDoors: number | null;
+	savedListId: number | null;
+	rosterSavedListId: number | null;
+};
 
 async function loadCandidates(db: Db, now: Date, mapRouteId?: number): Promise<Candidate[]> {
 	const settledBefore = new Date(now.getTime() - SETTLE_MS).toISOString();
@@ -187,6 +195,9 @@ async function loadCandidates(db: Db, now: Date, mapRouteId?: number): Promise<C
 				turfName: vanTurfs.name,
 				regionName: vanTurfs.regionName,
 				doorCount: vanTurfs.doorCount,
+				uncontactedDoors: vanTurfs.uncontactedDoors,
+				savedListId: vanTurfs.savedListId,
+				rosterSavedListId: vanTurfs.rosterSavedListId,
 			})
 			.from(vanTurfCheckouts)
 			// Inner join is safe for retired turf: those rows are stamped, never
@@ -436,9 +447,14 @@ async function syncCheckout(
 		if (!isUnfilled(current, tab.layout)) {
 			// Somebody has this packet. Theirs — but it is checked again every
 			// run, and filled in if their entry is cleared while ours is live.
-			// Silent: a filled row no longer blocks a claim on turf with doors
-			// left uncontacted (sheetBlocksClaim), so this is expected, not an
-			// organizer's problem to chase.
+			// Said only where the sheet still blocks a claim. On turf with doors
+			// known to be uncontacted it no longer does (sheetBlocksClaim), so a
+			// name already there is expected, not an organizer's problem to chase.
+			if (state.told !== 'taken' && sheetBlocksClaim(candidate)) {
+				warnings.push(
+					`${LOG} ${label} was claimed, but its packet already has someone else's entry in the Packet Tracker, so that entry was left as it is`,
+				);
+			}
 			await save({ ...base, told: 'taken' });
 			return 'unchanged';
 		}

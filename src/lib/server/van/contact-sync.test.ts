@@ -1,4 +1,4 @@
-import { describe, afterEach, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -748,5 +748,144 @@ describe('stampDoorsKnocked', () => {
 		await stampDoorsKnocked(db, { now: NOW });
 		expect(await knocked(2)).toBeNull();
 		expect(await knocked(3)).toBeNull();
+	});
+});
+
+describe('runContactSync: what a run recomputes and stamps', () => {
+	const COMPLETED = '2026-09-28T15:00:00.000Z';
+
+	beforeEach(async () => {
+		await turf(1, { cutAt: '2026-09-27T00:00:00.000Z' });
+		await replaceRoster(db, 1, 900, roster({ '111': '1 Main St', '222': '2 Main St' }));
+		await turf(2, { cutAt: '2026-09-27T00:00:00.000Z' });
+		await replaceRoster(db, 2, 900, roster({ '333': '9 Elm St' }));
+	});
+
+	async function completion() {
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts
+			        (id, map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at)
+			      VALUES (1, 1, 'U1', 'Dana', '2026-09-28T12:00:00.000Z', ?, ?)`,
+			args: [COMPLETED, COMPLETED],
+		});
+	}
+	async function knocked() {
+		const res = await client.execute('SELECT doors_knocked FROM van_turf_checkouts WHERE id = 1');
+		return res.rows[0]!.doors_knocked;
+	}
+
+	it('recomputes every turf the first scheduled run, then only turfs it pulled people for', async () => {
+		const quiet = fakeVan(() => []);
+		await runContactSync(db, quiet.van.client, {
+			hasher,
+			now: NOW,
+			fetchFn: quiet.fetchFn,
+			sleep: noSleep,
+		});
+		expect((await counts(1)).uncontacted_doors).toBe(2);
+		expect((await counts(2)).uncontacted_doors).toBe(1);
+		expect((await state()).full_recompute_at).toBe(NOW.toISOString());
+
+		// Tamper with turf 2's stored count: a run that pulled nobody on it
+		// must leave it be.
+		await client.execute('UPDATE van_turfs SET uncontacted_doors = 42 WHERE map_route_id = 2');
+		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
+		const busy = fakeVan(() => [contactRow('111', 2, '9/28/2026 2:10:00 PM')]);
+		const result = await runContactSync(db, busy.van.client, {
+			hasher,
+			now: later,
+			fetchFn: busy.fetchFn,
+			sleep: noSleep,
+		});
+		expect(result.turfsRecomputed).toBe(1);
+		expect((await counts(1)).uncontacted_doors).toBe(1);
+		expect((await counts(2)).uncontacted_doors).toBe(42);
+	});
+
+	it('does the full recompute again once the feature has been switched off and on', async () => {
+		const { van, fetchFn } = fakeVan(() => []);
+		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await clearUncontacted(db);
+		expect((await state()).full_recompute_at).toBeNull();
+		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
+		await runContactSync(db, van.client, { hasher, now: later, fetchFn, sleep: noSleep });
+		expect((await counts(2)).uncontacted_doors).toBe(1);
+	});
+
+	it('recomputes the nudged turf and any it pulled people for, never the rest', async () => {
+		const { van, fetchFn } = fakeVan(() => []);
+		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await client.execute('UPDATE van_turfs SET uncontacted_doors = 42');
+		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
+		const result = await runContactSync(db, van.client, {
+			hasher,
+			now: later,
+			fetchFn,
+			sleep: noSleep,
+			recomputeMapRouteIds: [2],
+		});
+		expect(result.turfsRecomputed).toBe(1);
+		expect((await counts(1)).uncontacted_doors).toBe(42);
+		expect((await counts(2)).uncontacted_doors).toBe(1);
+	});
+
+	// A nudge fires seconds after the tap, before MiniVAN's sync reaches VAN.
+	it('leaves doors knocked unset and countedThrough alone on a nudge', async () => {
+		await completion();
+		const { van, fetchFn } = fakeVan(() => []);
+		const result = await runContactSync(db, van.client, {
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+			recomputeMapRouteIds: [1],
+		});
+		expect(result.doorsKnockedStamped).toBe(0);
+		expect(await knocked()).toBeNull();
+		expect((await state()).counted_through).toBeNull();
+	});
+
+	it('stamps doors knocked and countedThrough on a scheduled run that caught up', async () => {
+		await completion();
+		const { van, fetchFn } = fakeVan((w) =>
+			w.to === NOW.toISOString() ? [contactRow('111', 2, '9/28/2026 9:00:00 AM')] : [],
+		);
+		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		expect(await knocked()).toBe(1);
+		expect((await state()).counted_through).toBe(NOW.toISOString());
+	});
+
+	it('moves neither while a window is still pending', async () => {
+		await completion();
+		const { van, fetchFn } = fakeVan(() => [], { status: () => 'Pending' });
+		const result = await runContactSync(db, van.client, {
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+			timeBudgetMs: 1,
+		});
+		expect(result.pending).toBe(true);
+		expect(await knocked()).toBeNull();
+		expect((await state()).counted_through).toBeNull();
+	});
+
+	it('logs an error, and carries on, when VAN lists no in-person contact types', async () => {
+		const { van, fetchFn } = fakeVan(() => [contactRow('111', 2, '9/28/2026 9:00:00 AM')]);
+		const client2 = { ...van.client, contactTypes: async () => [] } as VanClient;
+		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			const result = await runContactSync(db, client2, {
+				hasher,
+				now: NOW,
+				fetchFn,
+				sleep: noSleep,
+			});
+			expect(spy).toHaveBeenCalledWith(expect.stringContaining('no in-person contact types'));
+			expect(result.cursor).toBe(NOW.toISOString());
+			expect(result.contactsRead).toBe(0);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

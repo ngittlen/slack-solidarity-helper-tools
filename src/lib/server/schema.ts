@@ -1123,9 +1123,13 @@ export const vanTurfRoster = sqliteTable(
 		personHash: blob('person_hash', { mode: 'buffer' }).notNull(),
 		doorHash: blob('door_hash', { mode: 'buffer' }).notNull(),
 	},
-	// No index on personHash alone: every read goes turf → people (the primary
-	// key's prefix) → contacts (their primary key).
-	(table) => [primaryKey({ columns: [table.mapRouteId, table.personHash] })],
+	// The person index is for the other direction: after a ContactHistory pull,
+	// which turfs have one of the people just read (contact-sync.ts), so only
+	// those are recomputed. Without it that lookup scans the whole table.
+	(table) => [
+		primaryKey({ columns: [table.mapRouteId, table.personHash] }),
+		index('van_turf_roster_person').on(table.personHash),
+	],
 );
 
 // The latest in-person contact attempt per person, from VAN's ContactHistory
@@ -1161,6 +1165,15 @@ export const vanContactSyncState = sqliteTable(
 		windowTo: text('window_to'),
 		lastRunAt: text('last_run_at'),
 		lastError: text('last_error'),
+		/** Start of the last scheduled run that read ContactHistory all the way
+		 *  up to its own start. A completion at or after this has not been
+		 *  counted yet: its turf stays unclaimable and its doors knocked unset
+		 *  until a scheduled run gets past it. Nudges never set it. */
+		countedThrough: text('counted_through'),
+		/** When every counted turf was last recomputed. Null means the next
+		 *  scheduled run does all of them; after that, only turfs with a person
+		 *  in the contacts just pulled. Cleared when the feature is switched off. */
+		fullRecomputeAt: text('full_recompute_at'),
 	},
 	(table) => [check('van_contact_sync_state_singleton', sql`${table.id} = 1`)],
 );

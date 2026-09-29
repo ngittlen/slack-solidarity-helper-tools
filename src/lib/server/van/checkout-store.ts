@@ -19,6 +19,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
+import { loadContactMarks } from './contact-sync.js';
 import { sheetBlocksClaim, turfSnapshot } from '../../van/turf-view.js';
 import {
 	canClaim,
@@ -41,6 +42,10 @@ export type ReleaseResult = { ok: true } | { ok: false; status: 400 | 404 | 409;
 export interface WalkReport {
 	percent: number | null;
 	at: string;
+	/** No scheduled contact sync has caught up since this completion, so the
+	 *  uncontacted count does not include its doors yet (contact-sync.ts,
+	 *  `countedThrough`). Keeps a turf with a count out of the pool meanwhile. */
+	awaitingCount: boolean;
 }
 
 /**
@@ -54,6 +59,8 @@ export async function latestWalkReports(
 	mapRouteIds: readonly number[],
 ): Promise<Map<number, WalkReport>> {
 	const reports = new Map<number, WalkReport>();
+	if (mapRouteIds.length === 0) return reports;
+	const { countedThrough } = await loadContactMarks(db);
 	for (const batch of chunked([...new Set(mapRouteIds)])) {
 		const rows = await db
 			.select({
@@ -75,7 +82,11 @@ export async function latestWalkReports(
 		for (const row of rows) {
 			// Newest first, so the first row per route is the one that counts.
 			if (!reports.has(row.mapRouteId) && row.at !== null) {
-				reports.set(row.mapRouteId, { percent: row.percent, at: row.at });
+				reports.set(row.mapRouteId, {
+					percent: row.percent,
+					at: row.at,
+					awaitingCount: countedThrough === null || row.at >= countedThrough,
+				});
 			}
 		}
 	}

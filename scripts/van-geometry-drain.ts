@@ -111,6 +111,7 @@ const totals = {
 	deadLettered: 0,
 	hullsTooLarge: 0,
 	rostersStored: 0,
+	rostersUnavailable: 0,
 };
 
 async function main(): Promise<void> {
@@ -168,6 +169,7 @@ async function main(): Promise<void> {
 				await releaseSyncLock(db, VAN_SYNC_LOCK, token);
 			}
 			totals.rostersStored += result.rostersStored;
+			totals.rostersUnavailable += result.rostersUnavailable;
 
 			totals.attempted += result.attempted;
 			totals.hullsStored += result.hullsStored;
@@ -208,6 +210,11 @@ async function main(): Promise<void> {
 	console.log(`  retried             ${totals.retried}`);
 	console.log(`  dead-lettered       ${totals.deadLettered}`);
 	console.log(`  rosters built       ${totals.rostersStored}`);
+	if (totals.rostersUnavailable > 0) {
+		console.log(
+			`  no roster (no VanID) ${totals.rostersUnavailable}   (check VAN_EXPORT_JOB_TYPE_ID is type 5)`,
+		);
+	}
 	if (totals.hullsTooLarge > 0) {
 		console.log(`  implausibly large   ${totals.hullsTooLarge}   (stored, but worth a look)`);
 	}

@@ -503,11 +503,15 @@ describe('extractHull roster', () => {
 		expect(result.roster![0]!.doorHash).not.toEqual(result.roster![1]!.doorHash);
 	});
 
-	it('fails loudly when asked for a roster from an export without VanID', async () => {
+	// The wrong export type costs the roster, not the shape: the hull never
+	// needed VanID, and the reason goes back for the caller to surface.
+	it('still extracts the hull, and says why, when the export has no VanID', async () => {
 		const header = 'VAddressLatitude,VAddressLongitude';
-		await expect(extractHull(one(`${header}\n28.5,-81.4`), { roster: hasher })).rejects.toThrow(
-			HullExtractError,
-		);
+		const rows = ['28.5,-81.4', '28.51,-81.4', '28.5,-81.41', '28.51,-81.41'];
+		const result = await extractHull(one(`${header}\n${rows.join('\n')}`), { roster: hasher });
+		expect(result.roster).toBeNull();
+		expect(result.rosterUnavailable).toContain('VanID');
+		expect(result.centre).not.toBeNull();
 	});
 
 	it('keeps HASHED_COLUMNS out of FORBIDDEN_COLUMNS and in the live header', () => {

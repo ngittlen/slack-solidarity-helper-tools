@@ -42,6 +42,9 @@ export interface TurfSnapshot {
 	 *  means "walked, how much unknown" — the case of a turf with no count.
 	 *  Optional so snapshots that predate it need not name it. */
 	walked?: boolean;
+	/** That walk is newer than the last scheduled contact sync, so an
+	 *  uncontacted count does not reflect it yet. */
+	walkAwaitingCount?: boolean;
 }
 
 /** At this, a reported turf has nothing left to knock and leaves the pool. */
@@ -281,6 +284,19 @@ export function canClaim(
 			ok: false,
 			reason: 'no-doors-left',
 			message: 'The last volunteer here finished every door on this turf.',
+		};
+	}
+
+	// With a count, a walk the count has not caught up with keeps the turf out
+	// until the next scheduled sync. Seconds after "I walked this turf" the
+	// volunteer's doors are not in ContactHistory yet, so the count still shows
+	// every door open and would send the next person to re-knock them.
+	if (turf.uncontactedDoors != null && turf.walkAwaitingCount === true) {
+		return {
+			ok: false,
+			reason: 'no-doors-left',
+			message:
+				'Someone just walked this turf. It comes back once VAN has their doors, if any are left.',
 		};
 	}
 

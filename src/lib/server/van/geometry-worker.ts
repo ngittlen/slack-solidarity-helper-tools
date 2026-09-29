@@ -140,6 +140,9 @@ export interface GeometryWorkerResult {
 	geocodedFromAddress: number;
 	/** Turfs whose roster was (re)built this run. */
 	rostersStored: number;
+	/** Turfs whose roster was asked for but could not be built from the
+	 *  export (no VanID column). Their hulls are stored as normal. */
+	rostersUnavailable: number;
 	/** Rows returned to `pending` to try again later. */
 	retried: number;
 	/** Rows that hit MAX_ATTEMPTS and are now `failed`. */
@@ -200,6 +203,7 @@ export async function runGeometryQueue(
 		geocodedFromAddress: 0,
 		noGeometry: 0,
 		rostersStored: 0,
+		rostersUnavailable: 0,
 		retried: 0,
 		deadLettered: 0,
 		deadLetters,
@@ -399,9 +403,18 @@ export async function runGeometryQueue(
 				result.rostersStored++;
 			}
 
+			// A roster that could not be built leaves its reason on the done
+			// row. The sync re-queues a done row for a missing roster only when
+			// it has no error — otherwise every turf would be re-exported every
+			// run for a roster the export type can never give.
+			if (extract.rosterUnavailable) result.rostersUnavailable++;
 			await db
 				.update(vanGeometryQueue)
-				.set({ status: 'done', completedAt: new Date().toISOString(), lastError: null })
+				.set({
+					status: 'done',
+					completedAt: new Date().toISOString(),
+					lastError: extract.rosterUnavailable,
+				})
 				.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
 
 			result.geocodedFromAddress += extract.geocodedFromAddress;
@@ -495,6 +508,16 @@ export async function runGeometryQueue(
 		}
 	});
 	await Promise.all(workers);
+
+	// Once per run, not per turf: the cause is configuration and identical
+	// for every row.
+	if (result.rostersUnavailable > 0) {
+		warnings.push(
+			`${result.rostersUnavailable} turf(s) got a hull but no roster: the export CSV has no VanID ` +
+				'column, so the uncontacted-door count needs export job type 5 (VoterCircle). Check ' +
+				'VAN_EXPORT_JOB_TYPE_ID.',
+		);
+	}
 
 	// Dead letters only. The advisory `warnings` go back to the caller, which
 	// posts them alongside the rest of the sync's notices — sending both from

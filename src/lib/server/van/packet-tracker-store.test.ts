@@ -346,10 +346,21 @@ describe('a checkout through its life', () => {
 });
 
 describe('the campaign’s entries are never overwritten', () => {
-	// Silent: a filled row no longer blocks claiming turf with doors left, so
-	// this is expected rather than something for an organizer to chase.
-	it('leaves a packet someone else has filled in, without a warning', async () => {
+	/** Give turf 100 a current uncontacted count, so the sheet stops blocking. */
+	async function withDoorsLeft(uncontacted: number) {
+		await client.execute({
+			sql: `UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = 900,
+			        uncontacted_doors = ? WHERE map_route_id = 100`,
+			args: [uncontacted],
+		});
+	}
+
+	// Silent where doors are known to be left: the filled row no longer blocks
+	// claiming that turf, so this is expected rather than something for an
+	// organizer to chase.
+	it('leaves a packet someone else has filled in, without a warning, on turf with doors left', async () => {
 		await turf();
+		await withDoorsLeft(12);
 		await checkout();
 		const theirs = packet(LIST, { Canvasser: 'Sam', Status: 'Incomplete', 'Walk Mode': 'Paper' });
 		const fake = fakeSheets({ 'sheet-downriver': tracker(theirs) });
@@ -363,8 +374,26 @@ describe('the campaign’s entries are never overwritten', () => {
 		expect(second.warnings).toEqual([]);
 	});
 
+	// With no count the sheet still blocks claims, so a claim that collided
+	// with an entry is worth one warning — and only one.
+	it('warns once about someone else’s entry where the sheet still blocks', async () => {
+		await turf();
+		await checkout();
+		const theirs = packet(LIST, { Canvasser: 'Sam', Status: 'Incomplete', 'Walk Mode': 'Paper' });
+		const fake = fakeSheets({ 'sheet-downriver': tracker(theirs) });
+
+		const first = await run(fake.api);
+		const second = await run(fake.api);
+
+		expect(fake.sheet('sheet-downriver')[2]).toEqual(theirs);
+		expect(writes(fake.calls)).toEqual([]);
+		expect(first.warnings).toEqual([expect.stringContaining("someone else's entry")]);
+		expect(second.warnings).toEqual([]);
+	});
+
 	it('fills in a packet once someone else’s entry is cleared', async () => {
 		await turf();
+		await withDoorsLeft(12);
 		await checkout();
 		const fake = fakeSheets({
 			'sheet-downriver': tracker(packet(LIST, { Canvasser: 'Sam', Status: 'Incomplete' })),

@@ -26,6 +26,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { refreshingRegionIds } from './refresh.js';
 import { latestWalkReports } from './checkout-store.js';
+import { loadContactMarks } from './contact-sync.js';
 import { chunked } from './sql-chunk.js';
 import {
 	activeClaimFor,
@@ -197,12 +198,19 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<number>();
 	// What volunteers last reported walking, for this page's turf only.
 	const walkReports = judged?.walkReports ?? (await latestWalkReports(db, selectedIds));
+	// The uncontacted count's "as of"; one row, and skipped for an empty page.
+	const contactsThrough = selected.length > 0 ? (await loadContactMarks(db)).cursor : null;
 
 	return {
 		// toTurfView is the single gate on what reaches a viewer; see its header.
 		// Nothing here should ever be spread from a raw row instead.
 		turfs: selected.map((row) =>
-			toTurfView(row, claims, viewer, now, { ...claimOptions, refreshingRegions, walkReports }),
+			toTurfView(row, claims, viewer, now, {
+				...claimOptions,
+				refreshingRegions,
+				walkReports,
+				contactsThrough,
+			}),
 		),
 		total: claimableOnly ? candidates.length : rows.length,
 		omitted,

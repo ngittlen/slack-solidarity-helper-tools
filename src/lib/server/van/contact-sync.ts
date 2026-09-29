@@ -34,7 +34,7 @@
 // $env, so scripts/ can run it under tsx. Configuration is resolved in
 // contact-live.ts.
 
-import { eq, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { campaignWallClockToUtc } from '../../campaign-time.js';
@@ -75,6 +75,8 @@ const RECOMPUTE_BATCH = 200;
 const CONTACT_BATCH = 400;
 /** Three parameters per row. */
 const ROSTER_BATCH = 300;
+/** One parameter per person when finding the turfs a pull touched. */
+const TOUCHED_BATCH = 500;
 
 export const IN_PERSON_CHANNEL = 'in person';
 /** In-person contact types that are not a knock on a door on the list: meeting
@@ -195,6 +197,46 @@ export async function clearUncontacted(db: Db): Promise<void> {
 		.update(vanTurfs)
 		.set({ uncontactedDoors: null, uncontactedDoorsAt: null })
 		.where(isNotNull(vanTurfs.uncontactedDoors));
+	// Switched back on later, every turf needs its count again, not only the
+	// ones the next pull happens to touch.
+	await db
+		.update(vanContactSyncState)
+		.set({ fullRecomputeAt: null })
+		.where(and(eq(vanContactSyncState.id, 1), isNotNull(vanContactSyncState.fullRecomputeAt)));
+}
+
+/**
+ * What the readers of the count need from the pull's progress: how far
+ * ContactHistory has been read (`cursor`, the count's "as of"), and the start
+ * of the last scheduled run that caught up (`countedThrough`, before which a
+ * completion's doors are in the count). Nulls when the pull has never run.
+ */
+export async function loadContactMarks(
+	db: Db,
+): Promise<{ cursor: string | null; countedThrough: string | null }> {
+	const [row] = await db
+		.select({
+			cursor: vanContactSyncState.cursor,
+			countedThrough: vanContactSyncState.countedThrough,
+		})
+		.from(vanContactSyncState)
+		.where(eq(vanContactSyncState.id, 1));
+	return { cursor: row?.cursor ?? null, countedThrough: row?.countedThrough ?? null };
+}
+
+/** Turfs with a roster row for any of these people — the only counts a pull of
+ *  their contacts can move. Retired rosters included; recomputing one is
+ *  harmless and its completion may still need its % walked. */
+async function turfsWithPeople(db: Db, personHashes: readonly Buffer[]): Promise<number[]> {
+	const ids = new Set<number>();
+	for (const batch of chunked(personHashes, TOUCHED_BATCH)) {
+		const rows = await db
+			.selectDistinct({ id: vanTurfRoster.mapRouteId })
+			.from(vanTurfRoster)
+			.where(inArray(vanTurfRoster.personHash, batch));
+		for (const row of rows) ids.add(row.id);
+	}
+	return [...ids];
 }
 
 /**
@@ -318,6 +360,11 @@ const KNOCK_TRAIL_MS = 60 * 60 * 1000;
  * otherwise fall out of this claim's window and out of their count. Stops
  * moving after WALK_PERCENT_WINDOW_MS, like the % walked. Turfs without a
  * roster are left alone (null), and the dashboard falls back to VAN's delta.
+ *
+ * Only called by a scheduled run that read ContactHistory up to its own start
+ * (`now`), and only for completions before it. Stamped any earlier — by the
+ * nudge seconds after the tap — it would read the volunteer's doors before
+ * MiniVAN's sync reached VAN, and write a 0 that hides "not counted yet".
  */
 export async function stampDoorsKnocked(
 	db: Db,
@@ -348,6 +395,7 @@ export async function stampDoorsKnocked(
 	const result = await db.run(sql`
 		UPDATE van_turf_checkouts SET doors_knocked = ${knocked}
 		WHERE completed_at IS NOT NULL AND completed_at >= ${since}
+			AND completed_at < ${options.now.toISOString()}
 			AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.map_route_id = van_turf_checkouts.map_route_id)
 			AND (doors_knocked IS NULL OR doors_knocked < ${knocked})
 			${scope}
@@ -362,7 +410,10 @@ export interface ContactSyncOptions {
 	hasher: PersonHasher;
 	now?: Date;
 	timeBudgetMs?: number;
-	/** Recompute only these turfs (a completion nudge). Default: every live turf. */
+	/** A completion nudge: recompute these turfs as well as the ones the pull
+	 *  touched. Omitted means a scheduled run — the only kind that recomputes
+	 *  every turf (the first time), stamps doors knocked, and moves
+	 *  `countedThrough`. */
 	recomputeMapRouteIds?: readonly number[];
 	/** For the blob download — never the VAN client, which would send our
 	 *  Basic credentials to a different host. */
@@ -481,6 +532,12 @@ function isDeadDownload(status: number): boolean {
  * Walk the ContactHistory cursor forward as far as the budget allows, then
  * recompute uncontacted doors.
  *
+ * Which turfs are recomputed: every counted turf on the first scheduled run
+ * (or the first after the feature is switched back on), and after that only
+ * those with a person in the contacts this run pulled, plus the nudge's own.
+ * Nothing else moves a count: a new roster is recomputed by the geometry
+ * worker that wrote it, and the prune only drops contacts below every cut.
+ *
  * Never throws for a VAN failure: the error is recorded on the state row and
  * returned, and the recompute still runs over whatever is stored — a stale
  * count beats no count. A thrown error means the database itself failed.
@@ -521,6 +578,9 @@ export async function runContactSync(
 	let jobCreatedAt = state?.exportJobCreatedAt ?? null;
 	let jobFailures = state?.exportJobFailures ?? 0;
 	let windowTo = state?.windowTo ?? null;
+	const scheduled = options.recomputeMapRouteIds === undefined;
+	/** Everyone whose contact this run stored, keyed by hex digest. */
+	const touched = new Map<string, Buffer>();
 
 	const saveState = (patch: Partial<typeof vanContactSyncState.$inferInsert>) =>
 		db
@@ -576,6 +636,15 @@ export async function runContactSync(
 					)
 					.map((t) => String(t.contactTypeId)),
 			);
+			if (inPerson.size === 0) {
+				// Not fatal, but every row of every window below is skipped and the
+				// cursor still moves past it — those contacts are never read again
+				// without a manual rewind. Loud, so someone looks.
+				console.error(
+					`${LOG} no in-person contact types found in VAN; ContactHistory windows read ` +
+						'now will store no contacts',
+				);
+			}
 			const deletions = await deletionChangeTypes(client);
 
 			while (Date.now() < deadline) {
@@ -662,6 +731,7 @@ export async function runContactSync(
 					break;
 				}
 				await upsertContacts(db, contacts);
+				for (const [key, c] of contacts) touched.set(key, c.personHash);
 				result.contactsRead += read;
 				cursor = windowTo!;
 				jobId = null;
@@ -694,18 +764,33 @@ export async function runContactSync(
 	}
 
 	result.cursor = cursor;
-	result.turfsRecomputed = await recomputeUncontacted(db, {
-		now,
-		mapRouteIds: options.recomputeMapRouteIds,
-	});
+	const full = scheduled && !state?.fullRecomputeAt;
+	const recomputeIds = full
+		? undefined
+		: [
+				...new Set([
+					...(options.recomputeMapRouteIds ?? []),
+					...(await turfsWithPeople(db, [...touched.values()])),
+				]),
+			];
+	result.turfsRecomputed = await recomputeUncontacted(db, { now, mapRouteIds: recomputeIds });
+	if (full) await saveState({ fullRecomputeAt: now.toISOString() });
 	result.percentsStamped = await stampWalkPercents(db, {
 		now,
 		mapRouteIds: options.recomputeMapRouteIds,
 	});
-	result.doorsKnockedStamped = await stampDoorsKnocked(db, {
-		now,
-		mapRouteIds: options.recomputeMapRouteIds,
-	});
+
+	// Caught up: nothing failed, no job left waiting, and the cursor reached
+	// this run's start. Only then is a completion before `now` in the count.
+	const caughtUp =
+		result.error === null &&
+		!result.pending &&
+		cursor !== null &&
+		now.getTime() - Date.parse(cursor) < MIN_WINDOW_MS;
+	if (scheduled && caughtUp) {
+		result.doorsKnockedStamped = await stampDoorsKnocked(db, { now });
+		await saveState({ countedThrough: now.toISOString() });
+	}
 	return result;
 }
 

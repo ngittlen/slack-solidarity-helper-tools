@@ -492,7 +492,11 @@ describe('latestWalkReports', () => {
 		await completed('2026-08-21T12:00:00.000Z', 40);
 		await completed('2026-08-23T12:00:00.000Z', 90);
 		const reports = await latestWalkReports(db, [100, 999]);
-		expect(reports.get(100)).toEqual({ percent: 90, at: '2026-08-23T12:00:00.000Z' });
+		expect(reports.get(100)).toEqual({
+			percent: 90,
+			at: '2026-08-23T12:00:00.000Z',
+			awaitingCount: true,
+		});
 		expect(reports.has(999)).toBe(false);
 	});
 
@@ -505,7 +509,24 @@ describe('latestWalkReports', () => {
 		expect((await latestWalkReports(db, [100])).get(100)).toEqual({
 			percent: null,
 			at: '2026-08-23T12:00:00.000Z',
+			awaitingCount: true,
 		});
+	});
+
+	async function countedThrough(at: string) {
+		await client.execute({
+			sql: `INSERT INTO van_contact_sync_state (id, counted_through) VALUES (1, ?)
+			      ON CONFLICT(id) DO UPDATE SET counted_through = excluded.counted_through`,
+			args: [at],
+		});
+	}
+
+	it('marks a completion counted once a scheduled sync has caught up past it', async () => {
+		await completed('2026-08-23T12:00:00.000Z', 40);
+		await countedThrough('2026-08-23T12:30:00.000Z');
+		expect((await latestWalkReports(db, [100])).get(100)?.awaitingCount).toBe(false);
+		await countedThrough('2026-08-23T11:30:00.000Z');
+		expect((await latestWalkReports(db, [100])).get(100)?.awaitingCount).toBe(true);
 	});
 
 	async function claim() {
@@ -541,6 +562,18 @@ describe('latestWalkReports', () => {
 	it('hands out a turf with doors left on its count, however it was reported', async () => {
 		await completed('2026-08-23T12:00:00.000Z', 100);
 		await withCount(12);
+		await countedThrough('2026-08-23T12:30:00.000Z');
+		expect(await claim()).toMatchObject({ ok: true });
+	});
+
+	// Seconds after the tap the volunteer's doors are not in ContactHistory, so
+	// the count still reads every door open. Held until a scheduled sync.
+	it('keeps a just-walked turf out until the next scheduled sync, count or not', async () => {
+		await completed('2026-08-23T12:00:00.000Z', null);
+		await withCount(12);
+		await countedThrough('2026-08-23T11:30:00.000Z');
+		expect(await claim()).toMatchObject({ ok: false, status: 409 });
+		await countedThrough('2026-08-23T12:30:00.000Z');
 		expect(await claim()).toMatchObject({ ok: true });
 	});
 

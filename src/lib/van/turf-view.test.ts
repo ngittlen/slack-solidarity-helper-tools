@@ -181,6 +181,25 @@ describe('toTurfView — freshness and claimability', () => {
 		expect(toTurfView(row(), [], VOLUNTEER, NOW).refreshedMinutesAgo).toBe(360);
 	});
 
+	// Recomputes run even while the pull is failing, so their timestamp would
+	// call old data fresh; how far ContactHistory was read is the honest age.
+	it('ages a turf showing its count by the contact cursor, not the recompute', () => {
+		const counted = row({
+			savedListId: 900,
+			rosterSavedListId: 900,
+			uncontactedDoors: 5,
+			uncontactedDoorsAt: NOW.toISOString(),
+		});
+		const through = new Date(NOW.getTime() - 90 * 60 * 1000).toISOString();
+		expect(
+			toTurfView(counted, [], VOLUNTEER, NOW, { contactsThrough: through }).refreshedMinutesAgo,
+		).toBe(90);
+		// No count: still VAN's own refresh time.
+		expect(
+			toTurfView(row(), [], VOLUNTEER, NOW, { contactsThrough: through }).refreshedMinutesAgo,
+		).toBe(360);
+	});
+
 	it('reports null staleness when VAN never gave a refresh time', () => {
 		expect(
 			toTurfView(row({ lastRefreshedAt: null }), [], VOLUNTEER, NOW).refreshedMinutesAgo,
