@@ -351,7 +351,10 @@ describe('runContactSync', () => {
 			now: NOW,
 			fetchFn,
 			sleep: noSleep,
-			timeBudgetMs: 10,
+			// Room to submit and poll once, but under the 3 s poll interval, so
+			// the run stops at the first Pending. A budget of a few ms can lapse
+			// before the loop starts, and then no job is submitted at all.
+			timeBudgetMs: 2_000,
 		});
 
 		expect(result.pending).toBe(true);
@@ -863,7 +866,10 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 			now: NOW,
 			fetchFn,
 			sleep: noSleep,
-			timeBudgetMs: 1,
+			// Room to submit and poll once, but under the 3 s poll interval, so
+			// the run stops at the first Pending. A budget of a few ms can lapse
+			// before the loop starts, and then no job is submitted at all.
+			timeBudgetMs: 2_000,
 		});
 		expect(result.pending).toBe(true);
 		expect(await knocked()).toBeNull();
