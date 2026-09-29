@@ -7,10 +7,11 @@
 //
 // Three decisions worth keeping:
 //
-// 1. **Banded, not continuous.** Nobody can tell 40 doors from 45 by colour,
-//    and a continuous ramp cannot be put in a legend. Four bands can, and they
-//    line up with how turf actually wears down: untouched, mostly fresh, part
-//    walked, nearly done.
+// 1. **Continuous colour, banded words.** The fill follows `doorRamp`, a
+//    smooth 0–1 scale, so neighbouring counts get neighbouring colours — four
+//    hard bands put a visible step between 49 and 50 doors that meant nothing
+//    on the ground. The bands survive for what is SAID (screen readers, via
+//    `shadeLabel`), where "nearly finished" beats a number between 0 and 1.
 //
 // 2. **Absolute thresholds, not relative to what is on screen.** Normalising
 //    against the current viewport would repaint every turf as you pan, so the
@@ -78,6 +79,28 @@ export function turfShade(status: VolunteerStatus, doorsRemaining: number): Turf
 	// band table and come back undefined.
 	if (!Number.isFinite(doorsRemaining) || doorsRemaining <= 0) return 'cleared';
 	return DOOR_BANDS.find((band) => doorsRemaining >= band.min)?.shade ?? 'low';
+}
+
+/** Doors at which the colour scale tops out. Turf is commonly cut at 50–100
+ *  doors, so capping here keeps fresh turfs distinguishable from each other
+ *  rather than all painting as the same solid colour. */
+export const RAMP_FULL_DOORS = 80;
+
+/**
+ * Where a door count sits on the colour scale: 0 at one door, 1 at
+ * RAMP_FULL_DOORS or more, linear in between. The map, the legend and the
+ * list's door tiles all mix their hue and strength from this, so a turf looks
+ * the same everywhere. Zero doors never reaches it — that is `cleared`.
+ */
+export function doorRamp(doorsRemaining: number): number {
+	if (!Number.isFinite(doorsRemaining) || doorsRemaining <= 1) return 0;
+	return Math.min(1, (doorsRemaining - 1) / (RAMP_FULL_DOORS - 1));
+}
+
+/** The inline style that carries `doorRamp` to CSS, rounded so the value
+ *  is stable across renders and readable in the inspector. */
+export function rampStyle(doorsRemaining: number): string {
+	return `--turf-t: ${doorRamp(doorsRemaining).toFixed(3)}`;
 }
 
 /** Spoken form, for the map's accessible label. The visual ramp is invisible

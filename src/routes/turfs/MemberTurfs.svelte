@@ -12,7 +12,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
 	import { statusLabel } from '$lib/van/turf-status.js';
-	import { turfShade } from '$lib/van/turf-shade.js';
+	import { rampStyle, turfShade } from '$lib/van/turf-shade.js';
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
 	import { mappableTurfs, type TurfView } from '$lib/van/turf-view.js';
@@ -188,14 +188,19 @@
 	});
 
 	// Yours first, then available, then turf still waiting on a list number,
-	// then everything else; within a band, nearest first when we know where you
-	// are. A volunteer opening this wants the closest thing they can actually
-	// take, and a turf with no list number cannot be taken until an organizer
-	// steps in.
+	// then everything else — checked out by someone, or with no doors left to
+	// knock; within a band, nearest first when we know where you are. A
+	// volunteer opening this wants the closest thing they can actually take.
 	const sortedTurfs = $derived(
 		[...turfs].sort((a, b) => {
 			const rank = (t: TurfView) =>
-				t.status === 'held-by-you' ? 0 : t.noListNumber ? 2 : t.status === 'available' ? 1 : 3;
+				t.status === 'held-by-you'
+					? 0
+					: t.status !== 'available' || t.doorsRemaining <= 0
+						? 3
+						: t.noListNumber
+							? 2
+							: 1;
 			return (
 				rank(a) - rank(b) ||
 				(distances[a.mapRouteId] ?? Infinity) - (distances[b.mapRouteId] ?? Infinity) ||
@@ -516,17 +521,15 @@
 						onviewport={loadViewport}
 					/>
 					<ul class="legend">
-						<!-- The ramp is only useful if it can be read off, so the bands
-						     are shown rather than described. Order matches DOOR_BANDS. -->
+						<!-- The ramp is only useful if it can be read off, so it is
+						     shown rather than described: one continuous bar, the same
+						     scale the map and the door tiles mix from (doorRamp). -->
 						<li class="legend-ramp">
 							<!-- Ends labelled where they are, so the scale reads left to
 							     right without a colon or an arrow to parse. The item's own
 							     label comes last, matching every other row in the legend. -->
 							<span class="ramp-end">few</span>
-							<span class="swatch swatch-available shade-low"></span>
-							<span class="swatch swatch-available shade-medium"></span>
-							<span class="swatch swatch-available shade-high"></span>
-							<span class="swatch swatch-available shade-full"></span>
+							<span class="swatch swatch-ramp"></span>
 							<span class="ramp-end">many</span>
 							Doors left
 						</li>
@@ -652,6 +655,7 @@
 									class="door-tile shade-{turf.noListNumber
 										? 'no-list'
 										: turfShade(turf.status, turf.doorsRemaining)}"
+									style={rampStyle(turf.doorsRemaining)}
 								>
 									<span class="door-count">{turf.doorsRemaining}</span>
 									<span class="door-label">doors left</span>
@@ -764,7 +768,9 @@
 											type="button"
 											class="claim-btn"
 											class:is-no-list={turf.noListNumber}
-											disabled={!turf.claimable || busy[turf.mapRouteId]}
+											disabled={!turf.claimable ||
+												turf.doorsRemaining <= 0 ||
+												busy[turf.mapRouteId]}
 											onclick={() => act(turf, 'claim')}
 										>
 											{busy[turf.mapRouteId] ? 'Checking out…' : 'Check out this turf'}

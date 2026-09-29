@@ -151,6 +151,24 @@ const TOKEN_DEFS = {
 		dark: '@accent',
 	},
 	'color-blue': { label: 'Light Blue', group: 'accent', light: '@accent', dark: '#7f9bd8' },
+	// The two ends of the doors-left ramp on the turf map, legend and list. The
+	// bands between are mixed from these (turf-shade.ts has the bands), and
+	// opacity ramps alongside, so a fresh turf reads deep and solid and a nearly
+	// finished one pale and faint.
+	'color-turf-deep': {
+		label: 'Turf — most doors left',
+		group: 'accent',
+		light: '#3b2a96',
+		dark: '#9a86ff',
+		note: 'A purple-leaning blue so the full end differs in hue, not just depth. The dark value is lighter, so it still stands out against the dark surface.',
+	},
+	'color-turf-light': {
+		label: 'Turf — fewest doors left',
+		group: 'accent',
+		light: '#6fb2ee',
+		dark: '#8fd0ff',
+		note: 'Door-tile text over the ramp is checked at 46% opacity: worst case 6.1:1 light, 5.3:1 dark.',
+	},
 	'color-cream-light': {
 		label: 'Light Cream',
 		group: 'accent',

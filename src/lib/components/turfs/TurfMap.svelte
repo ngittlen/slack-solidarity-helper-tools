@@ -41,7 +41,7 @@
 		tileUrl,
 	} from '$lib/van/tiles.js';
 	import { statusLabel, type VolunteerStatus } from '$lib/van/turf-status.js';
-	import { shadeLabel, turfShade } from '$lib/van/turf-shade.js';
+	import { rampStyle, shadeLabel, turfShade } from '$lib/van/turf-shade.js';
 	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
 	import { focusZoom, isBoxVisible } from '$lib/van/map-focus.js';
 	import { untrack } from 'svelte';
@@ -753,6 +753,7 @@
 				{#each rendered as item (item.turf.mapRouteId)}
 					<g
 						class={statusClass(item.turf)}
+						style={rampStyle(item.turf.doorsRemaining)}
 						data-turf-id={item.turf.mapRouteId}
 						role="button"
 						aria-label={ariaLabelFor(item.turf)}
@@ -1116,7 +1117,8 @@
 
 	.turf-available polygon,
 	.turf-available circle {
-		fill: var(--color-blue);
+		/* The shade classes below set the hue along the doors-left ramp. */
+		fill: var(--turf-color, var(--color-blue));
 		stroke: var(--color-navy-mid);
 	}
 
@@ -1132,19 +1134,23 @@
 		stroke: var(--color-warm-dark);
 	}
 
-	/* The door ramp. Four steps, far enough apart to be told apart over a
-	   street basemap — closer spacing looked like one colour with noise. */
-	.shade-full {
-		--turf-fill: 0.7;
-	}
-	.shade-high {
-		--turf-fill: 0.56;
-	}
-	.shade-medium {
-		--turf-fill: 0.42;
-	}
+	/* The door ramp. Hue and opacity move together, from a deep purple-blue
+	   that is nearly solid at RAMP_FULL_DOORS to a pale, faint light blue at
+	   one door, so the difference reads from across the map. Continuous:
+	   --turf-t (0–1, doorRamp in turf-shade.ts, set inline per turf) drives
+	   both, so neighbouring door counts get neighbouring colours instead of a
+	   hard step at a band edge. Only available turf uses --turf-color; the
+	   other statuses keep their own hue. */
+	.shade-full,
+	.shade-high,
+	.shade-medium,
 	.shade-low {
-		--turf-fill: 0.28;
+		--turf-fill: calc(0.3 + 0.6 * var(--turf-t, 0.5));
+		--turf-color: color-mix(
+			in srgb,
+			var(--color-turf-deep) calc(var(--turf-t, 0.5) * 100%),
+			var(--color-turf-light)
+		);
 	}
 
 	/* Flat, deliberately: door count is not actionable on turf someone else is
