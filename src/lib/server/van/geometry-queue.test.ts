@@ -31,7 +31,12 @@ beforeEach(async () => {
 			phone_count integer DEFAULT 0 NOT NULL, centroid_lat real, centroid_lng real, hull_json text,
 			hull_source_route_size integer, van_distributed_to text, van_assigned_at text, sheet_assigned_to text, drift_alerted_at text,
 			drift_alerted_kind text, first_seen_at text NOT NULL,
-			last_seen_at text NOT NULL, last_refreshed_at text, retired_at text)`,
+			last_seen_at text NOT NULL, last_refreshed_at text, cut_at text,
+			uncontacted_doors integer, uncontacted_doors_at text, roster_saved_list_id integer,
+			retired_at text)`,
+		`CREATE TABLE van_turf_roster (
+			map_route_id integer NOT NULL, person_hash blob NOT NULL, door_hash blob NOT NULL,
+			PRIMARY KEY(map_route_id, person_hash))`,
 		`CREATE TABLE van_geometry_queue (
 			map_route_id integer PRIMARY KEY NOT NULL, saved_list_id integer NOT NULL,
 			export_job_id integer, status text DEFAULT 'pending' NOT NULL,
@@ -83,6 +88,10 @@ function vanClientWith(savedListId: number, routeSize = 76): VanClient {
 		exportJobTypes: async () => [],
 		createExportJob: async () => ({}) as never,
 		exportJob: async () => ({}) as never,
+		createChangedEntityExportJob: async () => ({}) as never,
+		changedEntityExportJob: async () => ({}) as never,
+		contactTypes: async () => [],
+		changeTypes: async () => [],
 		get: async () => undefined as never,
 	};
 }
@@ -196,5 +205,89 @@ describe('geometry queue re-arming', () => {
 		const row = await queueRow();
 		expect(row!.status).toBe('running');
 		expect(row!.export_job_id).toBe(900);
+	});
+});
+
+describe('geometry queue roster re-arming', () => {
+	const ROSTER = { roster: true };
+
+	// The uncontacted-door count's first pass: every turf already hulled has a
+	// `done` row and no roster, and must get one more export.
+	it('re-arms a settled row whose turf has no roster', async () => {
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await markDone(585052);
+
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, ROSTER);
+
+		const row = await queueRow();
+		expect(row!.status).toBe('pending');
+		expect(row!.export_job_id).toBeNull();
+	});
+
+	// Otherwise every sync would re-submit an export per turf, forever.
+	it('stops asking once the roster matches the saved list', async () => {
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await markDone(585052);
+		await client.execute(
+			`UPDATE van_turfs SET roster_saved_list_id = 585052 WHERE map_route_id = 56456`,
+		);
+
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, ROSTER);
+
+		expect((await queueRow())!.status).toBe('done');
+	});
+
+	it('does not resurrect a dead-lettered row just for a roster', async () => {
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await client.execute(
+			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE map_route_id=56456`,
+		);
+
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, ROSTER);
+
+		expect((await queueRow())!.status).toBe('failed');
+	});
+
+	// The worker leaves why on the row (an export with no VanID); asking again
+	// would fail the same way on every turf, every run.
+	it('does not re-arm a done row that says why it has no roster', async () => {
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await markDone(585052);
+		await client.execute(
+			`UPDATE van_geometry_queue SET last_error='export CSV has no VanID column' WHERE map_route_id=56456`,
+		);
+
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, ROSTER);
+
+		expect((await queueRow())!.status).toBe('done');
+	});
+
+	it('queues nothing for rosters when the feature is off', async () => {
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await markDone(585052);
+
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+
+		expect((await queueRow())!.status).toBe('done');
+	});
+
+	// Kept a day first: marking walked is what triggers the re-cut that
+	// retires the route, and that completion's % walked is derived from its
+	// roster afterwards.
+	it('drops a retired turf’s roster a day after it retires', async () => {
+		const t0 = new Date('2026-09-28T12:00:00.000Z');
+		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, { now: t0 });
+		await client.execute(
+			`INSERT INTO van_turf_roster (map_route_id, person_hash, door_hash) VALUES (56456, x'01', x'02')`,
+		);
+		const empty: VanClient = { ...vanClientWith(585052), mapRegions: async () => [] };
+		const rosterRows = async () =>
+			Number((await client.execute('SELECT count(*) AS n FROM van_turf_roster')).rows[0]!.n);
+
+		await runCatalogSync(db, empty, MAPPINGS, { now: t0 });
+		expect(await rosterRows()).toBe(1);
+
+		await runCatalogSync(db, empty, MAPPINGS, { now: new Date(t0.getTime() + 25 * 3600 * 1000) });
+		expect(await rosterRows()).toBe(0);
 	});
 });

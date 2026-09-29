@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toTurfView, parseHull, mappableTurfs, type TurfRowInput } from './turf-view.js';
+import { toTurfView, parseHull, mappableTurfs, doorsLeft, type TurfRowInput } from './turf-view.js';
 import type { ClaimSnapshot } from './checkout.js';
 
 const NOW = new Date('2026-08-22T12:00:00.000Z');
@@ -181,6 +181,25 @@ describe('toTurfView — freshness and claimability', () => {
 		expect(toTurfView(row(), [], VOLUNTEER, NOW).refreshedMinutesAgo).toBe(360);
 	});
 
+	// Recomputes run even while the pull is failing, so their timestamp would
+	// call old data fresh; how far ContactHistory was read is the honest age.
+	it('ages a turf showing its count by the contact cursor, not the recompute', () => {
+		const counted = row({
+			savedListId: 900,
+			rosterSavedListId: 900,
+			uncontactedDoors: 5,
+			uncontactedDoorsAt: NOW.toISOString(),
+		});
+		const through = new Date(NOW.getTime() - 90 * 60 * 1000).toISOString();
+		expect(
+			toTurfView(counted, [], VOLUNTEER, NOW, { contactsThrough: through }).refreshedMinutesAgo,
+		).toBe(90);
+		// No count: still VAN's own refresh time.
+		expect(
+			toTurfView(row(), [], VOLUNTEER, NOW, { contactsThrough: through }).refreshedMinutesAgo,
+		).toBe(360);
+	});
+
 	it('reports null staleness when VAN never gave a refresh time', () => {
 		expect(
 			toTurfView(row({ lastRefreshedAt: null }), [], VOLUNTEER, NOW).refreshedMinutesAgo,
@@ -281,5 +300,25 @@ describe('parseHull', () => {
 		['a NaN point', '[{"lat":null,"lng":2}]'],
 	])('degrades to no shape for %s', (_label, input) => {
 		expect(parseHull(input)).toEqual([]);
+	});
+});
+
+describe('doorsLeft', () => {
+	const base = { doorCount: 40, uncontactedDoors: 12, savedListId: 900 };
+
+	it('uses the count when its roster is from the current saved list', () => {
+		expect(doorsLeft({ ...base, rosterSavedListId: 900 })).toBe(12);
+	});
+
+	// Between a re-cut and the next recompute, or after the feature is
+	// switched off, the stored count is not this turf's.
+	it("falls back to VAN's doorCount when the count is from another cut", () => {
+		expect(doorsLeft({ ...base, rosterSavedListId: 899 })).toBe(40);
+		expect(doorsLeft({ ...base, rosterSavedListId: null })).toBe(40);
+		expect(doorsLeft({ ...base, savedListId: null, rosterSavedListId: null })).toBe(40);
+	});
+
+	it("falls back to VAN's doorCount when there is no count", () => {
+		expect(doorsLeft({ ...base, uncontactedDoors: null, rosterSavedListId: 900 })).toBe(40);
 	});
 });

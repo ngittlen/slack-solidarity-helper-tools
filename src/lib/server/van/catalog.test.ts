@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
 	planCatalogSync,
+	vanTimestamp,
 	needsGeometry,
 	type CatalogClaim,
 	type CatalogFolder,
@@ -281,7 +282,7 @@ describe('planCatalogSync', () => {
 	describe('geometry', () => {
 		it('queues a turf that has never had a hull', () => {
 			const plan = planCatalogSync({ ...base, folders: [folder([region([route()])])] });
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900 }]);
+			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900, roster: false }]);
 		});
 
 		it('does not queue a turf whose route merely shrank from canvassing', () => {
@@ -304,7 +305,7 @@ describe('planCatalogSync', () => {
 				folders: [folder([region([route({ routeSize: 460 })])])],
 				existing: [existingRow({ hullSourceRouteSize: 400 })],
 			});
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900 }]);
+			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900, roster: false }]);
 			expect(plan.upserts[0]!.hullJson).toBeNull();
 			expect(plan.upserts[0]!.centroidLat).toBeNull();
 			expect(plan.upserts[0]!.hullSourceRouteSize).toBeNull();
@@ -316,7 +317,7 @@ describe('planCatalogSync', () => {
 				folders: [folder([region([route({ routeSize: 150 })])])],
 				existing: [existingRow({ hullSourceRouteSize: 400 })],
 			});
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900 }]);
+			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900, roster: false }]);
 			expect(plan.upserts[0]!.hullJson).toBeNull();
 		});
 
@@ -694,5 +695,80 @@ describe('needsGeometry', () => {
 	});
 	it('is true just past it', () => {
 		expect(needsGeometry({ hullJson: '[]', hullSourceRouteSize: 100, routeSize: 49 })).toBe(true);
+	});
+});
+
+describe('planCatalogSync — uncontacted doors', () => {
+	it('queues a hulled turf that has no roster, when rosters are on', () => {
+		const plan = planCatalogSync({
+			...base,
+			roster: true,
+			existing: [existingRow()],
+			folders: [folder([region([route()])])],
+		});
+		expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900, roster: true }]);
+	});
+
+	it('queues nothing for rosters when they are off', () => {
+		const plan = planCatalogSync({
+			...base,
+			existing: [existingRow()],
+			folders: [folder([region([route()])])],
+		});
+		expect(plan.geometryQueue).toEqual([]);
+	});
+
+	it('leaves a turf alone once its roster matches the saved list, and re-queues a re-cut', () => {
+		const current = planCatalogSync({
+			...base,
+			roster: true,
+			existing: [existingRow({ rosterSavedListId: 900 })],
+			folders: [folder([region([route()])])],
+		});
+		expect(current.geometryQueue).toEqual([]);
+
+		const recut = planCatalogSync({
+			...base,
+			roster: true,
+			existing: [existingRow({ rosterSavedListId: 900 })],
+			folders: [folder([region([route({ savedListId: 901 })])])],
+		});
+		expect(recut.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 901, roster: true }]);
+	});
+
+	// The upsert is `set: row`, so a key present here would be overwritten on
+	// every sync.
+	it('never writes the count or the roster marker', () => {
+		const plan = planCatalogSync({
+			...base,
+			existing: [existingRow({ uncontactedDoors: 12, rosterSavedListId: 900 })],
+			folders: [folder([region([route()])])],
+		});
+		const row = plan.upserts[0]!;
+		expect(row).not.toHaveProperty('uncontactedDoors');
+		expect(row).not.toHaveProperty('uncontactedDoorsAt');
+		expect(row).not.toHaveProperty('rosterSavedListId');
+	});
+
+	it('takes the cut date from the refresh, else the region’s creation', () => {
+		const created = planCatalogSync({
+			...base,
+			folders: [folder([region([route()], { dateCreated: '2026-09-14T09:00:00Z' })])],
+		});
+		// VAN's clock is campaign-local wearing a Z; converted like every other.
+		expect(created.upserts[0]!.cutAt).toBe(vanTimestamp('2026-09-14T09:00:00Z'));
+
+		const refreshed = planCatalogSync({
+			...base,
+			folders: [
+				folder([
+					region([route()], {
+						dateCreated: '2026-09-14T09:00:00Z',
+						dateRefreshed: '2026-09-20T09:00:00Z',
+					}),
+				]),
+			],
+		});
+		expect(refreshed.upserts[0]!.cutAt).toBe(vanTimestamp('2026-09-20T09:00:00Z'));
 	});
 });

@@ -208,6 +208,17 @@ tr:hover td {
 	color: var(--color-success);
 }
 
+/* Under the badge rather than beside it: .col-what is shrink-to-fit, so a
+   sibling on the same line would widen the column for every row. */
+.reported-percent {
+	display: block;
+	margin-top: 4px;
+	font-size: var(--font-size-xs);
+	color: var(--color-text-muted);
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
+
 .badge-given-back {
 	background: color-mix(in srgb, var(--color-warning) 22%, transparent);
 	color: var(--color-warning);

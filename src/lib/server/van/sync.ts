@@ -12,14 +12,21 @@
 // we skipped — a partial sync is safe because retirement is scoped to the
 // folders actually fetched (see planCatalogSync).
 
-import { and, inArray, isNull, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 // Relative, not `$lib/...`: scripts/van-sync-once.ts runs this under tsx,
 // outside the Vite bundle, where the alias does not resolve.
 import { errMessage } from '../../err-message.js';
-import { vanGeometryQueue, vanTurfs, vanTurfCheckouts, vanSyncState } from '../schema.js';
+import {
+	vanGeometryQueue,
+	vanTurfs,
+	vanTurfCheckouts,
+	vanSyncState,
+	vanTurfRoster,
+} from '../schema.js';
 import { planCatalogSync, vanTimestamp, type CatalogFolder, type CatalogPlan } from './catalog.js';
 import { chunked } from './sql-chunk.js';
+import { RETIRED_ROSTER_KEEP_MS } from './contact-sync.js';
 import { VanError, type VanClient } from './client.js';
 import {
 	loadClaimsForExports,
@@ -89,6 +96,8 @@ export interface CatalogSyncOptions {
 	 *  WOULD have happened, so an operator can see the blast radius of a first
 	 *  run — particularly the retirements — before committing to it. */
 	dryRun?: boolean;
+	/** Queue turfs for a roster export too (see CatalogInput.roster). */
+	roster?: boolean;
 }
 
 /** Every printed list number this run's catalog could assign a turf: the
@@ -263,7 +272,15 @@ export async function runCatalogSync(
 	const claims = await loadClaimsForExports(db, now);
 
 	const existing = await db.select().from(vanTurfs);
-	const plan = planCatalogSync({ folders, printedLists, existing, minivanExports, claims, now });
+	const plan = planCatalogSync({
+		folders,
+		printedLists,
+		existing,
+		minivanExports,
+		claims,
+		roster: options.roster === true,
+		now,
+	});
 
 	const regionsRead = folders.flatMap((folder) =>
 		folder.regions.map((region) => ({
@@ -399,10 +416,32 @@ export async function runCatalogSync(
 			.where(inArray(vanGeometryQueue.mapRouteId, batch))
 			.returning({ mapRouteId: vanGeometryQueue.mapRouteId }),
 	);
+	// A retired route's people are a cut nobody can walk any more — but not
+	// straight away: a completion on it still derives its % walked from its
+	// count for RETIRED_ROSTER_KEEP_MS (see contact-sync.ts), and marking walked
+	// is itself what asks VAN for the re-cut that retires it. So only routes
+	// retired longer ago than that; one retired on this run keeps its roster.
+	// Last in the batch, and not counted, so the result indexes above are
+	// unchanged.
+	const rosterCutoff = new Date(now.getTime() - RETIRED_ROSTER_KEEP_MS).toISOString();
+	const rosterExpired = existing
+		.filter(
+			(row) =>
+				row.retiredAt !== null && row.retiredAt < rosterCutoff && !unretired.has(row.mapRouteId),
+		)
+		.map((row) => row.mapRouteId);
+	const rosterStatements = chunked(rosterExpired).map((batch) =>
+		db.delete(vanTurfRoster).where(inArray(vanTurfRoster.mapRouteId, batch)),
+	);
 
 	let claimsReleased = 0;
 	let geometryQueueDropped = 0;
-	const statements = [...retireStatements, ...releaseStatements, ...dropStatements];
+	const statements = [
+		...retireStatements,
+		...releaseStatements,
+		...dropStatements,
+		...rosterStatements,
+	];
 	if (statements.length > 0) {
 		const results = (await db.batch(
 			statements as unknown as Parameters<typeof db.batch>[0],
@@ -410,7 +449,8 @@ export async function runCatalogSync(
 		const releaseFrom = retireStatements.length;
 		const dropFrom = releaseFrom + releaseStatements.length;
 		for (let i = releaseFrom; i < dropFrom; i++) claimsReleased += results[i]?.length ?? 0;
-		for (let i = dropFrom; i < results.length; i++) geometryQueueDropped += results[i]?.length ?? 0;
+		const dropTo = dropFrom + dropStatements.length;
+		for (let i = dropFrom; i < dropTo; i++) geometryQueueDropped += results[i]?.length ?? 0;
 	}
 
 	// plan.unretirements needs no write of its own — the upsert above already
@@ -443,6 +483,14 @@ export async function runCatalogSync(
 	//
 	// A settled row therefore stays settled until VAN re-cuts the turf, and
 	// clearing a `failed` row by hand is the deliberate way to force a retry.
+	//
+	// The one other re-arm: a `done` row whose turf has no roster for its
+	// current saved list (the uncontacted-door count's first pass, or a turf
+	// hulled before rosters existed). Only `done` — a `failed` row stays failed
+	// for the reason above, and a pending or running one will build the roster
+	// anyway. Once the worker writes the roster the planner stops asking. And
+	// only a `done` row with no error: one that says why no roster could be
+	// built (the wrong export type) would fail the same way every run.
 	// Batched for the same reason as the upserts above: one queue row per turf
 	// is another round trip per turf, on the same hot path.
 	for (const items of chunked(plan.geometryQueue, WRITE_BATCH_SIZE)) {
@@ -470,7 +518,12 @@ export async function runCatalogSync(
 					},
 					// Refers to the EXISTING row, so this is "the stored saved list
 					// differs from the one VAN just reported".
-					where: ne(vanGeometryQueue.savedListId, item.savedListId),
+					where: item.roster
+						? or(
+								ne(vanGeometryQueue.savedListId, item.savedListId),
+								and(eq(vanGeometryQueue.status, 'done'), isNull(vanGeometryQueue.lastError)),
+							)
+						: ne(vanGeometryQueue.savedListId, item.savedListId),
 				}),
 		);
 		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);

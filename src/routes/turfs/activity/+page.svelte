@@ -119,6 +119,9 @@
 									</td>
 									<td class="col-what">
 										<span class="badge badge-{event.kind}">{activityLabel(event.kind)}</span>
+										{#if event.kind === 'completed' && event.reportedPercent !== null}
+											<span class="reported-percent">{event.reportedPercent}% done</span>
+										{/if}
 									</td>
 									<td>
 										<span class="turf-name">{event.turfName}</span>

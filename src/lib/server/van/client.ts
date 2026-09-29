@@ -19,6 +19,9 @@
 // outside the Vite bundle, where the alias does not resolve.
 import { errMessage } from '../../err-message.js';
 import type {
+	VanChangedEntityExportJob,
+	VanChangeType,
+	VanContactType,
 	VanExportJob,
 	VanExportJobType,
 	VanFolder,
@@ -145,6 +148,20 @@ export interface VanClient {
 		webhookUrl: string;
 	}): Promise<VanExportJob>;
 	exportJob(exportJobId: number): Promise<VanExportJob>;
+	/** Start a changed-entity export of one resource over a UTC window. Only
+	 *  `ContactHistory` is granted to this key. `requestedFields` is ignored by
+	 *  VAN — every column comes back — so it is not offered. */
+	createChangedEntityExportJob(input: {
+		resourceType: string;
+		dateChangedFrom: string;
+		dateChangedTo: string;
+	}): Promise<VanChangedEntityExportJob>;
+	changedEntityExportJob(exportJobId: number): Promise<VanChangedEntityExportJob>;
+	/** What each `ChangeTypeId` in a changed-entity file means for one resource
+	 *  — which is how a deletion is told from a create or update. */
+	changeTypes(resourceType: string): Promise<VanChangeType[]>;
+	/** Every contact type, with the channel each belongs to. */
+	contactTypes(): Promise<VanContactType[]>;
 	/** Escape hatch for one-off reads (scripts/van-check.ts). */
 	get<T>(path: string): Promise<T>;
 }
@@ -442,6 +459,27 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 		},
 
 		exportJob: (exportJobId) => getJson<VanExportJob>(`/exportJobs/${exportJobId}`),
+
+		async createChangedEntityExportJob({ resourceType, dateChangedFrom, dateChangedTo }) {
+			const res = await request('/changedEntityExportJobs', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ resourceType, dateChangedFrom, dateChangedTo }),
+			});
+			return (await res.json()) as VanChangedEntityExportJob;
+		},
+
+		changedEntityExportJob: (exportJobId) =>
+			getJson<VanChangedEntityExportJob>(`/changedEntityExportJobs/${exportJobId}`),
+
+		changeTypes: async (resourceType) =>
+			(await getJson<VanChangeType[]>(
+				`/changedEntityExportJobs/changeTypes/${encodeURIComponent(resourceType)}`,
+			)) ?? [],
+
+		// A bare array, not a page envelope.
+		contactTypes: async () =>
+			(await getJson<VanContactType[]>('/canvassResponses/contactTypes')) ?? [],
 
 		get: <T>(path: string) => getJson<T>(path),
 	};

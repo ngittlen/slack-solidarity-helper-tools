@@ -255,8 +255,11 @@ function handleTurfAction(
 	// The value round-tripped through a client, so it is untrusted input.
 	// decodeTurfAction validates it; turf-slack re-checks the chapter against
 	// settings regardless.
-	// A button carries `value`; the "Mark it done" dropdown carries the chosen
-	// option's value instead, with the percentage packed into it.
+	// Buttons carry `value`. A `selected_option` is the retired "Mark it done —
+	// MiniVAN %" dropdown on a message posted before the synced-MiniVAN
+	// confirm existed; it is decoded so the mine list can be redrawn with the
+	// new button, but never completes anything.
+	const fromOldDropdown = action.value === undefined && action.selected_option !== undefined;
 	const decoded = decodeTurfAction(action.value ?? action.selected_option?.value);
 
 	if (!slackUserId || !decoded) {
@@ -287,12 +290,10 @@ function handleTurfAction(
 					? await releaseFromSlack(db, { ...ctx, mapRouteId: routeId })
 					: action.action_id === TURF_RELEASE_MINE_ACTION_ID && routeId !== undefined
 						? await releaseMineFromSlack(db, { ...ctx, mapRouteId: routeId })
-						: action.action_id === TURF_COMPLETE_ACTION_ID && routeId !== undefined
-							? await completeFromSlack(db, {
-									...ctx,
-									mapRouteId: routeId,
-									percent: decoded.percent ?? null,
-								})
+						: action.action_id === TURF_COMPLETE_ACTION_ID &&
+							  routeId !== undefined &&
+							  !fromOldDropdown
+							? await completeFromSlack(db, { ...ctx, mapRouteId: routeId })
 							: // A mine-list button that lost its turf id redraws the mine
 								// list, not the nearby one — landing somewhere unrelated to
 								// where the tap happened is its own small betrayal.

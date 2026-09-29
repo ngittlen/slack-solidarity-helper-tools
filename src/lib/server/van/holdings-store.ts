@@ -15,11 +15,17 @@
 // to see all of. If a campaign ever has more live turf than fits a page, that
 // is worth knowing rather than truncating.
 
-import { and, desc, eq, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import type { CompletionRow, HoldingRow } from '../../van/turf-holdings.js';
 import { visibleToChapter } from './chapter-visibility.js';
+
+/** `doorsLeft` (turf-view.ts) in SQL: the uncontacted count when there is one
+ *  built from the turf's current saved list, VAN's doorCount otherwise. */
+const doorsLeftColumn = sql<number>`case when ${vanTurfs.rosterSavedListId} = ${vanTurfs.savedListId}
+	then coalesce(${vanTurfs.uncontactedDoors}, ${vanTurfs.doorCount})
+	else ${vanTurfs.doorCount} end`;
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -66,7 +72,7 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
-			doorCount: vanTurfs.doorCount,
+			doorCount: doorsLeftColumn,
 			// Not selected, deliberately: printedListNumber is the credential
 			// issued to the holder, and an organizer looking at a board is not the
 			// holder.
@@ -126,7 +132,7 @@ export async function loadHoldingsFor(db: Db, slackUserId: string): Promise<MyHo
 			turfName: vanTurfs.name,
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
-			doorCount: vanTurfs.doorCount,
+			doorCount: doorsLeftColumn,
 		})
 		.from(vanTurfCheckouts)
 		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))

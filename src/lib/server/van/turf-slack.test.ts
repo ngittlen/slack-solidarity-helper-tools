@@ -651,8 +651,7 @@ describe('/turfs-mine actions', () => {
 		],
 		[
 			'mark it done',
-			(user: string) =>
-				completeFromSlack(makeDb(), { slackUserId: user, mapRouteId: 100, percent: 100 }),
+			(user: string) => completeFromSlack(makeDb(), { slackUserId: user, mapRouteId: 100 }),
 		],
 	])('refuses a blocked user before %s writes anything', async (_label, act) => {
 		const user = freshUser();
@@ -668,7 +667,6 @@ describe('/turfs-mine actions', () => {
 		const msg = await completeFromSlack(makeDb(), {
 			slackUserId: user,
 			mapRouteId: 100,
-			percent: 100,
 		});
 		expect(mockEndClaim).not.toHaveBeenCalled();
 		expect(msg.text).toContain('a lot of requests');

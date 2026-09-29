@@ -10,7 +10,15 @@
  *
  * It takes VAN_SYNC_LOCK, the same lock the endpoint takes. That is the whole
  * safety story: without it a cron run could pick up the same queue rows this is
- * working on and submit a second export job for each.
+ * working on and submit a second export job for each. The lock is taken per
+ * one-minute slice, not for the whole run: the first roster pass is hours of
+ * exports, and holding the lock that long would make every scheduled sync skip
+ * — no expired claims swept, no warnings sent. A slice that finds the lock
+ * taken waits for the sync to finish and carries on.
+ *
+ * With VAN_ID_HASH_SECRET set, each export also builds the turf's roster for
+ * the uncontacted-door count; `npm run van:sync` first queues every turf that
+ * lacks one.
  *
  * Usage (from project root):
  *   npm run van:drain                      # 30 minutes, 2 at a time
@@ -23,7 +31,7 @@
  *
  * Required env vars:
  *   VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE, VAN_EXPORT_JOB_TYPE_ID,
- *   APP_URL, INTERNAL_CRON_SECRET,
+ *   APP_URL, INTERNAL_CRON_SECRET, VAN_ID_HASH_SECRET (optional: rosters),
  *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN (unless the URL starts with file:)
  */
 
@@ -35,6 +43,8 @@ import { runGeometryQueue } from '../src/lib/server/van/geometry-worker.js';
 import { VAN_SYNC_LOCK } from '../src/lib/server/van/locks.js';
 import { acquireSyncLock, releaseSyncLock } from '../src/lib/server/sync-lock.js';
 import { exportCallbackUrl } from '../src/lib/server/van/webhook-token.js';
+import { createPersonHasher } from '../src/lib/server/van/person-hash.js';
+import { rosterProgress } from '../src/lib/server/van/contact-sync.js';
 import { loadGeometryProgress } from '../src/lib/server/van/geometry-progress-store.js';
 import { percentShaped } from '../src/lib/van/geometry-progress.js';
 
@@ -60,6 +70,8 @@ const rawMode = (process.env.VAN_DATABASE_MODE ?? '').trim();
 const exportJobTypeId = Number(process.env.VAN_EXPORT_JOB_TYPE_ID ?? '');
 const appUrl = process.env.APP_URL ?? '';
 const cronSecret = process.env.INTERNAL_CRON_SECRET ?? '';
+const hashSecret = process.env.VAN_ID_HASH_SECRET ?? '';
+const roster = hashSecret ? createPersonHasher(hashSecret) : null;
 
 function fail(message: string): never {
 	console.error(message);
@@ -84,9 +96,10 @@ const client = createVanClient({
 	databaseMode: Number(rawMode) as VanDatabaseMode,
 });
 
-/** Lock TTL covers the whole run plus a slice, so a cron tick cannot start
- *  while this is working; released in `finally` either way. */
-const LOCK_TTL_MS = MINUTES * 60 * 1000 + SLICE_MS;
+/** Lock TTL for one slice, with room for the slice to overrun a little. */
+const LOCK_TTL_MS = 3 * SLICE_MS;
+/** How long to wait for a scheduled sync to let go of the lock. */
+const LOCK_RETRY_MS = 15 * 1000;
 
 const totals = {
 	attempted: 0,
@@ -97,11 +110,14 @@ const totals = {
 	retried: 0,
 	deadLettered: 0,
 	hullsTooLarge: 0,
+	rostersStored: 0,
+	rostersUnavailable: 0,
 };
 
 async function main(): Promise<void> {
 	console.log(`\nGeometry drain — ${dbConfig.url}`);
 	console.log(`VAN app: ${appName}, mode ${rawMode}, export job type ${exportJobTypeId}`);
+	console.log(roster ? 'Rosters: on' : 'Rosters: off (VAN_ID_HASH_SECRET unset)');
 	console.log(
 		`Budget: ${MINUTES} min · ${CONCURRENCY} at a time${MAX_ITEMS ? ` · max ${MAX_ITEMS} item(s)` : ''}\n`,
 	);
@@ -113,16 +129,6 @@ async function main(): Promise<void> {
 	if (before.pending === 0) {
 		console.log('  Nothing queued. Run npm run van:sync first if turf is missing shapes.\n');
 		return;
-	}
-
-	const token = await acquireSyncLock(db, VAN_SYNC_LOCK, LOCK_TTL_MS);
-	if (!token) {
-		console.error(
-			'  A sync already holds the lock. Wait for it to finish (the scheduled run\n' +
-				'  takes a few minutes) and try again — two drains would submit duplicate\n' +
-				'  export jobs for the same turf.',
-		);
-		process.exit(1);
 	}
 
 	// Ctrl-C releases the lock rather than leaving it to expire; whatever row is
@@ -141,15 +147,29 @@ async function main(): Promise<void> {
 		let slice = 0;
 		while (!stopping && Date.now() < deadline) {
 			const remaining = deadline - Date.now();
-			const result = await runGeometryQueue(db, client, {
-				exportJobTypeId,
-				webhookUrlFor: (mapRouteId) => exportCallbackUrl(appUrl, cronSecret, mapRouteId),
-				timeBudgetMs: Math.min(SLICE_MS, remaining),
-				concurrency: CONCURRENCY,
-				maxItems: MAX_ITEMS,
-				// No Slack alert: an operator is watching this run, and the
-				// channel does not need a line per dead letter from a backfill.
-			});
+			const token = await acquireSyncLock(db, VAN_SYNC_LOCK, LOCK_TTL_MS);
+			if (!token) {
+				console.log('  … a scheduled sync holds the lock; waiting for it');
+				await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
+				continue;
+			}
+			let result: Awaited<ReturnType<typeof runGeometryQueue>>;
+			try {
+				result = await runGeometryQueue(db, client, {
+					exportJobTypeId,
+					webhookUrlFor: (mapRouteId) => exportCallbackUrl(appUrl, cronSecret, mapRouteId),
+					timeBudgetMs: Math.min(SLICE_MS, remaining),
+					concurrency: CONCURRENCY,
+					maxItems: MAX_ITEMS,
+					roster,
+					// No Slack alert: an operator is watching this run, and the
+					// channel does not need a line per dead letter from a backfill.
+				});
+			} finally {
+				await releaseSyncLock(db, VAN_SYNC_LOCK, token);
+			}
+			totals.rostersStored += result.rostersStored;
+			totals.rostersUnavailable += result.rostersUnavailable;
 
 			totals.attempted += result.attempted;
 			totals.hullsStored += result.hullsStored;
@@ -165,7 +185,8 @@ async function main(): Promise<void> {
 			console.log(
 				`  [${String(slice).padStart(3)}] +${String(result.hullsStored).padStart(3)} hulls · ` +
 					`${percentShaped(progress)}% · ${progress.shaped}/${progress.eligible} shaped · ` +
-					`${progress.pending} left${result.deadLettered > 0 ? ` · ${result.deadLettered} dead-lettered` : ''}`,
+					`${progress.pending} left · +${result.rostersStored} rosters` +
+					`${result.deadLettered > 0 ? ` · ${result.deadLettered} dead-lettered` : ''}`,
 			);
 			for (const line of result.deadLetters) console.log(`        ${line}`);
 
@@ -175,7 +196,6 @@ async function main(): Promise<void> {
 			if (MAX_ITEMS) break;
 		}
 	} finally {
-		await releaseSyncLock(db, VAN_SYNC_LOCK, token);
 		process.off('SIGINT', onSignal);
 		process.off('SIGTERM', onSignal);
 	}
@@ -189,6 +209,12 @@ async function main(): Promise<void> {
 	console.log(`  geocoded by address ${totals.geocodedFromAddress}`);
 	console.log(`  retried             ${totals.retried}`);
 	console.log(`  dead-lettered       ${totals.deadLettered}`);
+	console.log(`  rosters built       ${totals.rostersStored}`);
+	if (totals.rostersUnavailable > 0) {
+		console.log(
+			`  no roster (no VanID) ${totals.rostersUnavailable}   (check VAN_EXPORT_JOB_TYPE_ID is type 5)`,
+		);
+	}
 	if (totals.hullsTooLarge > 0) {
 		console.log(`  implausibly large   ${totals.hullsTooLarge}   (stored, but worth a look)`);
 	}
@@ -196,6 +222,10 @@ async function main(): Promise<void> {
 		`\n  Now at ${percentShaped(after)}% — ${after.shaped}/${after.eligible} shaped, ` +
 			`${after.pending} queued, ${after.failed} failed.`,
 	);
+	if (roster) {
+		const rosters = await rosterProgress(db);
+		console.log(`  Rosters: ${rosters.rostered}/${rosters.live} live turfs.`);
+	}
 	console.log('  npm run van:geometry shows this any time.\n');
 }
 

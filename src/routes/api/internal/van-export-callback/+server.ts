@@ -4,7 +4,7 @@ import { db } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { acquireSyncLock, releaseSyncLock } from '$lib/server/sync-lock.js';
 import { alertFor } from '$lib/server/slack.js';
-import { vanClient, vanExportJobTypeId } from '$lib/server/van-env.js';
+import { vanClient, vanExportJobTypeId, vanPersonHasher } from '$lib/server/van-env.js';
 import { runGeometryQueue } from '$lib/server/van/geometry-worker.js';
 import { VAN_SYNC_LOCK } from '$lib/server/van/locks.js';
 import { exportCallbackUrl, verifyWebhookToken } from '$lib/server/van/webhook-token.js';
@@ -84,6 +84,7 @@ export const POST: RequestHandler = async ({ url, request }) => {
 			webhookUrlFor: (id) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, id),
 			timeBudgetMs: BUDGET_MS,
 			alert: alertFor('[van]', slackTurfChannelId),
+			roster: vanPersonHasher(),
 		});
 		console.log(`[van] export callback (job ${String(exportJobId)}):`, {
 			hullsStored: result.hullsStored,

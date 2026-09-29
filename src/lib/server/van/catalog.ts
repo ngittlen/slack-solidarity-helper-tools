@@ -31,6 +31,11 @@ export interface CatalogInput {
 	 *  export inside one of these is our volunteer loading the list, not the
 	 *  turf being handed out elsewhere. */
 	claims?: CatalogClaim[];
+	/** Also queue turfs whose van_turf_roster is missing or from an older saved
+	 *  list. Off unless VAN_ID_HASH_SECRET is configured: with nothing able to
+	 *  build a roster, queuing for one would re-submit the same export every
+	 *  sync, forever. */
+	roster?: boolean;
 	now: Date;
 }
 
@@ -52,8 +57,10 @@ export interface CatalogPlan {
 	/** mapRouteIds whose `retiredAt` should be cleared — a route that vanished
 	 *  and came back (an organizer un-archiving a folder, most often). */
 	unretirements: number[];
-	/** Turfs needing hull geometry: no hull, or one the route outgrew. */
-	geometryQueue: Array<{ mapRouteId: number; savedListId: number }>;
+	/** Turfs needing an export: no hull, one the route outgrew, or (with
+	 *  `roster` on) no roster for the current saved list. `roster` marks the
+	 *  last case, which is what lets the sync re-arm a finished queue row. */
+	geometryQueue: Array<{ mapRouteId: number; savedListId: number; roster: boolean }>;
 	/** Claims whose list was just seen loaded in MiniVAN, to stamp
 	 *  `loadedInMinivanAt` on. Only claims not already stamped. */
 	claimsLoaded: Array<{ checkoutId: number; loadedAt: string }>;
@@ -342,7 +349,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 	const missingListNumbers: string[] = [];
 	const listNumberDisagreements: string[] = [];
 	const unretirements: number[] = [];
-	const geometryQueue: Array<{ mapRouteId: number; savedListId: number }> = [];
+	const geometryQueue: CatalogPlan['geometryQueue'] = [];
 	const seen = new Set<number>();
 	const syncedFolderIds = new Set(folders.map((f) => f.folderId));
 
@@ -432,6 +439,14 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 					// rather than when we last asked for them. Converted from VAN's
 					// local clock; see vanTimestamp.
 					lastRefreshedAt: vanTimestamp(region.dateRefreshed) ?? prior?.lastRefreshedAt ?? null,
+					// What "since the turf was cut" means for the uncontacted
+					// count. A refresh re-cuts the region, so it wins over the
+					// original creation date.
+					cutAt:
+						vanTimestamp(region.dateRefreshed) ??
+						vanTimestamp(region.dateCreated) ??
+						prior?.cutAt ??
+						null,
 					retiredAt: null,
 				};
 				upserts.push(row);
@@ -443,8 +458,13 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 					hullSourceRouteSize: row.hullSourceRouteSize ?? null,
 					routeSize,
 				});
-				if (route.savedListId && wantsGeometry) {
-					geometryQueue.push({ mapRouteId: route.mapRouteId, savedListId: route.savedListId });
+				const wantsRoster = input.roster === true && prior?.rosterSavedListId !== route.savedListId;
+				if (route.savedListId && (wantsGeometry || wantsRoster)) {
+					geometryQueue.push({
+						mapRouteId: route.mapRouteId,
+						savedListId: route.savedListId,
+						roster: wantsRoster,
+					});
 				}
 				// Collected rather than warned per-turf: a folder cut but not yet
 				// printed would otherwise post one Slack line per route.

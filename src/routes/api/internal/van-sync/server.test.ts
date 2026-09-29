@@ -19,6 +19,8 @@ const mockRefreshSweep = vi.hoisted(() => vi.fn());
 const mockDoorDeltas = vi.hoisted(() => vi.fn());
 const mockDoorsHealth = vi.hoisted(() => vi.fn());
 const mockRunPacketTracker = vi.hoisted(() => vi.fn());
+const mockRunContactStage = vi.hoisted(() => vi.fn());
+const mockHasher = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
 // On in most tests so the sweep's own behaviour is exercised; the default-off
 // case has its own test below.
@@ -48,7 +50,9 @@ vi.mock('$lib/server/sync-lock.js', () => ({
 vi.mock('$lib/server/van-env.js', () => ({
 	vanClient: mockVanClient,
 	vanExportJobTypeId: mockExportJobTypeId,
+	vanPersonHasher: mockHasher,
 }));
+vi.mock('$lib/server/van/contact-live.js', () => ({ runContactStage: mockRunContactStage }));
 vi.mock('$lib/server/van/geometry-worker.js', () => ({
 	runGeometryQueue: mockRunGeometryQueue,
 }));
@@ -163,6 +167,8 @@ describe('POST /api/internal/van-sync', () => {
 		mockDrift.mockResolvedValue(driftResult);
 		mockListExpiry.mockResolvedValue({ announced: 0, failed: false, skipped: 'nothing-new' });
 		mockRunPacketTracker.mockResolvedValue(sheetLogResult);
+		mockHasher.mockReturnValue(null);
+		mockRunContactStage.mockResolvedValue(null);
 	});
 
 	it('returns 401 for a wrong key', async () => {
@@ -250,6 +256,7 @@ describe('POST /api/internal/van-sync', () => {
 			doorsWarning: null,
 			refresh: refreshResult,
 			sheetLog: sheetLogResult,
+			contacts: { disabled: true },
 		});
 		expect(mockRunCatalogSync).toHaveBeenCalledWith(
 			{},
@@ -257,7 +264,7 @@ describe('POST /api/internal/van-sync', () => {
 			[{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] }],
 			// The catalog is capped below the workflow's `curl --max-time 300`
 			// so geometry has room to run inside the same request.
-			{ timeBudgetMs: 3 * 60 * 1000 },
+			{ timeBudgetMs: 3 * 60 * 1000, roster: false },
 		);
 		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
 	});
@@ -501,6 +508,43 @@ describe('POST /api/internal/van-sync', () => {
 		expect(res.status).toBe(500);
 		expect(await res.json()).toEqual({ error: 'VAN /folders returned 500' });
 		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+	});
+
+	describe('uncontacted doors', () => {
+		it('queues roster exports only when the hash secret is configured', async () => {
+			mockHasher.mockReturnValue({ person: () => Buffer.alloc(16), door: () => Buffer.alloc(16) });
+			await POST(event());
+
+			expect(mockRunCatalogSync.mock.calls[0]![3]).toMatchObject({ roster: true });
+			expect(mockRunGeometryQueue.mock.calls[0]![2].roster).not.toBeNull();
+		});
+
+		it('recomputes every turf after the catalog and before geometry', async () => {
+			await POST(event());
+
+			expect(mockRunContactStage).toHaveBeenCalledOnce();
+			const [, options] = mockRunContactStage.mock.calls[0]!;
+			expect(options.mapRouteIds).toBeUndefined();
+			const stage = mockRunContactStage.mock.invocationCallOrder[0]!;
+			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(stage);
+			expect(stage).toBeLessThan(mockRunGeometryQueue.mock.invocationCallOrder[0]!);
+		});
+
+		it('reports what it did, or that it is off', async () => {
+			expect((await (await POST(event())).json()).contacts).toEqual({ disabled: true });
+
+			mockRunContactStage.mockResolvedValue({ windowsApplied: 2, turfsRecomputed: 9 });
+			expect((await (await POST(event())).json()).contacts).toMatchObject({ windowsApplied: 2 });
+		});
+
+		// The counts are an overlay on doorCount; the catalog is already written.
+		it('never fails the sync', async () => {
+			mockRunContactStage.mockRejectedValue(new Error('turso hiccup'));
+			const res = await POST(event());
+
+			expect(res.status).toBe(200);
+			expect(mockRunGeometryQueue).toHaveBeenCalled();
+		});
 	});
 
 	describe('the Packet Tracker', () => {

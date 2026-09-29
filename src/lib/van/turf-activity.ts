@@ -44,6 +44,10 @@ export interface ActivityRow {
 	/** Doors that left the turf between claim and the post-completion refresh.
 	 *  Null until Story 5.6 fills it in; rendered only when present. */
 	confirmedDoorDelta: number | null;
+	/** What MiniVAN showed as done, 0-100, when the volunteer marked the turf
+	 *  walked. Null on claims that have not completed and on rows from before
+	 *  it was asked. */
+	reportedPercent: number | null;
 }
 
 export interface ActivityEvent {
@@ -62,6 +66,7 @@ export interface ActivityEvent {
 	slackUserId: string;
 	slackUserName: string;
 	confirmedDoorDelta: number | null;
+	reportedPercent: number | null;
 }
 
 /**
@@ -169,6 +174,7 @@ export function activityEvents(
 			slackUserId: row.slackUserId,
 			slackUserName: row.slackUserName,
 			confirmedDoorDelta: row.confirmedDoorDelta,
+			reportedPercent: row.reportedPercent,
 		};
 
 		if (inRange(row.claimedAt, range)) {

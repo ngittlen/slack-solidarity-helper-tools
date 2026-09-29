@@ -23,6 +23,7 @@ vi.mock('$lib/server/sync-lock.js', () => ({
 vi.mock('$lib/server/van-env.js', () => ({
 	vanClient: mockVanClient,
 	vanExportJobTypeId: mockExportJobTypeId,
+	vanPersonHasher: () => null,
 }));
 vi.mock('$lib/server/van/geometry-worker.js', () => ({
 	runGeometryQueue: mockRunGeometryQueue,

@@ -18,7 +18,7 @@
 // cutover.
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { and, eq, gte, isNotNull, min } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, min, sql } from 'drizzle-orm';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { campaignDayKey, campaignWeekStart } from '../../campaign-time.js';
 import { DEFAULT_RANKING_ALPHA } from '../../growth-ranking.js';
@@ -90,7 +90,11 @@ export async function loadClearedRows(
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			completedAt: vanTurfCheckouts.completedAt,
-			doorsCleared: vanTurfCheckouts.confirmedDoorDelta,
+			// Doors this volunteer knocked, from ContactHistory; VAN's
+			// before/after delta for completions with no roster to count on.
+			doorsCleared: sql<
+				number | null
+			>`coalesce(${vanTurfCheckouts.doorsKnocked}, ${vanTurfCheckouts.confirmedDoorDelta})`,
 		})
 		.from(vanTurfCheckouts)
 		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))

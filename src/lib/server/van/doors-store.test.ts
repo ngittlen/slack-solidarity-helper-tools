@@ -45,12 +45,13 @@ async function checkout(over: {
 	completedAt?: string | null;
 	releasedAt?: string | null;
 	doors?: number | null;
+	knocked?: number | null;
 }) {
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
 		        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
-		         completed_at, released_at, confirmed_door_delta)
-		      VALUES (?, ?, ?, '2026-09-01T12:00:00.000Z', '2026-09-30T12:00:00.000Z', ?, ?, ?)`,
+		         completed_at, released_at, confirmed_door_delta, doors_knocked)
+		      VALUES (?, ?, ?, '2026-09-01T12:00:00.000Z', '2026-09-30T12:00:00.000Z', ?, ?, ?, ?)`,
 		args: [
 			over.mapRouteId ?? 100,
 			over.slackUserId ?? 'U1',
@@ -58,6 +59,7 @@ async function checkout(over: {
 			over.completedAt ?? null,
 			over.releasedAt ?? null,
 			over.doors ?? null,
+			over.knocked ?? null,
 		],
 	});
 }
@@ -104,6 +106,17 @@ describe('loadClearedRows', () => {
 
 		const [row] = await loadClearedRows(db);
 		expect(row.doorsCleared).toBeNull();
+	});
+
+	// Doors knocked (ContactHistory) wins; VAN's delta covers completions on
+	// turf with no roster to count against.
+	it('counts doors knocked, falling back to doors cleared', async () => {
+		await turf();
+		await checkout({ completedAt: '2026-09-09T18:00:00.000Z', doors: 5, knocked: 42 });
+		await checkout({ completedAt: '2026-09-09T19:00:00.000Z', doors: 7, knocked: null });
+
+		const rows = await loadClearedRows(db);
+		expect(rows.map((r) => r.doorsCleared)).toEqual([42, 7]);
 	});
 
 	it('drops chapters the report excludes', async () => {

@@ -11,3 +11,13 @@
  * it otherwise has nothing to do with, to learn a string.
  */
 export const VAN_SYNC_LOCK = 'van-catalog-sync';
+
+/**
+ * The ContactHistory pull and uncontacted-door recompute (contact-sync.ts).
+ *
+ * Its own name rather than VAN_SYNC_LOCK: it touches only its own cursor and
+ * the uncontacted columns, so a volunteer's completion nudge need not wait out
+ * a whole catalog sync — and a two-hour roster drain holding VAN_SYNC_LOCK
+ * must not stop the counts moving.
+ */
+export const VAN_CONTACT_LOCK = 'van-contact-sync';

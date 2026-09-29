@@ -6,7 +6,7 @@ import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
 import { turfAccess } from '$lib/van/access.js';
 import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from '$lib/server/van/packet-tracker-live.js';
-import { parseReportedPercent } from '$lib/van/checkout.js';
+import { nudgeContactCount } from '$lib/server/van/contact-live.js';
 import { recordRequest } from '$lib/van/request-budget.js';
 import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-store.js';
 
@@ -60,11 +60,11 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	}
 
 	let action: unknown;
-	// What MiniVAN shows as done — required when marking walked, and checked by
-	// endClaim rather than here so the Slack path shares the same rule.
-	let percent: unknown;
+	// "I synced MiniVAN" — required when marking walked, and checked by endClaim
+	// rather than here so the Slack path shares the same rule.
+	let synced: unknown;
 	try {
-		({ action, percent } = (await request.json()) as { action?: unknown; percent?: unknown });
+		({ action, synced } = (await request.json()) as { action?: unknown; synced?: unknown });
 	} catch {
 		return json({ error: 'Malformed request' }, { status: 400 });
 	}
@@ -104,10 +104,11 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		slackUserId: session.slackUserId,
 		now: new Date(now),
 		kind: action === 'complete' ? 'complete' : 'release',
-		reportedPercent: action === 'complete' ? parseReportedPercent(percent) : null,
+		syncedMinivan: action === 'complete' && synced === true,
 	});
 	if (!result.ok) return json({ error: result.message }, { status: result.status });
 	nudgePacketTracker(db, mapRouteId);
+	if (action === 'complete') nudgeContactCount(db, mapRouteId);
 	// Story 5.6 hangs off completion, and finishes elsewhere: `endClaim` records
 	// a refresh request for this turf's region, the sweep sends it, and once
 	// VAN's re-cut lands the door-delta check stamps `confirmedDoorDelta` and

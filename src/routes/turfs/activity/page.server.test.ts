@@ -51,6 +51,7 @@ function row(over: Record<string, unknown> = {}) {
 		completedAt: null,
 		releaseReason: null,
 		confirmedDoorDelta: null,
+		reportedPercent: null,
 		...over,
 	};
 }

@@ -147,6 +147,7 @@ export async function loadActivityRows(
 			completedAt: vanTurfCheckouts.completedAt,
 			releaseReason: vanTurfCheckouts.releaseReason,
 			confirmedDoorDelta: vanTurfCheckouts.confirmedDoorDelta,
+			reportedPercent: vanTurfCheckouts.reportedPercent,
 			// From the turf row. Note what is NOT selected: printedListNumber is
 			// the holder's credential and an admin is not the holder, so it never
 			// enters the payload in the first place.

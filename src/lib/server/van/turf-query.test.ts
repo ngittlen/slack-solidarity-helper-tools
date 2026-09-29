@@ -5,6 +5,9 @@ import { latestWalkReports } from './checkout-store.js';
 // Walk reports have their own tests on real SQLite (checkout-store.test.ts);
 // the stubbed db below answers only the select chains this module scripts.
 vi.mock('./checkout-store.js', () => ({ latestWalkReports: vi.fn(async () => new Map()) }));
+vi.mock('./contact-sync.js', () => ({
+	loadContactMarks: vi.fn(async () => ({ cursor: null, countedThrough: null })),
+}));
 
 function turfRow(over: Record<string, unknown> = {}) {
 	return {
@@ -66,7 +69,7 @@ describe('loadChapterTurfs', () => {
 	// offered again just because VAN's door count never moved.
 	it('carries the latest walk report onto the view, and blocks a walked-out turf', async () => {
 		vi.mocked(latestWalkReports).mockResolvedValueOnce(
-			new Map([[100, { percent: 100, at: '2026-09-23T18:00:00.000Z' }]]),
+			new Map([[100, { percent: 100, at: '2026-09-23T18:00:00.000Z', awaitingCount: false }]]),
 		);
 		const { db } = makeDb([[turfRow()], []]);
 		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
@@ -293,7 +296,7 @@ describe('loadChapterTurfs', () => {
 
 		it('leaves out turf walked to 100%', async () => {
 			vi.mocked(latestWalkReports).mockResolvedValueOnce(
-				new Map([[1, { percent: 100, at: '2026-09-23T18:00:00.000Z' }]]),
+				new Map([[1, { percent: 100, at: '2026-09-23T18:00:00.000Z', awaitingCount: false }]]),
 			);
 			const { db } = makeDb([[turfRow({ mapRouteId: 1 })], []]);
 			const result = await loadChapterTurfs(db, {

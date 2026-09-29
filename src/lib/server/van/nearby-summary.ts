@@ -34,7 +34,7 @@ import { chunked } from './sql-chunk.js';
 import { canClaim, isActive } from '../../van/checkout.js';
 import { latestWalkReports } from './checkout-store.js';
 import { haversineMeters, type LatLng } from '../../van/geometry.js';
-import { parseHull, turfSnapshot } from '../../van/turf-view.js';
+import { doorsLeft, parseHull, turfSnapshot } from '../../van/turf-view.js';
 import {
 	canvasserLevel,
 	coarsePoint,
@@ -113,7 +113,7 @@ export async function loadNearbySummary(
 	const available = nearby.filter(
 		(t) => canClaim(turfSnapshot(t, walkReports), claims, ANYONE, now, NO_CAP).ok,
 	);
-	const doors = available.reduce((sum, t) => sum + Math.max(0, t.doorCount), 0);
+	const doors = available.reduce((sum, t) => sum + Math.max(0, doorsLeft(t)), 0);
 
 	const cutoff = now.getTime() - RECENT_ACTIVITY_HOURS * 3600 * 1000;
 	const recent = (iso: string | null) => iso !== null && Date.parse(iso) >= cutoff;
@@ -134,7 +134,7 @@ export async function loadNearbySummary(
 		doors: doorsHeadline(doors, nearby.length > 0),
 		canvassers: canvasserLevel(people.size),
 		cells: densityGrid(
-			turfs.map((t) => ({ doors: t.doorCount, centre: t.centre, hull: parseHull(t.hullJson) })),
+			turfs.map((t) => ({ doors: doorsLeft(t), centre: t.centre, hull: parseHull(t.hullJson) })),
 			point,
 		),
 	};
