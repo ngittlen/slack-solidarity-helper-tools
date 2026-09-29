@@ -68,6 +68,13 @@ const MIN_SHEET_BUDGET_MS = 5 * 1000;
 // still frees the lock within a cadence rather than blocking until someone
 // notices.
 const LOCK_TTL_MS = 10 * 60 * 1000;
+// How long to wait for the lock before giving up on the catalog half. A roster
+// or geometry drain run from the command line holds it in one-minute slices
+// with a pause between them (scripts/van-geometry-drain.ts), so this outlasts
+// one slice. Counted against REQUEST_BUDGET_MS, which the catalog's own budget
+// leaves room for.
+const LOCK_WAIT_MS = 75 * 1000;
+const LOCK_POLL_MS = 2 * 1000;
 
 /**
  * Drain the geometry queue with whatever time the catalog left.
@@ -165,17 +172,37 @@ export const POST: RequestHandler = async ({ url }) => {
 	if (!secretMatches(url.searchParams.get('key'), INTERNAL_CRON_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
-	const token = await acquireSyncLock(db, VAN_SYNC_LOCK, LOCK_TTL_MS);
+	// Stamped before ANY work, the wait for the lock included. Taking it later
+	// would give the request `REQUEST_BUDGET_MS` on top of however long that
+	// took, which is precisely the overrun the budget exists to prevent.
+	const requestDeadline = Date.now() + REQUEST_BUDGET_MS;
+
+	let token = await acquireSyncLock(db, VAN_SYNC_LOCK, LOCK_TTL_MS);
+	const waitUntil = Date.now() + LOCK_WAIT_MS;
+	while (!token && Date.now() < waitUntil) {
+		await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
+		token = await acquireSyncLock(db, VAN_SYNC_LOCK, LOCK_TTL_MS);
+	}
 	if (!token) {
 		// Not an error: overlapping cron attempts are expected (the workflow
 		// fires staggered runs), and the second one has nothing to do.
-		return json({ skipped: 'another catalog sync is in progress' }, { status: 200 });
+		//
+		// The uncontacted-door counts still move. They take their own lock, so
+		// a drain holding this one for hours — as the first roster pass did,
+		// leaving every count frozen — cannot stop them.
+		let contacts: Awaited<ReturnType<typeof runContactStage>> = null;
+		try {
+			contacts = await runContactStage(db, {
+				timeBudgetMs: Math.min(CONTACT_BUDGET_MS, requestDeadline - Date.now()),
+			});
+		} catch (err) {
+			console.error('[van] contact sync failed:', err instanceof Error ? err.message : err);
+		}
+		return json(
+			{ skipped: 'another catalog sync is in progress', contacts: contacts ?? { disabled: true } },
+			{ status: 200 },
+		);
 	}
-
-	// Stamped before ANY work, housekeeping included. Taking it after the sweep
-	// would give the request `REQUEST_BUDGET_MS` on top of however long that took,
-	// which is precisely the overrun the budget exists to prevent.
-	const requestDeadline = Date.now() + REQUEST_BUDGET_MS;
 
 	try {
 		// Ledger housekeeping first, and genuinely independent of VAN — which is

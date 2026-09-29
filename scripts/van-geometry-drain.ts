@@ -18,7 +18,9 @@
  *
  * With VAN_ID_HASH_SECRET set, each export also builds the turf's roster for
  * the uncontacted-door count; `npm run van:sync` first queues every turf that
- * lacks one.
+ * lacks one. The run then ends by pulling VAN's ContactHistory up to now and
+ * recounting every turf — even when nothing was queued — so `van:sync` then
+ * `van:drain` leaves the doors-left numbers current.
  *
  * Usage (from project root):
  *   npm run van:drain                      # 30 minutes, 2 at a time
@@ -44,7 +46,8 @@ import { VAN_SYNC_LOCK } from '../src/lib/server/van/locks.js';
 import { acquireSyncLock, releaseSyncLock } from '../src/lib/server/sync-lock.js';
 import { exportCallbackUrl } from '../src/lib/server/van/webhook-token.js';
 import { createPersonHasher } from '../src/lib/server/van/person-hash.js';
-import { rosterProgress } from '../src/lib/server/van/contact-sync.js';
+import { rosterProgress, runContactSync } from '../src/lib/server/van/contact-sync.js';
+import { VAN_CONTACT_LOCK } from '../src/lib/server/van/locks.js';
 import { loadGeometryProgress } from '../src/lib/server/van/geometry-progress-store.js';
 import { percentShaped } from '../src/lib/van/geometry-progress.js';
 
@@ -98,6 +101,8 @@ const client = createVanClient({
 
 /** Lock TTL for one slice, with room for the slice to overrun a little. */
 const LOCK_TTL_MS = 3 * SLICE_MS;
+/** Pause after each slice, longer than the sync route's lock poll. */
+const SLICE_GAP_MS = 10 * 1000;
 /** How long to wait for a scheduled sync to let go of the lock. */
 const LOCK_RETRY_MS = 15 * 1000;
 
@@ -114,6 +119,52 @@ const totals = {
 	rostersUnavailable: 0,
 };
 
+/**
+ * Pull VAN's ContactHistory up to now and recompute every turf's uncontacted
+ * doors — what the scheduled sync does ~45 seconds at a time, done here in one
+ * sitting so that van:sync followed by van:drain leaves the counts current.
+ * Takes the contact pull's own lock, not VAN_SYNC_LOCK, per call.
+ */
+async function pullContacts(deadline: number, isStopping: () => boolean): Promise<void> {
+	if (!roster) return;
+	console.log('\nContacts — pulling VAN ContactHistory up to now');
+	// Always leave room for this, even if the drain used the whole budget.
+	const until = Math.max(deadline, Date.now() + 15 * 60 * 1000);
+	let windows = 0;
+	let contacts = 0;
+	while (!isStopping() && Date.now() < until) {
+		const token = await acquireSyncLock(db, VAN_CONTACT_LOCK, 3 * SLICE_MS);
+		if (!token) {
+			console.log('  … a scheduled sync is pulling contacts; waiting for it');
+			await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
+			continue;
+		}
+		let result: Awaited<ReturnType<typeof runContactSync>>;
+		try {
+			result = await runContactSync(db, client, {
+				hasher: roster,
+				timeBudgetMs: Math.min(SLICE_MS, until - Date.now()),
+			});
+		} finally {
+			await releaseSyncLock(db, VAN_CONTACT_LOCK, token);
+		}
+		windows += result.windowsApplied;
+		contacts += result.contactsRead;
+		console.log(
+			`  through ${result.cursor ?? '—'} · +${result.windowsApplied} day(s), ` +
+				`${result.contactsRead} contacts · ${result.turfsRecomputed} turfs recounted` +
+				(result.error ? ` · ${result.error}` : ''),
+		);
+		// Caught up: nothing applied, and no export job left waiting on VAN.
+		if (result.windowsApplied === 0 && !result.pending) {
+			if (result.error) console.log('  Stopped on the error above; the scheduled sync will retry.');
+			break;
+		}
+		if (result.pending) await new Promise((r) => setTimeout(r, 5_000));
+	}
+	console.log(`  ${windows} day window(s), ${contacts} in-person contact(s) read.`);
+}
+
 async function main(): Promise<void> {
 	console.log(`\nGeometry drain — ${dbConfig.url}`);
 	console.log(`VAN app: ${appName}, mode ${rawMode}, export job type ${exportJobTypeId}`);
@@ -127,7 +178,9 @@ async function main(): Promise<void> {
 		`  Starting at ${percentShaped(before)}% — ${before.shaped} shaped, ${before.pending} queued, ${before.failed} failed\n`,
 	);
 	if (before.pending === 0) {
-		console.log('  Nothing queued. Run npm run van:sync first if turf is missing shapes.\n');
+		console.log('  Nothing queued. Run npm run van:sync first if turf is missing shapes.');
+		await pullContacts(Date.now() + MINUTES * 60 * 1000, () => false);
+		console.log('');
 		return;
 	}
 
@@ -168,6 +221,11 @@ async function main(): Promise<void> {
 			} finally {
 				await releaseSyncLock(db, VAN_SYNC_LOCK, token);
 			}
+			// Let a scheduled sync in. It polls for the lock while this holds it,
+			// and without a pause the next slice re-takes the lock before the
+			// sync's next poll — every scheduled sync then skips for the whole
+			// drain, which is what froze the counts during the first roster pass.
+			if (!stopping) await new Promise((r) => setTimeout(r, SLICE_GAP_MS));
 			totals.rostersStored += result.rostersStored;
 			totals.rostersUnavailable += result.rostersUnavailable;
 
@@ -195,6 +253,7 @@ async function main(): Promise<void> {
 			if (result.attempted === 0 || progress.pending === 0) break;
 			if (MAX_ITEMS) break;
 		}
+		await pullContacts(deadline, () => stopping);
 	} finally {
 		process.off('SIGINT', onSignal);
 		process.off('SIGTERM', onSignal);

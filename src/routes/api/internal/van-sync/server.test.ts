@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { POST } from './+server.js';
 
 const mockRunCatalogSync = vi.hoisted(() => vi.fn());
@@ -459,13 +459,47 @@ describe('POST /api/internal/van-sync', () => {
 		expect(body).toMatchObject({ drift: { announced: 3, cleared: 1, failed: false } });
 	});
 
-	it('skips without error when another sync holds the lock', async () => {
-		mockAcquire.mockResolvedValue(null);
-		const res = await POST(event());
-		expect(res.status).toBe(200);
-		expect((await res.json()).skipped).toBeTruthy();
-		expect(mockRunCatalogSync).not.toHaveBeenCalled();
-		expect(mockRelease).not.toHaveBeenCalled();
+	describe('when another sync holds the lock', () => {
+		beforeEach(() => vi.useFakeTimers());
+		afterEach(() => vi.useRealTimers());
+
+		/** POST, letting the lock wait's polls elapse. */
+		async function postWaiting() {
+			const pending = POST(event());
+			await vi.advanceTimersByTimeAsync(80 * 1000);
+			return pending;
+		}
+
+		it('skips without error once the wait runs out', async () => {
+			mockAcquire.mockResolvedValue(null);
+			const res = await postWaiting();
+			expect(res.status).toBe(200);
+			expect((await res.json()).skipped).toBeTruthy();
+			expect(mockRunCatalogSync).not.toHaveBeenCalled();
+			expect(mockRelease).not.toHaveBeenCalled();
+		});
+
+		// A command-line drain lets go between slices; the sync gets in then
+		// rather than skipping every tick for the hours a drain runs.
+		it('waits for the lock and runs the sync when it frees', async () => {
+			mockAcquire
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce(null)
+				.mockResolvedValue('lock-token');
+			const res = await postWaiting();
+			expect(res.status).toBe(200);
+			expect(mockRunCatalogSync).toHaveBeenCalledOnce();
+			expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+		});
+
+		// The counts have their own lock; a drain must not freeze them.
+		it('still pulls contacts when it has to skip', async () => {
+			mockAcquire.mockResolvedValue(null);
+			mockRunContactStage.mockResolvedValue({ windowsApplied: 1 });
+			const body = await (await postWaiting()).json();
+			expect(mockRunContactStage).toHaveBeenCalledOnce();
+			expect(body.contacts).toMatchObject({ windowsApplied: 1 });
+		});
 	});
 
 	it('posts degraded-tier and warning notices to Slack', async () => {
