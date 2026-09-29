@@ -19,13 +19,12 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
+import { turfSnapshot } from '../../van/turf-view.js';
 import {
 	canClaim,
 	DEFAULT_MAX_CONCURRENT_CLAIMS,
-	parseReportedPercent,
 	type ClaimOptions,
 	type ClaimSnapshot,
-	type TurfSnapshot,
 } from '../../van/checkout.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -36,10 +35,11 @@ export type ClaimResult =
 
 export type ReleaseResult = { ok: true } | { ok: false; status: 400 | 404 | 409; message: string };
 
-/** What a volunteer last reported for a route: MiniVAN's percentage when they
- *  marked it walked, and when. */
+/** The last time a route was marked walked, and its % walked: typed from
+ *  MiniVAN on older rows, derived from the uncontacted count since (null until
+ *  contact-sync has derived it, and for good on a turf with no count). */
 export interface WalkReport {
-	percent: number;
+	percent: number | null;
 	at: string;
 }
 
@@ -65,14 +65,16 @@ export async function latestWalkReports(
 			.where(
 				and(
 					inArray(vanTurfCheckouts.mapRouteId, batch),
+					// Not filtered on reportedPercent: the latest completion is the
+					// report even before its % is known. Skipping it would surface an
+					// older completion's figure — a stale 100% that locks the turf.
 					isNotNull(vanTurfCheckouts.completedAt),
-					isNotNull(vanTurfCheckouts.reportedPercent),
 				),
 			)
 			.orderBy(desc(vanTurfCheckouts.completedAt));
 		for (const row of rows) {
 			// Newest first, so the first row per route is the one that counts.
-			if (!reports.has(row.mapRouteId) && row.percent !== null && row.at !== null) {
+			if (!reports.has(row.mapRouteId) && row.at !== null) {
 				reports.set(row.mapRouteId, { percent: row.percent, at: row.at });
 			}
 		}
@@ -145,14 +147,9 @@ export async function claimTurf(
 	const [row] = await db.select().from(vanTurfs).where(eq(vanTurfs.mapRouteId, mapRouteId));
 	if (!row) return { ok: false, status: 404, message: 'That turf no longer exists.' };
 
-	const snapshot: TurfSnapshot = {
-		mapRouteId: row.mapRouteId,
-		printedListNumber: row.printedListNumber,
-		retiredAt: row.retiredAt,
-		vanDistributedTo: row.vanDistributedTo ?? row.sheetAssignedTo,
-		doorCount: row.doorCount,
-		reportedPercent: (await latestWalkReports(db, [mapRouteId])).get(mapRouteId)?.percent ?? null,
-	};
+	// The same snapshot the page judged claimability from, so the server never
+	// refuses a turf the page offered (or hands out one it showed as done).
+	const snapshot = turfSnapshot(row, await latestWalkReports(db, [mapRouteId]));
 
 	const options = input.options ?? {};
 	const claims = await relevantClaims(db, mapRouteId, slackUserId);
@@ -293,9 +290,10 @@ export async function claimTurf(
  *  ledger; 'complete' stamps completedAt instead of releasedAt so the row
  *  records that the doors were actually knocked.
  *
- *  Marking walked REQUIRES `reportedPercent`, what MiniVAN shows as done: it
- *  is the only progress figure the app will ever have for this turf (see
- *  van_turf_checkouts.reportedPercent). Handing it back unwalked does not ask. */
+ *  Marking walked REQUIRES `syncedMinivan`: the volunteer saying they synced,
+ *  because the progress figure is now derived from VAN's ContactHistory
+ *  (contact-sync.ts stamps `reportedPercent` afterwards), and doors that never
+ *  left the phone would read as unwalked. Handing it back unwalked does not ask. */
 export async function endClaim(
 	db: Db,
 	input: {
@@ -303,22 +301,21 @@ export async function endClaim(
 		slackUserId: string;
 		now: Date;
 		kind: 'release' | 'complete';
-		/** 0-100. Required when `kind` is 'complete'; ignored otherwise. */
-		reportedPercent?: number | null;
+		/** Must be true when `kind` is 'complete'; ignored otherwise. */
+		syncedMinivan?: boolean;
 	},
 ): Promise<ReleaseResult> {
 	const { mapRouteId, slackUserId, now, kind } = input;
-	const reportedPercent = parseReportedPercent(input.reportedPercent);
-	if (kind === 'complete' && reportedPercent === null) {
+	if (kind === 'complete' && input.syncedMinivan !== true) {
 		return {
 			ok: false,
 			status: 400,
-			message: 'Enter the % MiniVAN shows as done for this turf (0 to 100).',
+			message: 'Sync MiniVAN first, then tick "I synced MiniVAN".',
 		};
 	}
 	const stamp =
 		kind === 'complete'
-			? { completedAt: now.toISOString(), reportedPercent }
+			? { completedAt: now.toISOString() }
 			: { releasedAt: now.toISOString(), releaseReason: 'volunteer' as const };
 
 	// Scoped to this user's own active claim, so one volunteer cannot release
@@ -368,10 +365,7 @@ export async function endClaim(
 		}
 	}
 
-	console.log(
-		`[van] ${kind}: user=${slackUserId} route=${mapRouteId}` +
-			(kind === 'complete' ? ` reported=${reportedPercent}%` : ''),
-	);
+	console.log(`[van] ${kind}: user=${slackUserId} route=${mapRouteId}`);
 	return { ok: true };
 }
 

@@ -12,8 +12,15 @@
 // to a chapter to be servable at all (see plan.md §3), so an env var listing
 // folders would be a second, conflicting source of truth.
 
-import { VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE, VAN_EXPORT_JOB_TYPE_ID } from './env.js';
+import {
+	VAN_APP_NAME,
+	VAN_API_KEY,
+	VAN_DATABASE_MODE,
+	VAN_EXPORT_JOB_TYPE_ID,
+	VAN_ID_HASH_SECRET,
+} from './env.js';
 import { createVanClient, type VanClient, type VanDatabaseMode } from './van/client.js';
+import { createPersonHasher, type PersonHasher } from './van/person-hash.js';
 
 export type VanClientResult = { ok: true; client: VanClient } | { ok: false; error: string };
 
@@ -59,4 +66,10 @@ export function vanExportJobTypeId(): number | null {
 	return Number.isFinite(VAN_EXPORT_JOB_TYPE_ID) && VAN_EXPORT_JOB_TYPE_ID > 0
 		? VAN_EXPORT_JOB_TYPE_ID
 		: null;
+}
+
+/** The VanID/door hasher for the uncontacted-door count, or null when
+ *  VAN_ID_HASH_SECRET is unset — which turns the whole feature off. */
+export function vanPersonHasher(): PersonHasher | null {
+	return VAN_ID_HASH_SECRET ? createPersonHasher(VAN_ID_HASH_SECRET) : null;
 }

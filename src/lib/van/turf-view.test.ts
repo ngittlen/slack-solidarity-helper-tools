@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toTurfView, parseHull, mappableTurfs, type TurfRowInput } from './turf-view.js';
+import { toTurfView, parseHull, mappableTurfs, doorsLeft, type TurfRowInput } from './turf-view.js';
 import type { ClaimSnapshot } from './checkout.js';
 
 const NOW = new Date('2026-08-22T12:00:00.000Z');
@@ -281,5 +281,25 @@ describe('parseHull', () => {
 		['a NaN point', '[{"lat":null,"lng":2}]'],
 	])('degrades to no shape for %s', (_label, input) => {
 		expect(parseHull(input)).toEqual([]);
+	});
+});
+
+describe('doorsLeft', () => {
+	const base = { doorCount: 40, uncontactedDoors: 12, savedListId: 900 };
+
+	it('uses the count when its roster is from the current saved list', () => {
+		expect(doorsLeft({ ...base, rosterSavedListId: 900 })).toBe(12);
+	});
+
+	// Between a re-cut and the next recompute, or after the feature is
+	// switched off, the stored count is not this turf's.
+	it("falls back to VAN's doorCount when the count is from another cut", () => {
+		expect(doorsLeft({ ...base, rosterSavedListId: 899 })).toBe(40);
+		expect(doorsLeft({ ...base, rosterSavedListId: null })).toBe(40);
+		expect(doorsLeft({ ...base, savedListId: null, rosterSavedListId: null })).toBe(40);
+	});
+
+	it("falls back to VAN's doorCount when there is no count", () => {
+		expect(doorsLeft({ ...base, uncontactedDoors: null, rosterSavedListId: 900 })).toBe(40);
 	});
 });

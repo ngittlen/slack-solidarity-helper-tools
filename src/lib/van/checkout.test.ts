@@ -13,7 +13,6 @@ import {
 	MAX_CONCURRENT_CLAIMS,
 	MIN_CLAIM_TTL_HOURS,
 	MIN_CONCURRENT_CLAIMS,
-	parseReportedPercent,
 	resolveClaimOptions,
 	turfStatus,
 	type ClaimSnapshot,
@@ -359,9 +358,9 @@ describe('resolveClaimOptions', () => {
 });
 
 describe('walk reports', () => {
-	// VAN's door count only moves on a re-cut, so a turf walked to the end would
-	// otherwise come straight back into the pool.
-	it('refuses a turf the last volunteer reported at 100%', () => {
+	// Without an uncontacted count, VAN's door count only moves on a re-cut, so
+	// a turf walked to the end would otherwise come straight back into the pool.
+	it('refuses a turf with no count that was last reported at 100%', () => {
 		const decision = canClaim(turf({ reportedPercent: 100 }), [], 'U_VOL', NOW);
 		expect(decision).toMatchObject({ ok: false, reason: 'no-doors-left' });
 	});
@@ -370,18 +369,24 @@ describe('walk reports', () => {
 		expect(canClaim(turf({ reportedPercent: 70 }), [], 'U_VOL', NOW).ok).toBe(true);
 	});
 
-	it.each([
-		[0, 0],
-		[100, 100],
-		['55', 55],
-		[-1, null],
-		[101, null],
-		[50.5, null],
-		['', null],
-		['abc', null],
-		[null, null],
-		[undefined, null],
-	])('parses %j as %j', (input, expected) => {
-		expect(parseReportedPercent(input)).toBe(expected);
+	// With a count, it alone decides: any uncontacted door puts the turf back.
+	it('offers a turf reported at 100% while doors are still uncontacted', () => {
+		const decision = canClaim(
+			turf({ reportedPercent: 100, uncontactedDoors: 4, doorCount: 4 }),
+			[],
+			'U_VOL',
+			NOW,
+		);
+		expect(decision.ok).toBe(true);
+	});
+
+	it('refuses a turf with every door contacted', () => {
+		const decision = canClaim(
+			turf({ reportedPercent: 60, uncontactedDoors: 0, doorCount: 0 }),
+			[],
+			'U_VOL',
+			NOW,
+		);
+		expect(decision).toMatchObject({ ok: false, reason: 'no-doors-left' });
 	});
 });

@@ -4,7 +4,8 @@ import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { loadSettings, loadVanChapterFolders } from '$lib/server/settings.js';
 import { acquireSyncLock, releaseSyncLock } from '$lib/server/sync-lock.js';
-import { vanClient, vanExportJobTypeId } from '$lib/server/van-env.js';
+import { vanClient, vanExportJobTypeId, vanPersonHasher } from '$lib/server/van-env.js';
+import { runContactStage } from '$lib/server/van/contact-live.js';
 import { runCatalogSync } from '$lib/server/van/sync.js';
 import { VAN_SYNC_LOCK } from '$lib/server/van/locks.js';
 import { runGeometryQueue } from '$lib/server/van/geometry-worker.js';
@@ -54,6 +55,12 @@ const MIN_GEOMETRY_BUDGET_MS = 20 * 1000;
 // can be slow or unreachable without anybody noticing, so it is capped rather
 // than trusted to finish. What it does not reach waits for the next run.
 const SHEET_BUDGET_MS = 30 * 1000;
+// The ContactHistory pull and uncontacted-door recompute. Normally one short
+// window (the half hour since the last run) plus a recompute of every turf;
+// during the first backfill it walks as many day-windows as fit, and the rest
+// wait for the next run.
+const CONTACT_BUDGET_MS = 45 * 1000;
+const MIN_CONTACT_BUDGET_MS = 10 * 1000;
 // Below this there is no point starting: the reads alone need a few seconds,
 // and anything unwritten is no worse off waiting.
 const MIN_SHEET_BUDGET_MS = 5 * 1000;
@@ -105,6 +112,8 @@ async function runGeometry(
 			webhookUrlFor: (mapRouteId) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, mapRouteId),
 			timeBudgetMs,
 			alert: alertFor('[van]', slackTurfChannelId),
+			// Null when VAN_ID_HASH_SECRET is unset: no roster, VanID unread.
+			roster: vanPersonHasher(),
 			// `geocode` deliberately omitted: the worker defaults to the Census
 			// batch geocoder, which fires only for rows VAN left without
 			// coordinates.
@@ -205,6 +214,8 @@ export const POST: RequestHandler = async ({ url }) => {
 		const mappings = await loadVanChapterFolders(db);
 		const result = await runCatalogSync(db, configured.client, mappings, {
 			timeBudgetMs: CATALOG_BUDGET_MS,
+			// Queue roster exports only when something can build them.
+			roster: vanPersonHasher() !== null,
 		});
 		console.log(
 			`[van] catalog sync: ${result.turfsUpserted} turfs across ${result.foldersSynced} folder(s), ` +
@@ -289,6 +300,23 @@ export const POST: RequestHandler = async ({ url }) => {
 				})
 			: null;
 
+		// Uncontacted doors for every turf. After the catalog, which writes each
+		// turf's cut date and retires dead routes; before the Packet Tracker,
+		// which reads the % walked this derives for recent completions; and
+		// before geometry, which is the stage that routinely runs out of time.
+		// Never fails the sync — the counts are an overlay on VAN's doorCount,
+		// which is already written.
+		let contacts: Awaited<ReturnType<typeof runContactStage>> = null;
+		const contactBudget = Math.min(CONTACT_BUDGET_MS, requestDeadline - Date.now());
+		if (contactBudget >= MIN_CONTACT_BUDGET_MS) {
+			try {
+				contacts = await runContactStage(db, { timeBudgetMs: contactBudget });
+				if (contacts?.error) console.warn('[van] contact sync:', contacts.error);
+			} catch (err) {
+				console.error('[van] contact sync failed:', err instanceof Error ? err.message : err);
+			}
+		}
+
 		// The campaign's Packet Tracker (specs/011-turf-checkout-sheet).
 		//
 		// After the catalog and the reconciliation, and that ordering matters:
@@ -357,6 +385,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			doorsWarning,
 			refresh: refresh ?? { disabled: true },
 			sheetLog: sheetLog ?? { disabled: true },
+			contacts: contacts ?? { disabled: true },
 		});
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

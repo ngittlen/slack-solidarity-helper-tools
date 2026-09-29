@@ -142,6 +142,35 @@ export interface VanExportJob {
 	errorCode: string | null;
 }
 
+/** A changed-entity export job, as POST and GET /changedEntityExportJobs
+ *  return it. Verified live 2026-09-28: the POST response carries NO
+ *  `jobStatus` at all (only the echoed request), so a job must be read back
+ *  before its status means anything. `files` holds one or more signed blob
+ *  URLs once the job is `Complete`. */
+export interface VanChangedEntityExportJob {
+	exportJobId: number;
+	jobStatus?: string | null;
+	message?: string | null;
+	files?: Array<{ downloadUrl: string; dateExpired?: string | null }> | null;
+}
+
+/** One of `/changedEntityExportJobs/changeTypes/{resourceType}`: what a row's
+ *  `ChangeTypeId` means. Casing of the id field is not verified live, so both
+ *  spellings are accepted. */
+export interface VanChangeType {
+	changeTypeId?: number;
+	changeTypeID?: number;
+	changeTypeName: string | null;
+}
+
+/** One of `/canvassResponses/contactTypes`. `channelTypeName` is what tells a
+ *  door knock ("In Person") from a phone call. */
+export interface VanContactType {
+	contactTypeId: number;
+	name: string | null;
+	channelTypeName: string | null;
+}
+
 /** VAN's standard error envelope. */
 export interface VanErrorEnvelope {
 	errors?: Array<{ code?: string | null; text?: string | null }>;

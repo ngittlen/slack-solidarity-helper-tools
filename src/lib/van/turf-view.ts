@@ -49,6 +49,48 @@ export interface TurfRowInput {
 	sheetAssignedTo?: string | null;
 	retiredAt: string | null;
 	lastRefreshedAt: string | null;
+	/** Doors with no in-person contact since the cut, from ContactHistory
+	 *  (van/contact-sync.ts). Optional so fixtures predating it need not name
+	 *  it; null until the turf has a roster. */
+	uncontactedDoors?: number | null;
+	uncontactedDoorsAt?: string | null;
+	/** The saved list VAN cut this route from, and the one its roster was
+	 *  built from. The count only describes this cut when the two agree. */
+	savedListId?: number | null;
+	rosterSavedListId?: number | null;
+}
+
+type CountedRow = Pick<
+	TurfRowInput,
+	'doorCount' | 'uncontactedDoors' | 'savedListId' | 'rosterSavedListId'
+>;
+
+/**
+ * The ContactHistory count, or null when there is none or it describes some
+ * other cut. Checked here as well as by the recompute, because the recompute
+ * only runs on the sync's schedule: between a re-cut and the next run, or
+ * after the feature is switched off, the stored number is not this turf's.
+ */
+export function currentUncontacted(row: CountedRow): number | null {
+	if (row.uncontactedDoors == null || row.savedListId == null) return null;
+	return row.rosterSavedListId === row.savedListId ? row.uncontactedDoors : null;
+}
+
+/**
+ * Doors still to knock: our own ContactHistory count when there is a current
+ * one, VAN's doorCount when not. VAN's number only shrinks when a region is
+ * re-cut with a "not yet contacted" filter, so the count is the fresher of the
+ * two whenever it exists.
+ */
+export function doorsLeft(row: CountedRow): number {
+	return currentUncontacted(row) ?? row.doorCount;
+}
+
+/** When `doorsLeft` was last true: the count's own timestamp, else VAN's. */
+function doorsLeftAsOf(row: TurfRowInput): string | null {
+	return currentUncontacted(row) != null
+		? (row.uncontactedDoorsAt ?? row.lastRefreshedAt)
+		: row.lastRefreshedAt;
 }
 
 export interface TurfView {
@@ -70,7 +112,8 @@ export interface TurfView {
 	printedListNumber: string | null;
 	/** People in the list. */
 	routeSize: number;
-	/** Doors VAN still shows as uncontacted, as of `refreshedMinutesAgo`. */
+	/** Doors with no in-person contact since the cut (see `doorsLeft`), as of
+	 *  `refreshedMinutesAgo`. */
 	doorsRemaining: number;
 	/** Hull vertices, or [] when geometry is missing or was degenerate. */
 	hull: LatLng[];
@@ -156,9 +199,11 @@ export interface TurfView {
 	walkReport?: { percent: number; dayLabel: string };
 }
 
-/** A walk report as the view needs it: the percentage, and when. */
+/** A walk report as the view needs it: the percentage, and when. `percent`
+ *  is null until contact-sync derives it — or for good, on a turf with no
+ *  count. */
 export interface WalkReportInput {
-	percent: number;
+	percent: number | null;
 	at: string;
 }
 
@@ -249,8 +294,12 @@ export function turfSnapshot(
 		// Handed out outside this app either way — through VAN, or written into
 		// the campaign's Packet Tracker by an organizer.
 		vanDistributedTo: row.vanDistributedTo ?? row.sheetAssignedTo ?? null,
-		doorCount: row.doorCount,
+		// The claim gate's "no doors left" reads the same number the volunteer
+		// sees, so a turf never shows doors it will then refuse to hand out.
+		doorCount: doorsLeft(row),
+		uncontactedDoors: currentUncontacted(row),
 		reportedPercent: walkReports?.get(row.mapRouteId)?.percent ?? null,
+		walked: walkReports?.has(row.mapRouteId) ?? false,
 	};
 }
 
@@ -294,14 +343,14 @@ export function toTurfView(
 		// Issued only while you hold it — see the field's own note.
 		printedListNumber: visible.status === 'held-by-you' ? row.printedListNumber : null,
 		routeSize: row.routeSize,
-		doorsRemaining: row.doorCount,
+		doorsRemaining: doorsLeft(row),
 		hull,
 		centre,
 		bounds,
 		status: visible.status,
 		heldBy: visible.heldBy,
 		expiresInHours: visible.expiresInHours,
-		refreshedMinutesAgo: minutesSince(row.lastRefreshedAt, now),
+		refreshedMinutesAgo: minutesSince(doorsLeftAsOf(row), now),
 		claimable: decision.ok,
 		...(decision.ok || visible.status !== 'available'
 			? {}
@@ -311,7 +360,7 @@ export function toTurfView(
 			? { noListNumber: true as const }
 			: {}),
 		...(row.retiredAt ? { retired: true as const } : {}),
-		...(report
+		...(report && report.percent !== null
 			? { walkReport: { percent: report.percent, dayLabel: campaignDayLabel(report.at) } }
 			: {}),
 	};

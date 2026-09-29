@@ -28,19 +28,20 @@ export interface TurfSnapshot {
 	 *  VAN reports, or the campaign's Packet Tracker. Non-null = already in
 	 *  someone's hands. */
 	vanDistributedTo: string | null;
-	/** Doors VAN still shows as uncontacted. */
+	/** Doors left to knock: the uncontacted count when there is one, else
+	 *  VAN's doorCount (see `doorsLeft` in turf-view.ts). */
 	doorCount: number;
-	/** What MiniVAN showed as done, 0-100, the last time a volunteer marked
-	 *  this route walked — or null if nobody has. VAN's own door count only
-	 *  moves on a re-cut, so this is the app's only measure of progress. */
+	/** The ContactHistory count behind `doorCount`, or null/absent when the
+	 *  turf has none yet. Decides whether `reportedPercent` still gates. */
+	uncontactedDoors?: number | null;
+	/** % walked on the last completion, 0-100, or null. Derived from the
+	 *  uncontacted count since the "I synced MiniVAN" change; older rows hold
+	 *  what the volunteer typed from MiniVAN. */
 	reportedPercent: number | null;
-}
-
-/** A reported percentage from a request: an integer 0-100, or null. */
-export function parseReportedPercent(value: unknown): number | null {
-	const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
-	if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 100) return null;
-	return n;
+	/** Someone has marked this route walked. With `reportedPercent` null that
+	 *  means "walked, how much unknown" — the case of a turf with no count.
+	 *  Optional so snapshots that predate it need not name it. */
+	walked?: boolean;
 }
 
 /** At this, a reported turf has nothing left to knock and leaves the pool. */
@@ -261,9 +262,21 @@ export function canClaim(
 	}
 
 	// VAN's door count only drops on a re-cut, so without this a turf walked
-	// to the end comes straight back into the pool. The volunteer's report is
-	// the only thing that knows it is finished.
-	if (turf.reportedPercent !== null && turf.reportedPercent >= WALKED_OUT_PERCENT) {
+	// to the end comes straight back into the pool. Only for a turf with no
+	// uncontacted count, though: where there is one, `doorCount` above already
+	// IS what is left, and a turf with any door still uncontacted goes back in
+	// the pool however its last volunteer described it.
+	//
+	// Without a count, a walk with no percentage (every completion since the
+	// "I synced MiniVAN" change, on a turf with no roster) keeps it out too.
+	// Nothing says how much is left, and fresh doors elsewhere beat
+	// re-knocking these; the re-cut that completion requested brings the
+	// region back as new routes with no walk at all.
+	const walkedOut =
+		turf.reportedPercent === null
+			? turf.walked === true
+			: turf.reportedPercent >= WALKED_OUT_PERCENT;
+	if (turf.uncontactedDoors == null && walkedOut) {
 		return {
 			ok: false,
 			reason: 'no-doors-left',

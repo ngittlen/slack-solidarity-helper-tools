@@ -284,7 +284,7 @@ describe('endClaim', () => {
 			slackUserId: 'U_FIRST',
 			now: NOW,
 			kind: 'complete',
-			reportedPercent: 80,
+			syncedMinivan: true,
 		});
 
 		expect(result).toMatchObject({ ok: true });
@@ -304,18 +304,18 @@ describe('endClaim', () => {
 		]);
 	});
 
-	// The only progress figure the app will have for this turf, so marking it
-	// walked without one is refused rather than recorded as unknown.
-	it('refuses to mark turf walked without the % MiniVAN shows', async () => {
+	// Progress now comes from VAN, so doors still on the phone would read as
+	// unknocked: marking walked without saying MiniVAN synced is refused.
+	it('refuses to mark turf walked without "I synced MiniVAN"', async () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 
-		for (const reportedPercent of [undefined, null, -1, 101, 50.5]) {
+		for (const syncedMinivan of [undefined, false]) {
 			const result = await endClaim(db, {
 				mapRouteId: 100,
 				slackUserId: 'U_FIRST',
 				now: NOW,
 				kind: 'complete',
-				reportedPercent,
+				syncedMinivan,
 			});
 			expect(result).toMatchObject({ ok: false, status: 400 });
 		}
@@ -323,19 +323,20 @@ describe('endClaim', () => {
 		expect(res.rows[0]!.completed_at).toBeNull();
 	});
 
-	it('records the % on the completed claim', async () => {
+	// The % is derived later from VAN's ContactHistory (contact-sync.ts).
+	it('records the completion with no % yet', async () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 		await endClaim(db, {
 			mapRouteId: 100,
 			slackUserId: 'U_FIRST',
 			now: NOW,
 			kind: 'complete',
-			reportedPercent: 65,
+			syncedMinivan: true,
 		});
 		const res = await client.execute(
 			'SELECT completed_at, reported_percent FROM van_turf_checkouts',
 		);
-		expect(res.rows[0]).toMatchObject({ completed_at: NOW.toISOString(), reported_percent: 65 });
+		expect(res.rows[0]).toMatchObject({ completed_at: NOW.toISOString(), reported_percent: null });
 	});
 
 	// Handing back unwalked is not asked for a percentage — and is not refused
@@ -453,12 +454,57 @@ describe('latestWalkReports', () => {
 		expect(reports.has(999)).toBe(false);
 	});
 
-	// Completions from before the question existed carry no percentage; they
-	// must not hide an older one that does, or read as 0%.
-	it('skips completions with no reported %', async () => {
-		await completed('2026-08-21T12:00:00.000Z', 40);
+	// A completion whose % is not derived yet is still the latest walk. Falling
+	// back to an older one would show its figure — and a stale 100% locks the
+	// turf out of the pool.
+	it('reports the newest completion even before its % is known', async () => {
+		await completed('2026-08-21T12:00:00.000Z', 100);
 		await completed('2026-08-23T12:00:00.000Z', null);
-		expect((await latestWalkReports(db, [100])).get(100)?.percent).toBe(40);
+		expect((await latestWalkReports(db, [100])).get(100)).toEqual({
+			percent: null,
+			at: '2026-08-23T12:00:00.000Z',
+		});
+	});
+
+	async function claim() {
+		return claimTurf(db, {
+			mapRouteId: 100,
+			slackUserId: 'U_NEXT',
+			slackUserName: 'Sam',
+			now: NOW,
+		});
+	}
+
+	async function withCount(uncontacted: number, rosterSavedListId = 900) {
+		await client.execute({
+			sql: `UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = ?,
+			        uncontacted_doors = ? WHERE map_route_id = 100`,
+			args: [rosterSavedListId, uncontacted],
+		});
+	}
+
+	// No count to say what is left, so a walk of unknown extent keeps the turf
+	// out until VAN re-cuts it: better that volunteers knock fresh doors.
+	it('keeps a turf walked with no % out of the pool when it has no count', async () => {
+		await completed('2026-08-23T12:00:00.000Z', null);
+		expect(await claim()).toMatchObject({ ok: false, status: 409 });
+	});
+
+	// The claim gate reads the same doors-left the page shows.
+	it('refuses a turf whose current count says every door was reached', async () => {
+		await withCount(0);
+		expect(await claim()).toMatchObject({ ok: false, status: 409 });
+	});
+
+	it('hands out a turf with doors left on its count, however it was reported', async () => {
+		await completed('2026-08-23T12:00:00.000Z', 100);
+		await withCount(12);
+		expect(await claim()).toMatchObject({ ok: true });
+	});
+
+	it('ignores a count built from another saved list', async () => {
+		await withCount(0, 899);
+		expect(await claim()).toMatchObject({ ok: true });
 	});
 
 	// A walked-out turf leaves the pool, because VAN's door count will not

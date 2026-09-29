@@ -37,6 +37,9 @@ import {
 	type GeocodeFn,
 } from './hull-extract.js';
 import { geocodeAddresses } from './geocode-batch.js';
+import { needsGeometry } from './catalog.js';
+import { recomputeUncontacted, replaceRoster } from './contact-sync.js';
+import type { PersonHasher } from './person-hash.js';
 import type { VanExportJob } from './types.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -110,6 +113,9 @@ export interface GeometryWorkerOptions {
 	 *  disables it outright, which also stops the extractor reading address
 	 *  columns at all (see the mask note in hull-extract.ts). */
 	geocode?: GeocodeFn | null;
+	/** Also reduce the export to a roster of hashed people and doors for the
+	 *  uncontacted-door count. Null or omitted: VanID is never read. */
+	roster?: PersonHasher | null;
 }
 
 export interface GeometryWorkerResult {
@@ -132,6 +138,8 @@ export interface GeometryWorkerResult {
 	 *  party — so "did any address leave our servers this run" is answerable
 	 *  from the sync response rather than from the logs. */
 	geocodedFromAddress: number;
+	/** Turfs whose roster was (re)built this run. */
+	rostersStored: number;
 	/** Rows returned to `pending` to try again later. */
 	retried: number;
 	/** Rows that hit MAX_ATTEMPTS and are now `failed`. */
@@ -191,6 +199,7 @@ export async function runGeometryQueue(
 		hullsTooLarge: 0,
 		geocodedFromAddress: 0,
 		noGeometry: 0,
+		rostersStored: 0,
 		retried: 0,
 		deadLettered: 0,
 		deadLetters,
@@ -310,6 +319,27 @@ export async function runGeometryQueue(
 				return;
 			}
 
+			// Read before the download, because it decides what the download is
+			// for. A turf queued only for its roster keeps its hull, and — more
+			// to the point — sends nothing to the geocoder: re-geocoding a turf
+			// whose shape is already right would ship addresses to a third
+			// party for no reason.
+			const [turf] = await db
+				.select({
+					routeSize: vanTurfs.routeSize,
+					hullJson: vanTurfs.hullJson,
+					hullSourceRouteSize: vanTurfs.hullSourceRouteSize,
+				})
+				.from(vanTurfs)
+				.where(eq(vanTurfs.mapRouteId, item.mapRouteId))
+				.limit(1);
+			const wantsHull = needsGeometry({
+				hullJson: turf?.hullJson ?? null,
+				hullSourceRouteSize: turf?.hullSourceRouteSize ?? null,
+				routeSize: turf?.routeSize ?? 0,
+			});
+			const hasher = options.roster ?? null;
+
 			// Plain fetch, deliberately not client.get(): the blob host is not
 			// api.securevan.com, and the URL carries its own signature. Sending
 			// the VAN Basic header here would hand our credentials to Azure.
@@ -334,33 +364,40 @@ export async function runGeometryQueue(
 			// timeout is five minutes for ONE turf, which is longer than the
 			// whole request the scheduled sync gets.
 			const extract = await extractHull(responseChunks(res), {
-				geocode:
-					options.geocode === undefined
+				geocode: !wantsHull
+					? null
+					: options.geocode === undefined
 						? (rows) => geocodeAddresses(rows, fetch, { deadline })
 						: options.geocode,
+				roster: hasher,
 			});
 
-			// routeSize is read now rather than carried from the queue row: the
-			// hull is only valid against the route as it stands at extraction
-			// time, and that is exactly what hullSourceRouteSize records.
-			const [turf] = await db
-				.select({ routeSize: vanTurfs.routeSize })
-				.from(vanTurfs)
-				.where(eq(vanTurfs.mapRouteId, item.mapRouteId))
-				.limit(1);
-
 			const hasHull = extract.hull.length >= 3;
-			await db
-				.update(vanTurfs)
-				.set({
-					hullJson: hasHull ? JSON.stringify(extract.hull) : null,
-					centroidLat: extract.centre?.lat ?? null,
-					centroidLng: extract.centre?.lng ?? null,
-					// Null when there is no geometry at all, so `needsGeometry`
-					// re-queues it rather than treating "no hull" as settled.
-					hullSourceRouteSize: extract.centre ? (turf?.routeSize ?? 0) : null,
-				})
-				.where(eq(vanTurfs.mapRouteId, item.mapRouteId));
+			if (wantsHull) {
+				// routeSize as read above, at extraction time: the hull is only
+				// valid against the route as it stood then, and that is exactly
+				// what hullSourceRouteSize records.
+				await db
+					.update(vanTurfs)
+					.set({
+						hullJson: hasHull ? JSON.stringify(extract.hull) : null,
+						centroidLat: extract.centre?.lat ?? null,
+						centroidLng: extract.centre?.lng ?? null,
+						// Null when there is no geometry at all, so `needsGeometry`
+						// re-queues it rather than treating "no hull" as settled.
+						hullSourceRouteSize: extract.centre ? (turf?.routeSize ?? 0) : null,
+					})
+					.where(eq(vanTurfs.mapRouteId, item.mapRouteId));
+			}
+
+			// Stamped with the QUEUE row's saved list, which is the one this
+			// export was cut from. If VAN has re-cut since, the planner sees the
+			// mismatch and queues again.
+			if (extract.roster) {
+				await replaceRoster(db, item.mapRouteId, item.savedListId, extract.roster);
+				await recomputeUncontacted(db, { now: new Date(), mapRouteIds: [item.mapRouteId] });
+				result.rostersStored++;
+			}
 
 			await db
 				.update(vanGeometryQueue)
@@ -368,6 +405,9 @@ export async function runGeometryQueue(
 				.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
 
 			result.geocodedFromAddress += extract.geocodedFromAddress;
+			// A roster-only pass says nothing new about the shape, so it counts
+			// toward none of the geometry outcomes or their warnings.
+			if (!wantsHull) return;
 			if (hasHull) result.hullsStored++;
 			else if (extract.centre) result.centroidsOnly++;
 			else result.noGeometry++;

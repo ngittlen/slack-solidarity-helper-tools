@@ -76,14 +76,6 @@ export const TURF_COMPLETE_ACTION_ID = 'van_turf_complete';
  */
 export const TURF_OPEN_MAP_ACTION_ID = 'van_turf_open_map';
 
-/** The choices "Mark it done" offers in Slack: 5% steps, 100 first because a
- *  finished turf is the common case. Slack caps a menu at 100 options; this
- *  is 20. The web page takes any whole number. */
-export const COMPLETE_PERCENTS: readonly number[] = Array.from(
-	{ length: 20 },
-	(_, i) => 100 - i * 5,
-);
-
 export type TurfArgument =
 	{ kind: 'none' } | { kind: 'zip'; zip: string } | { kind: 'address'; query: string };
 
@@ -109,9 +101,6 @@ export interface TurfActionValue {
 	chapterId: number;
 	offset: number;
 	location?: LatLng | null;
-	/** What MiniVAN shows as done, 0-100. Carried by the "Mark it done"
-	 *  options, one value per percentage, so completing needs no modal. */
-	percent?: number;
 }
 
 /** Pack a button's state. Coordinates are rounded to 3 dp (~100 m) — enough to
@@ -120,7 +109,6 @@ export interface TurfActionValue {
 export function encodeTurfAction(value: TurfActionValue): string {
 	const payload: Record<string, number> = { c: value.chapterId, o: value.offset };
 	if (value.mapRouteId !== undefined) payload.r = value.mapRouteId;
-	if (value.percent !== undefined) payload.p = value.percent;
 	if (value.location) {
 		payload.lat = round3(value.location.lat);
 		payload.lng = round3(value.location.lng);
@@ -156,10 +144,6 @@ export function decodeTurfAction(raw: string | null | undefined): TurfActionValu
 	};
 	const mapRouteId = asInt(p.r);
 	if (mapRouteId !== null) value.mapRouteId = mapRouteId;
-	// Out of range is dropped, not clamped: completing refuses a missing
-	// percentage with a message, which beats recording a forged 400 as 100.
-	const percent = asInt(p.p);
-	if (percent !== null && percent >= 0 && percent <= 100) value.percent = percent;
 
 	const lat = asFinite(p.lat);
 	const lng = asFinite(p.lng);
@@ -200,18 +184,14 @@ type Button = {
 	value?: string;
 	url?: string;
 	style?: 'primary' | 'danger';
+	/** Slack's own "are you sure" dialog; the action is sent only on confirm. */
+	confirm?: { title: PlainText; text: Mrkdwn; confirm: PlainText; deny: PlainText };
 };
 type PlainText = { type: 'plain_text'; text: string };
-type StaticSelect = {
-	type: 'static_select';
-	placeholder: PlainText;
-	action_id: string;
-	options: Array<{ text: PlainText; value: string }>;
-};
 export type Block =
 	| { type: 'section'; text: Mrkdwn; accessory?: Button }
 	| { type: 'context'; elements: Mrkdwn[] }
-	| { type: 'actions'; elements: Array<Button | StaticSelect> }
+	| { type: 'actions'; elements: Button[] }
 	| { type: 'divider' };
 
 export interface SlackMessage {
@@ -627,22 +607,28 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 		blocks.push({
 			type: 'actions',
 			elements: [
-				// A dropdown rather than a button: marking walked requires the
-				// % MiniVAN shows, and picking it IS the action — one tap, no
-				// modal. Each option carries the whole action value.
+				// Slack cannot disable a button until a box is ticked, so the
+				// confirm dialog is the checkbox: the action is only sent on
+				// "Yes, I synced". How much got walked comes from VAN afterwards.
 				{
-					type: 'static_select',
-					placeholder: { type: 'plain_text', text: 'Mark it done — MiniVAN %' },
+					type: 'button',
+					text: { type: 'plain_text', text: 'I walked this turf' },
+					style: 'primary',
 					action_id: TURF_COMPLETE_ACTION_ID,
-					options: COMPLETE_PERCENTS.map((percent) => ({
-						text: { type: 'plain_text', text: `${percent}% done` },
-						value: encodeTurfAction({
-							mapRouteId: turf.mapRouteId,
-							chapterId: turf.chapterId,
-							offset: 0,
-							percent,
-						}),
-					})),
+					value: encodeTurfAction({
+						mapRouteId: turf.mapRouteId,
+						chapterId: turf.chapterId,
+						offset: 0,
+					}),
+					confirm: {
+						title: { type: 'plain_text', text: 'Did you sync MiniVAN?' },
+						text: mrkdwn(
+							'Open MiniVAN and hit *Sync* before marking this walked. Your doors only reach ' +
+								'VAN from there — skip it and the turf looks unwalked.',
+						),
+						confirm: { type: 'plain_text', text: 'Yes, I synced' },
+						deny: { type: 'plain_text', text: 'Not yet' },
+					},
 				},
 				{
 					type: 'button',
@@ -664,7 +650,7 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 		});
 	}
 
-	// The warning that prompted this command existing. "Mark it done" records
+	// The warning that prompted this command existing. "I walked this turf" records
 	// that YOU walked it; it cannot move your answers off your phone, and a
 	// volunteer who taps it instead of syncing loses the morning, probably
 	// without being told (door-delta.ts can only nudge once VAN recounts the
@@ -672,7 +658,7 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 	// anything above it.
 	blocks.push(
 		context(
-			'*Sync MiniVAN first.* "Mark it done" records that you walked the turf — ' +
+			'*Sync MiniVAN first.* "I walked this turf" records that you walked it — ' +
 				'it does not send your answers to VAN. Only MiniVAN can do that.',
 		),
 	);

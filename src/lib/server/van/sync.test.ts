@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runCatalogSync } from './sync.js';
 import { VanError, VanIncompleteError, type VanClient } from './client.js';
 import type { VanMapRegion } from './types.js';
-import { vanGeometryQueue } from '../schema.js';
+import { vanGeometryQueue, vanTurfRoster } from '../schema.js';
 import {
 	loadClaimsForExports,
 	loadMinivanExports,
@@ -105,6 +105,10 @@ function makeClient(over: Partial<VanClient> = {}): VanClient {
 		exportJobTypes: async () => [],
 		createExportJob: async () => ({}) as never,
 		exportJob: async () => ({}) as never,
+		createChangedEntityExportJob: async () => ({}) as never,
+		changedEntityExportJob: async () => ({}) as never,
+		contactTypes: async () => [],
+		changeTypes: async () => [],
 		get: async () => ({}) as never,
 		...over,
 	};
@@ -306,8 +310,9 @@ describe('runCatalogSync', () => {
 
 		expect(result.turfsRetired).toBe(1);
 		expect(result.geometryQueueDropped).toBe(1);
-		// The queue, and nothing else: deleting from van_turfs here would destroy
-		// the retirement history the drift report reads.
+		// The queue, and nothing else: deleting from van_turfs here would
+		// destroy the retirement history the drift report reads. The roster
+		// outlives the route by a day (see contact-sync.ts).
 		expect(deletedFrom).toEqual([vanGeometryQueue]);
 	});
 
@@ -342,7 +347,7 @@ describe('runCatalogSync', () => {
 
 		expect(result.turfsRetired).toBe(0);
 		expect(result.geometryQueueDropped).toBe(1);
-		expect(deletedFrom).toEqual([vanGeometryQueue]);
+		expect(deletedFrom).toEqual([vanGeometryQueue, vanTurfRoster]);
 	});
 
 	it('keeps the geometry row for a turf coming back from retirement', async () => {

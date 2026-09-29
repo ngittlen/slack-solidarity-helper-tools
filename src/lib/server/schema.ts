@@ -3,6 +3,7 @@ import {
 	text,
 	integer,
 	real,
+	blob,
 	index,
 	uniqueIndex,
 	primaryKey,
@@ -925,6 +926,23 @@ export const vanTurfs = sqliteTable(
 		firstSeenAt: text('first_seen_at').notNull(),
 		lastSeenAt: text('last_seen_at').notNull(),
 		lastRefreshedAt: text('last_refreshed_at'),
+		/** When VAN cut this route: the region's `dateRefreshed`, else its
+		 *  `dateCreated`, as real UTC. Contact attempts before this are about a
+		 *  different cut and do not take a door off this one. Null when VAN said
+		 *  neither; readers fall back to `firstSeenAt`. */
+		cutAt: text('cut_at'),
+		/** Doors with no in-person contact attempt since `cutAt` — not home,
+		 *  refused and inaccessible all count as contacted. Computed from
+		 *  van_turf_roster × van_person_contacts by van/contact-sync.ts. Null
+		 *  until this turf has a roster for its current saved list. NOT part of
+		 *  the catalog upsert, which would otherwise clobber it every sync. */
+		uncontactedDoors: integer('uncontacted_doors'),
+		uncontactedDoorsAt: text('uncontacted_doors_at'),
+		/** The savedListId van_turf_roster was built from. Differs from
+		 *  `savedListId` (or is null) when the roster is missing or describes an
+		 *  older cut, which is what queues a fresh export. Written only by the
+		 *  geometry worker. */
+		rosterSavedListId: integer('roster_saved_list_id'),
 		/** Stamped, never deleted, so a live checkout pointing at a vanished
 		 *  route still renders. */
 		retiredAt: text('retired_at'),
@@ -992,6 +1010,13 @@ export const vanTurfCheckouts = sqliteTable(
 		/** Doors that left the turf between claim and the post-completion
 		 *  refresh. Zero means the volunteer probably never synced MiniVAN. */
 		confirmedDoorDelta: integer('confirmed_door_delta'),
+		/** Doors on the turf with an in-person contact in VAN's ContactHistory
+		 *  between this claim and its completion — the doors this volunteer
+		 *  knocked, not-homes included. Derived by van/contact-sync.ts for a day
+		 *  after completion (MiniVAN syncs late), then left alone. Null when the
+		 *  turf had no roster to count against; the dashboard then falls back
+		 *  to `confirmedDoorDelta`. */
+		doorsKnocked: integer('doors_knocked'),
 		/** The MiniVAN list number this volunteer was actually given.
 		 *
 		 *  Not a duplicate of van_turfs.printed_list_number: that column is what
@@ -1079,6 +1104,65 @@ export const vanGeometryQueue = sqliteTable(
 		lastError: text('last_error'),
 	},
 	(table) => [index('van_geometry_queue_status').on(table.status)],
+);
+
+// Who lives behind which door on each turf, with neither written down.
+//
+// Both columns are HMAC-SHA256 digests truncated to 16 bytes, keyed by
+// VAN_ID_HASH_SECRET (van/person-hash.ts). A VanID is a small integer and an
+// unkeyed hash of one is reversed by enumeration in seconds, so the key is what
+// makes this table useless without the server. The raw VanID and address exist
+// only inside the CSV parser (hull-extract.ts) and are never stored or logged.
+//
+// Blobs rather than hex: at ~200 people × a few thousand turfs this is the
+// largest table in the database, and hex would double it.
+export const vanTurfRoster = sqliteTable(
+	'van_turf_roster',
+	{
+		mapRouteId: integer('map_route_id').notNull(),
+		personHash: blob('person_hash', { mode: 'buffer' }).notNull(),
+		doorHash: blob('door_hash', { mode: 'buffer' }).notNull(),
+	},
+	// No index on personHash alone: every read goes turf → people (the primary
+	// key's prefix) → contacts (their primary key).
+	(table) => [primaryKey({ columns: [table.mapRouteId, table.personHash] })],
+);
+
+// The latest in-person contact attempt per person, from VAN's ContactHistory
+// changed-entity export. Every in-person contact in the committee is kept, not
+// only people already on a roster: rosters arrive turf by turf over hours, and
+// filtering on them would silently drop contacts made before a turf's roster
+// landed. Pruned below the oldest live turf's cut date. Same hashing as above.
+export const vanPersonContacts = sqliteTable('van_person_contacts', {
+	personHash: blob('person_hash', { mode: 'buffer' }).primaryKey(),
+	lastInPersonAt: text('last_in_person_at').notNull(),
+});
+
+// Singleton progress record for the ContactHistory pull. The pull walks forward
+// one window at a time; `cursor` is the end of the last window fully applied,
+// and a window's export job id is stored before it is waited on so a slow job
+// is resumed by polling on the next run rather than submitted twice.
+export const vanContactSyncState = sqliteTable(
+	'van_contact_sync_state',
+	{
+		id: integer('id').primaryKey(),
+		cursor: text('cursor'),
+		/** Where the pull began: [coveredFrom, cursor] has been read. A live turf
+		 *  cut before this (a newly mapped folder) rewinds the cursor to it. */
+		coveredFrom: text('covered_from'),
+		exportJobId: integer('export_job_id'),
+		/** When the current job was submitted, so one VAN never finishes is
+		 *  eventually abandoned rather than polled forever. */
+		exportJobCreatedAt: text('export_job_created_at'),
+		/** Failed attempts to read the current job's files. At the cap the job
+		 *  is dropped and its window submitted afresh. */
+		exportJobFailures: integer('export_job_failures').notNull().default(0),
+		windowFrom: text('window_from'),
+		windowTo: text('window_to'),
+		lastRunAt: text('last_run_at'),
+		lastError: text('last_error'),
+	},
+	(table) => [check('van_contact_sync_state_singleton', sql`${table.id} = 1`)],
 );
 
 // One row per Map Region we have ever asked VAN to re-cut.
@@ -1219,6 +1303,10 @@ export type NewVanMinivanExportRow = typeof vanMinivanExports.$inferInsert;
 
 export type VanGeometryQueueRow = typeof vanGeometryQueue.$inferSelect;
 export type NewVanGeometryQueueRow = typeof vanGeometryQueue.$inferInsert;
+
+export type VanTurfRosterRow = typeof vanTurfRoster.$inferSelect;
+export type VanPersonContactRow = typeof vanPersonContacts.$inferSelect;
+export type VanContactSyncStateRow = typeof vanContactSyncState.$inferSelect;
 
 export type VanZipCentroidRow = typeof vanZipCentroids.$inferSelect;
 export type NewVanZipCentroidRow = typeof vanZipCentroids.$inferInsert;

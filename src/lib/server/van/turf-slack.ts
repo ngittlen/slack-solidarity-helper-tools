@@ -36,6 +36,7 @@ import { isSlackAdmin } from '../slack-admin.js';
 import { displayName } from '../slack-display-name.js';
 import { claimTurf, endClaim } from './checkout-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from './packet-tracker-live.js';
+import { nudgeContactCount } from './contact-live.js';
 import { loadChapterTurfs } from './turf-query.js';
 import { foldersForChapter } from './chapter-visibility.js';
 import { loadHoldingsFor } from './holdings-store.js';
@@ -285,7 +286,7 @@ export async function releaseMineFromSlack(
  */
 export async function completeFromSlack(
 	db: Db,
-	ctx: TurfRequestContext & { mapRouteId: number; percent: number | null },
+	ctx: TurfRequestContext & { mapRouteId: number },
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
 	const gate = await passMineGate(db, ctx.slackUserId, now);
@@ -295,13 +296,16 @@ export async function completeFromSlack(
 		slackUserId: ctx.slackUserId,
 		now: new Date(now),
 		kind: 'complete',
-		// Required; endClaim refuses without it and says what to pick.
-		reportedPercent: ctx.percent,
+		// The button's confirm dialog asked "Did you sync MiniVAN?"; Slack
+		// only sends the action on "Yes, I synced".
+		syncedMinivan: true,
 	});
-	if (result.ok) nudgePacketTracker(db, ctx.mapRouteId);
+	if (result.ok) {
+		nudgePacketTracker(db, ctx.mapRouteId);
+		nudgeContactCount(db, ctx.mapRouteId);
+	}
 	const note = result.ok
-		? 'Marked walked. If MiniVAN has not synced yet, open it and hit *Sync* — ' +
-			'your answers only reach VAN from there.'
+		? 'Marked walked. Thanks! The doors left on this turf update once VAN has your answers.'
 		: result.message;
 	return withNote(note, await renderMine(db, ctx.slackUserId, now));
 }

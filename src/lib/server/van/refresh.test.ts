@@ -68,6 +68,10 @@ function makeClient(over: Partial<VanClient> = {}): VanClient {
 		exportJobTypes: async () => [],
 		createExportJob: async () => ({}) as never,
 		exportJob: async () => ({}) as never,
+		createChangedEntityExportJob: async () => ({}) as never,
+		changedEntityExportJob: async () => ({}) as never,
+		contactTypes: async () => [],
+		changeTypes: async () => [],
 		get: async () => ({}) as never,
 		...over,
 	};

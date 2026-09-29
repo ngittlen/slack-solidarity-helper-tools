@@ -178,6 +178,12 @@ export const VAN_DATABASE_MODE = get('VAN_DATABASE_MODE').trim();
 // example — discover the real one with `npm run van:check`. Unset is fine:
 // the catalog sync runs without it and only geometry is skipped.
 export const VAN_EXPORT_JOB_TYPE_ID = intEnv('VAN_EXPORT_JOB_TYPE_ID', 0);
+// Key for the HMAC digests of VanIDs and addresses behind the uncontacted-door
+// count (van/person-hash.ts). Any long random string:
+//   openssl rand -base64 32
+// Unset turns the count off — no roster is built and VanID is never read.
+// Rotating it orphans every stored digest; see person-hash.ts for the reset.
+export const VAN_ID_HASH_SECRET = get('VAN_ID_HASH_SECRET');
 
 // The service-account key the Packet Tracker sync signs in to Google Sheets with
 // (see src/lib/server/google-env.ts and specs/011-turf-checkout-sheet/spec.md).
