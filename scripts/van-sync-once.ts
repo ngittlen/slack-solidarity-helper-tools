@@ -17,6 +17,11 @@
  * Required env vars:
  *   VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE,
  *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN (unless the URL starts with file:)
+ *
+ * Optional:
+ *   VAN_ID_HASH_SECRET — with it set, turfs without a roster for the
+ *   uncontacted-door count are queued too, exactly as the scheduled sync does;
+ *   `npm run van:drain` then builds them.
  */
 
 import { createClient } from '@libsql/client';
@@ -31,6 +36,8 @@ const DRY_RUN = process.argv.slice(2).includes('--dry-run');
 const appName = process.env.VAN_APP_NAME ?? '';
 const apiKey = process.env.VAN_API_KEY ?? '';
 const rawMode = (process.env.VAN_DATABASE_MODE ?? '').trim();
+// Must match the route: queue roster exports only when something can build them.
+const ROSTER = (process.env.VAN_ID_HASH_SECRET ?? '') !== '';
 
 if (!appName || !apiKey) {
 	console.error('Missing required env vars: VAN_APP_NAME, VAN_API_KEY');
@@ -57,6 +64,7 @@ async function main(): Promise<void> {
 	// must not have to guess before a write.
 	console.log(`\nTarget database: ${dbConfig.url}`);
 	console.log(`VAN app: ${appName}, mode ${rawMode}`);
+	console.log(ROSTER ? 'Rosters: on' : 'Rosters: off (VAN_ID_HASH_SECRET unset)');
 	console.log(DRY_RUN ? 'Mode: DRY RUN — nothing will be written\n' : 'Mode: WRITING\n');
 
 	// Read the chapter → folder mapping straight from the table rather than
@@ -86,7 +94,7 @@ async function main(): Promise<void> {
 		}\n`,
 	);
 
-	const result = await runCatalogSync(db, client, mappings, { dryRun: DRY_RUN });
+	const result = await runCatalogSync(db, client, mappings, { dryRun: DRY_RUN, roster: ROSTER });
 
 	console.log('Result');
 	console.log(`  folders synced      ${result.foldersSynced}`);
@@ -95,6 +103,8 @@ async function main(): Promise<void> {
 	console.log(`  turfs retired       ${result.turfsRetired}`);
 	console.log(`  turfs unretired     ${result.turfsUnretired}`);
 	console.log(`  queued for geometry ${result.geometryQueued}`);
+	const rosterQueued = result.plan?.geometryQueue.filter((item) => item.roster).length ?? 0;
+	console.log(`  of those, rosters   ${rosterQueued}`);
 	console.log(`  geometry dropped    ${result.geometryQueueDropped}`);
 	console.log(`  claims released     ${result.claimsReleased}`);
 
