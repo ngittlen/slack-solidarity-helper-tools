@@ -19,7 +19,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
-import { turfSnapshot } from '../../van/turf-view.js';
+import { sheetBlocksClaim, turfSnapshot } from '../../van/turf-view.js';
 import {
 	canClaim,
 	DEFAULT_MAX_CONCURRENT_CLAIMS,
@@ -159,8 +159,9 @@ export async function claimTurf(
 	// The tracker double-check, only once everything else says yes: it is a
 	// round trip to Google, and a claim refused for another reason should not
 	// wait on one. The sync reads the tracker every half hour; an organizer
-	// may have written this turf down since.
-	if (input.sheetCheck) {
+	// may have written this turf down since. Skipped outright when doors are
+	// known to remain uncontacted — the sheet no longer blocks then.
+	if (input.sheetCheck && sheetBlocksClaim(row)) {
 		const assignedTo = await input.sheetCheck({
 			mapRouteId,
 			regionName: row.regionName,

@@ -77,6 +77,18 @@ export function currentUncontacted(row: CountedRow): number | null {
 }
 
 /**
+ * Whether a filled-in Packet Tracker row still keeps this turf from being
+ * claimed. Only while we cannot see what is left: once the ContactHistory count
+ * says doors remain uncontacted, a name in the campaign's sheet does not mean
+ * the doors are being knocked, and the turf goes back in the pool. (VAN's own
+ * record of an outside hand-out, `vanDistributedTo`, still blocks.)
+ */
+export function sheetBlocksClaim(row: CountedRow): boolean {
+	const left = currentUncontacted(row);
+	return left === null || left <= 0;
+}
+
+/**
  * Doors still to knock: our own ContactHistory count when there is a current
  * one, VAN's doorCount when not. VAN's number only shrinks when a region is
  * re-cut with a "not yet contacted" filter, so the count is the fresher of the
@@ -291,9 +303,11 @@ export function turfSnapshot(
 		mapRouteId: row.mapRouteId,
 		printedListNumber: row.printedListNumber,
 		retiredAt: row.retiredAt,
-		// Handed out outside this app either way — through VAN, or written into
-		// the campaign's Packet Tracker by an organizer.
-		vanDistributedTo: row.vanDistributedTo ?? row.sheetAssignedTo ?? null,
+		// Handed out outside this app — through VAN, or written into the
+		// campaign's Packet Tracker by an organizer. The sheet only counts while
+		// no uncontacted doors are known to remain; see sheetBlocksClaim.
+		vanDistributedTo:
+			row.vanDistributedTo ?? (sheetBlocksClaim(row) ? row.sheetAssignedTo : null) ?? null,
 		// The claim gate's "no doors left" reads the same number the volunteer
 		// sees, so a turf never shows doors it will then refuse to hand out.
 		doorCount: doorsLeft(row),
@@ -325,7 +339,7 @@ export function toTurfView(
 	const visible = visibleTurfState(
 		{
 			status: rawStatus,
-			heldBy: active?.slackUserName ?? row.vanDistributedTo ?? row.sheetAssignedTo ?? null,
+			heldBy: active?.slackUserName ?? snapshot.vanDistributedTo ?? null,
 			expiresInHours: active ? hoursRemaining(active, now) : null,
 		},
 		viewer,

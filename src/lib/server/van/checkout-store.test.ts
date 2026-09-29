@@ -427,6 +427,48 @@ describe('claimTurf — the campaign’s Packet Tracker', () => {
 		expect(await claim(async () => undefined)).toMatchObject({ ok: true });
 	});
 
+	// A name in the sheet does not mean the doors are being knocked. Once the
+	// ContactHistory count says doors remain, the turf goes back in the pool.
+	describe('with uncontacted doors known to remain', () => {
+		const counted = (left: number) =>
+			client.execute(
+				`UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = 900,
+				        uncontacted_doors = ${left} WHERE map_route_id = 100`,
+			);
+
+		it('claims turf the last sync saw in the tracker', async () => {
+			await counted(12);
+			await client.execute(
+				"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE map_route_id = 100",
+			);
+			expect(await claim()).toMatchObject({ ok: true });
+		});
+
+		it('does not ask Google at all', async () => {
+			await counted(12);
+			const sheetCheck = vi.fn(async () => 'Organizer Olu');
+			expect(await claim(sheetCheck)).toMatchObject({ ok: true });
+			expect(sheetCheck).not.toHaveBeenCalled();
+		});
+
+		// VAN's own record of an outside hand-out is a different matter.
+		it('still refuses turf VAN says was handed out directly', async () => {
+			await counted(12);
+			await client.execute(
+				"UPDATE van_turfs SET van_distributed_to = 'Sam' WHERE map_route_id = 100",
+			);
+			expect(await claim()).toMatchObject({ ok: false, status: 409 });
+		});
+
+		it('still refuses a stale count, where what is left is unknown', async () => {
+			await counted(12);
+			await client.execute(
+				"UPDATE van_turfs SET saved_list_id = 901, sheet_assigned_to = 'Organizer Olu' WHERE map_route_id = 100",
+			);
+			expect(await claim()).toMatchObject({ ok: false, status: 409 });
+		});
+	});
+
 	it('does not wait on Google for a claim refused anyway', async () => {
 		await insertClaim({ slack_user_id: 'U_OTHER', expires_at: '2026-08-30T00:00:00.000Z' });
 		const sheetCheck = vi.fn(async () => null);

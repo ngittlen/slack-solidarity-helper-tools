@@ -436,11 +436,9 @@ async function syncCheckout(
 		if (!isUnfilled(current, tab.layout)) {
 			// Somebody has this packet. Theirs — but it is checked again every
 			// run, and filled in if their entry is cleared while ours is live.
-			if (state.told !== 'taken') {
-				warnings.push(
-					`${LOG} ${label} was claimed, but its packet already has someone else's entry in the Packet Tracker, so that entry was left as it is`,
-				);
-			}
+			// Silent: a filled row no longer blocks a claim on turf with doors
+			// left uncontacted (sheetBlocksClaim), so this is expected, not an
+			// organizer's problem to chase.
 			await save({ ...base, told: 'taken' });
 			return 'unchanged';
 		}

@@ -346,7 +346,9 @@ describe('a checkout through its life', () => {
 });
 
 describe('the campaign’s entries are never overwritten', () => {
-	it('leaves a packet someone else has filled in, and says so once', async () => {
+	// Silent: a filled row no longer blocks claiming turf with doors left, so
+	// this is expected rather than something for an organizer to chase.
+	it('leaves a packet someone else has filled in, without a warning', async () => {
 		await turf();
 		await checkout();
 		const theirs = packet(LIST, { Canvasser: 'Sam', Status: 'Incomplete', 'Walk Mode': 'Paper' });
@@ -357,18 +359,18 @@ describe('the campaign’s entries are never overwritten', () => {
 
 		expect(fake.sheet('sheet-downriver')[2]).toEqual(theirs);
 		expect(writes(fake.calls)).toEqual([]);
-		expect(first.warnings.join(' ')).toContain('already has someone else');
+		expect(first.warnings).toEqual([]);
 		expect(second.warnings).toEqual([]);
 	});
 
-	it('fills in a packet once someone else’s entry is cleared, without telling twice', async () => {
+	it('fills in a packet once someone else’s entry is cleared', async () => {
 		await turf();
 		await checkout();
 		const fake = fakeSheets({
 			'sheet-downriver': tracker(packet(LIST, { Canvasser: 'Sam', Status: 'Incomplete' })),
 		});
 		const first = await run(fake.api);
-		expect(first.warnings).toHaveLength(1);
+		expect(first).toMatchObject({ filled: 0, warnings: [] });
 
 		fake.sheet('sheet-downriver')[2] = packet(LIST, { Status: 'Unwalked' });
 		const second = await run(fake.api);
