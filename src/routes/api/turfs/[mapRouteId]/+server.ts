@@ -86,6 +86,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			options: {
 				ttlHours: settings.vanTurfClaimTtlHours,
 				maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+				vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
 			},
 			sheetCheck: packetTrackerCheck(db),
 		});

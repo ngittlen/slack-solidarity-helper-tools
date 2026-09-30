@@ -395,6 +395,7 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 	const claimOptions = resolveClaimOptions({
 		ttlHours: settings.vanTurfClaimTtlHours,
 		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+		vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
 	});
 
 	// Counted against the same store the web API spends, so the budget follows

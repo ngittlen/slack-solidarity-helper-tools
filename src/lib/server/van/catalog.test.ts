@@ -516,7 +516,8 @@ describe('planCatalogSync', () => {
 			expect(result.upserts[0]!.vanAssignedAt).toBe('2026-09-22T15:52:28.150Z');
 		});
 
-		// "Never let turf assigned outside our tool become available again."
+		// Carried forward so the turf stays out until its hold lapses; the
+		// lapse itself is vanAssignmentBlocks in turf-view.ts.
 		it('keeps an outside assignment after the export is gone', () => {
 			const result = plan({
 				minivanExports: [],
@@ -533,7 +534,7 @@ describe('planCatalogSync', () => {
 			});
 		});
 
-		it('keeps it through a reprinted list, and names the newest outside holder', () => {
+		it('restarts the clock on a re-export, and names the newest outside holder', () => {
 			const result = plan({
 				folders: [folder([region([route({ printedList: { number: '11111111-22222' } })])])],
 				minivanExports: [
@@ -553,7 +554,36 @@ describe('planCatalogSync', () => {
 			});
 			expect(result.upserts[0]).toMatchObject({
 				vanDistributedTo: 'Sam Ito',
-				vanAssignedAt: '2026-09-22T15:52:28.150Z',
+				vanAssignedAt: '2026-09-28T13:00:00.000Z',
+			});
+		});
+
+		it('dates a hand-out from the latest of several outside exports', () => {
+			const result = plan({
+				minivanExports: [
+					loaded,
+					exportOf({
+						minivanExportId: 9,
+						dateCreated: '2026-09-26T10:00:00Z',
+						canvassers: [{ firstName: 'Sam', lastName: 'Ito' }],
+					}),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Sam Ito',
+				vanAssignedAt: '2026-09-26T14:00:00.000Z',
+			});
+		});
+
+		it('never moves the date backwards to an older export still in the store', () => {
+			const result = plan({
+				existing: [
+					existingRow({ vanDistributedTo: 'Sam Ito', vanAssignedAt: '2026-09-26T14:00:00.000Z' }),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Sam Ito',
+				vanAssignedAt: '2026-09-26T14:00:00.000Z',
 			});
 		});
 

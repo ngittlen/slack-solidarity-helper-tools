@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { toTurfView, parseHull, mappableTurfs, doorsLeft, type TurfRowInput } from './turf-view.js';
+import {
+	toTurfView,
+	parseHull,
+	mappableTurfs,
+	doorsLeft,
+	vanAssignmentBlocks,
+	type TurfRowInput,
+} from './turf-view.js';
 import type { ClaimSnapshot } from './checkout.js';
 
 const NOW = new Date('2026-08-22T12:00:00.000Z');
@@ -320,5 +327,93 @@ describe('doorsLeft', () => {
 
 	it("falls back to VAN's doorCount when there is no count", () => {
 		expect(doorsLeft({ ...base, uncontactedDoors: null, rosterSavedListId: 900 })).toBe(40);
+	});
+});
+
+describe('vanAssignmentBlocks', () => {
+	const HOUR = 3_600_000;
+	const ago = (hours: number) => new Date(NOW.getTime() - hours * HOUR).toISOString();
+	const counted = { savedListId: 900, rosterSavedListId: 900, uncontactedDoors: 12 };
+
+	it('blocks for 48 hours after the hand-out', () => {
+		const handedOut = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(47) });
+		expect(vanAssignmentBlocks(handedOut, NOW)).toBe(true);
+	});
+
+	it('lets go once 48 hours have passed and the count shows what is left', () => {
+		const handedOut = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(48) });
+		expect(vanAssignmentBlocks(handedOut, NOW)).toBe(false);
+	});
+
+	// Without a count the turf would come back at VAN's full doorCount.
+	it('keeps holding a lapsed hand-out when there is no current count', () => {
+		const lapsed = { vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(72) };
+		expect(vanAssignmentBlocks(row(lapsed), NOW)).toBe(true);
+		expect(vanAssignmentBlocks(row({ ...lapsed, ...counted, rosterSavedListId: 899 }), NOW)).toBe(
+			true,
+		);
+	});
+
+	it('uses the configured hold instead of 48 hours', () => {
+		const handedOut = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(60) });
+		expect(vanAssignmentBlocks(handedOut, NOW, 72)).toBe(true);
+		expect(vanAssignmentBlocks(handedOut, NOW, 24)).toBe(false);
+		expect(toTurfView(handedOut, [], VOLUNTEER, NOW, { vanAssignmentTtlHours: 72 }).status).toBe(
+			'checked-out',
+		);
+		expect(toTurfView(handedOut, [], VOLUNTEER, NOW, { vanAssignmentTtlHours: 24 }).status).toBe(
+			'available',
+		);
+	});
+
+	it('never lets go when the hold is set to 0', () => {
+		const old = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(10_000) });
+		expect(vanAssignmentBlocks(old, NOW, 0)).toBe(true);
+		expect(toTurfView(old, [], VOLUNTEER, NOW, { vanAssignmentTtlHours: 0 }).status).toBe(
+			'checked-out',
+		);
+		// 0 is "never", not "no hold": turf nobody was handed is unaffected.
+		expect(vanAssignmentBlocks(row(counted), NOW, 0)).toBe(false);
+	});
+
+	it('keeps holding a hand-out with no date', () => {
+		expect(
+			vanAssignmentBlocks(
+				row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: null }),
+				NOW,
+			),
+		).toBe(true);
+	});
+
+	it('never blocks turf nobody was handed', () => {
+		expect(vanAssignmentBlocks(row({ ...counted, vanAssignedAt: ago(1) }), NOW)).toBe(false);
+	});
+
+	it('shows a lapsed hand-out as available and claimable, with no holder', () => {
+		const lapsed = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(72) });
+		const view = toTurfView(lapsed, [], ADMIN, NOW);
+		expect(view.status).toBe('available');
+		expect(view.heldBy).toBeNull();
+		expect(view.claimable).toBe(true);
+	});
+
+	it('still shows a live hand-out as checked out', () => {
+		const live = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(2) });
+		const view = toTurfView(live, [], VOLUNTEER, NOW);
+		expect(view.status).toBe('checked-out');
+		expect(view.claimable).toBe(false);
+	});
+
+	// A lapsed VAN hand-out must not unmask a Packet Tracker row that still
+	// blocks on its own terms.
+	it('falls through to the Packet Tracker when the VAN hold has lapsed', () => {
+		const lapsed = row({
+			...counted,
+			uncontactedDoors: 0,
+			vanDistributedTo: 'Sam Ito',
+			vanAssignedAt: ago(72),
+			sheetAssignedTo: 'Jo Park',
+		});
+		expect(toTurfView(lapsed, [], ADMIN, NOW).heldBy).toBe('Jo Park');
 	});
 });

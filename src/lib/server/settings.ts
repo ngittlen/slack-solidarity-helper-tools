@@ -167,6 +167,9 @@ export interface Settings {
 	vanTurfClaimTtlHours: number;
 	/** Turfs one volunteer may hold at once. */
 	vanTurfMaxConcurrentClaims: number;
+	/** Hours a turf handed out in VAN stays out of the pool. Resolved and
+	 *  clamped like the claim TTL. */
+	vanAssignmentTtlHours: number;
 	/** Whether the sync may ask VAN to re-cut map regions. Off unless an admin
 	 *  turns it on — see the note on app_config.vanRegionRefreshEnabled. */
 	vanRegionRefreshEnabled: boolean;
@@ -207,6 +210,7 @@ export type AppConfigPatch = Partial<{
 	doorTickerColumnsPerSecond: number;
 	vanTurfClaimTtlHours: number;
 	vanTurfMaxConcurrentClaims: number;
+	vanAssignmentTtlHours: number;
 	vanRegionRefreshEnabled: boolean;
 	/** Which tab is the campaign's Packet Tracker. '' restores the default. */
 	vanSheetTabName: string;
@@ -324,6 +328,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	const claimOptions = resolveClaimOptions({
 		ttlHours: cfg?.vanTurfClaimTtlHours,
 		maxConcurrentClaims: cfg?.vanTurfMaxConcurrentClaims,
+		vanAssignmentTtlHours: cfg?.vanAssignmentTtlHours,
 	});
 
 	// Sorted here rather than in SQL so the order is part of the contract the
@@ -358,6 +363,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		doorTickerColumnsPerSecond,
 		vanTurfClaimTtlHours: claimOptions.ttlHours,
 		vanTurfMaxConcurrentClaims: claimOptions.maxConcurrentClaims,
+		vanAssignmentTtlHours: claimOptions.vanAssignmentTtlHours,
 		// Strictly true: NULL, and anything a hand edit left behind, is off.
 		vanRegionRefreshEnabled: cfg?.vanRegionRefreshEnabled === true,
 		// NULL and '' both mean the built-in name. Resolved here so the drain
@@ -813,6 +819,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'doorTickerColumnsPerSecond',
 	'vanTurfClaimTtlHours',
 	'vanTurfMaxConcurrentClaims',
+	'vanAssignmentTtlHours',
 	'vanRegionRefreshEnabled',
 	'vanSheetTabName',
 	'themeTokens',

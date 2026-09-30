@@ -224,6 +224,7 @@
 			<VanTurfCheckoutEditor
 				ttlHours={data.settings.vanTurfClaimTtlHours}
 				maxConcurrentClaims={data.settings.vanTurfMaxConcurrentClaims}
+				vanAssignmentTtlHours={data.settings.vanAssignmentTtlHours}
 				regionRefreshEnabled={data.settings.vanRegionRefreshEnabled}
 			/>
 		</section>

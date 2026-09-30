@@ -210,6 +210,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			// Built-in defaults from $lib/van/checkout.ts when app_config is empty.
 			vanTurfClaimTtlHours: 48,
 			vanTurfMaxConcurrentClaims: 2,
+			vanAssignmentTtlHours: 48,
 			// Off with no row: a re-cut can leave turf unclaimable.
 			vanRegionRefreshEnabled: false,
 			vanSheetTabName: 'Packet Tracker',
@@ -513,6 +514,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'doorTickerColumnsPerSecond',
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
+				'vanAssignmentTtlHours',
 				'vanRegionRefreshEnabled',
 				'vanSheetTabName',
 				'publicJoinUrl',

@@ -341,6 +341,10 @@ export const appConfig = sqliteTable(
 		// that lapses in a minute.
 		vanTurfClaimTtlHours: integer('van_turf_claim_ttl_hours'),
 		vanTurfMaxConcurrentClaims: integer('van_turf_max_concurrent_claims'),
+		// Hours a turf handed out in VAN stays out of the pool (vanAssignmentBlocks
+		// in turf-view.ts). Same NULL-means-default and clamp-on-read as the two
+		// above.
+		vanAssignmentTtlHours: integer('van_assignment_ttl_hours'),
 		// Whether the sync may ask VAN to re-cut map regions. NULL means OFF, and it
 		// should stay off. A re-cut retires every route in the region and returns
 		// new ones with new ids and new saved lists — and it DELETES the region's
@@ -888,25 +892,27 @@ export const vanTurfs = sqliteTable(
 		 *  routeSize means the turf was re-cut and the hull is stale. */
 		hullSourceRouteSize: integer('hull_source_route_size'),
 		/** Canvassers VAN reports for this turf via /minivanExports, when it was
-		 *  handed out outside this app. Null = not distributed. Sticky once
-		 *  `vanAssignedAt` is set — see there. */
+		 *  handed out outside this app. Null = not distributed. Carried forward
+		 *  once `vanAssignedAt` is set — see there. */
 		vanDistributedTo: text('van_distributed_to'),
-		/** When this route was first seen loaded in MiniVAN OUTSIDE one of our
+		/** When this route was last seen loaded in MiniVAN OUTSIDE one of our
 		 *  own claims — an organizer handing the list out directly, or a
-		 *  volunteer given the number by someone else.
+		 *  volunteer given the number by someone else. The latest such export,
+		 *  so a re-export restarts the clock.
 		 *
-		 *  Sticky for the life of the route: once set, the catalog sync keeps it
-		 *  and `vanDistributedTo`, so turf handed out elsewhere never comes back
-		 *  into this app's pool. A re-cut issues new route ids, which is the one
-		 *  thing that starts a route over. Exports made DURING one of our claims
-		 *  are our own volunteer loading the list and are recorded on the claim
-		 *  instead (`van_turf_checkouts.loaded_in_minivan_at`). See catalog.ts. */
+		 *  The catalog sync carries it and `vanDistributedTo` forward after the
+		 *  export ages out, but the turf only stays out of this app's pool for
+		 *  app_config.vanAssignmentTtlHours after it, once there is an uncontacted count
+		 *  (vanAssignmentBlocks in turf-view.ts). Exports made DURING one of our
+		 *  claims are our own volunteer loading the list and are recorded on the
+		 *  claim instead (`van_turf_checkouts.loaded_in_minivan_at`). See
+		 *  catalog.ts. */
 		vanAssignedAt: text('van_assigned_at'),
 		/** Who the campaign's Packet Tracker says has this turf, from a row it
 		 *  entered itself — matched on list number, Status Unwalked, Out or
 		 *  Complete. Null = the tracker does not have it out.
 		 *
-		 *  NOT sticky, unlike `vanAssignedAt`: re-read from the tracker every sync
+		 *  NOT carried forward, unlike `vanAssignedAt`: re-read from the tracker every sync
 		 *  and cleared when the row goes, because the campaign's rows change and
 		 *  this is their word, not VAN's. Blocks a claim the same way
 		 *  `vanDistributedTo` does. See van/packet-tracker-store.ts. */

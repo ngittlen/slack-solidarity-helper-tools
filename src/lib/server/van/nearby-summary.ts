@@ -73,6 +73,9 @@ export async function loadNearbySummary(
 	db: Db,
 	point: LatLng,
 	now: Date = new Date(),
+	/** The admin's hand-out TTL, so this counts the same turf as claimable
+	 *  that the map does. */
+	vanAssignmentTtlHours?: number,
 ): Promise<NearbySummary> {
 	const reach = GRID_RADIUS_MILES + HULL_REACH_MILES;
 	const dLat = reach / 69.05;
@@ -111,7 +114,14 @@ export async function loadNearbySummary(
 	const walkReports = await latestWalkReports(db, nearbyIds);
 
 	const available = nearby.filter(
-		(t) => canClaim(turfSnapshot(t, walkReports), claims, ANYONE, now, NO_CAP).ok,
+		(t) =>
+			canClaim(
+				turfSnapshot(t, now, { walkReports, vanAssignmentTtlHours }),
+				claims,
+				ANYONE,
+				now,
+				NO_CAP,
+			).ok,
 	);
 	const doors = available.reduce((sum, t) => sum + Math.max(0, doorsLeft(t)), 0);
 

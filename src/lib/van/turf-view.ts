@@ -22,6 +22,8 @@ import {
 	hoursRemaining,
 	turfStatus,
 	activeClaimFor,
+	DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
+	VAN_ASSIGNMENT_NEVER_RELEASED,
 	type ClaimOptions,
 	type ClaimSnapshot,
 	type TurfSnapshot,
@@ -44,6 +46,9 @@ export interface TurfRowInput {
 	centroidLng: number | null;
 	hullJson: string | null;
 	vanDistributedTo: string | null;
+	/** When `vanDistributedTo` was last handed the list. Optional so fixtures
+	 *  predating the expiry need not name it. */
+	vanAssignedAt?: string | null;
 	/** Who the campaign's Packet Tracker says has it. Optional so fixtures
 	 *  predating the tracker need not name it. */
 	sheetAssignedTo?: string | null;
@@ -86,6 +91,29 @@ export function currentUncontacted(row: CountedRow): number | null {
 export function sheetBlocksClaim(row: CountedRow): boolean {
 	const left = currentUncontacted(row);
 	return left === null || left <= 0;
+}
+
+/**
+ * Whether a hand-out outside this app still keeps the turf from being claimed.
+ *
+ * For `ttlHours` after the last export, always (the admin setting, resolved by
+ * resolveClaimOptions), and for good when that is
+ * VAN_ASSIGNMENT_NEVER_RELEASED. After that, only
+ * while we cannot see what is left: once there is an uncontacted count, the
+ * turf goes back in the pool showing just the doors its holder did not reach,
+ * so the next volunteer is not sent to re-knock theirs. Without a count it
+ * would come back at VAN's full doorCount, so it stays out as before. So does
+ * a hand-out with no date, which there is no clock to run on.
+ */
+export function vanAssignmentBlocks(
+	row: CountedRow & Pick<TurfRowInput, 'vanDistributedTo' | 'vanAssignedAt'>,
+	now: Date,
+	ttlHours = DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
+): boolean {
+	if (!row.vanDistributedTo) return false;
+	if (ttlHours === VAN_ASSIGNMENT_NEVER_RELEASED) return true;
+	if (!row.vanAssignedAt || currentUncontacted(row) === null) return true;
+	return now.getTime() - Date.parse(row.vanAssignedAt) < ttlHours * 3_600_000;
 }
 
 /**
@@ -308,17 +336,26 @@ function geometryFor(
  *  deciding which rows become views. */
 export function turfSnapshot(
 	row: TurfRowInput,
-	walkReports?: ReadonlyMap<number, WalkReportInput>,
+	now: Date,
+	options: {
+		walkReports?: ReadonlyMap<number, WalkReportInput>;
+		vanAssignmentTtlHours?: number;
+	} = {},
 ): TurfSnapshot {
+	const { walkReports, vanAssignmentTtlHours } = options;
 	return {
 		mapRouteId: row.mapRouteId,
 		printedListNumber: row.printedListNumber,
 		retiredAt: row.retiredAt,
 		// Handed out outside this app — through VAN, or written into the
-		// campaign's Packet Tracker by an organizer. The sheet only counts while
-		// no uncontacted doors are known to remain; see sheetBlocksClaim.
+		// campaign's Packet Tracker by an organizer. VAN's lapses after the
+		// admin's hand-out TTL and the sheet only counts while no uncontacted
+		// doors are known to remain, both once there is a count; see
+		// vanAssignmentBlocks and sheetBlocksClaim.
 		vanDistributedTo:
-			row.vanDistributedTo ?? (sheetBlocksClaim(row) ? row.sheetAssignedTo : null) ?? null,
+			(vanAssignmentBlocks(row, now, vanAssignmentTtlHours) ? row.vanDistributedTo : null) ??
+			(sheetBlocksClaim(row) ? row.sheetAssignedTo : null) ??
+			null,
 		// The claim gate's "no doors left" reads the same number the volunteer
 		// sees, so a turf never shows doors it will then refuse to hand out.
 		doorCount: doorsLeft(row),
@@ -344,7 +381,7 @@ export function toTurfView(
 	options: TurfViewOptions = {},
 ): TurfView {
 	const report = options.walkReports?.get(row.mapRouteId) ?? null;
-	const snapshot = turfSnapshot(row, options.walkReports);
+	const snapshot = turfSnapshot(row, now, options);
 
 	const rawStatus = turfStatus(snapshot, claims, viewer.slackUserId, now);
 	const active = activeClaimFor(row.mapRouteId, claims, now);
