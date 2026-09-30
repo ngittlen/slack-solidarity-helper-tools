@@ -123,6 +123,9 @@ export interface AttendeeSyncReport {
 	 * worth being able to see.
 	 */
 	profilesCreatedWithoutPhone: number;
+	/** Likewise for an email Solidarity judged undeliverable — user+tag@,
+	 *  disposable, or a domain with no MX record. */
+	profilesCreatedWithoutEmail: number;
 	matchedByEmail: number;
 	matchedByPhone: number;
 	/**
@@ -179,6 +182,8 @@ export interface AttendeeSyncReport {
 	 * on. Not a failure: nothing here can fix someone else's phone number.
 	 */
 	skippedInvalidPhone: number;
+	/** Email rejected as undeliverable, and no usable phone to fall back on. */
+	skippedInvalidEmail: number;
 	/** Mobilize status we don't have a mapping for. */
 	skippedUnknownStatus: number;
 	abortedReason?: string;
@@ -206,6 +211,7 @@ function emptyReport(): AttendeeSyncReport {
 		attendancesRecorded: 0,
 		profilesCreated: 0,
 		profilesCreatedWithoutPhone: 0,
+		profilesCreatedWithoutEmail: 0,
 		matchedByEmail: 0,
 		matchedByPhone: 0,
 		lookupsPerformed: 0,
@@ -215,6 +221,7 @@ function emptyReport(): AttendeeSyncReport {
 		overCapacity: [],
 		skippedNoContact: 0,
 		skippedInvalidPhone: 0,
+		skippedInvalidEmail: 0,
 		skippedUnknownStatus: 0,
 		authFailed: false,
 		failed: 0,
@@ -570,31 +577,44 @@ export async function runAttendeeSync(
 						zipcode: participation.zipcode,
 					};
 
-					let created: { id: number };
-					try {
-						created = await createUser(config.solidarityToken, person, chapterId);
-					} catch (err) {
-						if (!(err instanceof SolidarityUserCreateError && err.phoneRejected)) throw err;
-						// Solidarity checks that a new profile's number can receive
-						// texts. Mobilize never does, so landlines and typos reach us
-						// looking fine. Failing the whole signup over it meant the same
-						// person alerted on every run forever, and their RSVP never
-						// landed — so drop the number and keep the human.
-						if (!email) {
-							// Nothing left to create them on. Skipped rather than failed:
-							// it is a fact about their contact details, not a fault, and
-							// it self-heals if they correct the number in Mobilize.
-							report.skippedInvalidPhone++;
-							log(`${refFor(participation)}: Solidarity rejected the phone and there is no email`);
-							continue;
+					// Solidarity checks that a new profile's number can receive texts
+					// and that its email is deliverable. Mobilize checks neither, so
+					// landlines, typos and user+tag@ addresses reach us looking fine.
+					// Failing the whole signup over it meant the same person alerted
+					// on every run forever, and their RSVP never landed — so drop the
+					// rejected detail and keep the human. Each retry drops a field,
+					// so this ends after at most two.
+					let attempt = person;
+					let created: { id: number } | null = null;
+					let lastRejected: 'phone' | 'email' = 'phone';
+					while (created === null) {
+						try {
+							created = await createUser(config.solidarityToken, attempt, chapterId);
+						} catch (err) {
+							if (!(err instanceof SolidarityUserCreateError)) throw err;
+							const dropPhone = err.phoneRejected && !!normalizePhone(attempt.phone);
+							const dropEmail = err.emailRejected && !!normalizeEmail(attempt.email);
+							if (!dropPhone && !dropEmail) throw err;
+							lastRejected = dropEmail ? 'email' : 'phone';
+							attempt = {
+								...attempt,
+								phone: dropPhone ? null : attempt.phone,
+								email: dropEmail ? null : attempt.email,
+							};
+							if (!normalizeEmail(attempt.email) && !normalizePhone(attempt.phone)) break;
 						}
-						created = await createUser(
-							config.solidarityToken,
-							{ ...person, phone: null },
-							chapterId,
-						);
-						report.profilesCreatedWithoutPhone++;
 					}
+					if (created === null) {
+						// Nothing left to create them on. Skipped rather than failed:
+						// it is a fact about their contact details, not a fault, and
+						// it self-heals if they correct them in Mobilize.
+						if (lastRejected === 'email') report.skippedInvalidEmail++;
+						else report.skippedInvalidPhone++;
+						log(`${refFor(participation)}: Solidarity rejected every contact detail we had`);
+						continue;
+					}
+					if (phone && !attempt.phone) report.profilesCreatedWithoutPhone++;
+					if (email && !attempt.email) report.profilesCreatedWithoutEmail++;
 					userId = created.id;
 					report.profilesCreated++;
 					log(`created Solidarity user ${userId} (chapter ${chapterId})`);
