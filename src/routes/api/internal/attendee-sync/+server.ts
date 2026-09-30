@@ -158,6 +158,8 @@ export const POST: RequestHandler = async ({ url }) => {
 				`matched ${result.matchedByEmail}e/${result.matchedByPhone}p, unchanged ${result.unchanged}, ` +
 				`no-contact ${result.skippedNoContact}, bad-phone ${result.skippedInvalidPhone}, ` +
 				`phone-dropped ${result.profilesCreatedWithoutPhone}, ` +
+				`bad-email ${result.skippedInvalidEmail}, ` +
+				`email-dropped ${result.profilesCreatedWithoutEmail}, ` +
 				`unknown-status ${result.skippedUnknownStatus}, ` +
 				`failed ${result.failed}`,
 		);

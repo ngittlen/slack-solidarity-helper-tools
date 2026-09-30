@@ -225,6 +225,35 @@ describe('createUser', () => {
 		expect(failure.message).toContain('returned 422');
 	});
 
+	it('reads the field from the sentence-style details the email check sends', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => {
+				const body = {
+					error: 'email is not a valid, deliverable email address',
+					details: [
+						'email must be a deliverable address: subaddressed emails (user+tag@) are rejected',
+					],
+				};
+				return {
+					ok: false,
+					status: 422,
+					json: async () => body,
+					text: async () => JSON.stringify(body),
+					headers: new Headers(),
+				} as unknown as Response;
+			}),
+		);
+
+		const err = (await createUser(TOKEN, person, 1330).catch(
+			(e: unknown) => e,
+		)) as SolidarityUserCreateError;
+
+		expect(err.emailRejected).toBe(true);
+		expect(err.phoneRejected).toBe(false);
+		expect(err.fields).toEqual(['email']);
+	});
+
 	it('does not claim the phone was at fault when Solidarity says nothing about it', async () => {
 		mockFetch(() => ({ ok: false, body: { error: 'nope' } }));
 

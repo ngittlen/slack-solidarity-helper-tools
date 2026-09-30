@@ -174,13 +174,29 @@ export class SolidarityUserCreateError extends Error {
 	get phoneRejected(): boolean {
 		return this.status === 422 && this.fields.includes('phone_number');
 	}
+
+	/**
+	 * Solidarity rejected the email as undeliverable: subaddressed (user+tag@),
+	 * disposable, or a domain without MX records. Mobilize accepts all of these.
+	 */
+	get emailRejected(): boolean {
+		return this.status === 422 && this.fields.includes('email');
+	}
 }
 
-/** Field names from Solidarity's `details` array, when it sent one. */
+/**
+ * Field names from Solidarity's `details` array, when it sent one.
+ *
+ * Two shapes are live: `[{ field_name: 'phone_number', message }]` for the
+ * phone check, and bare sentences — `["email must be a deliverable address…"]`
+ * — for the email check, where the field is the sentence's first word.
+ */
 function rejectedFields(body: string): string[] {
 	try {
-		const parsed = JSON.parse(body) as { details?: { field_name?: string }[] };
-		return (parsed.details ?? []).map((d) => d.field_name).filter((f): f is string => !!f);
+		const parsed = JSON.parse(body) as { details?: ({ field_name?: string } | string)[] };
+		return (parsed.details ?? [])
+			.map((d) => (typeof d === 'string' ? /^([a-z_]+)\s/.exec(d)?.[1] : d?.field_name))
+			.filter((f): f is string => !!f);
 	} catch {
 		return [];
 	}
