@@ -638,6 +638,7 @@ describe('/turfs nearby action', () => {
 		address = `198.51.100.${++ip}`;
 		mockNearby.mockResolvedValue(SUMMARY);
 		mockResolveLocation.mockResolvedValue({ point: { lat: 42.2808, lng: -83.743 }, zip: '48104' });
+		mockSettings.mockResolvedValue({ vanAssignmentTtlHours: 72 });
 	});
 
 	function post(fields: Record<string, string>) {
@@ -663,10 +664,12 @@ describe('/turfs nearby action', () => {
 	it('uses device coordinates without geocoding, rounded', async () => {
 		const result = await actions.nearby(post({ lat: '42.280812', lng: '-83.743038' }));
 		expect(mockResolveLocation).not.toHaveBeenCalled();
+		// With the admin's hand-out TTL, so it counts what the map would.
 		expect(mockNearby).toHaveBeenCalledWith(
 			expect.anything(),
 			{ lat: 42.281, lng: -83.743 },
 			expect.any(Date),
+			72,
 		);
 		expect(result).toMatchObject({ nearby: { place: { kind: 'here' } } });
 	});

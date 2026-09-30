@@ -160,7 +160,10 @@ export async function claimTurf(
 
 	// The same snapshot the page judged claimability from, so the server never
 	// refuses a turf the page offered (or hands out one it showed as done).
-	const snapshot = turfSnapshot(row, await latestWalkReports(db, [mapRouteId]));
+	const snapshot = turfSnapshot(row, now, {
+		walkReports: await latestWalkReports(db, [mapRouteId]),
+		vanAssignmentTtlHours: input.options?.vanAssignmentTtlHours,
+	});
 
 	const options = input.options ?? {};
 	const claims = await relevantClaims(db, mapRouteId, slackUserId);

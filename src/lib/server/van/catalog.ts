@@ -281,37 +281,37 @@ function insideClaim(at: number, claims: readonly CatalogClaim[]): boolean {
  *     assignment; it is recorded on the claim instead (`claimsLoaded`).
  *   - anywhere else → the turf was handed out outside this app.
  *
- * An outside assignment is STICKY for the life of the route: once
- * `vanAssignedAt` is set it is carried forward on every sync, and so is the
- * name, even after the export ages out of the store or the list is reprinted.
- * Turf handed out elsewhere is managed elsewhere, and never comes back into this
- * app's pool. A re-cut issues new route ids, which is the one thing that starts
- * a route over.
+ * An outside assignment is carried forward on every sync once seen, name and
+ * all, even after the export ages out of the store or the list is reprinted.
+ * It does not hold the turf forever, though: `vanAssignmentBlocks` in
+ * turf-view.ts lets it go VAN_ASSIGNMENT_TTL_HOURS after `vanAssignedAt`, once
+ * the uncontacted count can show what the holder left.
  *
- * The LATEST outside export names the holder: re-exporting a list hands it to
- * someone else. Stickiness is keyed on `vanAssignedAt` rather than on
- * `vanDistributedTo`, because rows written before this rule may carry a name
- * that came from our own volunteer's export.
+ * `vanAssignedAt` is the LATEST outside export, not the first: re-exporting a
+ * list hands it to someone (or back to the same someone) again, and that
+ * restarts the clock. The latest export also names the holder. It never moves
+ * backwards, so an export ageing out of the store cannot rewind it. Carrying
+ * forward is keyed on `vanAssignedAt` rather than on `vanDistributedTo`,
+ * because rows written before this rule may carry a name that came from our
+ * own volunteer's export.
  */
 function outsideAssignment(
 	exports: readonly DatedExport[],
 	claims: readonly CatalogClaim[],
 	prior: VanTurfRow | undefined,
 ): { vanDistributedTo: string | null; vanAssignedAt: string | null } {
-	const outside = exports.filter((e) => !insideClaim(e.at, claims));
-	const latest = outside.at(-1);
+	const latest = exports.filter((e) => !insideClaim(e.at, claims)).at(-1);
+	const latestAt = latest ? new Date(latest.at).toISOString() : null;
+	if (latest && latestAt && !(prior?.vanAssignedAt && prior.vanAssignedAt > latestAt)) {
+		return { vanDistributedTo: latest.names, vanAssignedAt: latestAt };
+	}
 	if (prior?.vanAssignedAt) {
 		return {
-			vanDistributedTo: latest?.names ?? prior.vanDistributedTo ?? UNKNOWN_CANVASSER,
+			vanDistributedTo: prior.vanDistributedTo ?? UNKNOWN_CANVASSER,
 			vanAssignedAt: prior.vanAssignedAt,
 		};
 	}
-	if (!latest) return { vanDistributedTo: null, vanAssignedAt: null };
-	return {
-		vanDistributedTo: latest.names,
-		// The FIRST outside export: when the route left the pool.
-		vanAssignedAt: new Date(outside[0]!.at).toISOString(),
-	};
+	return { vanDistributedTo: null, vanAssignedAt: null };
 }
 
 /** First five names, then a count of the rest — a warning names the turf an

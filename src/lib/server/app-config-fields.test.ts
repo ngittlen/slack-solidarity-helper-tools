@@ -42,6 +42,7 @@ describe('the table', () => {
 				'slackGrowthReportRankingAlpha',
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
+				'vanAssignmentTtlHours',
 				'vanRegionRefreshEnabled',
 				'vanSheetTabName',
 				'doorTickerColumnsPerSecond',
@@ -54,7 +55,7 @@ describe('the table', () => {
 				'publicJoinUrl',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(21);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(22);
 	});
 });
 

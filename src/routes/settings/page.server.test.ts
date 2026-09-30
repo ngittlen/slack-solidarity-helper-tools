@@ -74,6 +74,7 @@ const settingsFixture = {
 	doorTickerColumnsPerSecond: 30,
 	vanTurfClaimTtlHours: 48,
 	vanTurfMaxConcurrentClaims: 2,
+	vanAssignmentTtlHours: 48,
 	vanRegionRefreshEnabled: false,
 	vanSheetTabName: 'Packet Tracker',
 	publicJoinUrl: '',

@@ -169,11 +169,13 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		const walkReports = await latestWalkReports(db, ids);
 		// No cap: see `claimableOnly` for why being at the limit does not hide a turf.
 		const ignoringCap = { ...claimOptions, maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
-		candidates = boxed.filter(
-			(row) =>
-				canClaim(turfSnapshot(row, walkReports), claims, viewer.slackUserId, now, ignoringCap).ok ||
-				activeClaimFor(row.mapRouteId, claims, now)?.slackUserId === viewer.slackUserId,
-		);
+		candidates = boxed.filter((row) => {
+			const snapshot = turfSnapshot(row, now, { ...claimOptions, walkReports });
+			return (
+				canClaim(snapshot, claims, viewer.slackUserId, now, ignoringCap).ok ||
+				activeClaimFor(row.mapRouteId, claims, now)?.slackUserId === viewer.slackUserId
+			);
+		});
 		judged = { claims, walkReports };
 	}
 

@@ -115,6 +115,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		claimOptions: {
 			ttlHours: settings.vanTurfClaimTtlHours,
 			maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+			vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
 		},
 	});
 

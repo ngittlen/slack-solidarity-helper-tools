@@ -112,6 +112,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const options = {
 		ttlHours: settings.vanTurfClaimTtlHours,
 		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+		vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
 	};
 
 	const access = turfAccess(
@@ -326,7 +327,10 @@ export const actions: Actions = {
 			place = zip ? { kind: 'zip', zip } : { kind: 'address' };
 		}
 
-		const summary = await loadNearbySummary(db, point, new Date(now));
+		// The admin's hand-out TTL, so the summary counts the same turf as
+		// claimable that a signed-in volunteer's map would.
+		const { vanAssignmentTtlHours } = await loadSettings(db);
+		const summary = await loadNearbySummary(db, point, new Date(now), vanAssignmentTtlHours);
 		return { nearby: { ...summary, place } satisfies PublicNearby };
 	},
 };

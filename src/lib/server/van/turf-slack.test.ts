@@ -440,6 +440,7 @@ describe('claimFromSlack', () => {
 			chapterChannelMap: CHANNEL_MAP,
 			vanTurfClaimTtlHours: 12,
 			vanTurfMaxConcurrentClaims: 1,
+			vanAssignmentTtlHours: 72,
 		});
 
 		await claimFromSlack(makeDb(), {
@@ -451,7 +452,7 @@ describe('claimFromSlack', () => {
 		expect(mockClaimTurf).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({
-				options: { ttlHours: 12, maxConcurrentClaims: 1 },
+				options: { ttlHours: 12, maxConcurrentClaims: 1, vanAssignmentTtlHours: 72 },
 			}),
 		);
 		// The list rendered alongside has to agree, or a Claim button offers
@@ -459,7 +460,7 @@ describe('claimFromSlack', () => {
 		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({
-				claimOptions: { ttlHours: 12, maxConcurrentClaims: 1 },
+				claimOptions: { ttlHours: 12, maxConcurrentClaims: 1, vanAssignmentTtlHours: 72 },
 			}),
 		);
 	});

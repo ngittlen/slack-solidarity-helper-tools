@@ -5,14 +5,17 @@ import {
 	canClaim,
 	DEFAULT_CLAIM_TTL_HOURS,
 	DEFAULT_MAX_CONCURRENT_CLAIMS,
+	DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 	expiryFor,
 	hoursRemaining,
 	isActive,
 	lapsedClaims,
 	MAX_CLAIM_TTL_HOURS,
 	MAX_CONCURRENT_CLAIMS,
+	MAX_VAN_ASSIGNMENT_TTL_HOURS,
 	MIN_CLAIM_TTL_HOURS,
 	MIN_CONCURRENT_CLAIMS,
+	MIN_VAN_ASSIGNMENT_TTL_HOURS,
 	resolveClaimOptions,
 	turfStatus,
 	type ClaimSnapshot,
@@ -257,6 +260,7 @@ describe('resolveClaimOptions', () => {
 		expect(resolveClaimOptions()).toEqual({
 			ttlHours: DEFAULT_CLAIM_TTL_HOURS,
 			maxConcurrentClaims: DEFAULT_MAX_CONCURRENT_CLAIMS,
+			vanAssignmentTtlHours: DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 		});
 	});
 
@@ -264,16 +268,26 @@ describe('resolveClaimOptions', () => {
 		['null', null],
 		['undefined', undefined],
 	])('falls back for a %s column', (_label, value) => {
-		expect(resolveClaimOptions({ ttlHours: value, maxConcurrentClaims: value })).toEqual({
+		expect(
+			resolveClaimOptions({
+				ttlHours: value,
+				maxConcurrentClaims: value,
+				vanAssignmentTtlHours: value,
+			}),
+		).toEqual({
 			ttlHours: DEFAULT_CLAIM_TTL_HOURS,
 			maxConcurrentClaims: DEFAULT_MAX_CONCURRENT_CLAIMS,
+			vanAssignmentTtlHours: DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 		});
 	});
 
 	it('passes configured values through', () => {
-		expect(resolveClaimOptions({ ttlHours: 24, maxConcurrentClaims: 5 })).toEqual({
+		expect(
+			resolveClaimOptions({ ttlHours: 24, maxConcurrentClaims: 5, vanAssignmentTtlHours: 72 }),
+		).toEqual({
 			ttlHours: 24,
 			maxConcurrentClaims: 5,
+			vanAssignmentTtlHours: 72,
 		});
 	});
 
@@ -300,7 +314,21 @@ describe('resolveClaimOptions', () => {
 			MIN_CONCURRENT_CLAIMS,
 		],
 	])('clamps a value %s', (_label, config, ttl, cap) => {
-		expect(resolveClaimOptions(config)).toEqual({ ttlHours: ttl, maxConcurrentClaims: cap });
+		expect(resolveClaimOptions(config)).toMatchObject({ ttlHours: ttl, maxConcurrentClaims: cap });
+	});
+
+	it.each([
+		// Below zero reads as "never" — the conservative side.
+		['below the floor', -5, MIN_VAN_ASSIGNMENT_TTL_HOURS],
+		['above the ceiling', 10_000, MAX_VAN_ASSIGNMENT_TTL_HOURS],
+	])('clamps a VAN hand-out TTL %s', (_label, value, expected) => {
+		expect(resolveClaimOptions({ vanAssignmentTtlHours: value }).vanAssignmentTtlHours).toBe(
+			expected,
+		);
+	});
+
+	it('keeps a VAN hand-out TTL of 0, which means never', () => {
+		expect(resolveClaimOptions({ vanAssignmentTtlHours: 0 }).vanAssignmentTtlHours).toBe(0);
 	});
 
 	it.each([
@@ -317,6 +345,8 @@ describe('resolveClaimOptions', () => {
 		expect(DEFAULT_CLAIM_TTL_HOURS).toBeLessThanOrEqual(MAX_CLAIM_TTL_HOURS);
 		expect(DEFAULT_MAX_CONCURRENT_CLAIMS).toBeGreaterThanOrEqual(MIN_CONCURRENT_CLAIMS);
 		expect(DEFAULT_MAX_CONCURRENT_CLAIMS).toBeLessThanOrEqual(MAX_CONCURRENT_CLAIMS);
+		expect(DEFAULT_VAN_ASSIGNMENT_TTL_HOURS).toBeGreaterThanOrEqual(MIN_VAN_ASSIGNMENT_TTL_HOURS);
+		expect(DEFAULT_VAN_ASSIGNMENT_TTL_HOURS).toBeLessThanOrEqual(MAX_VAN_ASSIGNMENT_TTL_HOURS);
 	});
 
 	// What the settings are actually for: the resolved numbers have to change

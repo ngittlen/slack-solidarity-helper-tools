@@ -23,8 +23,10 @@ import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '..
 import {
 	MAX_CLAIM_TTL_HOURS,
 	MAX_CONCURRENT_CLAIMS,
+	MAX_VAN_ASSIGNMENT_TTL_HOURS,
 	MIN_CLAIM_TTL_HOURS,
 	MIN_CONCURRENT_CLAIMS,
+	MIN_VAN_ASSIGNMENT_TTL_HOURS,
 } from '../van/checkout.js';
 import { parseOverrides } from '$lib/styles/theme-css.js';
 import { SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
@@ -323,6 +325,11 @@ export const APP_CONFIG_FIELDS: {
 		'vanTurfMaxConcurrentClaims',
 		MIN_CONCURRENT_CLAIMS,
 		MAX_CONCURRENT_CLAIMS,
+	),
+	vanAssignmentTtlHours: numberInRangeField(
+		'vanAssignmentTtlHours',
+		MIN_VAN_ASSIGNMENT_TTL_HOURS,
+		MAX_VAN_ASSIGNMENT_TTL_HOURS,
 	),
 	vanRegionRefreshEnabled: booleanField('vanRegionRefreshEnabled'),
 	vanSheetTabName: sheetTabNameField('vanSheetTabName'),

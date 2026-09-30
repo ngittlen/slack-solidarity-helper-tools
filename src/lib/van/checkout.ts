@@ -61,6 +61,11 @@ export interface ClaimSnapshot {
 }
 
 export const DEFAULT_CLAIM_TTL_HOURS = 48;
+
+/** How long a turf handed out outside this app stays out of the pool, from
+ *  the last time VAN saw its list exported. See `vanAssignmentBlocks` in
+ *  turf-view.ts. */
+export const DEFAULT_VAN_ASSIGNMENT_TTL_HOURS = 48;
 export const DEFAULT_MAX_CONCURRENT_CLAIMS = 2;
 
 // Bounds for the admin-tunable versions of the two above (Story 7.4). They sit
@@ -76,6 +81,18 @@ export const MIN_CLAIM_TTL_HOURS = 1;
  *  nobody revisits — and the turf sits out of the pool that whole time. */
 export const MAX_CLAIM_TTL_HOURS = 168;
 
+/** The hand-out TTL that means "never": turf handed out in VAN stays out of
+ *  the pool for good, as it did before the TTL existed. It doubles as the
+ *  floor, so anything below it (a hand-edited row) also reads as "never",
+ *  which errs toward nobody re-knocking a canvasser's doors. Otherwise any
+ *  whole number of hours is allowed, down to one. */
+export const VAN_ASSIGNMENT_NEVER_RELEASED = 0;
+export const MIN_VAN_ASSIGNMENT_TTL_HOURS = VAN_ASSIGNMENT_NEVER_RELEASED;
+/** Two weeks. Longer than a claim may last, because an organizer handing a
+ *  packet out directly may mean it for a longer push; past this the turf is
+ *  as good as never coming back, which is what this setting exists to end. */
+export const MAX_VAN_ASSIGNMENT_TTL_HOURS = 336;
+
 /** Zero would mean nobody may claim anything, which is a way to break turf
  *  checkout by typing in a settings box rather than a setting anyone wants. */
 export const MIN_CONCURRENT_CLAIMS = 1;
@@ -88,8 +105,8 @@ export const MAX_CONCURRENT_CLAIMS = 10;
  *
  * Every caller of `canClaim` and `claimTurf` goes through this, so the page,
  * the map's viewport endpoint, the claim route and the `/turfs` Slack command
- * cannot disagree about how long a claim lasts or how many a volunteer may
- * hold. With real settings a disagreement is visible: turf that shows claimable
+ * cannot disagree about how long a claim lasts, how many a volunteer may
+ * hold, or when a turf handed out in VAN comes back. With real settings a disagreement is visible: turf that shows claimable
  * and refuses on click, or the same person getting different rules depending on
  * whether they opened the page or typed the command.
  *
@@ -98,7 +115,11 @@ export const MAX_CONCURRENT_CLAIMS = 10;
  * and neither is worth failing a volunteer's page load over.
  */
 export function resolveClaimOptions(
-	config: { ttlHours?: number | null; maxConcurrentClaims?: number | null } = {},
+	config: {
+		ttlHours?: number | null;
+		maxConcurrentClaims?: number | null;
+		vanAssignmentTtlHours?: number | null;
+	} = {},
 ): Required<ClaimOptions> {
 	return {
 		ttlHours: clamp(
@@ -112,6 +133,12 @@ export function resolveClaimOptions(
 			MIN_CONCURRENT_CLAIMS,
 			MAX_CONCURRENT_CLAIMS,
 			DEFAULT_MAX_CONCURRENT_CLAIMS,
+		),
+		vanAssignmentTtlHours: clamp(
+			config.vanAssignmentTtlHours,
+			MIN_VAN_ASSIGNMENT_TTL_HOURS,
+			MAX_VAN_ASSIGNMENT_TTL_HOURS,
+			DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 		),
 	};
 }
@@ -210,6 +237,10 @@ export type ClaimDecision =
 export interface ClaimOptions {
 	ttlHours?: number;
 	maxConcurrentClaims?: number;
+	/** How long a hand-out outside this app keeps a turf out of the pool.
+	 *  Applied by `turfSnapshot`, not by `canClaim`, which only sees the
+	 *  result; carried here so every caller hands both the same settings. */
+	vanAssignmentTtlHours?: number;
 }
 
 /** When a claim made at `now` should lapse. */
