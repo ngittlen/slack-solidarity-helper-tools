@@ -224,6 +224,53 @@ describe('planCatalogSync', () => {
 			expect(plan.upserts[0]!.printedListNumber).toBeNull();
 		});
 
+		describe('two regions in one folder sharing a name', () => {
+			// The live case: one precinct cut twice, both cuts printed, so every
+			// turf name owns two lists and each route carries its own.
+			const list = (number: string) => ({
+				number,
+				name: 'City of Cambridge Turf 01',
+				listSize: 400,
+				folders: [{ folderId: 1152, name: 'Middlesex Turf' }],
+				dateCreated: null,
+				createdBy: null,
+			});
+			const printedLists = [list('11111111-11111'), list('22222222-22222')];
+
+			it('says the regions share a name, not that the list numbers disagree', () => {
+				const plan = planCatalogSync({
+					...base,
+					folders: [
+						folder([
+							region([route({ printedList: { number: '11111111-11111' } })]),
+							region([route({ mapRouteId: 200, printedList: { number: '22222222-22222' } })], {
+								mapRegionId: 20,
+							}),
+						]),
+					],
+					printedLists,
+				});
+
+				expect(plan.upserts.map((r) => r.printedListNumber)).toEqual([
+					'11111111-11111',
+					'22222222-22222',
+				]);
+				expect(plan.warnings).toHaveLength(1);
+				expect(plan.warnings[0]).toContain('Cambridge North (2 regions in Middlesex Turf)');
+				expect(plan.warnings[0]).not.toContain('11111111-11111');
+				expect(plan.warnings[0]).not.toContain('22222222-22222');
+			});
+
+			it('does not backfill a route from a name that owns several lists', () => {
+				const plan = planCatalogSync({
+					...base,
+					folders: [folder([region([route({ printedList: null })])])],
+					printedLists,
+				});
+				expect(plan.upserts[0]!.printedListNumber).toBeNull();
+			});
+		});
+
 		it('collects unclaimable turf into a single warning, not one per route', () => {
 			const routes = [1, 2, 3, 4, 5, 6, 7].map((n) =>
 				route({ mapRouteId: 100 + n, name: `Turf 0${n}`, printedList: null }),

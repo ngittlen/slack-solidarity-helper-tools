@@ -124,19 +124,27 @@ function listCreatedIndex(printedLists: VanPrintedList[]): Map<string, string> {
 	return index;
 }
 
-/** Printed-list numbers by turf name, for backfilling routes that don't carry
- *  their own. Scoped per folder because two counties can both have a
- *  "Turf 01". */
-function printedListIndex(printedLists: VanPrintedList[]): Map<string, string> {
-	const index = new Map<string, string>();
+/** Every printed-list number by turf name, for backfilling routes that don't
+ *  carry their own. Scoped per folder because two counties can both have a
+ *  "Turf 01".
+ *
+ *  A set, because one name can own several lists. A regenerated list appears
+ *  alongside the old one, and two regions in one folder can share a name —
+ *  verified live 2026-09-30 in folder 68295, where
+ *  R03C_Ottawa_HollandCityWd04Pct006_9.11 was cut twice five minutes apart
+ *  and both cuts printed, so each "Turf 01" through "Turf 05" had two
+ *  different, equally valid lists. The name alone cannot say which one a
+ *  route owns. */
+function printedListIndex(printedLists: VanPrintedList[]): Map<string, Set<string>> {
+	const index = new Map<string, Set<string>>();
 	for (const list of printedLists) {
-		if (!list.number) continue;
+		const number = list.number?.trim();
+		if (!number) continue;
 		for (const folder of list.folders ?? []) {
 			const key = `${folder.folderId}:${nameKey(list.name)}`;
-			// First writer wins: a regenerated list appears alongside the old
-			// one, and picking arbitrarily between them would flip the number a
-			// volunteer sees from sync to sync.
-			if (!index.has(key)) index.set(key, list.number);
+			const numbers = index.get(key) ?? new Set<string>();
+			numbers.add(number);
+			index.set(key, numbers);
 		}
 	}
 	return index;
@@ -348,12 +356,29 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 	const upserts: NewVanTurfRow[] = [];
 	const missingListNumbers: string[] = [];
 	const listNumberDisagreements: string[] = [];
+	const sharedRegionNames: string[] = [];
 	const unretirements: number[] = [];
 	const geometryQueue: CatalogPlan['geometryQueue'] = [];
 	const seen = new Set<number>();
 	const syncedFolderIds = new Set(folders.map((f) => f.folderId));
 
 	for (const folder of folders) {
+		// Two regions under one name means their turfs share names too — the
+		// same "Turf 01" listed twice, often the same ground cut twice. That is
+		// for an organizer to sort out in VAN; all this can do is say so.
+		const regionIdsByName = new Map<string, { name: string; ids: Set<number> }>();
+		for (const region of folder.regions) {
+			const key = nameKey(region.name);
+			if (!key) continue;
+			const entry = regionIdsByName.get(key) ?? { name: region.name!.trim(), ids: new Set() };
+			entry.ids.add(region.mapRegionId);
+			regionIdsByName.set(key, entry);
+		}
+		for (const { name, ids } of regionIdsByName.values()) {
+			if (ids.size > 1)
+				sharedRegionNames.push(`${name} (${ids.size} regions in ${folder.folderName})`);
+		}
+
 		for (const region of folder.regions) {
 			for (const route of region.mapRoutes ?? []) {
 				if (typeof route.mapRouteId !== 'number') continue;
@@ -361,17 +386,19 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				const prior = existingById.get(route.mapRouteId);
 
 				// The Map Region response is authoritative for the list number;
-				// /printedLists only fills a gap. When both exist and disagree,
-				// someone regenerated the list — take VAN's route-level answer
-				// and flag the turf, rather than silently handing out a stale
-				// number. The numbers themselves stay out of the warning: it is
-				// posted to a channel, and a list number is the credential that
-				// pulls a turf's doors down in MiniVAN.
+				// /printedLists only fills a gap, and only when the name points
+				// at exactly one list — with several, guessing could hand a
+				// volunteer another turf's doors. A route whose own number is
+				// not among its name's lists is flagged rather than trusted
+				// silently. The numbers themselves stay out of the warning: it
+				// is posted to a channel, and a list number is the credential
+				// that pulls a turf's doors down in MiniVAN.
 				const routeNumber = route.printedList?.number?.trim() || null;
-				const backfill = listIndex.get(`${folder.folderId}:${nameKey(route.name)}`) ?? null;
+				const listNumbers = listIndex.get(`${folder.folderId}:${nameKey(route.name)}`);
+				const backfill = listNumbers?.size === 1 ? [...listNumbers][0]! : null;
 				const printedListNumber = routeNumber ?? backfill;
 				const listNumberDisagrees =
-					routeNumber !== null && backfill !== null && routeNumber !== backfill;
+					routeNumber !== null && listNumbers !== undefined && !listNumbers.has(routeNumber);
 				// The date belongs to whichever number is being issued, so it is
 				// looked up by that number rather than taken from the route alone.
 				const printedListCreatedAt = vanTimestamp(
@@ -478,6 +505,14 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 		warnings.push(
 			`${missingListNumbers.length} turf(s) have no MiniVAN list number and are not claimable ` +
 				`until someone generates their printed lists in VAN: ${sampleNames(missingListNumbers)}.`,
+		);
+	}
+
+	if (sharedRegionNames.length > 0) {
+		warnings.push(
+			`${sharedRegionNames.length} map region name(s) are used by more than one region in the ` +
+				`same folder, so their turfs are listed twice under the same names. Check VAN for a ` +
+				`region cut twice: ${sampleNames(sharedRegionNames)}.`,
 		);
 	}
 
