@@ -53,9 +53,10 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		// `malformed` also covers the states minted by the previous bare-UUID
 		// code, so the few in flight across a deploy restart cleanly rather than
 		// 400ing. Neither reason can loop: the state we mint next is well-formed
-		// and freshly dated by construction.
+		// and freshly dated by construction. An expired state did pass its
+		// signature check, so its destination is ours and rides along.
 		console.warn(`[auth] restarting login: OAuth state ${verdict.reason}`);
-		restartLogin(null);
+		restartLogin(verdict.reason === 'expired' ? verdict.destination : null);
 	}
 	const state = verdict.state;
 

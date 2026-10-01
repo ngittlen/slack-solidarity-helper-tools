@@ -463,13 +463,45 @@ describe('GET /auth/slack/callback — recovering a login that lost its cookie',
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
 		const event = makeEvent();
-		vi.setSystemTime(new Date('2026-01-01T00:11:00Z'));
+		vi.setSystemTime(new Date('2026-01-01T01:01:00Z'));
 
 		await expect(GET(event as never)).rejects.toMatchObject({
 			status: 302,
 			location: '/auth/slack?retry=1',
 		});
 		expect(mockSessionSet).not.toHaveBeenCalled();
+	});
+
+	it('keeps the destination when restarting an expired login', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+		const event = makeEvent({ stateDestination: '/members?user=U123' });
+		vi.setSystemTime(new Date('2026-01-01T01:01:00Z'));
+
+		await expect(GET(event as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/auth/slack?redirectTo=%2Fmembers%3Fuser%3DU123&retry=1',
+		});
+	});
+
+	// Ten minutes used to be the limit, and real logins outlived it while the
+	// person signed in to Slack — the restart then showed them Allow a second time.
+	it('accepts a login that took longer than ten minutes', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+		const event = makeEvent();
+		vi.setSystemTime(new Date('2026-01-01T00:25:00Z'));
+		vi.stubGlobal(
+			'fetch',
+			vi
+				.fn()
+				.mockResolvedValue(
+					jsonRes({ ok: true, authed_user: { id: 'UMEMBER', access_token: 'tok' } }),
+				),
+		);
+
+		await expect(GET(event as never)).rejects.toMatchObject({ status: 302, location: '/' });
+		expect(mockSessionSet).toHaveBeenCalled();
 	});
 
 	// The bare UUIDs the previous implementation minted. Only the handful in
