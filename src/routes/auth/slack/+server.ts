@@ -5,7 +5,7 @@ import { SLACK_CLIENT_ID, REDIRECT_URI } from '$lib/server/env.js';
 import { env } from '$env/dynamic/private';
 import { OAUTH_REDIRECT_COOKIE, sanitizeRedirectTarget } from '$lib/server/post-login-redirect.js';
 import { POST_AS_USER_SCOPE } from '$lib/server/user-tokens.js';
-import { signState } from '$lib/server/oauth-state.js';
+import { signState, STATE_TTL_MS } from '$lib/server/oauth-state.js';
 import { workspaceTeamId } from '$lib/server/slack-team.js';
 
 const OAUTH_STATE_COOKIE = 'oauth_state';
@@ -49,7 +49,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		httpOnly: true,
 		secure: !dev,
 		sameSite: 'lax',
-		maxAge: 600, // 10 minutes
+		maxAge: STATE_TTL_MS / 1000,
 	});
 
 	if (redirectTo === null) {
@@ -61,7 +61,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 			httpOnly: true,
 			secure: !dev,
 			sameSite: 'lax',
-			maxAge: 600, // matches the state cookie
+			maxAge: STATE_TTL_MS / 1000,
 		});
 	}
 

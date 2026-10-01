@@ -117,7 +117,19 @@ describe('oauth state', () => {
 			const { state } = signState({ destination: null, isRetry: false });
 			vi.advanceTimersByTime(STATE_TTL_MS + 1000);
 
-			expect(verifyState(state)).toEqual({ ok: false, reason: 'expired' });
+			expect(verifyState(state)).toEqual({ ok: false, reason: 'expired', destination: null });
+		});
+
+		it('still reports the signed destination of an expired state', () => {
+			vi.useFakeTimers({ toFake: ['Date'] });
+			const { state } = signState({ destination: '/members?user=U123', isRetry: false });
+			vi.advanceTimersByTime(STATE_TTL_MS + 1000);
+
+			expect(verifyState(state)).toEqual({
+				ok: false,
+				reason: 'expired',
+				destination: '/members?user=U123',
+			});
 		});
 	});
 

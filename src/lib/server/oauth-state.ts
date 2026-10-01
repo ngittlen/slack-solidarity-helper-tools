@@ -18,8 +18,18 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { SLACK_CLIENT_SECRET } from './env.js';
 
-/** How long a login attempt may sit on Slack's approval screen. */
-export const STATE_TTL_MS = 10 * 60 * 1000;
+/**
+ * How long a login attempt may sit on Slack's approval screen.
+ *
+ * An hour, not the customary ten minutes: someone who is not yet signed in to
+ * Slack spends this window on Slack's own sign-in — an emailed code, SSO, 2FA —
+ * and ten minutes was short enough that real logins expired there, which reads
+ * to them as an Allow button that needs clicking twice. The TTL is not what
+ * stops a forged callback; the nonce matching the cookie is, so a longer window
+ * costs nothing there. The cookies in ../../routes/auth/slack/+server.ts live
+ * exactly this long too.
+ */
+export const STATE_TTL_MS = 60 * 60 * 1000;
 
 /**
  * Destination cap for the *signed* copy specifically, well under the 512 the
@@ -43,7 +53,10 @@ export interface OAuthState {
 
 export type StateVerdict =
 	| { ok: true; state: OAuthState }
-	| { ok: false; reason: 'malformed' | 'bad-signature' | 'expired' };
+	// An expired state still passed its signature check, so the destination it
+	// carries is one we minted — enough to resume the journey on the restart.
+	| { ok: false; reason: 'expired'; destination: string | null }
+	| { ok: false; reason: 'malformed' | 'bad-signature' };
 
 /**
  * Keyed off the OAuth client secret rather than a new environment variable: it
@@ -115,13 +128,14 @@ export function verifyState(raw: string): StateVerdict {
 	if (typeof n !== 'string' || n === '' || typeof t !== 'number' || !Number.isFinite(t)) {
 		return { ok: false, reason: 'malformed' };
 	}
-	if (Date.now() - t > STATE_TTL_MS) return { ok: false, reason: 'expired' };
+	const destination = typeof d === 'string' ? d : null;
+	if (Date.now() - t > STATE_TTL_MS) return { ok: false, reason: 'expired', destination };
 
 	return {
 		ok: true,
 		state: {
 			nonce: n,
-			destination: typeof d === 'string' ? d : null,
+			destination,
 			issuedAt: t,
 			isRetry: r === true,
 		},
