@@ -4,7 +4,12 @@ import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { loadSettings, loadVanChapterFolders } from '$lib/server/settings.js';
 import { acquireSyncLock, releaseSyncLock } from '$lib/server/sync-lock.js';
-import { vanClient, vanExportJobTypeId, vanPersonHasher } from '$lib/server/van-env.js';
+import {
+	ensureCampaignRows,
+	vanClient,
+	vanExportJobTypeId,
+	vanPersonHasher,
+} from '$lib/server/van-env.js';
 import { runContactStage } from '$lib/server/van/contact-live.js';
 import { runCatalogSync } from '$lib/server/van/sync.js';
 import { VAN_SYNC_LOCK } from '$lib/server/van/locks.js';
@@ -222,6 +227,18 @@ export const POST: RequestHandler = async ({ url }) => {
 		// Sweep first, then warn: the sweep releases anything already past its
 		// TTL, so nobody is warned about turf that expired moments ago.
 		const warnings = await sendExpiryWarnings(db, now);
+
+		// A campaign secret added since the last tick gets its (disabled)
+		// van_campaigns row, ready to configure in /settings. Bookkeeping only —
+		// it makes no VAN call and must never fail the sync.
+		try {
+			const created = await ensureCampaignRows(db, now);
+			if (created.length > 0) {
+				console.log(`[van] new campaign secret(s), added disabled: ${created.join(', ')}`);
+			}
+		} catch (err) {
+			console.error('[van] campaign discovery failed:', err instanceof Error ? err.message : err);
+		}
 
 		// The catalog half needs VAN. Still a 500 so a misconfigured key is
 		// visible in the workflow run rather than passing quietly.

@@ -20,11 +20,16 @@
  *   npx tsx --env-file=.env.local scripts/van-check.ts
  *   npx tsx --env-file=.env.local scripts/van-check.ts --folder 1152
  *   npx tsx --env-file=.env.local scripts/van-check.ts --both
+ *   npx tsx --env-file=.env.local scripts/van-check.ts --campaign other
  *
- * Required env vars:
- *   VAN_APP_NAME, VAN_API_KEY
- *   VAN_DATABASE_MODE (0 = My Voters, 1 = My Campaign) — optional here; leave
- *   it unset to have the script work out which one your turf is in.
+ * Credentials, one of:
+ *   --campaign <key>: the VAN_CAMPAIGN_<KEY> secret, a JSON object
+ *     {"appName":"…","apiKey":"…","databaseMode":0}. databaseMode is optional
+ *     here; leave it out to have the script work out which one your turf is
+ *     in. This is how to vet a new campaign's key before it goes to Fly.
+ *   otherwise: VAN_APP_NAME, VAN_API_KEY and, optionally, VAN_DATABASE_MODE
+ *     (0 = My Voters, 1 = My Campaign) — the legacy vars, which the app still
+ *     reads as the `primary` campaign.
  */
 
 import {
@@ -33,32 +38,84 @@ import {
 	type VanClient,
 	type VanDatabaseMode,
 } from '../src/lib/server/van/client.js';
+import {
+	campaignSecretName,
+	parseCampaignSecret,
+	parseDatabaseMode,
+} from '../src/lib/server/van/campaign-credentials.js';
 
 const args = process.argv.slice(2);
 const folderIdx = args.indexOf('--folder');
 const FOLDER_ARG = folderIdx >= 0 ? Number(args[folderIdx + 1]) : undefined;
 const FORCE_BOTH = args.includes('--both');
+const campaignIdx = args.indexOf('--campaign');
+// A following flag is not a key: `--campaign --both` is a missing key, not a
+// secret called VAN_CAMPAIGN_--BOTH.
+const campaignValue = campaignIdx >= 0 ? (args[campaignIdx + 1] ?? '') : undefined;
+const CAMPAIGN_ARG = campaignValue?.startsWith('--') ? '' : campaignValue;
 
-const appName = process.env.VAN_APP_NAME ?? '';
-const apiKey = process.env.VAN_API_KEY ?? '';
-const rawMode = (process.env.VAN_DATABASE_MODE ?? '').trim();
+/** Where the credentials came from, so advice names the right thing to edit. */
+const SECRET_NAME = CAMPAIGN_ARG === undefined ? null : campaignSecretName(CAMPAIGN_ARG);
 
-if (!appName || !apiKey) {
-	console.error('Missing required env vars: VAN_APP_NAME, VAN_API_KEY');
-	process.exit(1);
+/** The credentials to probe with, or exit with why there are none. */
+function loadCredentials(): { appName: string; apiKey: string; mode: VanDatabaseMode | null } {
+	if (SECRET_NAME !== null) {
+		if (!CAMPAIGN_ARG) {
+			console.error('--campaign needs a key, e.g. --campaign other for VAN_CAMPAIGN_OTHER');
+			process.exit(1);
+		}
+		const raw = process.env[SECRET_NAME];
+		if (raw === undefined) {
+			console.error(`${SECRET_NAME} is not set`);
+			process.exit(1);
+		}
+		const parsed = parseCampaignSecret(SECRET_NAME, raw, { modeOptional: true });
+		if (!parsed.ok) {
+			console.error(parsed.error);
+			process.exit(1);
+		}
+		return { appName: parsed.appName, apiKey: parsed.apiKey, mode: parsed.databaseMode };
+	}
+
+	const appName = process.env.VAN_APP_NAME ?? '';
+	const apiKey = process.env.VAN_API_KEY ?? '';
+	const rawMode = (process.env.VAN_DATABASE_MODE ?? '').trim();
+	if (!appName || !apiKey) {
+		console.error('Missing required env vars: VAN_APP_NAME, VAN_API_KEY (or use --campaign <key>)');
+		process.exit(1);
+	}
+	const mode = parseDatabaseMode(rawMode);
+	if (rawMode !== '' && mode === null) {
+		console.error(
+			`VAN_DATABASE_MODE must be 0 (My Voters), 1 (My Campaign), or unset. Got "${rawMode}".`,
+		);
+		process.exit(1);
+	}
+	return { appName, apiKey, mode };
 }
-if (rawMode !== '' && rawMode !== '0' && rawMode !== '1') {
-	console.error(
-		`VAN_DATABASE_MODE must be 0 (My Voters), 1 (My Campaign), or unset. Got "${rawMode}".`,
-	);
-	process.exit(1);
+
+const { appName, apiKey, mode: configuredMode } = loadCredentials();
+
+/** The instruction for setting the database mode, wherever it lives. */
+function setModeAdvice(mode: VanDatabaseMode): string {
+	return SECRET_NAME
+		? `→ Set "databaseMode": ${mode} in ${SECRET_NAME}  (${MODE_NAMES[mode]})`
+		: `→ Set VAN_DATABASE_MODE=${mode}  (${MODE_NAMES[mode]})`;
+}
+
+/** The instruction for setting the geometry export job type. A campaign's is
+ *  stored on its van_campaigns row rather than in its secret, because it is
+ *  not a credential. */
+function setJobTypeAdvice(id: number | string): string {
+	return SECRET_NAME
+		? `→ use export job type ${id} for this campaign`
+		: `→ set VAN_EXPORT_JOB_TYPE_ID=${id}`;
 }
 
 // Unset means "I don't know which database the turf is in" — the common case
 // on a fresh demo key. Probing both is cheap and read-only, and it turns the
 // question into an answer instead of a coin flip.
-const MODES: VanDatabaseMode[] =
-	FORCE_BOTH || rawMode === '' ? [0, 1] : [Number(rawMode) as VanDatabaseMode];
+const MODES: VanDatabaseMode[] = FORCE_BOTH || configuredMode === null ? [0, 1] : [configuredMode];
 
 const OK = '  ok  ';
 const NO = ' FAIL ';
@@ -73,7 +130,12 @@ interface ModeSummary {
 	folderCount: number | null;
 	regionCount: number;
 	routeCount: number;
-	tiers: { printedLists: boolean; savedLists: boolean; minivanExports: boolean };
+	tiers: {
+		printedLists: boolean;
+		savedLists: boolean;
+		minivanExports: boolean;
+		contactHistory: boolean;
+	};
 }
 
 /** Run one probe, printing a one-line verdict. Never throws: the point of the
@@ -230,6 +292,19 @@ async function checkMode(mode: VanDatabaseMode, verbose: boolean): Promise<ModeS
 		return exports;
 	});
 
+	console.log('\nChanged entities (uncontacted doors)');
+	// A separate grant from the tiers above. Without it the catalog still syncs
+	// but no turf gets an uncontacted-door count. Reading the change types is
+	// the cheapest call that needs the grant and starts no export job.
+	const contactHistory = await probe(
+		'GET /changedEntityExportJobs/changeTypes/ContactHistory',
+		async () => {
+			const types = await client.changeTypes('ContactHistory');
+			console.log(`         ${types.length} change type(s)`);
+			return types;
+		},
+	);
+
 	console.log('\nExport jobs (geometry)');
 	const jobTypes = await probe('GET /exportJobTypes', () => client.exportJobTypes());
 	if (jobTypes && verbose) {
@@ -246,14 +321,14 @@ async function checkMode(mode: VanDatabaseMode, verbose: boolean): Promise<ModeS
 		const voterCircle = jobTypes.find((t) => (t.name ?? '').toLowerCase() === 'votercircle');
 		if (voterCircle) {
 			console.log(
-				`         → set VAN_EXPORT_JOB_TYPE_ID=${voterCircle.exportJobTypeId}  (VoterCircle)\n` +
+				`         ${setJobTypeAdvice(voterCircle.exportJobTypeId)}  (VoterCircle)\n` +
 					'           It is the only type whose export carries VAddressLatitude /\n' +
 					'           VAddressLongitude. Do NOT use SavedListExport — it has no\n' +
 					'           coordinate columns, so every turf dead-letters and renders as a pin.',
 			);
 		} else {
 			console.log(
-				'         → set VAN_EXPORT_JOB_TYPE_ID to the id of the type that can\n' +
+				`         ${setJobTypeAdvice('<id>')}, the id of the type that can\n` +
 					'           export VAddressLatitude / VAddressLongitude. On this key that has\n' +
 					'           always been VoterCircle, which is NOT in the list above — so check\n' +
 					'           with EveryAction which of these types carries coordinates.',
@@ -281,6 +356,7 @@ async function checkMode(mode: VanDatabaseMode, verbose: boolean): Promise<ModeS
 			printedLists: printedLists !== null,
 			savedLists: savedLists !== null,
 			minivanExports: minivanExports !== null,
+			contactHistory: contactHistory !== null,
 		},
 	};
 }
@@ -292,7 +368,7 @@ function verdict(summaries: ModeSummary[]): string[] {
 		return [
 			'Neither database accepted these credentials.',
 			'',
-			'VAN_APP_NAME must be the Application Name EveryAction issued with the key —',
+			`${SECRET_NAME ? 'appName' : 'VAN_APP_NAME'} must be the Application Name EveryAction issued with the key —`,
 			'it is the HTTP Basic username, not a display string. A 401 in both modes is',
 			'almost always that, or a mistyped key.',
 		];
@@ -302,7 +378,7 @@ function verdict(summaries: ModeSummary[]): string[] {
 	if (withTurf.length === 1) {
 		const win = withTurf[0]!;
 		return [
-			`→ Set VAN_DATABASE_MODE=${win.mode}  (${MODE_NAMES[win.mode]})`,
+			setModeAdvice(win.mode),
 			'',
 			`It is the only database holding turf: ${win.routeCount} route(s) across ` +
 				`${win.regionCount} map region(s).`,
@@ -311,7 +387,7 @@ function verdict(summaries: ModeSummary[]): string[] {
 	if (withTurf.length > 1) {
 		const win = [...withTurf].sort((a, b) => b.routeCount - a.routeCount)[0]!;
 		return [
-			`→ Set VAN_DATABASE_MODE=${win.mode}  (${MODE_NAMES[win.mode]})`,
+			setModeAdvice(win.mode),
 			'',
 			'Both databases hold turf, which is unusual. Picking the one with more routes ' +
 				`(${win.routeCount} vs ${withTurf.find((s) => s.mode !== win.mode)!.routeCount}), but ` +
@@ -328,17 +404,17 @@ function verdict(summaries: ModeSummary[]): string[] {
 		'',
 		'The credentials are fine — there is just no turf cut yet, or none in the folders',
 		'checked. Turf is a My Voters concept (it is cut against the voter file), so',
-		'VAN_DATABASE_MODE=0 is the near-certain answer once someone cuts some.',
+		`${SECRET_NAME ? 'databaseMode 0' : 'VAN_DATABASE_MODE=0'} is the near-certain answer once someone cuts some.`,
 		'',
 		'Try --folder <id> against a specific folder if you know one holds turf.',
 	];
 }
 
 async function main(): Promise<void> {
-	console.log(`\nVAN check — app "${appName}"`);
+	console.log(`\nVAN check — app "${appName}"${SECRET_NAME ? ` from ${SECRET_NAME}` : ''}`);
 	if (MODES.length > 1) {
 		console.log(
-			'No VAN_DATABASE_MODE set — probing both databases.\n' +
+			`No ${SECRET_NAME ? 'databaseMode' : 'VAN_DATABASE_MODE'} set — probing both databases.\n` +
 				'The mode is a selector appended to the key, not a property of it, so one key\n' +
 				'can address both. What matters is which database holds your turf.',
 		);
@@ -356,6 +432,7 @@ async function main(): Promise<void> {
 				s.tiers.printedLists ? 'printedLists' : null,
 				s.tiers.savedLists ? 'savedLists' : null,
 				s.tiers.minivanExports ? 'minivanExports' : null,
+				s.tiers.contactHistory ? 'ContactHistory' : null,
 			].filter(Boolean);
 			console.log(
 				`  mode ${s.mode} (${MODE_NAMES[s.mode].padEnd(11)}) ` +
@@ -369,7 +446,7 @@ async function main(): Promise<void> {
 		console.log('');
 		for (const line of verdict(summaries)) console.log(`  ${line}`);
 		console.log('\n  Then re-run with that mode set for the full detail:');
-		console.log('    npm run van:check\n');
+		console.log(`    npm run van:check${CAMPAIGN_ARG ? ` -- --campaign ${CAMPAIGN_ARG}` : ''}\n`);
 		return;
 	}
 

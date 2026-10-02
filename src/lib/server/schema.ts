@@ -758,6 +758,42 @@ export type NewSlackUserTokenRow = typeof slackUserTokens.$inferInsert;
 // (plan §3), so the most granular thing stored is a polygon and a count.
 // ---------------------------------------------------------------------------
 
+// One row per VAN campaign — a committee the app reads turf from with its own
+// API key (specs/012-multi-van-campaigns/spec.md).
+//
+// NO credentials here. A campaign's app name, API key and database mode live
+// in its `VAN_CAMPAIGN_<KEY>` Fly secret (van/campaign-credentials.ts), and
+// `credential_key` is the lowercased <KEY> that links this row to it. That key
+// is the campaign's permanent identity: renaming the secret is creating a new
+// campaign, and this row is left reporting its credentials missing.
+//
+// Row 1 is seeded by the migration as the campaign the app has always served,
+// with key 'primary' — which the legacy VAN_APP_NAME/VAN_API_KEY vars stand in
+// for — so an existing install keeps working with no secret changes. It has no
+// label until an admin gives it one. Rows for
+// new secrets are created disabled (`ensureCampaignRows` in van-env.ts), so
+// setting a secret on its own never starts a sync.
+export const vanCampaigns = sqliteTable('van_campaigns', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	credentialKey: text('credential_key').notNull().unique(),
+	/** Shown to signed-in volunteers on turf and in alerts. Blank until an admin
+	 *  names the campaign in /settings — the migration and discovery never pick
+	 *  one, so no organisation's name is baked into the schema. Unique among
+	 *  campaigns that have one (SQLite lets any number of rows be NULL). */
+	label: text('label').unique(),
+	enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+	/** The coordinates export that feeds hull geometry. Per campaign because
+	 *  EveryAction issues export job types per key. Null means no geometry —
+	 *  turf draws as pins — except for 'primary', which falls back to
+	 *  VAN_EXPORT_JOB_TYPE_ID (vanExportJobTypeIdFor in van-env.ts). */
+	exportJobTypeId: integer('export_job_type_id'),
+	disabledAt: text('disabled_at'),
+	disabledByName: text('disabled_by_name'),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
 // Which VAN folders belong to which Solidarity chapter. Mirrors
 // chapter_channel_map deliberately: same composite-key shape, same audit
 // triplet, same settings-editor ergonomics.
@@ -1300,6 +1336,9 @@ export const vanZipCentroids = sqliteTable('van_zip_centroids', {
 	lng: real('lng').notNull(),
 	fetchedAt: text('fetched_at').notNull(),
 });
+
+export type VanCampaignRow = typeof vanCampaigns.$inferSelect;
+export type NewVanCampaignRow = typeof vanCampaigns.$inferInsert;
 
 export type VanChapterFolderRow = typeof vanChapterFolders.$inferSelect;
 export type NewVanChapterFolderRow = typeof vanChapterFolders.$inferInsert;
