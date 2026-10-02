@@ -8,7 +8,7 @@ import {
 } from './turf-paging.js';
 
 function turf(id: number, name: string, lat: number | null, lng: number | null): Locatable {
-	return { mapRouteId: id, name, centroidLat: lat, centroidLng: lng };
+	return { turfId: id, name, centroidLat: lat, centroidLng: lng };
 }
 
 // Ann Arbor, roughly.
@@ -56,7 +56,7 @@ describe('selectNearest', () => {
 		it('keeps a pinned row that the cap would have dropped', () => {
 			const rows = [...many(200), turf(999, 'Zzz last by name', 42, -83)];
 			const { selected } = selectNearest(rows, { limit: 150, alwaysInclude: [999] });
-			expect(selected[0]!.mapRouteId).toBe(999);
+			expect(selected[0]!.turfId).toBe(999);
 			expect(selected).toHaveLength(150);
 		});
 
@@ -64,7 +64,7 @@ describe('selectNearest', () => {
 			// The pinned row also sorts into the page on its own merits.
 			const rows = many(5);
 			const { selected } = selectNearest(rows, { limit: 5, alwaysInclude: [2] });
-			expect(selected.filter((t) => t.mapRouteId === 2)).toHaveLength(1);
+			expect(selected.filter((t) => t.turfId === 2)).toHaveLength(1);
 			expect(selected).toHaveLength(5);
 		});
 
@@ -80,7 +80,7 @@ describe('selectNearest', () => {
 		it('pins only on the first page, so Slack paging does not repeat it', () => {
 			const rows = many(300);
 			const page2 = selectNearest(rows, { limit: 150, offset: 150, alwaysInclude: [0] });
-			expect(page2.selected.some((t) => t.mapRouteId === 0)).toBe(false);
+			expect(page2.selected.some((t) => t.turfId === 0)).toBe(false);
 			// 299 unpinned rows, of which 150 were already past.
 			expect(page2.selected).toHaveLength(149);
 		});
@@ -123,9 +123,7 @@ describe('selectNearest', () => {
 			const rows = many(200);
 			const plain = selectNearest(rows, { limit: 150 });
 			const empty = selectNearest(rows, { limit: 150, alwaysInclude: [] });
-			expect(empty.selected.map((t) => t.mapRouteId)).toEqual(
-				plain.selected.map((t) => t.mapRouteId),
-			);
+			expect(empty.selected.map((t) => t.turfId)).toEqual(plain.selected.map((t) => t.turfId));
 			expect(empty.omitted).toBe(plain.omitted);
 		});
 	});
@@ -157,7 +155,7 @@ describe('withinBounds', () => {
 	const box = { minLat: 42, maxLat: 43, minLng: -84, maxLng: -83 };
 
 	it('keeps turf inside the box', () => {
-		expect(withinBounds([turf(1, 'In', 42.5, -83.5)], box).map((t) => t.mapRouteId)).toEqual([1]);
+		expect(withinBounds([turf(1, 'In', 42.5, -83.5)], box).map((t) => t.turfId)).toEqual([1]);
 	});
 
 	it('drops turf outside it', () => {
@@ -231,7 +229,7 @@ describe('selectNearest paging', () => {
 			...selectNearest(rows, { location: HERE, limit: 5, offset: 5 }).selected,
 		];
 		const single = selectNearest(rows, { location: HERE, limit: 10 }).selected;
-		expect(paged.map((t) => t.mapRouteId)).toEqual(single.map((t) => t.mapRouteId));
+		expect(paged.map((t) => t.turfId)).toEqual(single.map((t) => t.turfId));
 	});
 
 	it('counts only what follows the page as omitted', () => {
@@ -256,7 +254,7 @@ describe('selectNearest paging', () => {
 	])('clamps a %s offset', (_label, offset, expectedIndex) => {
 		const { selected } = selectNearest(rows, { location: HERE, limit: 5, offset });
 		const all = selectNearest(rows, { location: HERE, limit: 12 }).selected;
-		expect(selected[0]!.mapRouteId).toBe(all[expectedIndex]!.mapRouteId);
+		expect(selected[0]!.turfId).toBe(all[expectedIndex]!.turfId);
 	});
 
 	it('leaves the default behaviour untouched', () => {

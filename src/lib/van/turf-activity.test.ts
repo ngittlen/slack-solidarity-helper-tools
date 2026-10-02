@@ -19,7 +19,7 @@ const NOW = new Date('2026-08-24T18:00:00.000Z');
 function row(over: Partial<ActivityRow> = {}): ActivityRow {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,

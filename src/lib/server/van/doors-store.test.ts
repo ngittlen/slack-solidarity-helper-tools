@@ -28,18 +28,18 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 });
 
-async function turf(over: { mapRouteId?: number; chapterId?: number; chapterName?: string } = {}) {
+async function turf(over: { turfId?: number; chapterId?: number; chapterName?: string } = {}) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, door_count, first_seen_at, last_seen_at)
 		      VALUES (?, 1, 1, ?, ?, 'Region', 'Turf', 100, 'x', 'x')`,
-		args: [over.mapRouteId ?? 100, over.chapterId ?? 71, over.chapterName ?? 'Washtenaw County'],
+		args: [over.turfId ?? 100, over.chapterId ?? 71, over.chapterName ?? 'Washtenaw County'],
 	});
 }
 
 async function checkout(over: {
-	mapRouteId?: number;
+	turfId?: number;
 	slackUserId?: string;
 	slackUserName?: string;
 	completedAt?: string | null;
@@ -49,11 +49,11 @@ async function checkout(over: {
 }) {
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
-		        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         completed_at, released_at, confirmed_door_delta, doors_knocked)
 		      VALUES (?, ?, ?, '2026-09-01T12:00:00.000Z', '2026-09-30T12:00:00.000Z', ?, ?, ?, ?)`,
 		args: [
-			over.mapRouteId ?? 100,
+			over.turfId ?? 100,
 			over.slackUserId ?? 'U1',
 			over.slackUserName ?? 'Dana',
 			over.completedAt ?? null,
@@ -79,7 +79,7 @@ describe('loadClearedRows', () => {
 		const rows = await loadClearedRows(db);
 		expect(rows).toEqual([
 			{
-				mapRouteId: 100,
+				turfId: 100,
 				chapterId: 71,
 				chapterName: 'Washtenaw County',
 				slackUserId: 'U1',
@@ -120,10 +120,10 @@ describe('loadClearedRows', () => {
 	});
 
 	it('drops chapters the report excludes', async () => {
-		await turf({ mapRouteId: 100, chapterId: 71 });
-		await turf({ mapRouteId: 200, chapterId: 99, chapterName: 'Test Chapter' });
-		await checkout({ mapRouteId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 10 });
-		await checkout({ mapRouteId: 200, completedAt: '2026-09-09T18:00:00.000Z', doors: 10 });
+		await turf({ turfId: 100, chapterId: 71 });
+		await turf({ turfId: 200, chapterId: 99, chapterName: 'Test Chapter' });
+		await checkout({ turfId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 10 });
+		await checkout({ turfId: 200, completedAt: '2026-09-09T18:00:00.000Z', doors: 10 });
 
 		const rows = await loadClearedRows(db, { excludedChapterIds: new Set([99]) });
 		expect(rows.map((r) => r.chapterId)).toEqual([71]);
@@ -227,10 +227,10 @@ describe('loadDoorsTicker', () => {
 
 describe('loadDoorsClearedSignups and loadDoorsDayTotals', () => {
 	it('shapes the chart series by campaign day and chapter', async () => {
-		await turf({ mapRouteId: 100, chapterId: 71, chapterName: 'Washtenaw County' });
-		await turf({ mapRouteId: 200, chapterId: 12, chapterName: 'Oakland County' });
-		await checkout({ mapRouteId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 60 });
-		await checkout({ mapRouteId: 200, completedAt: '2026-09-09T19:00:00.000Z', doors: 15 });
+		await turf({ turfId: 100, chapterId: 71, chapterName: 'Washtenaw County' });
+		await turf({ turfId: 200, chapterId: 12, chapterName: 'Oakland County' });
+		await checkout({ turfId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 60 });
+		await checkout({ turfId: 200, completedAt: '2026-09-09T19:00:00.000Z', doors: 15 });
 
 		const series = await loadDoorsClearedSignups(db, { days: 30, now: NOW });
 		expect(series).toEqual([

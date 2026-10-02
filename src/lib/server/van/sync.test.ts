@@ -27,7 +27,7 @@ vi.mock('./minivan-export-store.js', () => ({
 // A recording stub of the drizzle chains sync.ts actually uses. Enough to
 // assert what was written without standing up SQLite; the storage-level
 // guarantees (the partial unique index) are covered by their own tests.
-function makeDb(existing: unknown[] = [], deletedRows: unknown[] = [{ mapRouteId: 100 }]) {
+function makeDb(existing: unknown[] = [], deletedRows: unknown[] = [{ turfId: 100 }]) {
 	const inserted: unknown[] = [];
 	const updates: unknown[] = [];
 	/** Tables `.delete()` was called against, so a test can assert that
@@ -130,12 +130,12 @@ describe('runCatalogSync', () => {
 		expect(result.foldersSynced).toBe(1);
 		expect(result.turfsUpserted).toBe(1);
 		expect(result.geometryQueued).toBe(1);
-		expect(inserted[0]).toMatchObject({ mapRouteId: 100, chapterId: 71 });
+		expect(inserted[0]).toMatchObject({ turfId: 100, chapterId: 71 });
 	});
 
 	// The bug this replaced: a folder mapped to several chapters was fetched
 	// once per chapter and upserted once per chapter, every row keyed by
-	// mapRouteId alone — so the last chapter written silently owned the folder
+	// turfId alone — so the last chapter written silently owned the folder
 	// and the others saw none of its turf. Visibility is a query-time join on
 	// the mapping now (chapter-visibility.ts), so the catalog reads each folder
 	// exactly once and writes one row per turf.
@@ -159,7 +159,7 @@ describe('runCatalogSync', () => {
 		expect(turfRows).toHaveLength(1);
 		// The label is the first chapter mapped to the folder; who can SEE it is
 		// every chapter in the mapping, which this row does not encode.
-		expect(turfRows[0]).toMatchObject({ mapRouteId: 100, chapterId: 71 });
+		expect(turfRows[0]).toMatchObject({ turfId: 100, chapterId: 71 });
 	});
 
 	it('does nothing but warn when no chapter is mapped to a folder', async () => {
@@ -210,7 +210,7 @@ describe('runCatalogSync', () => {
 	it('skips a folder that errors without retiring its turf', async () => {
 		const existing = [
 			{
-				mapRouteId: 500,
+				turfId: 500,
 				folderId: 9999,
 				retiredAt: null,
 				hullJson: null,
@@ -243,7 +243,7 @@ describe('runCatalogSync', () => {
 		// who are out walking those blocks right now.
 		const existing = [
 			{
-				mapRouteId: 500,
+				turfId: 500,
 				folderId: 9999,
 				retiredAt: null,
 				hullJson: null,
@@ -275,7 +275,7 @@ describe('runCatalogSync', () => {
 	it('releases live claims on turf that retired', async () => {
 		const existing = [
 			{
-				mapRouteId: 500,
+				turfId: 500,
 				folderId: 1152,
 				retiredAt: null,
 				hullJson: null,
@@ -297,7 +297,7 @@ describe('runCatalogSync', () => {
 		// goes with the turf.
 		const existing = [
 			{
-				mapRouteId: 500,
+				turfId: 500,
 				folderId: 1152,
 				retiredAt: null,
 				hullJson: null,
@@ -305,7 +305,7 @@ describe('runCatalogSync', () => {
 				routeSize: 0,
 			},
 		];
-		const { db, deletedFrom } = makeDb(existing, [{ mapRouteId: 500 }]);
+		const { db, deletedFrom } = makeDb(existing, [{ turfId: 500 }]);
 		const result = await runCatalogSync(db, makeClient(), MAPPING);
 
 		expect(result.turfsRetired).toBe(1);
@@ -334,7 +334,7 @@ describe('runCatalogSync', () => {
 			{
 				// Already retired, and route 100 is the one the client still returns —
 				// so this run retires nothing.
-				mapRouteId: 900,
+				turfId: 900,
 				folderId: 1152,
 				retiredAt: '2026-09-04T07:07:12.832Z',
 				hullJson: null,
@@ -342,7 +342,7 @@ describe('runCatalogSync', () => {
 				routeSize: 0,
 			},
 		];
-		const { db, deletedFrom } = makeDb(existing, [{ mapRouteId: 900 }]);
+		const { db, deletedFrom } = makeDb(existing, [{ turfId: 900 }]);
 		const result = await runCatalogSync(db, makeClient(), MAPPING);
 
 		expect(result.turfsRetired).toBe(0);
@@ -356,7 +356,7 @@ describe('runCatalogSync', () => {
 		// race the insert that follows.
 		const existing = [
 			{
-				mapRouteId: 100,
+				turfId: 100,
 				folderId: 1152,
 				retiredAt: '2026-09-04T07:07:12.832Z',
 				hullJson: null,
@@ -434,7 +434,7 @@ describe('runCatalogSync', () => {
 
 			expect(result.degraded.join(' ')).toContain('/minivanExports unavailable');
 			expect(syncState(inserted)?.minivanExportsOk).toBe(false);
-			expect(inserted[0]).toMatchObject({ mapRouteId: 100, vanDistributedTo: 'Tammy B' });
+			expect(inserted[0]).toMatchObject({ turfId: 100, vanDistributedTo: 'Tammy B' });
 		});
 
 		it('looks up exports for every list number the catalog could assign', async () => {
@@ -467,7 +467,7 @@ describe('runCatalogSync', () => {
 			vi.mocked(loadClaimsForExports).mockResolvedValueOnce([
 				{
 					checkoutId: 42,
-					mapRouteId: 100,
+					turfId: 100,
 					claimedAt: '2026-09-22T15:40:00.000Z',
 					endedAt: '2026-09-24T15:40:00.000Z',
 					loadedInMinivanAt: null,
@@ -475,7 +475,7 @@ describe('runCatalogSync', () => {
 			]);
 			const { db, inserted } = makeDb();
 			await runCatalogSync(db, makeClient(), MAPPING);
-			expect(inserted[0]).toMatchObject({ mapRouteId: 100, vanAssignedAt: null });
+			expect(inserted[0]).toMatchObject({ turfId: 100, vanAssignedAt: null });
 			expect(vi.mocked(stampClaimsLoaded).mock.calls.at(-1)![1]).toEqual([
 				{ checkoutId: 42, loadedAt: '2026-09-22T15:52:28.150Z' },
 			]);

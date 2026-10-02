@@ -575,7 +575,7 @@ describe('POST /api/internal/van-sync', () => {
 
 			expect(mockRunContactStage).toHaveBeenCalledOnce();
 			const [, options] = mockRunContactStage.mock.calls[0]!;
-			expect(options.mapRouteIds).toBeUndefined();
+			expect(options.turfIds).toBeUndefined();
 			const stage = mockRunContactStage.mock.invocationCallOrder[0]!;
 			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(stage);
 			expect(stage).toBeLessThan(mockRunGeometryQueue.mock.invocationCallOrder[0]!);

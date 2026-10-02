@@ -14,7 +14,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 function turf(over: Partial<DriftTurfRow> = {}): DriftTurfRow {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,
@@ -29,7 +29,7 @@ function turf(over: Partial<DriftTurfRow> = {}): DriftTurfRow {
 
 function claim(over: Partial<DriftClaim> = {}): DriftClaim {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',
 		claimedAt: iso(NOW.getTime() - 5 * HOUR),
@@ -45,7 +45,7 @@ function claim(over: Partial<DriftClaim> = {}): DriftClaim {
 // these in the catalog the report returns `exports-unused` and says nothing,
 // which is correct behaviour and would make the rules below untestable — so
 // the fixtures that are ABOUT those rules carry one.
-const exported = () => turf({ mapRouteId: 999, vanDistributedTo: 'Avery Harbison' });
+const exported = () => turf({ turfId: 999, vanDistributedTo: 'Avery Harbison' });
 
 describe('driftReport', () => {
 	it('reports nothing when the two systems agree', () => {
@@ -89,7 +89,7 @@ describe('driftReport', () => {
 				[claim({ claimedAt: iso(NOW.getTime() - 2 * HOUR) })],
 				NOW,
 			);
-			expect(report.items.map((i) => i.mapRouteId)).toEqual([100]);
+			expect(report.items.map((i) => i.turfId)).toEqual([100]);
 		});
 	});
 
@@ -114,7 +114,7 @@ describe('driftReport', () => {
 		});
 
 		it('matches a claim to its own turf only', () => {
-			const report = driftReport([turf({ mapRouteId: 100 })], [claim({ mapRouteId: 999 })], NOW);
+			const report = driftReport([turf({ turfId: 100 })], [claim({ turfId: 999 })], NOW);
 			expect(report.items).toEqual([]);
 		});
 	});
@@ -130,24 +130,20 @@ describe('driftReport', () => {
 	describe('ordering', () => {
 		it('ranks bigger turf first', () => {
 			const report = driftReport(
-				[
-					turf({ mapRouteId: 1, doorCount: 50 }),
-					turf({ mapRouteId: 2, doorCount: 400 }),
-					exported(),
-				],
-				[claim({ mapRouteId: 1 }), claim({ mapRouteId: 2 })],
+				[turf({ turfId: 1, doorCount: 50 }), turf({ turfId: 2, doorCount: 400 }), exported()],
+				[claim({ turfId: 1 }), claim({ turfId: 2 })],
 				NOW,
 			);
-			expect(report.items.map((i) => i.mapRouteId)).toEqual([2, 1]);
+			expect(report.items.map((i) => i.turfId)).toEqual([2, 1]);
 		});
 
 		it('breaks a tie stably', () => {
 			const report = driftReport(
-				[turf({ mapRouteId: 9 }), turf({ mapRouteId: 2 }), exported()],
-				[claim({ mapRouteId: 9 }), claim({ mapRouteId: 2 })],
+				[turf({ turfId: 9 }), turf({ turfId: 2 }), exported()],
+				[claim({ turfId: 9 }), claim({ turfId: 2 })],
 				NOW,
 			);
-			expect(report.items.map((i) => i.mapRouteId)).toEqual([2, 9]);
+			expect(report.items.map((i) => i.turfId)).toEqual([2, 9]);
 		});
 	});
 
@@ -177,7 +173,7 @@ describe('driftReport', () => {
 
 	it('reports whether the turf even has a list number', () => {
 		const pick = (rows: Parameters<typeof driftReport>[0]) =>
-			driftReport(rows, [claim()], NOW).items.find((i) => i.mapRouteId === 100)!;
+			driftReport(rows, [claim()], NOW).items.find((i) => i.turfId === 100)!;
 		expect(pick([turf(), exported()]).hasListNumber).toBe(true);
 		// canClaim refuses turf without a number, so a claimed row lacking one
 		// means something upstream is wrong — worth surfacing, not hiding.
@@ -186,12 +182,8 @@ describe('driftReport', () => {
 
 	it('counts the rows it reports', () => {
 		const report = driftReport(
-			[
-				turf({ mapRouteId: 1 }),
-				turf({ mapRouteId: 2 }),
-				turf({ mapRouteId: 3, vanDistributedTo: 'Sam' }),
-			],
-			[claim({ mapRouteId: 1 }), claim({ mapRouteId: 2 })],
+			[turf({ turfId: 1 }), turf({ turfId: 2 }), turf({ turfId: 3, vanDistributedTo: 'Sam' })],
+			[claim({ turfId: 1 }), claim({ turfId: 2 })],
 			NOW,
 		);
 		expect(report.claimedNotInMinivan).toBe(2);
@@ -225,15 +217,12 @@ describe('driftReport: exports-unused', () => {
 	// they are the same evidence that lists are being loaded.
 	it('counts a claim seen loaded in MiniVAN as the workflow being in use', () => {
 		const report = driftReport(
-			[turf({ mapRouteId: 1 }), turf({ mapRouteId: 2 })],
-			[
-				claim({ mapRouteId: 1, loadedInMinivanAt: iso(NOW.getTime() - HOUR) }),
-				claim({ mapRouteId: 2 }),
-			],
+			[turf({ turfId: 1 }), turf({ turfId: 2 })],
+			[claim({ turfId: 1, loadedInMinivanAt: iso(NOW.getTime() - HOUR) }), claim({ turfId: 2 })],
 			NOW,
 		);
 		expect(report.visibility).toBe('visible');
-		expect(report.items.map((i) => i.mapRouteId)).toEqual([2]);
+		expect(report.items.map((i) => i.turfId)).toEqual([2]);
 	});
 
 	// Verified live 2026-09-22: every printed list in the committee was
@@ -243,11 +232,8 @@ describe('driftReport: exports-unused', () => {
 	// noise that buries the direction that matters.
 	it('reports nothing when no turf has ever been exported', () => {
 		const report = driftReport(
-			[
-				turf({ mapRouteId: 1, vanDistributedTo: null }),
-				turf({ mapRouteId: 2, vanDistributedTo: null }),
-			],
-			[claim({ mapRouteId: 1 }), claim({ mapRouteId: 2 })],
+			[turf({ turfId: 1, vanDistributedTo: null }), turf({ turfId: 2, vanDistributedTo: null })],
+			[claim({ turfId: 1 }), claim({ turfId: 2 })],
 			NOW,
 		);
 
@@ -261,17 +247,17 @@ describe('driftReport: exports-unused', () => {
 	it('switches back on as soon as a single turf matches an export', () => {
 		const report = driftReport(
 			[
-				turf({ mapRouteId: 1, vanDistributedTo: null }),
-				turf({ mapRouteId: 2, vanDistributedTo: 'Avery Harbison' }),
+				turf({ turfId: 1, vanDistributedTo: null }),
+				turf({ turfId: 2, vanDistributedTo: 'Avery Harbison' }),
 			],
-			[claim({ mapRouteId: 1 })],
+			[claim({ turfId: 1 })],
 			NOW,
 		);
 
 		expect(report.visibility).toBe('visible');
 		// Turf 1 is claimed and not exported — flagged now that one real export
 		// shows the workflow is in use. Turf 2, exported and unclaimed, is not.
-		expect(report.items.map((i) => i.mapRouteId)).toEqual([1]);
+		expect(report.items.map((i) => i.turfId)).toEqual([1]);
 	});
 
 	// A retired row keeps whatever it was last distributed to. Counting that as
@@ -280,14 +266,14 @@ describe('driftReport: exports-unused', () => {
 	it('does not count a retired turf as evidence the workflow is in use', () => {
 		const report = driftReport(
 			[
-				turf({ mapRouteId: 1, vanDistributedTo: null }),
+				turf({ turfId: 1, vanDistributedTo: null }),
 				turf({
-					mapRouteId: 2,
+					turfId: 2,
 					vanDistributedTo: 'Avery Harbison',
 					retiredAt: '2026-09-01T00:00:00.000Z',
 				}),
 			],
-			[claim({ mapRouteId: 1 })],
+			[claim({ turfId: 1 })],
 			NOW,
 		);
 
@@ -298,8 +284,8 @@ describe('driftReport: exports-unused', () => {
 	// outranks "we looked and it is unused".
 	it('still reports van-side-unavailable when the key cannot read exports', () => {
 		const report = driftReport(
-			[turf({ mapRouteId: 1, vanDistributedTo: null })],
-			[claim({ mapRouteId: 1 })],
+			[turf({ turfId: 1, vanDistributedTo: null })],
+			[claim({ turfId: 1 })],
 			NOW,
 			'van-side-unavailable',
 		);

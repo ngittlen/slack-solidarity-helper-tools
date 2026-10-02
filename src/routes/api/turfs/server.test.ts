@@ -26,7 +26,7 @@ vi.mock('$lib/server/settings.js', () => ({
 
 function turfRow(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		chapterId: 71,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
@@ -86,7 +86,7 @@ describe('GET /api/turfs', () => {
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body.turfs).toHaveLength(1);
-		expect(body.turfs[0].mapRouteId).toBe(100);
+		expect(body.turfs[0].turfId).toBe(100);
 	});
 
 	it('excludes turf outside the box', async () => {
@@ -190,7 +190,7 @@ describe('GET /api/turfs', () => {
 		const total = TURFS_PER_PAYLOAD + 50;
 		stubQueries(
 			Array.from({ length: total }, (_, i) =>
-				turfRow({ mapRouteId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
+				turfRow({ turfId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
 			),
 		);
 		const body = await (await GET(event(VOLUNTEER, INSIDE))).json();

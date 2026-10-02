@@ -11,7 +11,7 @@ const HOUR = 3_600_000;
 
 function claim(over: Partial<WarnableClaim> = {}): WarnableClaim {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',
 		claimedAt: '2026-08-23T18:00:00.000Z',

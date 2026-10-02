@@ -15,7 +15,7 @@ const APP = 'https://example.test';
 function candidate(over: Partial<CompletionCandidate> = {}): CompletionCandidate {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U1',
 		slackUserName: 'Dana',
 		completedAt: '2026-09-12T12:00:00.000Z',
@@ -33,7 +33,7 @@ function candidate(over: Partial<CompletionCandidate> = {}): CompletionCandidate
 
 function replacement(over: Partial<ReplacementRoute> = {}): ReplacementRoute {
 	return {
-		mapRouteId: 200,
+		turfId: 200,
 		mapRegionId: 10,
 		name: 'Turf 01',
 		doorCount: 190,
@@ -204,7 +204,7 @@ describe('measuring a re-cut turf against its replacement', () => {
 		['no replacement at all', []],
 		['a replacement in another region', [replacement({ mapRegionId: 11 })]],
 		['a differently named route', [replacement({ name: 'Turf 02' })]],
-		['two routes with the same name', [replacement(), replacement({ mapRouteId: 201 })]],
+		['two routes with the same name', [replacement(), replacement({ turfId: 201 })]],
 	])('leaves it unmeasured with %s, rather than guessing', (_label, replacements) => {
 		expect(plan([retired()], { replacements })).toEqual([]);
 	});

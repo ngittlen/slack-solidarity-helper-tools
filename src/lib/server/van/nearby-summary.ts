@@ -101,14 +101,11 @@ export async function loadNearbySummary(
 	});
 	const nearby = turfs.filter((t) => t.nearby);
 
-	const nearbyIds = nearby.map((t) => t.mapRouteId);
+	const nearbyIds = nearby.map((t) => t.turfId);
 	const claims: (typeof vanTurfCheckouts.$inferSelect)[] = [];
 	for (const batch of chunked(nearbyIds)) {
 		claims.push(
-			...(await db
-				.select()
-				.from(vanTurfCheckouts)
-				.where(inArray(vanTurfCheckouts.mapRouteId, batch))),
+			...(await db.select().from(vanTurfCheckouts).where(inArray(vanTurfCheckouts.turfId, batch))),
 		);
 	}
 	const walkReports = await latestWalkReports(db, nearbyIds);
@@ -136,7 +133,7 @@ export async function loadNearbySummary(
 		}
 	}
 	for (const turf of nearby) {
-		if (recent(turf.vanAssignedAt)) people.add(`van:${turf.mapRouteId}`);
+		if (recent(turf.vanAssignedAt)) people.add(`van:${turf.turfId}`);
 	}
 
 	return {

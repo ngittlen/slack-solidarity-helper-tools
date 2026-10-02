@@ -96,7 +96,7 @@ async function main(): Promise<void> {
 	// resume; a pile of them with old timestamps is work nobody is picking up.
 	const running = await db
 		.select({
-			mapRouteId: vanGeometryQueue.mapRouteId,
+			turfId: vanGeometryQueue.turfId,
 			exportJobId: vanGeometryQueue.exportJobId,
 			attempts: vanGeometryQueue.attempts,
 			requestedAt: vanGeometryQueue.requestedAt,
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
 		console.log('\n  in flight (oldest first)');
 		for (const row of running) {
 			console.log(
-				`    [${row.mapRouteId}] job ${row.exportJobId ?? '—'} · ${row.attempts} attempt(s) · requested ${row.requestedAt ?? '—'}` +
+				`    [${row.turfId}] job ${row.exportJobId ?? '—'} · ${row.attempts} attempt(s) · requested ${row.requestedAt ?? '—'}` +
 					(row.lastError ? `\n        ${row.lastError.slice(0, 120)}` : ''),
 			);
 		}
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
 		const failures = await loadGeometryFailures(db, FAILURE_LIMIT);
 		console.log(`\n  Dead-lettered turfs (showing ${failures.length} of ${progress.failed})`);
 		for (const failure of failures) {
-			console.log(`    [${failure.mapRouteId}] ${failure.name} — ${failure.attempts} attempt(s)`);
+			console.log(`    [${failure.turfId}] ${failure.name} — ${failure.attempts} attempt(s)`);
 			if (failure.lastError) console.log(`        ${failure.lastError.slice(0, 160)}`);
 		}
 		console.log(

@@ -159,7 +159,7 @@ export interface TrackerOptions {
 	channelId: string;
 	/** Limit the run to the spreadsheet this turf routes to — the nudge after
 	 *  one volunteer's action has no business reading a dozen spreadsheets. */
-	onlyMapRouteId?: number;
+	onlyTurfId?: number;
 }
 
 /** The count columns are for `sheetBlocksClaim`: whether someone else's
@@ -171,7 +171,7 @@ type Candidate = PacketCheckout & {
 	rosterSavedListId: number | null;
 };
 
-async function loadCandidates(db: Db, now: Date, mapRouteId?: number): Promise<Candidate[]> {
+async function loadCandidates(db: Db, now: Date, turfId?: number): Promise<Candidate[]> {
 	const settledBefore = new Date(now.getTime() - SETTLE_MS).toISOString();
 	const pending = or(
 		isNull(vanTurfCheckouts.sheetState),
@@ -202,12 +202,8 @@ async function loadCandidates(db: Db, now: Date, mapRouteId?: number): Promise<C
 			.from(vanTurfCheckouts)
 			// Inner join is safe for retired turf: those rows are stamped, never
 			// deleted, precisely so a checkout on a vanished route still renders.
-			.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
-			.where(
-				mapRouteId === undefined
-					? pending
-					: and(pending, eq(vanTurfCheckouts.mapRouteId, mapRouteId)),
-			)
+			.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
+			.where(turfId === undefined ? pending : and(pending, eq(vanTurfCheckouts.turfId, turfId)))
 			// Oldest first, so packets are filled in the order turf went out.
 			.orderBy(vanTurfCheckouts.claimedAt, vanTurfCheckouts.id)
 			.limit(MAX_CHECKOUTS_PER_RUN)
@@ -528,7 +524,7 @@ async function refreshAssignments(
 	tab: OpenTab,
 	ours: ReadonlyMap<string, string>,
 	turfs: ReadonlyArray<{
-		mapRouteId: number;
+		turfId: number;
 		printedListNumber: string | null;
 		sheetAssignedTo: string | null;
 	}>,
@@ -543,7 +539,7 @@ async function refreshAssignments(
 		await db
 			.update(vanTurfs)
 			.set({ sheetAssignedTo: next })
-			.where(eq(vanTurfs.mapRouteId, turf.mapRouteId));
+			.where(eq(vanTurfs.turfId, turf.turfId));
 		changed += 1;
 	}
 	return changed;
@@ -568,26 +564,26 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	let candidates: Candidate[];
 	let ourEntries: Map<string, Map<string, string>>;
 	let turfs: Array<{
-		mapRouteId: number;
+		turfId: number;
 		regionName: string;
 		printedListNumber: string | null;
 		sheetAssignedTo: string | null;
 	}>;
 	try {
-		candidates = await loadCandidates(db, now, options.onlyMapRouteId);
+		candidates = await loadCandidates(db, now, options.onlyTurfId);
 		ourEntries = await loadOurEntries(db);
 		turfs = await db
 			.select({
-				mapRouteId: vanTurfs.mapRouteId,
+				turfId: vanTurfs.turfId,
 				regionName: vanTurfs.regionName,
 				printedListNumber: vanTurfs.printedListNumber,
 				sheetAssignedTo: vanTurfs.sheetAssignedTo,
 			})
 			.from(vanTurfs)
 			.where(
-				options.onlyMapRouteId === undefined
+				options.onlyTurfId === undefined
 					? isNull(vanTurfs.retiredAt)
-					: and(isNull(vanTurfs.retiredAt), eq(vanTurfs.mapRouteId, options.onlyMapRouteId)),
+					: and(isNull(vanTurfs.retiredAt), eq(vanTurfs.turfId, options.onlyTurfId)),
 			);
 	} catch (err) {
 		console.error(`${LOG} could not read the ledger:`, errText(err));
@@ -780,7 +776,7 @@ export async function liveAssignment(
 		client: SheetsClient;
 		targets: readonly SheetTarget[];
 		tabName?: string;
-		turf: { mapRouteId: number; regionName: string; printedListNumber: string | null };
+		turf: { turfId: number; regionName: string; printedListNumber: string | null };
 		timeBudgetMs: number;
 	},
 ): Promise<string | null | undefined> {
@@ -810,7 +806,7 @@ export async function liveAssignment(
 			db
 				.update(vanTurfs)
 				.set({ sheetAssignedTo: assigned })
-				.where(eq(vanTurfs.mapRouteId, turf.mapRouteId))
+				.where(eq(vanTurfs.turfId, turf.turfId))
 				.then(() => undefined),
 		'assignment',
 	);

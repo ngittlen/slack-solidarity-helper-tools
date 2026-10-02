@@ -2,7 +2,7 @@
 // own; `now` is always passed in.
 //
 // The storage layer enforces the one rule that must never be violated: a
-// partial unique index on van_turf_checkouts (map_route_id) WHERE released_at
+// partial unique index on van_turf_checkouts (turf_id) WHERE released_at
 // IS NULL AND completed_at IS NULL, so two racing claims cannot both win even
 // if this module's checks are somehow bypassed. Everything here is the
 // *friendly* layer on top of that — deciding what to show, and refusing a
@@ -19,7 +19,7 @@ import type { TurfStatus } from './turf-status.js';
 /** The turf fields the rules actually depend on. Deliberately narrow so the
  *  DB row shape can change without touching this file. */
 export interface TurfSnapshot {
-	mapRouteId: number;
+	turfId: number;
 	/** The MiniVAN list number. Null means VAN has the route but nobody has
 	 *  generated its printed list — see `canClaim`. */
 	printedListNumber: string | null;
@@ -51,7 +51,7 @@ export interface TurfSnapshot {
 export const WALKED_OUT_PERCENT = 100;
 
 export interface ClaimSnapshot {
-	mapRouteId: number;
+	turfId: number;
 	slackUserId: string;
 	slackUserName: string;
 	claimedAt: string;
@@ -171,19 +171,19 @@ export function isActive<T extends Pick<ClaimSnapshot, 'expiresAt' | 'releasedAt
 	return toTime(claim.expiresAt) > now.getTime();
 }
 
-/** The one claim currently holding `mapRouteId`, if any.
+/** The one claim currently holding `turfId`, if any.
  *
  *  Returns the most recent when several qualify. That should be impossible —
  *  the partial unique index forbids it — but a defensive pick beats returning
  *  an arbitrary row if a migration ever lands the index late. */
 export function activeClaimFor(
-	mapRouteId: number,
+	turfId: number,
 	claims: readonly ClaimSnapshot[],
 	now: Date,
 ): ClaimSnapshot | null {
 	let best: ClaimSnapshot | null = null;
 	for (const claim of claims) {
-		if (claim.mapRouteId !== mapRouteId) continue;
+		if (claim.turfId !== turfId) continue;
 		if (!isActive(claim, now)) continue;
 		if (best === null || toTime(claim.claimedAt) > toTime(best.claimedAt)) best = claim;
 	}
@@ -213,7 +213,7 @@ export function turfStatus(
 	viewerSlackUserId: string,
 	now: Date,
 ): TurfStatus {
-	const active = activeClaimFor(turf.mapRouteId, claims, now);
+	const active = activeClaimFor(turf.turfId, claims, now);
 	if (active) {
 		return active.slackUserId === viewerSlackUserId ? 'held-by-you' : 'held-by-other';
 	}
@@ -331,7 +331,7 @@ export function canClaim(
 		};
 	}
 
-	const active = activeClaimFor(turf.mapRouteId, claims, now);
+	const active = activeClaimFor(turf.turfId, claims, now);
 	if (active) {
 		return active.slackUserId === slackUserId
 			? { ok: false, reason: 'already-held', message: "You've already got this one." }

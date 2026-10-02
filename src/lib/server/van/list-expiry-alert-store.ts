@@ -50,7 +50,7 @@ export async function sendListExpiryAlerts(
 		const [turfs, claims] = await Promise.all([
 			db
 				.select({
-					mapRouteId: vanTurfs.mapRouteId,
+					turfId: vanTurfs.turfId,
 					name: vanTurfs.name,
 					regionName: vanTurfs.regionName,
 					chapterName: vanTurfs.chapterName,
@@ -63,7 +63,7 @@ export async function sendListExpiryAlerts(
 				.where(and(isNull(vanTurfs.retiredAt), isNotNull(vanTurfs.printedListCreatedAt))),
 			db
 				.select({
-					mapRouteId: vanTurfCheckouts.mapRouteId,
+					turfId: vanTurfCheckouts.turfId,
 					expiresAt: vanTurfCheckouts.expiresAt,
 				})
 				.from(vanTurfCheckouts)
@@ -72,7 +72,7 @@ export async function sendListExpiryAlerts(
 		// Open (filtered in SQL) and unexpired — the test isActive() applies,
 		// without loading a full claim snapshot for it.
 		const held = new Set(
-			claims.filter((c) => Date.parse(c.expiresAt) > now.getTime()).map((c) => c.mapRouteId),
+			claims.filter((c) => Date.parse(c.expiresAt) > now.getTime()).map((c) => c.turfId),
 		);
 		alerts = listExpiryAlerts(turfs, held, now);
 	} catch (err) {
@@ -94,15 +94,15 @@ export async function sendListExpiryAlerts(
 		const byCreatedAt = new Map<string, number[]>();
 		for (const alert of alerts) {
 			const ids = byCreatedAt.get(alert.createdAt);
-			if (ids) ids.push(alert.mapRouteId);
-			else byCreatedAt.set(alert.createdAt, [alert.mapRouteId]);
+			if (ids) ids.push(alert.turfId);
+			else byCreatedAt.set(alert.createdAt, [alert.turfId]);
 		}
 		for (const [createdAt, routeIds] of byCreatedAt) {
 			for (const batch of chunked(routeIds)) {
 				await db
 					.update(vanTurfs)
 					.set({ listExpiryWarnedFor: createdAt })
-					.where(inArray(vanTurfs.mapRouteId, batch));
+					.where(inArray(vanTurfs.turfId, batch));
 			}
 		}
 	} catch (err) {

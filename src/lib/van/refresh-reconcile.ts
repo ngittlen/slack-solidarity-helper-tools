@@ -48,7 +48,7 @@ export const RECUT_NOTICE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** The turf state a live claim is judged against. */
 export interface ReconcileTurf {
-	mapRouteId: number;
+	turfId: number;
 	mapRegionId: number;
 	chapterId: number;
 	name: string;
@@ -61,7 +61,7 @@ export interface ReconcileTurf {
 /** A live claim, with what we told its holder when we issued it. */
 export interface ReconcileClaim {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	slackUserId: string;
 	slackUserName: string;
 	issuedListNumber: string | null;
@@ -71,7 +71,7 @@ export interface ReconcileClaim {
 /** A claim the catalog sync released because VAN stopped returning its route. */
 export interface RecutClaim {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	slackUserId: string;
 	slackUserName: string;
 	releasedAt: string;
@@ -80,7 +80,7 @@ export interface RecutClaim {
 
 /** A route that could be the replacement for a re-cut one. */
 export interface ReplacementTurf {
-	mapRouteId: number;
+	turfId: number;
 	mapRegionId: number;
 	name: string;
 	printedListNumber: string | null;
@@ -251,7 +251,7 @@ export function renderRecutGone(input: {
  * Pair a re-cut claim to the route that replaced it.
  *
  * By region and name, because Story 4.6 established there is no id in common:
- * the refresh retires `mapRouteId` 56456 and returns 56502. Name is only a
+ * the refresh retires VAN route 56456 and returns 56502. Name is only a
  * convention — VAN's re-cut happens to reuse "City of Cambridge Turf 01" — so
  * this is deliberately strict rather than clever:
  *
@@ -274,7 +274,7 @@ export function findReplacement(
 			r.mapRegionId === claim.turf.mapRegionId &&
 			r.retiredAt === null &&
 			!r.claimed &&
-			r.mapRouteId !== claim.mapRouteId &&
+			r.turfId !== claim.turfId &&
 			turfNameKey(r.name) === key,
 	);
 	return matches.length === 1 ? matches[0] : null;

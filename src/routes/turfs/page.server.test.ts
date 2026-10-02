@@ -52,7 +52,7 @@ const CHAPTERS = [
 
 function turfRow(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		chapterId: 71,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
@@ -247,7 +247,7 @@ describe('/turfs load', () => {
 			[turfRow()],
 			[
 				{
-					mapRouteId: 100,
+					turfId: 100,
 					slackUserId: 'U_VOL',
 					slackUserName: 'Dana',
 					claimedAt: '2026-08-22T09:00:00.000Z',
@@ -281,7 +281,7 @@ describe('/turfs load', () => {
 			const total = TURFS_PER_PAYLOAD + 50;
 			stubQueries(
 				Array.from({ length: total }, (_, i) =>
-					turfRow({ mapRouteId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
+					turfRow({ turfId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
 				),
 			);
 			const result = await run(event(VOLUNTEER, 'chapter=71'));
@@ -297,14 +297,14 @@ describe('/turfs load', () => {
 			const mine = 99_999;
 			const rows = [
 				...Array.from({ length: TURFS_PER_PAYLOAD + 50 }, (_, i) =>
-					turfRow({ mapRouteId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
+					turfRow({ turfId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
 				),
 				// Last by name, so the cap would drop it.
-				turfRow({ mapRouteId: mine, name: 'Zzz far-away turf' }),
+				turfRow({ turfId: mine, name: 'Zzz far-away turf' }),
 			];
 			stubQueries(rows, [
 				{
-					mapRouteId: mine,
+					turfId: mine,
 					slackUserId: 'U_VOL',
 					slackUserName: 'Dana',
 					claimedAt: '2026-08-22T09:00:00.000Z',
@@ -315,12 +315,10 @@ describe('/turfs load', () => {
 			]);
 
 			const result = await run(event(VOLUNTEER, 'chapter=71'));
-			const held = result.turfs.find(
-				(t: { mapRouteId: number; status: string }) => t.mapRouteId === mine,
-			);
+			const held = result.turfs.find((t: { turfId: number; status: string }) => t.turfId === mine);
 			expect(held?.status).toBe('held-by-you');
 			// It is pinned to the front, and the payload still respects the cap.
-			expect(result.turfs[0]!.mapRouteId).toBe(mine);
+			expect(result.turfs[0]!.turfId).toBe(mine);
 			expect(result.turfs).toHaveLength(TURFS_PER_PAYLOAD);
 		});
 
@@ -465,12 +463,12 @@ describe('/turfs load', () => {
 
 	describe('retired turf', () => {
 		const RETIRED = turfRow({
-			mapRouteId: 200,
+			turfId: 200,
 			name: 'Retired 01',
 			retiredAt: '2026-08-01T00:00:00.000Z',
 		});
 		const MY_CLAIM = {
-			mapRouteId: 200,
+			turfId: 200,
 			slackUserId: 'U_VOL',
 			slackUserName: 'Dana',
 			claimedAt: '2026-08-22T09:00:00.000Z',
@@ -591,7 +589,7 @@ describe('/turfs load — configured claim options', () => {
 
 	it('greys out a turf once the volunteer is at the configured cap', async () => {
 		const heldElsewhere = {
-			mapRouteId: 900,
+			turfId: 900,
 			slackUserId: viewer.slackUserId,
 			slackUserName: viewer.slackUserName,
 			claimedAt: '2026-08-24T09:00:00.000Z',

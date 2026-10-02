@@ -28,7 +28,7 @@ beforeEach(async () => {
 		[300, 2, 72, 'Wayne County'],
 	] as const) {
 		await client.execute(
-			`INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, printed_list_number, first_seen_at, last_seen_at)
+			`INSERT INTO van_turfs (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, printed_list_number, first_seen_at, last_seen_at)
 			 VALUES (${id}, 1, ${folder}, ${chapter}, '${chapterName}', 'Ann Arbor', 'Turf ${id}', 100, '35536745-${id}', '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
 		);
 	}
@@ -46,14 +46,12 @@ beforeEach(async () => {
 // drift (DRIFT_LOAD_GRACE_HOURS in turf-drift.ts).
 const claimOn = (route: number, name = 'Dana') =>
 	client.execute(
-		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+		`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
 		 VALUES (${route}, 'U_VOL', '${name}', '${iso(NOW.getTime() - 3 * HOUR)}', '${iso(NOW.getTime() + 40 * HOUR)}')`,
 	);
 
 const distribute = (route: number, who: string) =>
-	client.execute(
-		`UPDATE van_turfs SET van_distributed_to = '${who}' WHERE map_route_id = ${route}`,
-	);
+	client.execute(`UPDATE van_turfs SET van_distributed_to = '${who}' WHERE turf_id = ${route}`);
 
 const syncState = (ok: boolean | null) =>
 	client.execute(
@@ -75,12 +73,12 @@ describe('loadDriftTurfs', () => {
 	it('returns turf whether or not anyone claimed it', async () => {
 		await claimOn(100);
 		const rows = await loadDriftTurfs(db, all);
-		expect(rows.map((r) => r.mapRouteId).sort()).toEqual([100, 200, 300]);
+		expect(rows.map((r) => r.turfId).sort()).toEqual([100, 200, 300]);
 	});
 
 	it('filters to one chapter', async () => {
 		const rows = await loadDriftTurfs(db, { chapterId: 72 });
-		expect(rows.map((r) => r.mapRouteId)).toEqual([300]);
+		expect(rows.map((r) => r.turfId)).toEqual([300]);
 	});
 
 	it('carries the columns the comparison needs', async () => {
@@ -97,11 +95,11 @@ describe('loadDriftClaims', () => {
 	it('returns only claims the ledger has not closed', async () => {
 		await claimOn(100);
 		await client.execute(
-			`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, release_reason)
+			`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, release_reason)
 			 VALUES (200, 'U2', 'Sam', '${iso(NOW.getTime() - 5 * HOUR)}', '${iso(NOW.getTime() + HOUR)}', '${iso(NOW.getTime() - HOUR)}', 'volunteer')`,
 		);
 		const claims = await loadDriftClaims(db, all);
-		expect(claims.map((c) => c.mapRouteId)).toEqual([100]);
+		expect(claims.map((c) => c.turfId)).toEqual([100]);
 	});
 
 	it('scopes by chapter through the join', async () => {
@@ -142,7 +140,7 @@ describe('the three reads together', () => {
 		await claimOn(300);
 		// Claimed and loaded — agreement, not drift.
 		await client.execute(
-			`UPDATE van_turf_checkouts SET loaded_in_minivan_at = '${iso(NOW.getTime())}' WHERE map_route_id = 300`,
+			`UPDATE van_turf_checkouts SET loaded_in_minivan_at = '${iso(NOW.getTime())}' WHERE turf_id = 300`,
 		);
 		await syncState(true);
 
@@ -153,7 +151,7 @@ describe('the three reads together', () => {
 			await loadDriftVisibility(db),
 		);
 		expect(report.claimedNotInMinivan).toBe(1);
-		expect(report.items.map((i) => i.mapRouteId)).toEqual([100]);
+		expect(report.items.map((i) => i.turfId)).toEqual([100]);
 	});
 
 	// Same rows, unreadable VAN side: the report must go quiet rather than

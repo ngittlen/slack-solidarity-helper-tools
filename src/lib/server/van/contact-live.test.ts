@@ -55,7 +55,7 @@ describe('nudgeWithRetry', () => {
 		expect(mockRunContactSync).toHaveBeenCalledWith(
 			db,
 			{},
-			expect.objectContaining({ recomputeMapRouteIds: [42] }),
+			expect.objectContaining({ recomputeTurfIds: [42] }),
 		);
 		expect(mockNudgeTracker).toHaveBeenCalledWith(db, 42);
 	});

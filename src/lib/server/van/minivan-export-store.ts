@@ -194,7 +194,7 @@ export async function loadClaimsForExports(db: Db, now: Date): Promise<CatalogCl
 	const rows = await db
 		.select({
 			id: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			claimedAt: vanTurfCheckouts.claimedAt,
 			expiresAt: vanTurfCheckouts.expiresAt,
 			releasedAt: vanTurfCheckouts.releasedAt,
@@ -210,7 +210,7 @@ export async function loadClaimsForExports(db: Db, now: Date): Promise<CatalogCl
 		);
 	return rows.map((r) => ({
 		checkoutId: r.id,
-		mapRouteId: r.mapRouteId,
+		turfId: r.turfId,
 		claimedAt: r.claimedAt,
 		endedAt: r.completedAt ?? r.releasedAt ?? r.expiresAt,
 		loadedInMinivanAt: r.loadedInMinivanAt,

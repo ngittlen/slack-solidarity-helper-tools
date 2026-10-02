@@ -42,7 +42,7 @@ export interface CatalogInput {
 /** One of our checkouts, as the export attribution needs it. */
 export interface CatalogClaim {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	claimedAt: string;
 	/** completedAt ?? releasedAt ?? expiresAt — when the claim stopped (or will
 	 *  stop) covering the turf. */
@@ -52,15 +52,15 @@ export interface CatalogClaim {
 
 export interface CatalogPlan {
 	upserts: NewVanTurfRow[];
-	/** mapRouteIds to stamp `retiredAt` on. */
+	/** turfIds to stamp `retiredAt` on. */
 	retirements: number[];
-	/** mapRouteIds whose `retiredAt` should be cleared — a route that vanished
+	/** turfIds whose `retiredAt` should be cleared — a route that vanished
 	 *  and came back (an organizer un-archiving a folder, most often). */
 	unretirements: number[];
 	/** Turfs needing an export: no hull, one the route outgrew, or (with
 	 *  `roster` on) no roster for the current saved list. `roster` marks the
 	 *  last case, which is what lets the sync re-arm a finished queue row. */
-	geometryQueue: Array<{ mapRouteId: number; savedListId: number; roster: boolean }>;
+	geometryQueue: Array<{ turfId: number; savedListId: number; roster: boolean }>;
 	/** Claims whose list was just seen loaded in MiniVAN, to stamp
 	 *  `loadedInMinivanAt` on. Only claims not already stamped. */
 	claimsLoaded: Array<{ checkoutId: number; loadedAt: string }>;
@@ -346,12 +346,12 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 	const exportIndex = exportsByList(input.minivanExports ?? []);
 	const claimsByRoute = new Map<number, CatalogClaim[]>();
 	for (const claim of input.claims ?? []) {
-		const list = claimsByRoute.get(claim.mapRouteId) ?? [];
+		const list = claimsByRoute.get(claim.turfId) ?? [];
 		list.push(claim);
-		claimsByRoute.set(claim.mapRouteId, list);
+		claimsByRoute.set(claim.turfId, list);
 	}
 	const claimsLoaded: CatalogPlan['claimsLoaded'] = [];
-	const existingById = new Map(existing.map((row) => [row.mapRouteId, row]));
+	const existingById = new Map(existing.map((row) => [row.turfId, row]));
 
 	const upserts: NewVanTurfRow[] = [];
 	const missingListNumbers: string[] = [];
@@ -435,7 +435,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				}
 
 				const row: NewVanTurfRow = {
-					mapRouteId: route.mapRouteId,
+					turfId: route.mapRouteId,
 					mapRegionId: region.mapRegionId,
 					folderId: folder.folderId,
 					chapterId: folder.chapterId,
@@ -488,7 +488,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				const wantsRoster = input.roster === true && prior?.rosterSavedListId !== route.savedListId;
 				if (route.savedListId && (wantsGeometry || wantsRoster)) {
 					geometryQueue.push({
-						mapRouteId: route.mapRouteId,
+						turfId: route.mapRouteId,
 						savedListId: route.savedListId,
 						roster: wantsRoster,
 					});
@@ -526,10 +526,9 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 
 	const retirements = existing
 		.filter(
-			(row) =>
-				row.retiredAt === null && syncedFolderIds.has(row.folderId) && !seen.has(row.mapRouteId),
+			(row) => row.retiredAt === null && syncedFolderIds.has(row.folderId) && !seen.has(row.turfId),
 		)
-		.map((row) => row.mapRouteId);
+		.map((row) => row.turfId);
 
 	return { upserts, retirements, unretirements, geometryQueue, claimsLoaded, warnings };
 }

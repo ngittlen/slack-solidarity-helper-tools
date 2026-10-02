@@ -24,19 +24,19 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-/** Hex HMAC-SHA256 of `mapRouteId` under `secret`. Truncated to 32 hex chars
+/** Hex HMAC-SHA256 of `turfId` under `secret`. Truncated to 32 hex chars
  *  (128 bits) — far past guessing, and short enough that the URL VAN stores
  *  stays readable in their UI. */
-export function signWebhookToken(secret: string, mapRouteId: number): string {
-	return createHmac('sha256', secret).update(`van-export:${mapRouteId}`).digest('hex').slice(0, 32);
+export function signWebhookToken(secret: string, turfId: number): string {
+	return createHmac('sha256', secret).update(`van-export:${turfId}`).digest('hex').slice(0, 32);
 }
 
-/** Constant-time check of a token against `mapRouteId`. False for any
+/** Constant-time check of a token against `turfId`. False for any
  *  malformed input rather than throwing — this runs on unauthenticated
  *  requests, so a crafted query string must not produce a 500. */
-export function verifyWebhookToken(secret: string, mapRouteId: number, token: string): boolean {
-	if (!secret || !Number.isInteger(mapRouteId) || !token) return false;
-	const expected = Buffer.from(signWebhookToken(secret, mapRouteId), 'utf8');
+export function verifyWebhookToken(secret: string, turfId: number, token: string): boolean {
+	if (!secret || !Number.isInteger(turfId) || !token) return false;
+	const expected = Buffer.from(signWebhookToken(secret, turfId), 'utf8');
 	const actual = Buffer.from(token, 'utf8');
 	// timingSafeEqual throws on a length mismatch, which would itself leak the
 	// length. The token is a fixed-width hex digest, so an unequal length is
@@ -51,8 +51,8 @@ export function verifyWebhookToken(secret: string, mapRouteId: number, token: st
  * Built per turf rather than once per run because the token is per turf — the
  * worker calls this immediately before each POST /exportJobs.
  */
-export function exportCallbackUrl(appUrl: string, secret: string, mapRouteId: number): string {
+export function exportCallbackUrl(appUrl: string, secret: string, turfId: number): string {
 	const base = appUrl.replace(/\/+$/, '');
-	const token = signWebhookToken(secret, mapRouteId);
-	return `${base}/api/internal/van-export-callback?turf=${mapRouteId}&token=${token}`;
+	const token = signWebhookToken(secret, turfId);
+	return `${base}/api/internal/van-export-callback?turf=${turfId}&token=${token}`;
 }

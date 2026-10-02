@@ -122,7 +122,7 @@ async function main(): Promise<void> {
 		console.log(`\n${DRY_RUN ? 'Would write' : 'Wrote'} ${rows.length} turf row(s)`);
 		for (const row of rows.slice(0, 20)) {
 			console.log(
-				`  [${row.mapRouteId}] ${row.name}\n` +
+				`  [${row.turfId}] ${row.name}\n` +
 					`        chapter ${row.chapterId} ${row.chapterName} · region ${row.mapRegionId} ${row.regionName}\n` +
 					`        ${row.doorCount} doors, ${row.routeSize} people · list ${row.printedListNumber ?? '(none — NOT claimable)'}\n` +
 					`        savedListId ${row.savedListId ?? '—'} · hull ${row.hullJson ? 'yes' : 'none (renders as a pin)'}`,

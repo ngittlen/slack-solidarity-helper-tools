@@ -27,7 +27,7 @@ const HERE = { lat: 42.28, lng: -83.74 };
 
 function view(over: Partial<TurfView> = {}): TurfView {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		chapterId: 71,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
@@ -98,9 +98,9 @@ describe('parseTurfArgument', () => {
 
 describe('turf action values', () => {
 	it('round-trips', () => {
-		const value = { mapRouteId: 100, chapterId: 71, offset: 5, location: HERE };
+		const value = { turfId: 100, chapterId: 71, offset: 5, location: HERE };
 		expect(decodeTurfAction(encodeTurfAction(value))).toEqual({
-			mapRouteId: 100,
+			turfId: 100,
 			chapterId: 71,
 			offset: 5,
 			location: { lat: 42.28, lng: -83.74 },
@@ -110,7 +110,7 @@ describe('turf action values', () => {
 	it('omits the route id for a paging button', () => {
 		const decoded = decodeTurfAction(encodeTurfAction({ chapterId: 71, offset: 5 }));
 		expect(decoded).toEqual({ chapterId: 71, offset: 5 });
-		expect(decoded).not.toHaveProperty('mapRouteId');
+		expect(decoded).not.toHaveProperty('turfId');
 	});
 
 	// ~100m. Enough to re-sort a list; not a location trace sitting in a message.
@@ -230,7 +230,7 @@ describe('buildTurfListBlocks', () => {
 	it('states how stale the door counts are', () => {
 		const { blocks } = buildTurfListBlocks({
 			...base,
-			turfs: [view({ refreshedMinutesAgo: 30 }), view({ mapRouteId: 2, refreshedMinutesAgo: 360 })],
+			turfs: [view({ refreshedMinutesAgo: 30 }), view({ turfId: 2, refreshedMinutesAgo: 360 })],
 			total: 2,
 		});
 		// The oldest of the two, since one line is read as covering the whole list.
@@ -269,7 +269,7 @@ describe('buildTurfListBlocks', () => {
 		it('reports the range it is showing', () => {
 			const { blocks } = buildTurfListBlocks({
 				...base,
-				turfs: [view(), view({ mapRouteId: 2 })],
+				turfs: [view(), view({ turfId: 2 })],
 				offset: 5,
 				start: 5,
 				nextOffset: 7,
@@ -285,7 +285,7 @@ describe('buildTurfListBlocks', () => {
 		it('uses the offset the query handed back for the next page', () => {
 			const { blocks } = buildTurfListBlocks({
 				...base,
-				turfs: [view(), view({ mapRouteId: 2 })],
+				turfs: [view(), view({ turfId: 2 })],
 				nextOffset: 1,
 				omitted: 5,
 				total: 7,
@@ -363,7 +363,7 @@ describe('buildTurfListBlocks', () => {
 		});
 		const { blocks, text } = buildTurfListBlocks({
 			...base,
-			turfs: [held, view({ mapRouteId: 2 })],
+			turfs: [held, view({ turfId: 2 })],
 		});
 		const body = serialise(blocks) + text;
 		expect(body).not.toContain('35536745-88712');
@@ -383,7 +383,7 @@ describe('buildTurfListBlocks', () => {
 
 describe('buildClaimedBlocks', () => {
 	const input = {
-		turf: { mapRouteId: 100, name: 'Turf 01', regionName: 'Ann Arbor', doorsRemaining: 250 },
+		turf: { turfId: 100, name: 'Turf 01', regionName: 'Ann Arbor', doorsRemaining: 250 },
 		chapter: CHAPTER,
 		printedListNumber: '35536745-88712',
 		expiresAt: '2026-08-25T06:00:00.000Z',
@@ -433,7 +433,7 @@ describe('buildClaimedBlocks', () => {
 		const release = buttons(buildClaimedBlocks(input).blocks).find(
 			(b) => b.action_id === TURF_RELEASE_ACTION_ID,
 		);
-		expect(decodeTurfAction(release!.value)!.mapRouteId).toBe(100);
+		expect(decodeTurfAction(release!.value)!.turfId).toBe(100);
 	});
 });
 
@@ -478,7 +478,7 @@ describe('buildChapterPickerBlocks', () => {
 
 describe('buildMineBlocks', () => {
 	const turf = (over: Partial<Parameters<typeof buildMineBlocks>[0]['turfs'][number]> = {}) => ({
-		mapRouteId: 501,
+		turfId: 501,
 		name: 'Turf 01',
 		regionName: 'R06B_Washtenaw_AnnArbor',
 		doorCount: 120,
@@ -529,7 +529,7 @@ describe('buildMineBlocks', () => {
 	// says "Mark it done", so a string match over the serialised message counts
 	// three for two turfs.
 	it('offers both actions for every turf held', () => {
-		const ids = buttons(buildMineBlocks(input([turf(), turf({ mapRouteId: 502 })])).blocks).map(
+		const ids = buttons(buildMineBlocks(input([turf(), turf({ turfId: 502 })])).blocks).map(
 			(b) => b.action_id,
 		);
 		expect(ids.filter((id) => id === TURF_COMPLETE_ACTION_ID)).toHaveLength(2);
@@ -537,11 +537,11 @@ describe('buildMineBlocks', () => {
 	});
 
 	it('carries each turf to its own action', () => {
-		const blocks = buildMineBlocks(input([turf(), turf({ mapRouteId: 502 })])).blocks;
+		const blocks = buildMineBlocks(input([turf(), turf({ turfId: 502 })])).blocks;
 		const actions = blocks.filter((b) => b.type === 'actions');
 		const ids = actions.map((b) => {
 			const first = b.type === 'actions' ? b.elements[0] : undefined;
-			return decodeTurfAction(first?.value)?.mapRouteId;
+			return decodeTurfAction(first?.value)?.turfId;
 		});
 		expect(ids).toEqual([501, 502]);
 	});
@@ -558,7 +558,7 @@ describe('buildMineBlocks', () => {
 			text: { text: 'I walked this turf' },
 			confirm: { title: { text: 'Did you sync MiniVAN?' }, confirm: { text: 'Yes, I synced' } },
 		});
-		expect(decodeTurfAction(button?.value)?.mapRouteId).toBe(501);
+		expect(decodeTurfAction(button?.value)?.turfId).toBe(501);
 	});
 
 	// The whole point of the warning. Completing records that YOU walked it; it

@@ -877,7 +877,11 @@ export const vanSheetHealth = sqliteTable('van_sheet_health', {
 
 // One row per VAN Map Route.
 //
-// `mapRouteId` is VAN's own identifier and it is NOT stable across a refresh —
+// `turfId` is this app's id for the turf: what checkouts, rosters, the geometry
+// queue, Slack buttons and webhook URLs point at. Today it is the route's VAN
+// `mapRouteId`, copied as is.
+//
+// VAN's `mapRouteId` is NOT stable across a refresh —
 // this comment used to claim it was, and the plan's Story 4.6 was written to
 // settle the question. Verified against the live API on 2026-09-08: refreshing
 // region 508413 retired routes 56456/56457 and returned 56502/56503 in their
@@ -890,7 +894,7 @@ export const vanSheetHealth = sqliteTable('van_sheet_health', {
 export const vanTurfs = sqliteTable(
 	'van_turfs',
 	{
-		mapRouteId: integer('map_route_id').primaryKey(),
+		turfId: integer('turf_id').primaryKey(),
 		mapRegionId: integer('map_region_id').notNull(),
 		folderId: integer('folder_id').notNull(),
 		// Resolved through van_chapter_folders at sync time so reads don't join.
@@ -1006,7 +1010,7 @@ export const vanTurfCheckouts = sqliteTable(
 	'van_turf_checkouts',
 	{
 		id: integer('id').primaryKey({ autoIncrement: true }),
-		mapRouteId: integer('map_route_id').notNull(),
+		turfId: integer('turf_id').notNull(),
 		slackUserId: text('slack_user_id').notNull(),
 		slackUserName: text('slack_user_name').notNull(),
 		claimedAt: text('claimed_at').notNull(),
@@ -1110,7 +1114,7 @@ export const vanTurfCheckouts = sqliteTable(
 	},
 	(table) => [
 		uniqueIndex('van_turf_checkouts_one_active')
-			.on(table.mapRouteId)
+			.on(table.turfId)
 			.where(sql`${table.releasedAt} IS NULL AND ${table.completedAt} IS NULL`),
 		index('van_turf_checkouts_holder').on(table.slackUserId),
 	],
@@ -1135,7 +1139,7 @@ export const vanBlockedUsers = sqliteTable('van_blocked_users', {
 export const vanGeometryQueue = sqliteTable(
 	'van_geometry_queue',
 	{
-		mapRouteId: integer('map_route_id').primaryKey(),
+		turfId: integer('turf_id').primaryKey(),
 		savedListId: integer('saved_list_id').notNull(),
 		exportJobId: integer('export_job_id'),
 		/** 'pending' | 'running' | 'done' | 'failed' */
@@ -1161,7 +1165,7 @@ export const vanGeometryQueue = sqliteTable(
 export const vanTurfRoster = sqliteTable(
 	'van_turf_roster',
 	{
-		mapRouteId: integer('map_route_id').notNull(),
+		turfId: integer('turf_id').notNull(),
 		personHash: blob('person_hash', { mode: 'buffer' }).notNull(),
 		doorHash: blob('door_hash', { mode: 'buffer' }).notNull(),
 	},
@@ -1169,7 +1173,7 @@ export const vanTurfRoster = sqliteTable(
 	// which turfs have one of the people just read (contact-sync.ts), so only
 	// those are recomputed. Without it that lookup scans the whole table.
 	(table) => [
-		primaryKey({ columns: [table.mapRouteId, table.personHash] }),
+		primaryKey({ columns: [table.turfId, table.personHash] }),
 		index('van_turf_roster_person').on(table.personHash),
 	],
 );

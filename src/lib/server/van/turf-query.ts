@@ -56,7 +56,7 @@ export interface TurfQueryInput {
 	bounds?: BoundingBox | null;
 	/** Restrict to specific routes. Used to read one turf back through the same
 	 *  gate the list uses, rather than reaching past it to the raw row. */
-	mapRouteIds?: number[];
+	turfIds?: number[];
 	/**
 	 * Keep retired turf the viewer is still holding.
 	 *
@@ -116,7 +116,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		limit = TURFS_PER_PAYLOAD,
 		offset = 0,
 		bounds = null,
-		mapRouteIds,
+		turfIds,
 		includeHeldByViewer = false,
 		claimableOnly = false,
 		now = new Date(),
@@ -128,10 +128,10 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// and a turf they hold is a turf they need to see.
 	const myRouteIds = includeHeldByViewer ? await activeRouteIdsFor(db, viewer.slackUserId) : [];
 
-	// An empty `mapRouteIds` is a request for nothing, not a request for
+	// An empty `turfIds` is a request for nothing, not a request for
 	// everything — `inArray` with an empty list is invalid SQL in some drivers
 	// and "no filter" in others, and neither is what the caller asked for.
-	if (mapRouteIds?.length === 0) {
+	if (turfIds?.length === 0) {
 		return { turfs: [], total: 0, omitted: 0, start: 0, nextOffset: 0, unavailable: 0 };
 	}
 
@@ -143,9 +143,9 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				// Every folder this chapter is mapped to, so turf in a folder shared
 				// by several chapters appears for each of them.
 				visibleToChapter(chapterId),
-				mapRouteIds ? inArray(vanTurfs.mapRouteId, mapRouteIds) : undefined,
+				turfIds ? inArray(vanTurfs.turfId, turfIds) : undefined,
 				myRouteIds.length > 0
-					? or(isNull(vanTurfs.retiredAt), inArray(vanTurfs.mapRouteId, myRouteIds))
+					? or(isNull(vanTurfs.retiredAt), inArray(vanTurfs.turfId, myRouteIds))
 					: isNull(vanTurfs.retiredAt),
 			),
 		);
@@ -164,7 +164,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		walkReports: Awaited<ReturnType<typeof latestWalkReports>>;
 	} | null = null;
 	if (claimableOnly) {
-		const ids = boxed.map((r) => r.mapRouteId);
+		const ids = boxed.map((r) => r.turfId);
 		const claims = await claimsFor(db, ids, viewer.slackUserId);
 		const walkReports = await latestWalkReports(db, ids);
 		// No cap: see `claimableOnly` for why being at the limit does not hide a turf.
@@ -173,7 +173,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 			const snapshot = turfSnapshot(row, now, { ...claimOptions, walkReports });
 			return (
 				canClaim(snapshot, claims, viewer.slackUserId, now, ignoringCap).ok ||
-				activeClaimFor(row.mapRouteId, claims, now)?.slackUserId === viewer.slackUserId
+				activeClaimFor(row.turfId, claims, now)?.slackUserId === viewer.slackUserId
 			);
 		});
 		judged = { claims, walkReports };
@@ -190,7 +190,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		alwaysInclude: myRouteIds,
 	});
 
-	const selectedIds = selected.map((r) => r.mapRouteId);
+	const selectedIds = selected.map((r) => r.turfId);
 	const claims = judged?.claims ?? (await claimsFor(db, selectedIds, viewer.slackUserId));
 
 	// One small read for the whole payload rather than a lookup per row. The
@@ -225,7 +225,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 /** Map routes this user is actively holding, across every chapter. */
 async function activeRouteIdsFor(db: Db, slackUserId: string): Promise<number[]> {
 	const rows = await db
-		.select({ mapRouteId: vanTurfCheckouts.mapRouteId })
+		.select({ turfId: vanTurfCheckouts.turfId })
 		.from(vanTurfCheckouts)
 		.where(
 			and(
@@ -234,7 +234,7 @@ async function activeRouteIdsFor(db: Db, slackUserId: string): Promise<number[]>
 				isNull(vanTurfCheckouts.completedAt),
 			),
 		);
-	return rows.map((r) => r.mapRouteId);
+	return rows.map((r) => r.turfId);
 }
 
 /**
@@ -247,38 +247,38 @@ async function activeRouteIdsFor(db: Db, slackUserId: string): Promise<number[]>
  * nothing, so every turf renders claimable with no reason given and the click
  * 409s. Adding them discloses nothing new — their own page already shows them.
  *
- * Everyone else's stays scoped by mapRouteId, so a chapter's payload still
+ * Everyone else's stays scoped by turfId, so a chapter's payload still
  * carries no evidence of activity in other chapters.
  */
 async function claimsFor(
 	db: Db,
-	mapRouteIds: number[],
+	turfIds: number[],
 	viewerSlackUserId: string,
 ): Promise<ClaimSnapshot[]> {
-	if (mapRouteIds.length === 0) return [];
+	if (turfIds.length === 0) return [];
 	// Chunked because the `claimableOnly` path asks about a whole chapter. The
 	// viewer's own claims come back in every chunk, so they are de-duplicated —
 	// by route, which is safe because the partial unique index allows only one
 	// open claim per route.
 	const byRoute = new Map<number, typeof vanTurfCheckouts.$inferSelect>();
-	for (const batch of chunked(mapRouteIds)) {
+	for (const batch of chunked(turfIds)) {
 		const rows = await db
 			.select()
 			.from(vanTurfCheckouts)
 			.where(
 				and(
 					or(
-						inArray(vanTurfCheckouts.mapRouteId, batch),
+						inArray(vanTurfCheckouts.turfId, batch),
 						eq(vanTurfCheckouts.slackUserId, viewerSlackUserId),
 					),
 					isNull(vanTurfCheckouts.releasedAt),
 					isNull(vanTurfCheckouts.completedAt),
 				),
 			);
-		for (const row of rows) byRoute.set(row.mapRouteId, row);
+		for (const row of rows) byRoute.set(row.turfId, row);
 	}
 	return [...byRoute.values()].map((c) => ({
-		mapRouteId: c.mapRouteId,
+		turfId: c.turfId,
 		slackUserId: c.slackUserId,
 		slackUserName: c.slackUserName,
 		claimedAt: c.claimedAt,

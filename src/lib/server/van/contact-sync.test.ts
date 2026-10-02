@@ -41,16 +41,16 @@ afterEach(() => {
 });
 
 async function turf(
-	mapRouteId: number,
+	turfId: number,
 	over: { savedListId?: number; cutAt?: string | null; retiredAt?: string | null } = {},
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, name, saved_list_id, door_count,
+		        (turf_id, map_region_id, folder_id, chapter_id, name, saved_list_id, door_count,
 		         first_seen_at, last_seen_at, cut_at, retired_at)
 		      VALUES (?, 1, 1, 1, 'Turf', ?, 99, ?, ?, ?, ?)`,
 		args: [
-			mapRouteId,
+			turfId,
 			over.savedListId ?? 900,
 			'2026-09-15T00:00:00.000Z',
 			'2026-09-28T00:00:00.000Z',
@@ -72,10 +72,10 @@ async function contact(vanId: string, at: string) {
 	await upsertContacts(db, new Map([[vanId, { personHash: hasher.person(vanId), at }]]));
 }
 
-async function counts(mapRouteId: number) {
+async function counts(turfId: number) {
 	const res = await client.execute({
-		sql: 'SELECT uncontacted_doors, uncontacted_doors_at FROM van_turfs WHERE map_route_id = ?',
-		args: [mapRouteId],
+		sql: 'SELECT uncontacted_doors, uncontacted_doors_at FROM van_turfs WHERE turf_id = ?',
+		args: [turfId],
 	});
 	return res.rows[0]!;
 }
@@ -142,7 +142,7 @@ describe('recomputeUncontacted', () => {
 	it('touches only the turfs asked for', async () => {
 		await turf(2);
 		await replaceRoster(db, 2, 900, roster({ d: '9 Elm St' }));
-		await recomputeUncontacted(db, { now: NOW, mapRouteIds: [2] });
+		await recomputeUncontacted(db, { now: NOW, turfIds: [2] });
 		expect((await counts(1)).uncontacted_doors).toBeNull();
 		expect((await counts(2)).uncontacted_doors).toBe(1);
 	});
@@ -339,7 +339,7 @@ describe('runContactSync', () => {
 
 		await turf(2, { cutAt: '2026-09-27T00:00:00.000Z' });
 		await replaceRoster(db, 2, 900, roster({ '999': '9 Elm St' }));
-		await recomputeUncontacted(db, { now: NOW, mapRouteIds: [2] });
+		await recomputeUncontacted(db, { now: NOW, turfIds: [2] });
 
 		expect((await counts(2)).uncontacted_doors).toBe(0);
 	});
@@ -580,7 +580,7 @@ describe('stampWalkPercents', () => {
 	) {
 		await client.execute({
 			sql: `INSERT INTO van_turf_checkouts
-			        (id, map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+			        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 			         completed_at, reported_percent)
 			      VALUES (?, 1, 'U1', 'Dana', ?, ?, ?, ?)`,
 			args: [id, completedAt, completedAt, completedAt, reportedPercent],
@@ -663,8 +663,8 @@ describe('stampWalkPercents', () => {
 	it('scopes to the turfs asked for', async () => {
 		await completion(1, '2026-09-28T12:00:00.000Z');
 		await recomputeUncontacted(db, { now: NOW });
-		expect(await stampWalkPercents(db, { now: NOW, mapRouteIds: [2] })).toBe(0);
-		expect(await stampWalkPercents(db, { now: NOW, mapRouteIds: [1] })).toBe(1);
+		expect(await stampWalkPercents(db, { now: NOW, turfIds: [2] })).toBe(0);
+		expect(await stampWalkPercents(db, { now: NOW, turfIds: [1] })).toBe(1);
 		expect(await percent(1)).toBe(0);
 	});
 });
@@ -676,7 +676,7 @@ describe('stampDoorsKnocked', () => {
 	async function completion(id: number, claimedAt = CLAIMED, completedAt = COMPLETED) {
 		await client.execute({
 			sql: `INSERT INTO van_turf_checkouts
-			        (id, map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at)
+			        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at)
 			      VALUES (?, 1, 'U1', 'Dana', ?, ?, ?)`,
 			args: [id, claimedAt, completedAt, completedAt],
 		});
@@ -743,7 +743,7 @@ describe('stampDoorsKnocked', () => {
 		await turf(2);
 		await client.execute({
 			sql: `INSERT INTO van_turf_checkouts
-			        (id, map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at)
+			        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at)
 			      VALUES (2, 2, 'U1', 'Dana', ?, ?, ?)`,
 			args: [CLAIMED, COMPLETED, COMPLETED],
 		});
@@ -767,7 +767,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 	async function completion() {
 		await client.execute({
 			sql: `INSERT INTO van_turf_checkouts
-			        (id, map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at)
+			        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at)
 			      VALUES (1, 1, 'U1', 'Dana', '2026-09-28T12:00:00.000Z', ?, ?)`,
 			args: [COMPLETED, COMPLETED],
 		});
@@ -791,7 +791,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 
 		// Tamper with turf 2's stored count: a run that pulled nobody on it
 		// must leave it be.
-		await client.execute('UPDATE van_turfs SET uncontacted_doors = 42 WHERE map_route_id = 2');
+		await client.execute('UPDATE van_turfs SET uncontacted_doors = 42 WHERE turf_id = 2');
 		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
 		const busy = fakeVan(() => [contactRow('111', 2, '9/28/2026 2:10:00 PM')]);
 		const result = await runContactSync(db, busy.van.client, {
@@ -825,7 +825,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 			now: later,
 			fetchFn,
 			sleep: noSleep,
-			recomputeMapRouteIds: [2],
+			recomputeTurfIds: [2],
 		});
 		expect(result.turfsRecomputed).toBe(1);
 		expect((await counts(1)).uncontacted_doors).toBe(42);
@@ -841,7 +841,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 			now: NOW,
 			fetchFn,
 			sleep: noSleep,
-			recomputeMapRouteIds: [1],
+			recomputeTurfIds: [1],
 		});
 		expect(result.doorsKnockedStamped).toBe(0);
 		expect(await knocked()).toBeNull();

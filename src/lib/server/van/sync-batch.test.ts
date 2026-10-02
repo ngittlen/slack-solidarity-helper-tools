@@ -23,13 +23,13 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 	await client.execute(
 		`INSERT INTO van_turfs
-		   (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		   (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		    name, door_count, first_seen_at, last_seen_at)
 		 VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 5, 'x', 'x')`,
 	);
 	await client.execute(
 		`INSERT INTO van_turf_checkouts
-		   (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+		   (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
 		 VALUES (100, 'U1', 'Dana', '2026-09-12T10:00:00.000Z', '2026-09-14T10:00:00.000Z')`,
 	);
 });
@@ -47,11 +47,11 @@ describe('the retirement batch, against a real libsql', () => {
 			db
 				.update(vanTurfs)
 				.set({ retiredAt: 'now' })
-				.where(inArray(vanTurfs.mapRouteId, [100])),
+				.where(inArray(vanTurfs.turfId, [100])),
 			db
 				.update(vanTurfCheckouts)
 				.set({ releasedAt: 'now', releaseReason: 'retired' })
-				.where(inArray(vanTurfCheckouts.mapRouteId, [100]))
+				.where(inArray(vanTurfCheckouts.turfId, [100]))
 				.returning({ id: vanTurfCheckouts.id }),
 		];
 
@@ -76,7 +76,7 @@ describe('the retirement batch, against a real libsql', () => {
 			db
 				.update(vanTurfs)
 				.set({ retiredAt: 'now' })
-				.where(inArray(vanTurfs.mapRouteId, [100])),
+				.where(inArray(vanTurfs.turfId, [100])),
 			db.run('UPDATE van_turf_checkouts SET nope = 1'),
 		];
 

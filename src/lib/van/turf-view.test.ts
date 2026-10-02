@@ -22,7 +22,7 @@ const HULL = JSON.stringify([
 
 function row(over: Partial<TurfRowInput> = {}): TurfRowInput {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		mapRegionId: 10,
 		chapterId: 71,
 		name: 'Turf 01',
@@ -42,7 +42,7 @@ function row(over: Partial<TurfRowInput> = {}): TurfRowInput {
 
 function claim(over: Partial<ClaimSnapshot> = {}): ClaimSnapshot {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana Ruiz',
 		claimedAt: '2026-08-22T09:00:00.000Z',
@@ -121,7 +121,7 @@ describe('toTurfView — what reaches the browser', () => {
 				'expiresInHours',
 				'heldBy',
 				'hull',
-				'mapRouteId',
+				'turfId',
 				'name',
 				'printedListNumber',
 				'refreshedMinutesAgo',
@@ -177,9 +177,9 @@ describe('toTurfView — geometry', () => {
 
 	it('mappableTurfs keeps only what can be drawn', () => {
 		const withHull = toTurfView(row(), [], VOLUNTEER, NOW);
-		const without = toTurfView(row({ mapRouteId: 101, hullJson: null }), [], VOLUNTEER, NOW);
+		const without = toTurfView(row({ turfId: 101, hullJson: null }), [], VOLUNTEER, NOW);
 		const mappable = mappableTurfs([withHull, without]);
-		expect(mappable.map((t) => t.mapRouteId)).toEqual([100]);
+		expect(mappable.map((t) => t.turfId)).toEqual([100]);
 	});
 });
 

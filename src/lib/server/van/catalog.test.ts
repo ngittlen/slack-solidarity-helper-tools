@@ -47,7 +47,7 @@ function folder(regions: VanMapRegion[], over: Partial<CatalogFolder> = {}): Cat
 
 function existingRow(over: Partial<VanTurfRow> = {}): VanTurfRow {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		mapRegionId: 10,
 		folderId: 1152,
 		chapterId: 71,
@@ -82,7 +82,7 @@ describe('planCatalogSync', () => {
 
 		expect(plan.upserts).toHaveLength(1);
 		expect(plan.upserts[0]).toMatchObject({
-			mapRouteId: 100,
+			turfId: 100,
 			mapRegionId: 10,
 			folderId: 1152,
 			chapterId: 71,
@@ -289,7 +289,7 @@ describe('planCatalogSync', () => {
 			const plan = planCatalogSync({
 				...base,
 				folders: [folder([region([route()])])],
-				existing: [existingRow(), existingRow({ mapRouteId: 101, name: 'Turf 02' })],
+				existing: [existingRow(), existingRow({ turfId: 101, name: 'Turf 02' })],
 			});
 			expect(plan.retirements).toEqual([101]);
 		});
@@ -301,7 +301,7 @@ describe('planCatalogSync', () => {
 			const plan = planCatalogSync({
 				...base,
 				folders: [folder([region([route()])])],
-				existing: [existingRow(), existingRow({ mapRouteId: 500, folderId: 9999 })],
+				existing: [existingRow(), existingRow({ turfId: 500, folderId: 9999 })],
 			});
 			expect(plan.retirements).toEqual([]);
 		});
@@ -329,7 +329,7 @@ describe('planCatalogSync', () => {
 	describe('geometry', () => {
 		it('queues a turf that has never had a hull', () => {
 			const plan = planCatalogSync({ ...base, folders: [folder([region([route()])])] });
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900, roster: false }]);
+			expect(plan.geometryQueue).toEqual([{ turfId: 100, savedListId: 900, roster: false }]);
 		});
 
 		it('does not queue a turf whose route merely shrank from canvassing', () => {
@@ -352,7 +352,7 @@ describe('planCatalogSync', () => {
 				folders: [folder([region([route({ routeSize: 460 })])])],
 				existing: [existingRow({ hullSourceRouteSize: 400 })],
 			});
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900, roster: false }]);
+			expect(plan.geometryQueue).toEqual([{ turfId: 100, savedListId: 900, roster: false }]);
 			expect(plan.upserts[0]!.hullJson).toBeNull();
 			expect(plan.upserts[0]!.centroidLat).toBeNull();
 			expect(plan.upserts[0]!.hullSourceRouteSize).toBeNull();
@@ -364,7 +364,7 @@ describe('planCatalogSync', () => {
 				folders: [folder([region([route({ routeSize: 150 })])])],
 				existing: [existingRow({ hullSourceRouteSize: 400 })],
 			});
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900, roster: false }]);
+			expect(plan.geometryQueue).toEqual([{ turfId: 100, savedListId: 900, roster: false }]);
 			expect(plan.upserts[0]!.hullJson).toBeNull();
 		});
 
@@ -510,7 +510,7 @@ describe('planCatalogSync', () => {
 		const loaded = exportOf({ dateCreated: '2026-09-22T11:52:28.15Z' });
 		const claim = (over: Partial<CatalogClaim> = {}): CatalogClaim => ({
 			checkoutId: 7,
-			mapRouteId: 100,
+			turfId: 100,
 			claimedAt: '2026-09-22T15:40:00.000Z',
 			endedAt: '2026-09-24T15:40:00.000Z',
 			loadedInMinivanAt: null,
@@ -783,7 +783,7 @@ describe('planCatalogSync — uncontacted doors', () => {
 			existing: [existingRow()],
 			folders: [folder([region([route()])])],
 		});
-		expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900, roster: true }]);
+		expect(plan.geometryQueue).toEqual([{ turfId: 100, savedListId: 900, roster: true }]);
 	});
 
 	it('queues nothing for rosters when they are off', () => {
@@ -810,7 +810,7 @@ describe('planCatalogSync — uncontacted doors', () => {
 			existing: [existingRow({ rosterSavedListId: 900 })],
 			folders: [folder([region([route({ savedListId: 901 })])])],
 		});
-		expect(recut.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 901, roster: true }]);
+		expect(recut.geometryQueue).toEqual([{ turfId: 100, savedListId: 901, roster: true }]);
 	});
 
 	// The upsert is `set: row`, so a key present here would be overwritten on

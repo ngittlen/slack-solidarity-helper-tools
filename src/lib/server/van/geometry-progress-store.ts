@@ -35,7 +35,7 @@ export async function loadGeometryProgress(db: Db): Promise<GeometryProgress> {
 	const queue = await db
 		.select({ status: vanGeometryQueue.status, n: count })
 		.from(vanGeometryQueue)
-		.innerJoin(vanTurfs, eq(vanGeometryQueue.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanGeometryQueue.turfId, vanTurfs.turfId))
 		.where(isNull(vanTurfs.retiredAt))
 		.groupBy(vanGeometryQueue.status);
 
@@ -55,18 +55,16 @@ export async function loadGeometryProgress(db: Db): Promise<GeometryProgress> {
 export async function loadGeometryFailures(
 	db: Db,
 	limit = 10,
-): Promise<
-	Array<{ mapRouteId: number; name: string; attempts: number; lastError: string | null }>
-> {
+): Promise<Array<{ turfId: number; name: string; attempts: number; lastError: string | null }>> {
 	return db
 		.select({
-			mapRouteId: vanGeometryQueue.mapRouteId,
+			turfId: vanGeometryQueue.turfId,
 			name: vanTurfs.name,
 			attempts: vanGeometryQueue.attempts,
 			lastError: vanGeometryQueue.lastError,
 		})
 		.from(vanGeometryQueue)
-		.innerJoin(vanTurfs, eq(vanGeometryQueue.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanGeometryQueue.turfId, vanTurfs.turfId))
 		.where(and(eq(vanGeometryQueue.status, 'failed'), isNull(vanTurfs.retiredAt)))
 		.limit(limit);
 }

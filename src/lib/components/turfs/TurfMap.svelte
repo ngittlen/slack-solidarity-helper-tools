@@ -59,7 +59,7 @@
 		 *  instead of the nearest few, and draws no "you" marker. Declining
 		 *  location must not cost you the map. */
 		location: LatLng | null;
-		onselect: (mapRouteId: number) => void;
+		onselect: (turfId: number) => void;
 		/** Basemap source. Passed in rather than imported so moving to a keyed
 		 *  account is a secret to set, not a deploy (plan.md 6.3). */
 		tiles?: { urlTemplate: string; attribution: string };
@@ -175,7 +175,7 @@
 		if (id === null) return;
 		untrack(() => {
 			if (mapWidth === 0 || mapHeight === 0) return;
-			const turf = turfs.find((t) => t.mapRouteId === id);
+			const turf = turfs.find((t) => t.turfId === id);
 			if (!turf) return;
 
 			const nw = view.project({ lat: turf.bounds.maxLat, lng: turf.bounds.minLng });
@@ -673,7 +673,7 @@
 		// door ramp apply to available turf without touching the colours that
 		// mean "yours" and "taken".
 		const shade = turfShade(turf.status, turf.doorsRemaining);
-		const selected = turf.mapRouteId === selectedId ? ' is-selected' : '';
+		const selected = turf.turfId === selectedId ? ' is-selected' : '';
 		const noList = turf.noListNumber ? ' is-no-list' : '';
 		return `turf turf-${turf.status} shade-${shade}${noList}${selected}`;
 	}
@@ -750,19 +750,19 @@
 					{/each}
 				</g>
 
-				{#each rendered as item (item.turf.mapRouteId)}
+				{#each rendered as item (item.turf.turfId)}
 					<g
 						class={statusClass(item.turf)}
 						style={rampStyle(item.turf.doorsRemaining)}
-						data-turf-id={item.turf.mapRouteId}
+						data-turf-id={item.turf.turfId}
 						role="button"
 						aria-label={ariaLabelFor(item.turf)}
-						aria-pressed={item.turf.mapRouteId === selectedId}
+						aria-pressed={item.turf.turfId === selectedId}
 						tabindex={item.points ? 0 : -1}
 						onkeydown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
 								e.preventDefault();
-								onselect(item.turf.mapRouteId);
+								onselect(item.turf.turfId);
 							}
 						}}
 					>

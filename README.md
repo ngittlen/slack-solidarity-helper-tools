@@ -975,11 +975,11 @@ Empty states distinguish **"no activity in this period"** from **"no turf has be
 
 Nothing is written by this page, and nothing is posted to Slack: it reads `van_turf_checkouts`, which already records every event.
 
-### `POST /api/turfs/{mapRouteId}`
+### `POST /api/turfs/{turfId}`
 
 Claim, release, or complete a turf, via `{"action": "claim" | "release" | "complete"}`. 401 unauthenticated, 403 blocked, 409 with a volunteer-readable reason when the rules refuse.
 
-Two simultaneous claims resolve to exactly one winner at the storage layer, not in application code: a partial unique index on `van_turf_checkouts (map_route_id) WHERE released_at IS NULL AND completed_at IS NULL`. `canClaim` in `$lib/van/checkout.ts` is the friendly layer that refuses with a reason someone can act on.
+Two simultaneous claims resolve to exactly one winner at the storage layer, not in application code: a partial unique index on `van_turf_checkouts (turf_id) WHERE released_at IS NULL AND completed_at IS NULL`. `canClaim` in `$lib/van/checkout.ts` is the friendly layer that refuses with a reason someone can act on.
 
 The per-volunteer cap is enforced at the storage layer too, by a count subquery inside the claiming `INSERT`. An index cannot express it — it constrains a set of rows rather than one — so a volunteer one under the cap who fires two claims on _different_ turf would otherwise pass both checks and land both inserts. Evaluating the count inside the write makes SQLite serialise the two, and the second sees the first's row.
 

@@ -121,7 +121,7 @@ async function runGeometry(
 			// INTERNAL_CRON_SECRET: VAN stores this string forever and echoes it
 			// back on every read of the job, and that secret opens seven other
 			// internal endpoints. See webhook-token.ts.
-			webhookUrlFor: (mapRouteId) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, mapRouteId),
+			webhookUrlFor: (turfId) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, turfId),
 			timeBudgetMs,
 			alert: alertFor('[van]', slackTurfChannelId),
 			// Null when VAN_ID_HASH_SECRET is unset: no roster, VanID unread.

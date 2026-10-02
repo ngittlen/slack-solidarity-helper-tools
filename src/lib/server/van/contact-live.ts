@@ -29,7 +29,7 @@ type StageOutcome = { kind: 'off' } | { kind: 'busy' } | { kind: 'ran'; result: 
 
 async function attemptContactStage(
 	db: Db,
-	options: { timeBudgetMs: number; mapRouteIds?: readonly number[] },
+	options: { timeBudgetMs: number; turfIds?: readonly number[] },
 ): Promise<StageOutcome> {
 	const hasher = vanPersonHasher();
 	// Switched off: drop any count a previous configuration left behind, or it
@@ -44,7 +44,7 @@ async function attemptContactStage(
 		runContactSync(db, configured.client, {
 			hasher,
 			timeBudgetMs: options.timeBudgetMs,
-			recomputeMapRouteIds: options.mapRouteIds,
+			recomputeTurfIds: options.turfIds,
 		}),
 	);
 	return run.skipped ? { kind: 'busy' } : { kind: 'ran', result: run.result };
@@ -57,7 +57,7 @@ async function attemptContactStage(
  */
 export async function runContactStage(
 	db: Db,
-	options: { timeBudgetMs: number; mapRouteIds?: readonly number[] },
+	options: { timeBudgetMs: number; turfIds?: readonly number[] },
 ): Promise<ContactSyncResult | null> {
 	const outcome = await attemptContactStage(db, options);
 	return outcome.kind === 'ran' ? outcome.result : null;
@@ -71,7 +71,7 @@ export async function runContactStage(
  */
 export async function nudgeWithRetry(
 	db: Db,
-	mapRouteId: number,
+	turfId: number,
 	timing: { waitMs?: number; retryMs?: number; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<void> {
 	const waitMs = timing.waitMs ?? NUDGE_WAIT_MS;
@@ -81,21 +81,21 @@ export async function nudgeWithRetry(
 	for (;;) {
 		const outcome = await attemptContactStage(db, {
 			timeBudgetMs: NUDGE_BUDGET_MS,
-			mapRouteIds: [mapRouteId],
+			turfIds: [turfId],
 		});
 		if (outcome.kind === 'off') return;
 		if (outcome.kind === 'ran') {
 			const { result } = outcome;
-			if (result.error) console.warn(`${LOG} contact nudge for ${mapRouteId}:`, result.error);
+			if (result.error) console.warn(`${LOG} contact nudge for ${turfId}:`, result.error);
 			// The completion's % walked was just derived; the tracker row the
 			// first nudge wrote went out without it.
-			if (result.percentsStamped > 0) nudgePacketTracker(db, mapRouteId);
+			if (result.percentsStamped > 0) nudgePacketTracker(db, turfId);
 			return;
 		}
 		if (waited >= waitMs) {
 			// Still held after every holder's budget: something is wrong with
 			// it, and the scheduled sync will catch this turf up.
-			console.warn(`${LOG} contact nudge for ${mapRouteId}: lock still held, leaving it`);
+			console.warn(`${LOG} contact nudge for ${turfId}: lock still held, leaving it`);
 			return;
 		}
 		await sleep(retryMs);
@@ -111,8 +111,8 @@ export async function nudgeWithRetry(
  * contacts in VAN to find, so the scheduled sync (every 30 minutes by day) is
  * what catches the rest.
  */
-export function nudgeContactCount(db: Db, mapRouteId: number): void {
-	void nudgeWithRetry(db, mapRouteId).catch((err) =>
+export function nudgeContactCount(db: Db, turfId: number): void {
+	void nudgeWithRetry(db, turfId).catch((err) =>
 		console.error(`${LOG} contact nudge failed:`, errMessage(err)),
 	);
 }

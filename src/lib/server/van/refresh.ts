@@ -83,7 +83,7 @@ export async function loadRegionStates(db: Db): Promise<RegionRefreshState[]> {
 	const claimCounts = await db
 		.select({ mapRegionId: vanTurfs.mapRegionId, claims: sql<number>`count(*)` })
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(and(isNull(vanTurfCheckouts.releasedAt), isNull(vanTurfCheckouts.completedAt)))
 		.groupBy(vanTurfs.mapRegionId);
 	const claimsByRegion = new Map(claimCounts.map((r) => [r.mapRegionId, Number(r.claims)]));

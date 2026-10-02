@@ -47,9 +47,9 @@ export const POST: RequestHandler = async ({ url, request }) => {
 	// The turf whose export job carried this URL. Only used to check the token —
 	// the drain that follows covers the whole queue, so a valid token for turf A
 	// arriving while turf B is what finished is still a correct wake-up.
-	const mapRouteId = Number(url.searchParams.get('turf'));
+	const turfId = Number(url.searchParams.get('turf'));
 	const signature = url.searchParams.get('token') ?? '';
-	if (!verifyWebhookToken(INTERNAL_CRON_SECRET, mapRouteId, signature)) {
+	if (!verifyWebhookToken(INTERNAL_CRON_SECRET, turfId, signature)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 

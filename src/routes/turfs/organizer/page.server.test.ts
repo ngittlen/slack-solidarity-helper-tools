@@ -52,7 +52,7 @@ const event = (session: unknown, query?: string) =>
 function holdingRow(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		turfName: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,
@@ -72,7 +72,7 @@ function holdingRow(over: Record<string, unknown> = {}) {
 function completionRow(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 9,
-		mapRouteId: 900,
+		turfId: 900,
 		turfName: 'Turf 09',
 		regionName: 'Ypsilanti',
 		chapterId: 71,
@@ -215,11 +215,11 @@ describe('/turfs/organizer board', () => {
 
 	it('summarises what is out', async () => {
 		mockHoldings.mockResolvedValue([
-			holdingRow({ checkoutId: 1, mapRouteId: 1, slackUserId: 'U_A', doorCount: 100 }),
-			holdingRow({ checkoutId: 2, mapRouteId: 2, slackUserId: 'U_A', doorCount: 200 }),
+			holdingRow({ checkoutId: 1, turfId: 1, slackUserId: 'U_A', doorCount: 100 }),
+			holdingRow({ checkoutId: 2, turfId: 2, slackUserId: 'U_A', doorCount: 200 }),
 			holdingRow({
 				checkoutId: 3,
-				mapRouteId: 3,
+				turfId: 3,
 				slackUserId: 'U_B',
 				doorCount: 50,
 				expiresAt: iso(NOW.getTime() + 2 * HOUR),
@@ -328,7 +328,7 @@ describe('/turfs/organizer payload', () => {
 describe('/turfs/organizer drift pane', () => {
 	function driftTurf(over: Record<string, unknown> = {}) {
 		return {
-			mapRouteId: 100,
+			turfId: 100,
 			name: 'Turf 01',
 			regionName: 'Ann Arbor',
 			chapterId: 71,
@@ -341,7 +341,7 @@ describe('/turfs/organizer drift pane', () => {
 		};
 	}
 	const liveClaim = {
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',
 		claimedAt: iso(NOW.getTime() - 3 * HOUR), // past the 2-hour grace
@@ -357,7 +357,7 @@ describe('/turfs/organizer drift pane', () => {
 		// `exports-unused` and says nothing — correct, and a different test.
 		mockDriftTurfs.mockResolvedValue([
 			driftTurf(),
-			driftTurf({ mapRouteId: 999, vanDistributedTo: 'Avery Harbison' }),
+			driftTurf({ turfId: 999, vanDistributedTo: 'Avery Harbison' }),
 		]);
 		mockDriftClaims.mockResolvedValue([liveClaim]);
 		const data = await run(event(ADMIN));
@@ -393,7 +393,7 @@ describe('/turfs/organizer drift pane', () => {
 	it('says nothing when the two agree', async () => {
 		mockDriftTurfs.mockResolvedValue([
 			driftTurf(),
-			driftTurf({ mapRouteId: 999, vanDistributedTo: 'Avery Harbison' }),
+			driftTurf({ turfId: 999, vanDistributedTo: 'Avery Harbison' }),
 		]);
 		mockDriftClaims.mockResolvedValue([{ ...liveClaim, loadedInMinivanAt: iso(NOW.getTime()) }]);
 		expect((await run(event(ADMIN))).drift.items).toEqual([]);

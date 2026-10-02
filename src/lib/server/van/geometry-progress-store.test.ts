@@ -9,18 +9,18 @@ let client: Client;
 const AT = '2026-09-20T00:00:00.000Z';
 
 async function turf(
-	mapRouteId: number,
+	turfId: number,
 	over: Record<string, string | number | null> = {},
 ): Promise<void> {
 	const row: Record<string, string | number | null> = {
-		map_route_id: mapRouteId,
+		turf_id: turfId,
 		map_region_id: 1,
 		folder_id: 1,
 		chapter_id: 71,
 		chapter_name: 'Chapter',
 		region_name: 'Region',
-		name: `Turf ${mapRouteId}`,
-		saved_list_id: 900 + mapRouteId,
+		name: `Turf ${turfId}`,
+		saved_list_id: 900 + turfId,
 		door_count: 100,
 		hull_json: null,
 		centroid_lat: null,
@@ -37,13 +37,13 @@ async function turf(
 }
 
 async function queued(
-	mapRouteId: number,
+	turfId: number,
 	status: string,
 	over: Record<string, string | number | null> = {},
 ): Promise<void> {
 	const row: Record<string, string | number | null> = {
-		map_route_id: mapRouteId,
-		saved_list_id: 900 + mapRouteId,
+		turf_id: turfId,
+		saved_list_id: 900 + turfId,
 		status,
 		attempts: status === 'failed' ? 4 : 1,
 		last_error: null,
@@ -132,7 +132,7 @@ describe('loadGeometryFailures', () => {
 		const failures = await loadGeometryFailures(db);
 		expect(failures).toEqual([
 			{
-				mapRouteId: 500,
+				turfId: 500,
 				name: 'Brighton Turf 03',
 				attempts: 4,
 				lastError: 'downloadUrl returned HTTP 403',

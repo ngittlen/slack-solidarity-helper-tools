@@ -56,7 +56,7 @@ function makeDb(reads: unknown[][] = [], insertWins = true) {
 function liveClaim(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U1',
 		slackUserName: 'Dana',
 		issuedListNumber: '35536745-88712',
@@ -74,7 +74,7 @@ function liveClaim(over: Record<string, unknown> = {}) {
 function recutRow(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 2,
-		mapRouteId: 56456,
+		turfId: 56456,
 		slackUserId: 'U1',
 		slackUserName: 'Dana',
 		releasedAt: '2026-09-12T17:55:00.000Z',
@@ -88,7 +88,7 @@ function recutRow(over: Record<string, unknown> = {}) {
 
 function replacementRow(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 56502,
+		turfId: 56502,
 		mapRegionId: 508413,
 		name: 'Turf 01',
 		printedListNumber: '99999999-11111',
@@ -182,7 +182,7 @@ describe('reconcileClaims — a turf VAN re-cut', () => {
 
 		expect(result.recutReplaced).toBe(1);
 		expect(inserts[0]).toMatchObject({
-			mapRouteId: 56502,
+			turfId: 56502,
 			slackUserId: 'U1',
 			slackUserName: 'Dana',
 			issuedListNumber: '99999999-11111',
@@ -212,7 +212,7 @@ describe('reconcileClaims — a turf VAN re-cut', () => {
 			[],
 			[recutRow()],
 			[replacementRow()],
-			[{ mapRouteId: 56502 }], // claimed
+			[{ turfId: 56502 }], // claimed
 		]);
 		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
 		expect(result.recutGone).toBe(1);

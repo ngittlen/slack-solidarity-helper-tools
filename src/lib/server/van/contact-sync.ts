@@ -125,24 +125,21 @@ export function contactTimestamp(value: string): string | null {
  *  atomic batch — a reader never sees half a roster. */
 export async function replaceRoster(
 	db: Db,
-	mapRouteId: number,
+	turfId: number,
 	savedListId: number,
 	entries: readonly RosterEntry[],
 ): Promise<void> {
 	const inserts = chunked(entries, ROSTER_BATCH).map((batch) =>
 		db
 			.insert(vanTurfRoster)
-			.values(batch.map((e) => ({ mapRouteId, personHash: e.personHash, doorHash: e.doorHash })))
+			.values(batch.map((e) => ({ turfId, personHash: e.personHash, doorHash: e.doorHash })))
 			// A person listed twice in one saved list is still one person.
 			.onConflictDoNothing(),
 	);
 	const statements = [
-		db.delete(vanTurfRoster).where(eq(vanTurfRoster.mapRouteId, mapRouteId)),
+		db.delete(vanTurfRoster).where(eq(vanTurfRoster.turfId, turfId)),
 		...inserts,
-		db
-			.update(vanTurfs)
-			.set({ rosterSavedListId: savedListId })
-			.where(eq(vanTurfs.mapRouteId, mapRouteId)),
+		db.update(vanTurfs).set({ rosterSavedListId: savedListId }).where(eq(vanTurfs.turfId, turfId)),
 	];
 	await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 }
@@ -231,7 +228,7 @@ async function turfsWithPeople(db: Db, personHashes: readonly Buffer[]): Promise
 	const ids = new Set<number>();
 	for (const batch of chunked(personHashes, TOUCHED_BATCH)) {
 		const rows = await db
-			.selectDistinct({ id: vanTurfRoster.mapRouteId })
+			.selectDistinct({ id: vanTurfRoster.turfId })
 			.from(vanTurfRoster)
 			.where(inArray(vanTurfRoster.personHash, batch));
 		for (const row of rows) ids.add(row.id);
@@ -251,13 +248,13 @@ async function turfsWithPeople(db: Db, personHashes: readonly Buffer[]): Promise
  */
 export async function recomputeUncontacted(
 	db: Db,
-	options: { now: Date; mapRouteIds?: readonly number[] },
+	options: { now: Date; turfIds?: readonly number[] },
 ): Promise<number> {
 	const ids =
-		options.mapRouteIds ??
-		(
-			await db.select({ id: vanTurfs.mapRouteId }).from(vanTurfs).where(countedTurfs(options.now))
-		).map((r) => r.id);
+		options.turfIds ??
+		(await db.select({ id: vanTurfs.turfId }).from(vanTurfs).where(countedTurfs(options.now))).map(
+			(r) => r.id,
+		);
 	const nowIso = options.now.toISOString();
 	let updated = 0;
 	for (const batch of chunked(ids, RECOMPUTE_BATCH)) {
@@ -270,10 +267,10 @@ export async function recomputeUncontacted(
 						THEN r.door_hash END)
 					FROM van_turf_roster r
 					LEFT JOIN van_person_contacts c ON c.person_hash = r.person_hash
-					WHERE r.map_route_id = van_turfs.map_route_id
+					WHERE r.turf_id = van_turfs.turf_id
 				) ELSE NULL END,
 				uncontacted_doors_at = CASE WHEN ${current} THEN ${nowIso} ELSE NULL END
-			WHERE van_turfs.map_route_id IN (${sql.join(
+			WHERE van_turfs.turf_id IN (${sql.join(
 				batch.map((id) => sql`${id}`),
 				sql`, `,
 			)})
@@ -308,34 +305,34 @@ export const RETIRED_ROSTER_KEEP_MS = WALK_PERCENT_WINDOW_MS;
  */
 export async function stampWalkPercents(
 	db: Db,
-	options: { now: Date; mapRouteIds?: readonly number[] },
+	options: { now: Date; turfIds?: readonly number[] },
 ): Promise<number> {
 	const since = new Date(options.now.getTime() - WALK_PERCENT_WINDOW_MS).toISOString();
 	const scope =
-		options.mapRouteIds === undefined
+		options.turfIds === undefined
 			? sql``
-			: options.mapRouteIds.length === 0
+			: options.turfIds.length === 0
 				? sql`AND 0`
-				: sql`AND van_turf_checkouts.map_route_id IN (${sql.join(
-						options.mapRouteIds.map((id) => sql`${id}`),
+				: sql`AND van_turf_checkouts.turf_id IN (${sql.join(
+						options.turfIds.map((id) => sql`${id}`),
 						sql`, `,
 					)})`;
 	const derived = sql`(
 		SELECT CAST(round(100.0 * (count(DISTINCT r.door_hash) - t.uncontacted_doors)
 			/ count(DISTINCT r.door_hash)) AS INTEGER)
 		FROM van_turf_roster r
-		JOIN van_turfs t ON t.map_route_id = r.map_route_id
-		WHERE r.map_route_id = van_turf_checkouts.map_route_id
+		JOIN van_turfs t ON t.turf_id = r.turf_id
+		WHERE r.turf_id = van_turf_checkouts.turf_id
 	)`;
 	const result = await db.run(sql`
 		UPDATE van_turf_checkouts SET reported_percent = ${derived}
 		WHERE completed_at IS NOT NULL AND completed_at >= ${since}
 			AND EXISTS (
 				SELECT 1 FROM van_turfs t
-				WHERE t.map_route_id = van_turf_checkouts.map_route_id
+				WHERE t.turf_id = van_turf_checkouts.turf_id
 					AND t.uncontacted_doors IS NOT NULL
 					AND t.roster_saved_list_id = t.saved_list_id
-					AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.map_route_id = t.map_route_id)
+					AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.turf_id = t.turf_id)
 			)
 			AND reported_percent IS NOT ${derived}
 			${scope}
@@ -368,16 +365,16 @@ const KNOCK_TRAIL_MS = 60 * 60 * 1000;
  */
 export async function stampDoorsKnocked(
 	db: Db,
-	options: { now: Date; mapRouteIds?: readonly number[] },
+	options: { now: Date; turfIds?: readonly number[] },
 ): Promise<number> {
 	const since = new Date(options.now.getTime() - WALK_PERCENT_WINDOW_MS).toISOString();
 	const scope =
-		options.mapRouteIds === undefined
+		options.turfIds === undefined
 			? sql``
-			: options.mapRouteIds.length === 0
+			: options.turfIds.length === 0
 				? sql`AND 0`
-				: sql`AND van_turf_checkouts.map_route_id IN (${sql.join(
-						options.mapRouteIds.map((id) => sql`${id}`),
+				: sql`AND van_turf_checkouts.turf_id IN (${sql.join(
+						options.turfIds.map((id) => sql`${id}`),
 						sql`, `,
 					)})`;
 	// ISO strings compare correctly as text, and this strftime shape matches
@@ -388,7 +385,7 @@ export async function stampDoorsKnocked(
 		SELECT count(DISTINCT r.door_hash)
 		FROM van_turf_roster r
 		JOIN van_person_contacts c ON c.person_hash = r.person_hash
-		WHERE r.map_route_id = van_turf_checkouts.map_route_id
+		WHERE r.turf_id = van_turf_checkouts.turf_id
 			AND c.last_in_person_at >= ${shifted(sql`van_turf_checkouts.claimed_at`, -KNOCK_LEAD_MS)}
 			AND c.last_in_person_at <= ${shifted(sql`van_turf_checkouts.completed_at`, KNOCK_TRAIL_MS)}
 	)`;
@@ -396,7 +393,7 @@ export async function stampDoorsKnocked(
 		UPDATE van_turf_checkouts SET doors_knocked = ${knocked}
 		WHERE completed_at IS NOT NULL AND completed_at >= ${since}
 			AND completed_at < ${options.now.toISOString()}
-			AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.map_route_id = van_turf_checkouts.map_route_id)
+			AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.turf_id = van_turf_checkouts.turf_id)
 			AND (doors_knocked IS NULL OR doors_knocked < ${knocked})
 			${scope}
 	`);
@@ -414,7 +411,7 @@ export interface ContactSyncOptions {
 	 *  touched. Omitted means a scheduled run — the only kind that recomputes
 	 *  every turf (the first time), stamps doors knocked, and moves
 	 *  `countedThrough`. */
-	recomputeMapRouteIds?: readonly number[];
+	recomputeTurfIds?: readonly number[];
 	/** For the blob download — never the VAN client, which would send our
 	 *  Basic credentials to a different host. */
 	fetchFn?: FetchFn;
@@ -578,7 +575,7 @@ export async function runContactSync(
 	let jobCreatedAt = state?.exportJobCreatedAt ?? null;
 	let jobFailures = state?.exportJobFailures ?? 0;
 	let windowTo = state?.windowTo ?? null;
-	const scheduled = options.recomputeMapRouteIds === undefined;
+	const scheduled = options.recomputeTurfIds === undefined;
 	/** Everyone whose contact this run stored, keyed by hex digest. */
 	const touched = new Map<string, Buffer>();
 
@@ -769,15 +766,15 @@ export async function runContactSync(
 		? undefined
 		: [
 				...new Set([
-					...(options.recomputeMapRouteIds ?? []),
+					...(options.recomputeTurfIds ?? []),
 					...(await turfsWithPeople(db, [...touched.values()])),
 				]),
 			];
-	result.turfsRecomputed = await recomputeUncontacted(db, { now, mapRouteIds: recomputeIds });
+	result.turfsRecomputed = await recomputeUncontacted(db, { now, turfIds: recomputeIds });
 	if (full) await saveState({ fullRecomputeAt: now.toISOString() });
 	result.percentsStamped = await stampWalkPercents(db, {
 		now,
-		mapRouteIds: options.recomputeMapRouteIds,
+		turfIds: options.recomputeTurfIds,
 	});
 
 	// Caught up: nothing failed, no job left waiting, and the cursor reached

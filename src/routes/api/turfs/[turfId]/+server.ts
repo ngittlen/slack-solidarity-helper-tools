@@ -54,8 +54,8 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	);
 	if (!access.allowed) return json({ error: access.message }, { status: 403 });
 
-	const mapRouteId = Number(params.mapRouteId);
-	if (!Number.isInteger(mapRouteId)) {
+	const turfId = Number(params.turfId);
+	if (!Number.isInteger(turfId)) {
 		return json({ error: 'Unknown turf' }, { status: 400 });
 	}
 
@@ -79,7 +79,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		// so both have to be handed the same numbers.
 		const settings = await loadSettings(db);
 		const result = await claimTurf(db, {
-			mapRouteId,
+			turfId,
 			slackUserId: session.slackUserId,
 			slackUserName: session.slackUserName,
 			now: new Date(now),
@@ -91,7 +91,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			sheetCheck: packetTrackerCheck(db),
 		});
 		if (!result.ok) return json({ error: result.message }, { status: result.status });
-		nudgePacketTracker(db, mapRouteId);
+		nudgePacketTracker(db, turfId);
 		return json({
 			expiresAt: result.expiresAt,
 			// Issued only on a successful claim. This response is the only path
@@ -101,15 +101,15 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	}
 
 	const result = await endClaim(db, {
-		mapRouteId,
+		turfId,
 		slackUserId: session.slackUserId,
 		now: new Date(now),
 		kind: action === 'complete' ? 'complete' : 'release',
 		syncedMinivan: action === 'complete' && synced === true,
 	});
 	if (!result.ok) return json({ error: result.message }, { status: result.status });
-	nudgePacketTracker(db, mapRouteId);
-	if (action === 'complete') nudgeContactCount(db, mapRouteId);
+	nudgePacketTracker(db, turfId);
+	if (action === 'complete') nudgeContactCount(db, turfId);
 	// Story 5.6 hangs off completion, and finishes elsewhere: `endClaim` records
 	// a refresh request for this turf's region, the sweep sends it, and once
 	// VAN's re-cut lands the door-delta check stamps `confirmedDoorDelta` and

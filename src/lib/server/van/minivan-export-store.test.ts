@@ -198,7 +198,7 @@ describe('our claims, for export attribution', () => {
 		const row: Record<string, string | number> = {
 			id,
 			// One route each: the real schema allows one open claim per route.
-			map_route_id: 100 + id,
+			turf_id: 100 + id,
 			slack_user_id: 'U_VOL',
 			slack_user_name: 'Dana',
 			claimed_at: claimedAt,

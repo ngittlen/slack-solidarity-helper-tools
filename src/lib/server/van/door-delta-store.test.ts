@@ -37,7 +37,7 @@ beforeEach(async () => {
 async function turf(over: { doorCount?: number; lastRefreshedAt?: string | null } = {}) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, door_count, last_refreshed_at, first_seen_at, last_seen_at)
 		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', ?, ?, ?, ?)`,
 		args: [
@@ -58,7 +58,7 @@ async function completion(
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
-		        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         completed_at, claim_door_count, confirmed_door_delta)
 		      VALUES (100, 'U1', 'Dana', '2026-09-11T12:00:00.000Z', '2026-09-13T12:00:00.000Z', ?, ?, ?)`,
 		args: [
@@ -89,7 +89,7 @@ afterEach(() => {
 /** Any other route row, for the re-cut case: the walked route retired, and the
  *  route VAN returned in its place. */
 async function route(r: {
-	mapRouteId: number;
+	turfId: number;
 	name?: string;
 	doorCount: number;
 	lastRefreshedAt?: string | null;
@@ -98,11 +98,11 @@ async function route(r: {
 }) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, door_count, last_refreshed_at, first_seen_at, last_seen_at, retired_at)
 		      VALUES (?, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, ?, ?, ?, ?)`,
 		args: [
-			r.mapRouteId,
+			r.turfId,
 			r.name ?? 'Turf 01',
 			r.doorCount,
 			r.lastRefreshedAt ?? null,
@@ -119,14 +119,14 @@ describe('stampDoorDeltas', () => {
 	// carrying the current count.
 	it('measures a re-cut turf against the route that replaced it', async () => {
 		await route({
-			mapRouteId: 100,
+			turfId: 100,
 			doorCount: 250,
 			lastRefreshedAt: '2026-09-10T00:00:00.000Z',
 			firstSeenAt: '2026-09-01T00:00:00.000Z',
 			retiredAt: '2026-09-12T14:30:00.000Z',
 		});
 		await route({
-			mapRouteId: 200,
+			turfId: 200,
 			doorCount: 190,
 			lastRefreshedAt: '2026-09-12T14:00:00.000Z',
 			firstSeenAt: '2026-09-12T14:30:00.000Z',
@@ -141,13 +141,13 @@ describe('stampDoorDeltas', () => {
 
 	it('leaves a re-cut turf unmeasured when nothing replaced it', async () => {
 		await route({
-			mapRouteId: 100,
+			turfId: 100,
 			doorCount: 250,
 			firstSeenAt: '2026-09-01T00:00:00.000Z',
 			retiredAt: '2026-09-12T14:30:00.000Z',
 		});
 		await route({
-			mapRouteId: 200,
+			turfId: 200,
 			name: 'Turf 02',
 			doorCount: 10,
 			firstSeenAt: NOW.toISOString(),
@@ -245,7 +245,7 @@ describe('stampDoorDeltas', () => {
 		await turf();
 		await client.execute(
 			`INSERT INTO van_turf_checkouts
-			   (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, claim_door_count)
+			   (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, claim_door_count)
 			 VALUES (100, 'U2', 'Sam', '2026-09-12T09:00:00.000Z', '2026-09-14T09:00:00.000Z', 250)`,
 		);
 

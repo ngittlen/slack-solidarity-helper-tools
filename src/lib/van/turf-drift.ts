@@ -37,7 +37,7 @@
 import { isActive, type ClaimSnapshot } from './checkout.js';
 
 export interface DriftTurfRow {
-	mapRouteId: number;
+	turfId: number;
 	name: string;
 	regionName: string;
 	chapterId: number;
@@ -68,7 +68,7 @@ export const DRIFT_LOAD_GRACE_HOURS = 2;
 
 export interface DriftItem {
 	kind: DriftKind;
-	mapRouteId: number;
+	turfId: number;
 	turfName: string;
 	regionName: string;
 	chapterId: number;
@@ -161,7 +161,7 @@ export function driftReport(
 
 	const heldBy = new Map<number, DriftClaim>();
 	for (const claim of claims) {
-		if (isActive(claim, now)) heldBy.set(claim.mapRouteId, claim);
+		if (isActive(claim, now)) heldBy.set(claim.turfId, claim);
 	}
 
 	const items: DriftItem[] = [];
@@ -171,7 +171,7 @@ export function driftReport(
 		// Loaded means THIS claim's list was seen in MiniVAN. The turf-level
 		// `vanDistributedTo` no longer carries our own volunteers' loads — see
 		// outsideAssignment in catalog.ts — so it cannot answer this.
-		const claim = heldBy.get(turf.mapRouteId) ?? null;
+		const claim = heldBy.get(turf.turfId) ?? null;
 		if (
 			claim &&
 			!claim.loadedInMinivanAt &&
@@ -179,7 +179,7 @@ export function driftReport(
 		) {
 			items.push({
 				kind: 'claimed-not-in-minivan',
-				mapRouteId: turf.mapRouteId,
+				turfId: turf.turfId,
 				turfName: turf.name,
 				regionName: turf.regionName,
 				chapterId: turf.chapterId,
@@ -192,7 +192,7 @@ export function driftReport(
 		// Claimed here AND loaded is agreement, not drift.
 	}
 
-	items.sort((a, b) => b.doorCount - a.doorCount || a.mapRouteId - b.mapRouteId);
+	items.sort((a, b) => b.doorCount - a.doorCount || a.turfId - b.turfId);
 
 	return { visibility, items, claimedNotInMinivan: items.length };
 }
