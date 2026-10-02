@@ -14,7 +14,7 @@ const APP = 'https://app.example.org';
 function item(over: Partial<AlertableDrift> = {}): AlertableDrift {
 	return {
 		kind: 'claimed-not-in-minivan',
-		mapRouteId: 100,
+		turfId: 100,
 		turfName: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,
@@ -40,12 +40,12 @@ describe('needsDriftAlert', () => {
 describe('newDriftAlerts', () => {
 	it('keeps only unannounced rows, in the order given', () => {
 		const fresh = newDriftAlerts([
-			item({ mapRouteId: 1, alertedKind: 'claimed-not-in-minivan' }),
-			item({ mapRouteId: 2 }),
-			item({ mapRouteId: 3, alertedKind: 'claimed-not-in-minivan' }),
-			item({ mapRouteId: 4 }),
+			item({ turfId: 1, alertedKind: 'claimed-not-in-minivan' }),
+			item({ turfId: 2 }),
+			item({ turfId: 3, alertedKind: 'claimed-not-in-minivan' }),
+			item({ turfId: 4 }),
 		]);
-		expect(fresh.map((i) => i.mapRouteId)).toEqual([2, 4]);
+		expect(fresh.map((i) => i.turfId)).toEqual([2, 4]);
 	});
 
 	it('returns nothing when every drifting turf has been announced', () => {
@@ -55,11 +55,11 @@ describe('newDriftAlerts', () => {
 
 describe('staleDriftStamps', () => {
 	it('clears a stamp for turf that stopped drifting', () => {
-		expect(staleDriftStamps([100, 200], [item({ mapRouteId: 100 })])).toEqual([200]);
+		expect(staleDriftStamps([100, 200], [item({ turfId: 100 })])).toEqual([200]);
 	});
 
 	it('keeps the stamp of a turf that is still drifting', () => {
-		expect(staleDriftStamps([100], [item({ mapRouteId: 100 })])).toEqual([]);
+		expect(staleDriftStamps([100], [item({ turfId: 100 })])).toEqual([]);
 	});
 
 	it('clears everything when nothing drifts any more', () => {
@@ -73,7 +73,7 @@ describe('renderDriftAlert', () => {
 	});
 
 	it('leads with the count and links the report', () => {
-		const text = renderDriftAlert([item(), item({ mapRouteId: 200 })], APP)!;
+		const text = renderDriftAlert([item(), item({ turfId: 200 })], APP)!;
 		expect(text).toContain('2 new disagreements');
 		expect(text).toContain(`<${APP}/turfs/organizer|Open the drift report>`);
 	});
@@ -120,7 +120,7 @@ describe('renderDriftAlert', () => {
 
 	it('summarises past the row cap instead of posting hundreds of lines', () => {
 		const many: DriftItem[] = Array.from({ length: DRIFT_ALERT_MAX_ROWS + 7 }, (_, i) =>
-			item({ mapRouteId: i + 1, turfName: `Turf ${i + 1}` }),
+			item({ turfId: i + 1, turfName: `Turf ${i + 1}` }),
 		);
 		const text = renderDriftAlert(many, APP)!;
 		expect(text).toContain(`${DRIFT_ALERT_MAX_ROWS + 7} new disagreements`);

@@ -69,7 +69,7 @@ async function loadCandidates(db: Db, since: string): Promise<CompletionCandidat
 	return db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			completedAt: vanTurfCheckouts.completedAt,
@@ -83,7 +83,7 @@ async function loadCandidates(db: Db, since: string): Promise<CompletionCandidat
 			retiredAt: vanTurfs.retiredAt,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				isNotNull(vanTurfCheckouts.completedAt),
@@ -112,7 +112,7 @@ async function loadReplacements(
 		out.push(
 			...(await db
 				.select({
-					mapRouteId: vanTurfs.mapRouteId,
+					turfId: vanTurfs.turfId,
 					mapRegionId: vanTurfs.mapRegionId,
 					name: vanTurfs.name,
 					doorCount: vanTurfs.doorCount,

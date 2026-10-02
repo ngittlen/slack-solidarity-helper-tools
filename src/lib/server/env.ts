@@ -4,6 +4,7 @@
 
 import { env } from '$env/dynamic/private';
 import { parseEncryptionKey } from './token-crypto.js';
+import { parseVanCampaigns, type VanCampaignCredentials } from './van/campaign-credentials.js';
 
 const get = (key: string) => (env as Record<string, string | undefined>)[key] ?? '';
 
@@ -185,6 +186,17 @@ export const VAN_EXPORT_JOB_TYPE_ID = intEnv('VAN_EXPORT_JOB_TYPE_ID', 0);
 // Rotating it orphans every stored digest; see person-hash.ts for the reset.
 export const VAN_ID_HASH_SECRET = get('VAN_ID_HASH_SECRET');
 
+// Every VAN campaign's credentials: one `VAN_CAMPAIGN_<KEY>` secret each, plus
+// the legacy VAN_APP_NAME/VAN_API_KEY/VAN_DATABASE_MODE above standing in for
+// the `primary` campaign. See van/campaign-credentials.ts for the format.
+//
+// Computed once: secrets only change when Fly restarts the machine.
+let vanCampaignCredentialsCache: VanCampaignCredentials | null = null;
+export function vanCampaignCredentials(): VanCampaignCredentials {
+	vanCampaignCredentialsCache ??= parseVanCampaigns(env as Record<string, string | undefined>);
+	return vanCampaignCredentialsCache;
+}
+
 // The service-account key the Packet Tracker sync signs in to Google Sheets with
 // (see src/lib/server/google-env.ts and specs/011-turf-checkout-sheet/spec.md).
 // The whole JSON key file, as one value.
@@ -277,4 +289,11 @@ export function validateEnv(): void {
 			'[env] SOLIDARITY_API_TOKEN is not set — the team_join welcome flow will be disabled (every lookup returns null).',
 		);
 	}
+	// Warnings, not exits: VAN is optional, and one campaign's malformed secret
+	// must not take down the app — or the campaigns whose secrets are fine.
+	// The messages name the secret and never carry its value. An install with
+	// no VAN vars at all has no errors here, so it boots silently.
+	const van = vanCampaignCredentials();
+	for (const error of van.errors.values()) console.warn(`[env] ${error}`);
+	for (const warning of van.warnings) console.warn(`[env] ${warning}`);
 }

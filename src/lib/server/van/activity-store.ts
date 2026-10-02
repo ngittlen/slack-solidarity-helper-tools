@@ -98,7 +98,7 @@ export async function loadActivityCounts(db: Db, query: ActivityQuery): Promise<
 			walkedOut: countWhen(sql`${released} and ${vanTurfCheckouts.releaseReason} = 'walked-out'`),
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(scopeWhere(query));
 
 	// `sum()` over no rows is NULL, not 0.
@@ -139,7 +139,7 @@ export async function loadActivityRows(
 	return db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			claimedAt: vanTurfCheckouts.claimedAt,
@@ -158,7 +158,7 @@ export async function loadActivityRows(
 			doorCount: vanTurfs.doorCount,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(scopeWhere(query))
 		.orderBy(desc(newest))
 		.limit(limit);
@@ -168,6 +168,6 @@ export async function loadActivityRows(
  *  week" apart from "no turf has ever been loaded" — which, with no VAN key
  *  yet, is the state anyone actually hits today. */
 export async function hasAnyTurf(db: Db): Promise<boolean> {
-	const rows = await db.select({ mapRouteId: vanTurfs.mapRouteId }).from(vanTurfs).limit(1);
+	const rows = await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs).limit(1);
 	return rows.length > 0;
 }

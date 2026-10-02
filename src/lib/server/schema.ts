@@ -758,6 +758,42 @@ export type NewSlackUserTokenRow = typeof slackUserTokens.$inferInsert;
 // (plan §3), so the most granular thing stored is a polygon and a count.
 // ---------------------------------------------------------------------------
 
+// One row per VAN campaign — a committee the app reads turf from with its own
+// API key (specs/012-multi-van-campaigns/spec.md).
+//
+// NO credentials here. A campaign's app name, API key and database mode live
+// in its `VAN_CAMPAIGN_<KEY>` Fly secret (van/campaign-credentials.ts), and
+// `credential_key` is the lowercased <KEY> that links this row to it. That key
+// is the campaign's permanent identity: renaming the secret is creating a new
+// campaign, and this row is left reporting its credentials missing.
+//
+// Row 1 is seeded by the migration as the campaign the app has always served,
+// with key 'primary' — which the legacy VAN_APP_NAME/VAN_API_KEY vars stand in
+// for — so an existing install keeps working with no secret changes. It has no
+// label until an admin gives it one. Rows for
+// new secrets are created disabled (`ensureCampaignRows` in van-env.ts), so
+// setting a secret on its own never starts a sync.
+export const vanCampaigns = sqliteTable('van_campaigns', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	credentialKey: text('credential_key').notNull().unique(),
+	/** Shown to signed-in volunteers on turf and in alerts. Blank until an admin
+	 *  names the campaign in /settings — the migration and discovery never pick
+	 *  one, so no organisation's name is baked into the schema. Unique among
+	 *  campaigns that have one (SQLite lets any number of rows be NULL). */
+	label: text('label').unique(),
+	enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+	/** The coordinates export that feeds hull geometry. Per campaign because
+	 *  EveryAction issues export job types per key. Null means no geometry —
+	 *  turf draws as pins — except for 'primary', which falls back to
+	 *  VAN_EXPORT_JOB_TYPE_ID (vanExportJobTypeIdFor in van-env.ts). */
+	exportJobTypeId: integer('export_job_type_id'),
+	disabledAt: text('disabled_at'),
+	disabledByName: text('disabled_by_name'),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
 // Which VAN folders belong to which Solidarity chapter. Mirrors
 // chapter_channel_map deliberately: same composite-key shape, same audit
 // triplet, same settings-editor ergonomics.
@@ -841,7 +877,11 @@ export const vanSheetHealth = sqliteTable('van_sheet_health', {
 
 // One row per VAN Map Route.
 //
-// `mapRouteId` is VAN's own identifier and it is NOT stable across a refresh —
+// `turfId` is this app's id for the turf: what checkouts, rosters, the geometry
+// queue, Slack buttons and webhook URLs point at. Today it is the route's VAN
+// `mapRouteId`, copied as is.
+//
+// VAN's `mapRouteId` is NOT stable across a refresh —
 // this comment used to claim it was, and the plan's Story 4.6 was written to
 // settle the question. Verified against the live API on 2026-09-08: refreshing
 // region 508413 retired routes 56456/56457 and returned 56502/56503 in their
@@ -854,7 +894,7 @@ export const vanSheetHealth = sqliteTable('van_sheet_health', {
 export const vanTurfs = sqliteTable(
 	'van_turfs',
 	{
-		mapRouteId: integer('map_route_id').primaryKey(),
+		turfId: integer('turf_id').primaryKey(),
 		mapRegionId: integer('map_region_id').notNull(),
 		folderId: integer('folder_id').notNull(),
 		// Resolved through van_chapter_folders at sync time so reads don't join.
@@ -970,7 +1010,7 @@ export const vanTurfCheckouts = sqliteTable(
 	'van_turf_checkouts',
 	{
 		id: integer('id').primaryKey({ autoIncrement: true }),
-		mapRouteId: integer('map_route_id').notNull(),
+		turfId: integer('turf_id').notNull(),
 		slackUserId: text('slack_user_id').notNull(),
 		slackUserName: text('slack_user_name').notNull(),
 		claimedAt: text('claimed_at').notNull(),
@@ -1074,7 +1114,7 @@ export const vanTurfCheckouts = sqliteTable(
 	},
 	(table) => [
 		uniqueIndex('van_turf_checkouts_one_active')
-			.on(table.mapRouteId)
+			.on(table.turfId)
 			.where(sql`${table.releasedAt} IS NULL AND ${table.completedAt} IS NULL`),
 		index('van_turf_checkouts_holder').on(table.slackUserId),
 	],
@@ -1099,7 +1139,7 @@ export const vanBlockedUsers = sqliteTable('van_blocked_users', {
 export const vanGeometryQueue = sqliteTable(
 	'van_geometry_queue',
 	{
-		mapRouteId: integer('map_route_id').primaryKey(),
+		turfId: integer('turf_id').primaryKey(),
 		savedListId: integer('saved_list_id').notNull(),
 		exportJobId: integer('export_job_id'),
 		/** 'pending' | 'running' | 'done' | 'failed' */
@@ -1125,7 +1165,7 @@ export const vanGeometryQueue = sqliteTable(
 export const vanTurfRoster = sqliteTable(
 	'van_turf_roster',
 	{
-		mapRouteId: integer('map_route_id').notNull(),
+		turfId: integer('turf_id').notNull(),
 		personHash: blob('person_hash', { mode: 'buffer' }).notNull(),
 		doorHash: blob('door_hash', { mode: 'buffer' }).notNull(),
 	},
@@ -1133,7 +1173,7 @@ export const vanTurfRoster = sqliteTable(
 	// which turfs have one of the people just read (contact-sync.ts), so only
 	// those are recomputed. Without it that lookup scans the whole table.
 	(table) => [
-		primaryKey({ columns: [table.mapRouteId, table.personHash] }),
+		primaryKey({ columns: [table.turfId, table.personHash] }),
 		index('van_turf_roster_person').on(table.personHash),
 	],
 );
@@ -1300,6 +1340,9 @@ export const vanZipCentroids = sqliteTable('van_zip_centroids', {
 	lng: real('lng').notNull(),
 	fetchedAt: text('fetched_at').notNull(),
 });
+
+export type VanCampaignRow = typeof vanCampaigns.$inferSelect;
+export type NewVanCampaignRow = typeof vanCampaigns.$inferInsert;
 
 export type VanChapterFolderRow = typeof vanChapterFolders.$inferSelect;
 export type NewVanChapterFolderRow = typeof vanChapterFolders.$inferInsert;

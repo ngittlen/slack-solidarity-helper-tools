@@ -43,7 +43,7 @@ async function turf(
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, name, door_count,
+		        (turf_id, map_region_id, folder_id, chapter_id, name, door_count,
 		         printed_list_number, van_distributed_to, sheet_assigned_to,
 		         centroid_lat, centroid_lng, retired_at, van_assigned_at, first_seen_at, last_seen_at)
 		      VALUES (?, 1, 1, 71, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -65,7 +65,7 @@ async function turf(
 }
 
 async function claim(
-	mapRouteId: number,
+	turfId: number,
 	slackUserId: string,
 	over: {
 		expiresAt?: string;
@@ -77,11 +77,11 @@ async function claim(
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
-		        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         released_at, completed_at, release_reason, reported_percent)
 		      VALUES (?, ?, 'Someone', ?, ?, ?, ?, ?, ?)`,
 		args: [
-			mapRouteId,
+			turfId,
 			slackUserId,
 			iso(-2 * HOUR),
 			over.expiresAt ?? iso(24 * HOUR),

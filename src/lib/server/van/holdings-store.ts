@@ -60,7 +60,7 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 	return db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			claimedAt: vanTurfCheckouts.claimedAt,
@@ -78,7 +78,7 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 			// holder.
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				isNull(vanTurfCheckouts.releasedAt),
@@ -90,7 +90,7 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 
 /** One of the caller's own claims, as `/turfs-mine` renders it. */
 export interface MyHoldingRow {
-	mapRouteId: number;
+	turfId: number;
 	claimedAt: string;
 	expiresAt: string;
 	releasedAt: string | null;
@@ -123,7 +123,7 @@ export interface MyHoldingRow {
 export async function loadHoldingsFor(db: Db, slackUserId: string): Promise<MyHoldingRow[]> {
 	return db
 		.select({
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			claimedAt: vanTurfCheckouts.claimedAt,
 			expiresAt: vanTurfCheckouts.expiresAt,
 			releasedAt: vanTurfCheckouts.releasedAt,
@@ -135,7 +135,7 @@ export async function loadHoldingsFor(db: Db, slackUserId: string): Promise<MyHo
 			doorCount: doorsLeftColumn,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				eq(vanTurfCheckouts.slackUserId, slackUserId),
@@ -161,7 +161,7 @@ export async function loadRecentCompletions(
 	const rows = await db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			completedAt: vanTurfCheckouts.completedAt,
@@ -172,7 +172,7 @@ export async function loadRecentCompletions(
 			chapterName: vanTurfs.chapterName,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(and(isNotNull(vanTurfCheckouts.completedAt), chapterFilter(query.chapterId)))
 		.orderBy(desc(vanTurfCheckouts.completedAt))
 		.limit(query.limit ?? COMPLETION_LOOKBACK);

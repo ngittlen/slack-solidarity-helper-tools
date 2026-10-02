@@ -127,15 +127,15 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 const writes = (calls: string[]) => calls.filter((c) => c.startsWith('write'));
 
 async function turf(
-	over: { mapRouteId?: number; regionName?: string; name?: string; list?: string | null } = {},
+	over: { turfId?: number; regionName?: string; name?: string; list?: string | null } = {},
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, printed_list_number, route_size, door_count, first_seen_at, last_seen_at)
 		      VALUES (?, 1, 1, 71, 'Wayne County', ?, ?, ?, 120, 50, 'x', 'x')`,
 		args: [
-			over.mapRouteId ?? 100,
+			over.turfId ?? 100,
 			over.regionName ?? 'R10C_Wayne_TaylorCity004_9.11',
 			over.name ?? 'Turf 01',
 			over.list === undefined ? LIST : over.list,
@@ -146,7 +146,7 @@ async function turf(
 async function checkout(
 	over: {
 		id?: number;
-		mapRouteId?: number;
+		turfId?: number;
 		list?: string;
 		releasedAt?: string | null;
 		completedAt?: string | null;
@@ -156,14 +156,14 @@ async function checkout(
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
-		        (id, map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         released_at, completed_at, reported_percent, issued_list_number,
 		         claim_door_count, sheet_state)
 		      VALUES (?, ?, 'U1', 'Dana', '2026-09-19T14:07:00.000Z', '2026-09-21T14:00:00.000Z',
 		              ?, ?, ?, ?, 64, ?)`,
 		args: [
 			over.id ?? 1,
-			over.mapRouteId ?? 100,
+			over.turfId ?? 100,
 			over.releasedAt ?? null,
 			over.completedAt ?? null,
 			over.reportedPercent ?? null,
@@ -185,10 +185,10 @@ async function stateOf(id: number) {
 	return parseSheetState((res.rows[0]?.['sheet_state'] as string | null) ?? null);
 }
 
-async function assignedTo(mapRouteId = 100) {
+async function assignedTo(turfId = 100) {
 	const res = await client.execute({
-		sql: 'SELECT sheet_assigned_to FROM van_turfs WHERE map_route_id = ?',
-		args: [mapRouteId],
+		sql: 'SELECT sheet_assigned_to FROM van_turfs WHERE turf_id = ?',
+		args: [turfId],
 	});
 	return (res.rows[0]?.['sheet_assigned_to'] as string | null) ?? null;
 }
@@ -350,7 +350,7 @@ describe('the campaign’s entries are never overwritten', () => {
 	async function withDoorsLeft(uncontacted: number) {
 		await client.execute({
 			sql: `UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = 900,
-			        uncontacted_doors = ? WHERE map_route_id = 100`,
+			        uncontacted_doors = ? WHERE turf_id = 100`,
 			args: [uncontacted],
 		});
 	}
@@ -548,7 +548,7 @@ describe('the campaign’s own assignments', () => {
 			client: api,
 			targets: [DOWNRIVER],
 			turf: {
-				mapRouteId: 100,
+				turfId: 100,
 				regionName: 'R10C_Wayne_TaylorCity004_9.11',
 				printedListNumber: LIST,
 			},
@@ -610,10 +610,10 @@ describe('Google’s 60-a-minute quota and the run’s time', () => {
 	});
 
 	it('stops calling Google once the quota is spent', async () => {
-		await turf({ mapRouteId: 100 });
-		await turf({ mapRouteId: 101, regionName: 'R10D_Wayne_X', name: 'Turf 02', list: '2-2' });
-		await checkout({ id: 1, mapRouteId: 100 });
-		await checkout({ id: 2, mapRouteId: 101, list: '2-2' });
+		await turf({ turfId: 100 });
+		await turf({ turfId: 101, regionName: 'R10D_Wayne_X', name: 'Turf 02', list: '2-2' });
+		await checkout({ id: 1, turfId: 100 });
+		await checkout({ id: 2, turfId: 101, list: '2-2' });
 		const fake = fakeSheets({
 			'sheet-downriver': tracker(packet(LIST)),
 			'sheet-western': tracker(packet('2-2')),
@@ -630,9 +630,9 @@ describe('Google’s 60-a-minute quota and the run’s time', () => {
 	// If the read-only sheet went first and hit the quota, the stop would come
 	// before the write. The order is shuffled, so this is run several times.
 	it('writes the spreadsheets with work before the ones only read for assignments', async () => {
-		await turf({ mapRouteId: 100 });
-		await turf({ mapRouteId: 101, regionName: 'R10D_Wayne_X', name: 'Turf 02', list: '2-2' });
-		await checkout({ id: 2, mapRouteId: 101, list: '2-2' });
+		await turf({ turfId: 100 });
+		await turf({ turfId: 101, regionName: 'R10D_Wayne_X', name: 'Turf 02', list: '2-2' });
+		await checkout({ id: 2, turfId: 101, list: '2-2' });
 
 		for (let i = 0; i < 8; i++) {
 			await update(2, 'sheet_state = NULL');
@@ -651,10 +651,10 @@ describe('Google’s 60-a-minute quota and the run’s time', () => {
 
 describe('alerts', () => {
 	it('alerts once, with every spreadsheet failing the same way in one message', async () => {
-		await turf({ mapRouteId: 100 });
-		await turf({ mapRouteId: 101, regionName: 'R10D_Wayne_X', name: 'Turf 02', list: '2-2' });
-		await checkout({ id: 1, mapRouteId: 100 });
-		await checkout({ id: 2, mapRouteId: 101, list: '2-2' });
+		await turf({ turfId: 100 });
+		await turf({ turfId: 101, regionName: 'R10D_Wayne_X', name: 'Turf 02', list: '2-2' });
+		await checkout({ id: 1, turfId: 100 });
+		await checkout({ id: 2, turfId: 101, list: '2-2' });
 		const fake = fakeSheets({
 			'sheet-downriver': tracker(packet(LIST)),
 			'sheet-western': tracker(packet('2-2')),
@@ -690,20 +690,20 @@ describe('alerts', () => {
 
 describe('backfill and scope', () => {
 	it('fills in live and walked checkouts and skips released ones the migration stamped', async () => {
-		await turf({ mapRouteId: 100 });
-		await turf({ mapRouteId: 101, name: 'Turf 02', list: '2-2' });
-		await turf({ mapRouteId: 102, name: 'Turf 03', list: '3-3' });
-		await checkout({ id: 1, mapRouteId: 100 });
+		await turf({ turfId: 100 });
+		await turf({ turfId: 101, name: 'Turf 02', list: '2-2' });
+		await turf({ turfId: 102, name: 'Turf 03', list: '3-3' });
+		await checkout({ id: 1, turfId: 100 });
 		await checkout({
 			id: 2,
-			mapRouteId: 101,
+			turfId: 101,
 			list: '2-2',
 			completedAt: '2026-09-01T17:00:00.000Z',
 			reportedPercent: 100,
 		});
 		await checkout({
 			id: 3,
-			mapRouteId: 102,
+			turfId: 102,
 			list: '3-3',
 			releasedAt: '2026-09-01T15:00:00.000Z',
 			sheetState: '{"spreadsheetId":null,"cells":null}',
@@ -720,13 +720,13 @@ describe('backfill and scope', () => {
 	});
 
 	it('limits a nudge to the one turf', async () => {
-		await turf({ mapRouteId: 100 });
-		await turf({ mapRouteId: 101, name: 'Turf 02', list: '2-2' });
-		await checkout({ id: 1, mapRouteId: 100 });
-		await checkout({ id: 2, mapRouteId: 101, list: '2-2' });
+		await turf({ turfId: 100 });
+		await turf({ turfId: 101, name: 'Turf 02', list: '2-2' });
+		await checkout({ id: 1, turfId: 100 });
+		await checkout({ id: 2, turfId: 101, list: '2-2' });
 		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST), packet('2-2')) });
 
-		await run(fake.api, { onlyMapRouteId: 101 });
+		await run(fake.api, { onlyTurfId: 101 });
 
 		expect(fake.entry('sheet-downriver').Canvasser).toBe('');
 		expect(fake.entry('sheet-downriver', '2-2').Canvasser).toBe('Dana');

@@ -31,7 +31,7 @@ import { campaignDayKey } from '../campaign-time.js';
 
 /** One completed checkout, joined to the turf it was on. */
 export interface ClearedRow {
-	mapRouteId: number;
+	turfId: number;
 	chapterId: number;
 	chapterName: string;
 	slackUserId: string;

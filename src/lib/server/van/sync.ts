@@ -172,7 +172,7 @@ export async function runCatalogSync(
 	// One entry per FOLDER, not per chapter-folder pair.
 	//
 	// A folder mapped to eleven chapters used to be fetched eleven times and to
-	// produce eleven upserts per route — all keyed by `mapRouteId` alone, so the
+	// produce eleven upserts per route — all keyed by `turfId` alone, so the
 	// last chapter written won and the other ten saw none of that folder's turf.
 	// Visibility now comes from the mapping at query time (chapter-visibility.ts),
 	// so the catalog reads each folder once and stores one row per turf.
@@ -329,7 +329,7 @@ export async function runCatalogSync(
 	// already labels with the timestamp those counts came from.
 	for (const rows of chunked(plan.upserts, WRITE_BATCH_SIZE)) {
 		const statements = rows.map((row) =>
-			db.insert(vanTurfs).values(row).onConflictDoUpdate({ target: vanTurfs.mapRouteId, set: row }),
+			db.insert(vanTurfs).values(row).onConflictDoUpdate({ target: vanTurfs.turfId, set: row }),
 		);
 		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
@@ -382,13 +382,13 @@ export async function runCatalogSync(
 		...new Set([
 			...plan.retirements,
 			...existing
-				.filter((row) => row.retiredAt !== null && !unretired.has(row.mapRouteId))
-				.map((row) => row.mapRouteId),
+				.filter((row) => row.retiredAt !== null && !unretired.has(row.turfId))
+				.map((row) => row.turfId),
 		]),
 	];
 
 	const retireStatements = chunked(plan.retirements).map((batch) =>
-		db.update(vanTurfs).set({ retiredAt }).where(inArray(vanTurfs.mapRouteId, batch)),
+		db.update(vanTurfs).set({ retiredAt }).where(inArray(vanTurfs.turfId, batch)),
 	);
 
 	// Retirement releases live claims: a volunteer holding turf that no longer
@@ -402,7 +402,7 @@ export async function runCatalogSync(
 			.set({ releasedAt: retiredAt, releaseReason: 'retired' })
 			.where(
 				and(
-					inArray(vanTurfCheckouts.mapRouteId, batch),
+					inArray(vanTurfCheckouts.turfId, batch),
 					isNull(vanTurfCheckouts.releasedAt),
 					isNull(vanTurfCheckouts.completedAt),
 				),
@@ -413,8 +413,8 @@ export async function runCatalogSync(
 	const dropStatements = chunked(retiredRouteIds).map((batch) =>
 		db
 			.delete(vanGeometryQueue)
-			.where(inArray(vanGeometryQueue.mapRouteId, batch))
-			.returning({ mapRouteId: vanGeometryQueue.mapRouteId }),
+			.where(inArray(vanGeometryQueue.turfId, batch))
+			.returning({ turfId: vanGeometryQueue.turfId }),
 	);
 	// A retired route's people are a cut nobody can walk any more — but not
 	// straight away: a completion on it still derives its % walked from its
@@ -426,12 +426,11 @@ export async function runCatalogSync(
 	const rosterCutoff = new Date(now.getTime() - RETIRED_ROSTER_KEEP_MS).toISOString();
 	const rosterExpired = existing
 		.filter(
-			(row) =>
-				row.retiredAt !== null && row.retiredAt < rosterCutoff && !unretired.has(row.mapRouteId),
+			(row) => row.retiredAt !== null && row.retiredAt < rosterCutoff && !unretired.has(row.turfId),
 		)
-		.map((row) => row.mapRouteId);
+		.map((row) => row.turfId);
 	const rosterStatements = chunked(rosterExpired).map((batch) =>
-		db.delete(vanTurfRoster).where(inArray(vanTurfRoster.mapRouteId, batch)),
+		db.delete(vanTurfRoster).where(inArray(vanTurfRoster.turfId, batch)),
 	);
 
 	let claimsReleased = 0;
@@ -462,8 +461,8 @@ export async function runCatalogSync(
 	// This was `onConflictDoNothing`, to keep a turf that is queued or
 	// mid-flight from being reset to pending under the worker's feet. That
 	// protected the right thing and broke re-cut detection while doing it: the
-	// row is keyed by mapRouteId, so once a turf had ANY queue row, a later
-	// sync could never correct it. A re-cut turf keeps its mapRouteId and gets
+	// row is keyed by turfId, so once a turf had ANY queue row, a later
+	// sync could never correct it. A re-cut turf keeps its VAN route id and gets
 	// a NEW savedListId (observed live: "Orlando Turf 01" moved from 585052 to
 	// 585484 when the demo region was re-cut), so the stale row kept pointing
 	// at a saved list VAN now rejects with `'savedListId' must be a valid saved
@@ -498,13 +497,13 @@ export async function runCatalogSync(
 			db
 				.insert(vanGeometryQueue)
 				.values({
-					mapRouteId: item.mapRouteId,
+					turfId: item.turfId,
 					savedListId: item.savedListId,
 					status: 'pending',
 					attempts: 0,
 				})
 				.onConflictDoUpdate({
-					target: vanGeometryQueue.mapRouteId,
+					target: vanGeometryQueue.turfId,
 					set: {
 						savedListId: item.savedListId,
 						status: 'pending',

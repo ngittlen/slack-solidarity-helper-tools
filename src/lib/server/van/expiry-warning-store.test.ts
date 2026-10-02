@@ -47,7 +47,7 @@ beforeEach(async () => {
 		[300, 'Turf 03'],
 	] as const) {
 		await client.execute(
-			`INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+			`INSERT INTO van_turfs (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
 			 VALUES (${id}, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', '${name}', 250, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
 		);
 	}
@@ -57,7 +57,7 @@ beforeEach(async () => {
  *  six-hour lead window — held by an unwarned volunteer. */
 async function checkout(over: Record<string, string | number | null> = {}) {
 	const row = {
-		map_route_id: 100,
+		turf_id: 100,
 		slack_user_id: 'U_VOL',
 		slack_user_name: 'Dana',
 		claimed_at: iso(NOW.getTime() - 20 * HOUR),
@@ -69,8 +69,8 @@ async function checkout(over: Record<string, string | number | null> = {}) {
 	};
 	const q = (v: string | number | null) => (v === null ? 'NULL' : `'${v}'`);
 	await client.execute(
-		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, expiry_warned_at)
-		 VALUES (${row.map_route_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}', ${q(row.released_at)}, ${q(row.completed_at)}, ${q(row.expiry_warned_at)})`,
+		`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, expiry_warned_at)
+		 VALUES (${row.turf_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}', ${q(row.released_at)}, ${q(row.completed_at)}, ${q(row.expiry_warned_at)})`,
 	);
 }
 
@@ -188,7 +188,7 @@ describe('sendExpiryWarnings', () => {
 
 		it('skips a checkout whose turf row is missing', async () => {
 			await client.execute(
-				`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+				`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
 				 VALUES (999, 'U_GHOST', 'Ghost', '${iso(NOW.getTime() - HOUR)}', '${iso(NOW.getTime() + HOUR)}')`,
 			);
 			expect(await sendExpiryWarnings(db, NOW)).toEqual({ sent: 0, failed: 0 });
@@ -196,10 +196,10 @@ describe('sendExpiryWarnings', () => {
 	});
 
 	it('warns several holders in one sweep', async () => {
-		await checkout({ map_route_id: 100, slack_user_id: 'U_A', slack_user_name: 'A' });
-		await checkout({ map_route_id: 200, slack_user_id: 'U_B', slack_user_name: 'B' });
+		await checkout({ turf_id: 100, slack_user_id: 'U_A', slack_user_name: 'A' });
+		await checkout({ turf_id: 200, slack_user_id: 'U_B', slack_user_name: 'B' });
 		await checkout({
-			map_route_id: 300,
+			turf_id: 300,
 			slack_user_id: 'U_C',
 			slack_user_name: 'C',
 			expires_at: iso(NOW.getTime() + 30 * HOUR),
@@ -210,8 +210,8 @@ describe('sendExpiryWarnings', () => {
 	});
 
 	it('reports sent and failed separately in a mixed sweep', async () => {
-		await checkout({ map_route_id: 100, slack_user_id: 'U_A', slack_user_name: 'A' });
-		await checkout({ map_route_id: 200, slack_user_id: 'U_B', slack_user_name: 'B' });
+		await checkout({ turf_id: 100, slack_user_id: 'U_A', slack_user_name: 'A' });
+		await checkout({ turf_id: 200, slack_user_id: 'U_B', slack_user_name: 'B' });
 		mockSendDm.mockImplementation(async (userId: string) => userId !== 'U_B');
 
 		expect(await sendExpiryWarnings(db, NOW)).toEqual({ sent: 1, failed: 1 });

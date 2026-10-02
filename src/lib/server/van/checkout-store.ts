@@ -6,7 +6,7 @@
 // and three copies of it would eventually disagree about one of the checks.
 //
 // Neither guarantee a claim rests on is enforced in JavaScript. One turf to one
-// volunteer is the partial unique index on van_turf_checkouts (map_route_id)
+// volunteer is the partial unique index on van_turf_checkouts (turf_id)
 // WHERE released_at IS NULL AND completed_at IS NULL. The per-volunteer cap is
 // the count subquery inside the INSERT in `claimTurf` — the index cannot
 // express it, since it constrains a set of rows rather than one. `canClaim` is
@@ -56,22 +56,22 @@ export interface WalkReport {
  */
 export async function latestWalkReports(
 	db: Db,
-	mapRouteIds: readonly number[],
+	turfIds: readonly number[],
 ): Promise<Map<number, WalkReport>> {
 	const reports = new Map<number, WalkReport>();
-	if (mapRouteIds.length === 0) return reports;
+	if (turfIds.length === 0) return reports;
 	const { countedThrough } = await loadContactMarks(db);
-	for (const batch of chunked([...new Set(mapRouteIds)])) {
+	for (const batch of chunked([...new Set(turfIds)])) {
 		const rows = await db
 			.select({
-				mapRouteId: vanTurfCheckouts.mapRouteId,
+				turfId: vanTurfCheckouts.turfId,
 				percent: vanTurfCheckouts.reportedPercent,
 				at: vanTurfCheckouts.completedAt,
 			})
 			.from(vanTurfCheckouts)
 			.where(
 				and(
-					inArray(vanTurfCheckouts.mapRouteId, batch),
+					inArray(vanTurfCheckouts.turfId, batch),
 					// Not filtered on reportedPercent: the latest completion is the
 					// report even before its % is known. Skipping it would surface an
 					// older completion's figure — a stale 100% that locks the turf.
@@ -81,8 +81,8 @@ export async function latestWalkReports(
 			.orderBy(desc(vanTurfCheckouts.completedAt));
 		for (const row of rows) {
 			// Newest first, so the first row per route is the one that counts.
-			if (!reports.has(row.mapRouteId) && row.at !== null) {
-				reports.set(row.mapRouteId, {
+			if (!reports.has(row.turfId) && row.at !== null) {
+				reports.set(row.turfId, {
 					percent: row.percent,
 					at: row.at,
 					awaitingCount: countedThrough === null || row.at >= countedThrough,
@@ -107,7 +107,7 @@ export async function latestWalkReports(
  *  for no benefit. */
 async function relevantClaims(
 	db: Db,
-	mapRouteId: number,
+	turfId: number,
 	slackUserId: string,
 ): Promise<ClaimSnapshot[]> {
 	const rows = await db
@@ -117,14 +117,11 @@ async function relevantClaims(
 			and(
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
-				or(
-					eq(vanTurfCheckouts.mapRouteId, mapRouteId),
-					eq(vanTurfCheckouts.slackUserId, slackUserId),
-				),
+				or(eq(vanTurfCheckouts.turfId, turfId), eq(vanTurfCheckouts.slackUserId, slackUserId)),
 			),
 		);
 	return rows.map((r) => ({
-		mapRouteId: r.mapRouteId,
+		turfId: r.turfId,
 		slackUserId: r.slackUserId,
 		slackUserName: r.slackUserName,
 		claimedAt: r.claimedAt,
@@ -134,11 +131,11 @@ async function relevantClaims(
 	}));
 }
 
-/** Claim `mapRouteId` for `session`. */
+/** Claim `turfId` for `session`. */
 export async function claimTurf(
 	db: Db,
 	input: {
-		mapRouteId: number;
+		turfId: number;
 		slackUserId: string;
 		slackUserName: string;
 		now: Date;
@@ -147,26 +144,26 @@ export async function claimTurf(
 		 *  turf, null for nobody, undefined for "could not tell". See
 		 *  packet-tracker-live.ts. Omitted, the last sync's record stands. */
 		sheetCheck?: (turf: {
-			mapRouteId: number;
+			turfId: number;
 			regionName: string;
 			printedListNumber: string | null;
 		}) => Promise<string | null | undefined>;
 	},
 ): Promise<ClaimResult> {
-	const { mapRouteId, slackUserId, slackUserName, now } = input;
+	const { turfId, slackUserId, slackUserName, now } = input;
 
-	const [row] = await db.select().from(vanTurfs).where(eq(vanTurfs.mapRouteId, mapRouteId));
+	const [row] = await db.select().from(vanTurfs).where(eq(vanTurfs.turfId, turfId));
 	if (!row) return { ok: false, status: 404, message: 'That turf no longer exists.' };
 
 	// The same snapshot the page judged claimability from, so the server never
 	// refuses a turf the page offered (or hands out one it showed as done).
 	const snapshot = turfSnapshot(row, now, {
-		walkReports: await latestWalkReports(db, [mapRouteId]),
+		walkReports: await latestWalkReports(db, [turfId]),
 		vanAssignmentTtlHours: input.options?.vanAssignmentTtlHours,
 	});
 
 	const options = input.options ?? {};
-	const claims = await relevantClaims(db, mapRouteId, slackUserId);
+	const claims = await relevantClaims(db, turfId, slackUserId);
 	const decision = canClaim(snapshot, claims, slackUserId, now, options);
 	if (!decision.ok) return { ok: false, status: 409, message: decision.message };
 
@@ -177,7 +174,7 @@ export async function claimTurf(
 	// known to remain uncontacted — the sheet no longer blocks then.
 	if (input.sheetCheck && sheetBlocksClaim(row)) {
 		const assignedTo = await input.sheetCheck({
-			mapRouteId,
+			turfId,
 			regionName: row.regionName,
 			printedListNumber: row.printedListNumber,
 		});
@@ -221,13 +218,13 @@ export async function claimTurf(
 	// and every writer here uses toISOString(). A corrupt timestamp is not
 	// cleared and is left to sweepExpiredClaims, which parses in JS.
 	const nowIso = now.toISOString();
-	if (claims.some((c) => c.mapRouteId === mapRouteId)) {
+	if (claims.some((c) => c.turfId === turfId)) {
 		await db
 			.update(vanTurfCheckouts)
 			.set({ releasedAt: nowIso, releaseReason: 'expired' })
 			.where(
 				and(
-					eq(vanTurfCheckouts.mapRouteId, mapRouteId),
+					eq(vanTurfCheckouts.turfId, turfId),
 					isNull(vanTurfCheckouts.releasedAt),
 					isNull(vanTurfCheckouts.completedAt),
 					lte(vanTurfCheckouts.expiresAt, nowIso),
@@ -259,9 +256,9 @@ export async function claimTurf(
 	// parse at all, which is convenient rather than a constraint here.
 	const inserted = (await db.all(sql`
 		INSERT INTO van_turf_checkouts
-			(map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+			(turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 			 claim_door_count, issued_list_number)
-		SELECT ${mapRouteId}, ${slackUserId}, ${slackUserName}, ${nowIso}, ${decision.expiresAt},
+		SELECT ${turfId}, ${slackUserId}, ${slackUserName}, ${nowIso}, ${decision.expiresAt},
 		       ${row.doorCount}, ${row.printedListNumber}
 		WHERE (
 			SELECT count(*) FROM van_turf_checkouts
@@ -279,7 +276,7 @@ export async function claimTurf(
 		// which, so re-derive it from current state. One extra read, only ever
 		// on the losing path, and the wording comes from the same `canClaim`
 		// the volunteer would have seen a moment earlier.
-		const fresh = await relevantClaims(db, mapRouteId, slackUserId);
+		const fresh = await relevantClaims(db, turfId, slackUserId);
 		const reason = canClaim(snapshot, fresh, slackUserId, now, options);
 		return {
 			ok: false,
@@ -290,7 +287,7 @@ export async function claimTurf(
 		};
 	}
 
-	console.log(`[van] claim: user=${slackUserId} route=${mapRouteId} expires=${decision.expiresAt}`);
+	console.log(`[van] claim: user=${slackUserId} route=${turfId} expires=${decision.expiresAt}`);
 	// The list number is issued here and nowhere else — see the note on
 	// TurfView.printedListNumber. `canClaim` has already refused a turf without
 	// one, so this is non-null by construction.
@@ -312,7 +309,7 @@ export async function claimTurf(
 export async function endClaim(
 	db: Db,
 	input: {
-		mapRouteId: number;
+		turfId: number;
 		slackUserId: string;
 		now: Date;
 		kind: 'release' | 'complete';
@@ -320,7 +317,7 @@ export async function endClaim(
 		syncedMinivan?: boolean;
 	},
 ): Promise<ReleaseResult> {
-	const { mapRouteId, slackUserId, now, kind } = input;
+	const { turfId, slackUserId, now, kind } = input;
 	if (kind === 'complete' && input.syncedMinivan !== true) {
 		return {
 			ok: false,
@@ -340,7 +337,7 @@ export async function endClaim(
 		.set(stamp)
 		.where(
 			and(
-				eq(vanTurfCheckouts.mapRouteId, mapRouteId),
+				eq(vanTurfCheckouts.turfId, turfId),
 				eq(vanTurfCheckouts.slackUserId, slackUserId),
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
@@ -370,7 +367,7 @@ export async function endClaim(
 		const [turf] = await db
 			.select({ folderId: vanTurfs.folderId, mapRegionId: vanTurfs.mapRegionId })
 			.from(vanTurfs)
-			.where(eq(vanTurfs.mapRouteId, mapRouteId));
+			.where(eq(vanTurfs.turfId, turfId));
 		if (turf) {
 			await requestRegionRefresh(db, {
 				folderId: turf.folderId,
@@ -380,7 +377,7 @@ export async function endClaim(
 		}
 	}
 
-	console.log(`[van] ${kind}: user=${slackUserId} route=${mapRouteId}`);
+	console.log(`[van] ${kind}: user=${slackUserId} route=${turfId}`);
 	return { ok: true };
 }
 

@@ -28,7 +28,7 @@ export type ActivityKind =
  *  it is the holder's credential, and an admin is not the holder. */
 export interface ActivityRow {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	/** Turf name from van_turfs. */
 	name: string;
 	regionName: string;
@@ -57,7 +57,7 @@ export interface ActivityEvent {
 	kind: ActivityKind;
 	at: string;
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	turfName: string;
 	regionName: string;
 	chapterId: number;
@@ -165,7 +165,7 @@ export function activityEvents(
 	for (const row of rows) {
 		const base = {
 			checkoutId: row.checkoutId,
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			turfName: row.name,
 			regionName: row.regionName,
 			chapterId: row.chapterId,

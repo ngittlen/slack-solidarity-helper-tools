@@ -18,7 +18,7 @@ function createdExpiringIn(days: number): string {
 
 function turf(over: Partial<ListExpiryTurf> = {}): ListExpiryTurf {
 	return {
-		mapRouteId: 1,
+		turfId: 1,
 		name: 'Brighton Turf 01',
 		regionName: 'R04C_Livingston_BrightonCity003',
 		chapterName: 'Livingston County',
@@ -46,13 +46,13 @@ describe('listExpiryAlerts', () => {
 	it('warns five days out and not before', () => {
 		const alerts = listExpiryAlerts(
 			[
-				turf({ mapRouteId: 1, printedListCreatedAt: createdExpiringIn(5) }),
-				turf({ mapRouteId: 2, printedListCreatedAt: createdExpiringIn(5.01) }),
+				turf({ turfId: 1, printedListCreatedAt: createdExpiringIn(5) }),
+				turf({ turfId: 2, printedListCreatedAt: createdExpiringIn(5.01) }),
 			],
 			new Set(),
 			NOW,
 		);
-		expect(alerts.map((a) => a.mapRouteId)).toEqual([1]);
+		expect(alerts.map((a) => a.turfId)).toEqual([1]);
 	});
 
 	it('still warns about a list already past expiry that nobody was told about', () => {
@@ -116,13 +116,13 @@ describe('listExpiryAlerts', () => {
 	it('marks turf someone holds, and lists the soonest first', () => {
 		const alerts = listExpiryAlerts(
 			[
-				turf({ mapRouteId: 1, printedListCreatedAt: createdExpiringIn(4) }),
-				turf({ mapRouteId: 2, printedListCreatedAt: createdExpiringIn(1) }),
+				turf({ turfId: 1, printedListCreatedAt: createdExpiringIn(4) }),
+				turf({ turfId: 2, printedListCreatedAt: createdExpiringIn(1) }),
 			],
 			new Set([1]),
 			NOW,
 		);
-		expect(alerts.map((a) => [a.mapRouteId, a.held])).toEqual([
+		expect(alerts.map((a) => [a.turfId, a.held])).toEqual([
 			[2, false],
 			[1, true],
 		]);
@@ -167,7 +167,7 @@ describe('renderListExpiryAlert', () => {
 
 	it('caps the rows and counts the rest', () => {
 		const many = Array.from({ length: LIST_EXPIRY_ALERT_MAX_ROWS + 3 }, (_, i) =>
-			turf({ mapRouteId: i + 1, name: `Turf ${i + 1}` }),
+			turf({ turfId: i + 1, name: `Turf ${i + 1}` }),
 		);
 		const text = renderListExpiryAlert(listExpiryAlerts(many, new Set(), NOW), NOW, APP)!;
 		expect(text).toContain('18 turfs');

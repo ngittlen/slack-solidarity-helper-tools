@@ -26,7 +26,7 @@ beforeEach(async () => {
 
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
+		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name,
 		         region_name, name, printed_list_number, door_count, first_seen_at, last_seen_at)
 		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 'L-100', 250, ?, ?)`,
 		args: [NOW.toISOString(), NOW.toISOString()],
@@ -35,7 +35,7 @@ beforeEach(async () => {
 
 async function insertClaim(over: Record<string, string | number | null> = {}) {
 	const row = {
-		map_route_id: 100,
+		turf_id: 100,
 		slack_user_id: 'U_FIRST',
 		slack_user_name: 'Dana',
 		claimed_at: CLAIMED,
@@ -47,11 +47,11 @@ async function insertClaim(over: Record<string, string | number | null> = {}) {
 	};
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
-		        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         released_at, completed_at, release_reason)
 		      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		args: [
-			row.map_route_id,
+			row.turf_id,
 			row.slack_user_id,
 			row.slack_user_name,
 			row.claimed_at,
@@ -92,7 +92,7 @@ describe('claimTurf', () => {
 		await insertClaim();
 
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SECOND',
 			slackUserName: 'Sam',
 			now: NOW,
@@ -119,7 +119,7 @@ describe('claimTurf', () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SECOND',
 			slackUserName: 'Sam',
 			now: NOW,
@@ -136,7 +136,7 @@ describe('claimTurf', () => {
 		await insertClaim({ released_at: CLAIMED, release_reason: 'volunteer' });
 
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SECOND',
 			slackUserName: 'Sam',
 			now: NOW,
@@ -155,7 +155,7 @@ describe('claimTurf', () => {
 		expect(swept).toBe(1);
 
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SECOND',
 			slackUserName: 'Sam',
 			now: NOW,
@@ -170,7 +170,7 @@ describe('claimTurf — the per-volunteer cap', () => {
 		for (const id of routeIds) {
 			await client.execute({
 				sql: `INSERT INTO van_turfs
-				        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
+				        (turf_id, map_region_id, folder_id, chapter_id, chapter_name,
 				         region_name, name, printed_list_number, door_count, first_seen_at, last_seen_at)
 				      VALUES (?, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, 250, ?, ?)`,
 				args: [id, `Turf ${id}`, `L-${id}`, NOW.toISOString(), NOW.toISOString()],
@@ -190,9 +190,9 @@ describe('claimTurf — the per-volunteer cap', () => {
 
 	it('refuses the claim that would take a volunteer past the cap', async () => {
 		await addTurfs(101, 102);
-		const claim = (mapRouteId: number) =>
+		const claim = (turfId: number) =>
 			claimTurf(db, {
-				mapRouteId,
+				turfId,
 				slackUserId: 'U_KEEN',
 				slackUserName: 'Keen',
 				now: NOW,
@@ -215,7 +215,7 @@ describe('claimTurf — the per-volunteer cap', () => {
 		// INSERT this volunteer ends up holding three.
 		await addTurfs(101, 102);
 		await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_KEEN',
 			slackUserName: 'Keen',
 			now: NOW,
@@ -223,9 +223,9 @@ describe('claimTurf — the per-volunteer cap', () => {
 		});
 
 		const results = await Promise.all(
-			[101, 102].map((mapRouteId) =>
+			[101, 102].map((turfId) =>
 				claimTurf(db, {
-					mapRouteId,
+					turfId,
 					slackUserId: 'U_KEEN',
 					slackUserName: 'Keen',
 					now: NOW,
@@ -246,7 +246,7 @@ describe('claimTurf — the per-volunteer cap', () => {
 		await insertClaim({ slack_user_id: 'U_KEEN', expires_at: LAPSED });
 
 		const result = await claimTurf(db, {
-			mapRouteId: 101,
+			turfId: 101,
 			slackUserId: 'U_KEEN',
 			slackUserName: 'Keen',
 			now: NOW,
@@ -262,7 +262,7 @@ describe('endClaim', () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 
 		const result = await endClaim(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SOMEONE_ELSE',
 			now: NOW,
 			kind: 'release',
@@ -280,7 +280,7 @@ describe('endClaim', () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 
 		const result = await endClaim(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_FIRST',
 			now: NOW,
 			kind: 'complete',
@@ -311,7 +311,7 @@ describe('endClaim', () => {
 
 		for (const syncedMinivan of [undefined, false]) {
 			const result = await endClaim(db, {
-				mapRouteId: 100,
+				turfId: 100,
 				slackUserId: 'U_FIRST',
 				now: NOW,
 				kind: 'complete',
@@ -327,7 +327,7 @@ describe('endClaim', () => {
 	it('records the completion with no % yet', async () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 		await endClaim(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_FIRST',
 			now: NOW,
 			kind: 'complete',
@@ -344,7 +344,7 @@ describe('endClaim', () => {
 	it('hands turf back without asking for a %', async () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 		const result = await endClaim(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_FIRST',
 			now: NOW,
 			kind: 'release',
@@ -355,7 +355,7 @@ describe('endClaim', () => {
 	it('does not ask for a refresh when turf is simply handed back', async () => {
 		// Nothing was knocked, so nothing about VAN's counts has changed.
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
-		await endClaim(db, { mapRouteId: 100, slackUserId: 'U_FIRST', now: NOW, kind: 'release' });
+		await endClaim(db, { turfId: 100, slackUserId: 'U_FIRST', now: NOW, kind: 'release' });
 		const res = await client.execute('SELECT count(*) AS n FROM van_region_refreshes');
 		expect(res.rows[0].n).toBe(0);
 	});
@@ -364,7 +364,7 @@ describe('endClaim', () => {
 describe('claimTurf — what the volunteer was told', () => {
 	it('records the list number it issued, for the reconciliation to compare against', async () => {
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_FIRST',
 			slackUserName: 'Dana',
 			now: NOW,
@@ -386,7 +386,7 @@ describe('claimTurf — what the volunteer was told', () => {
 describe('claimTurf — the campaign’s Packet Tracker', () => {
 	const claim = (sheetCheck?: Parameters<typeof claimTurf>[1]['sheetCheck']) =>
 		claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_FIRST',
 			slackUserName: 'Dana',
 			now: NOW,
@@ -395,7 +395,7 @@ describe('claimTurf — the campaign’s Packet Tracker', () => {
 
 	it('refuses turf the last sync saw in the tracker', async () => {
 		await client.execute(
-			"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE map_route_id = 100",
+			"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE turf_id = 100",
 		);
 
 		expect(await claim()).toMatchObject({ ok: false, status: 409 });
@@ -416,7 +416,7 @@ describe('claimTurf — the campaign’s Packet Tracker', () => {
 		await claim(sheetCheck);
 
 		expect(sheetCheck).toHaveBeenCalledWith({
-			mapRouteId: 100,
+			turfId: 100,
 			regionName: 'Ann Arbor',
 			printedListNumber: 'L-100',
 		});
@@ -433,13 +433,13 @@ describe('claimTurf — the campaign’s Packet Tracker', () => {
 		const counted = (left: number) =>
 			client.execute(
 				`UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = 900,
-				        uncontacted_doors = ${left} WHERE map_route_id = 100`,
+				        uncontacted_doors = ${left} WHERE turf_id = 100`,
 			);
 
 		it('claims turf the last sync saw in the tracker', async () => {
 			await counted(12);
 			await client.execute(
-				"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE map_route_id = 100",
+				"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE turf_id = 100",
 			);
 			expect(await claim()).toMatchObject({ ok: true });
 		});
@@ -454,16 +454,14 @@ describe('claimTurf — the campaign’s Packet Tracker', () => {
 		// VAN's own record of an outside hand-out is a different matter.
 		it('still refuses turf VAN says was handed out directly', async () => {
 			await counted(12);
-			await client.execute(
-				"UPDATE van_turfs SET van_distributed_to = 'Sam' WHERE map_route_id = 100",
-			);
+			await client.execute("UPDATE van_turfs SET van_distributed_to = 'Sam' WHERE turf_id = 100");
 			expect(await claim()).toMatchObject({ ok: false, status: 409 });
 		});
 
 		it('still refuses a stale count, where what is left is unknown', async () => {
 			await counted(12);
 			await client.execute(
-				"UPDATE van_turfs SET saved_list_id = 901, sheet_assigned_to = 'Organizer Olu' WHERE map_route_id = 100",
+				"UPDATE van_turfs SET saved_list_id = 901, sheet_assigned_to = 'Organizer Olu' WHERE turf_id = 100",
 			);
 			expect(await claim()).toMatchObject({ ok: false, status: 409 });
 		});
@@ -482,7 +480,7 @@ describe('latestWalkReports', () => {
 	async function completed(at: string, percent: number | null) {
 		await client.execute({
 			sql: `INSERT INTO van_turf_checkouts
-			        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at, reported_percent)
+			        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at, reported_percent)
 			      VALUES (100, 'U_FIRST', 'Dana', ?, ?, ?, ?)`,
 			args: [CLAIMED, LAPSED, at, percent],
 		});
@@ -531,7 +529,7 @@ describe('latestWalkReports', () => {
 
 	async function claim() {
 		return claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_NEXT',
 			slackUserName: 'Sam',
 			now: NOW,
@@ -541,7 +539,7 @@ describe('latestWalkReports', () => {
 	async function withCount(uncontacted: number, rosterSavedListId = 900) {
 		await client.execute({
 			sql: `UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = ?,
-			        uncontacted_doors = ? WHERE map_route_id = 100`,
+			        uncontacted_doors = ? WHERE turf_id = 100`,
 			args: [rosterSavedListId, uncontacted],
 		});
 	}
@@ -587,7 +585,7 @@ describe('latestWalkReports', () => {
 	it('makes a turf reported at 100% unclaimable', async () => {
 		await completed('2026-08-23T12:00:00.000Z', 100);
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_NEXT',
 			slackUserName: 'Sam',
 			now: NOW,

@@ -27,15 +27,15 @@ const createdExpiringIn = (days: number) => iso(NOW.getTime() + days * DAY - 30 
 const run = (over: Partial<Parameters<typeof sendListExpiryAlerts>[1]> = {}) =>
 	sendListExpiryAlerts(db, { now: NOW, channelId: CHANNEL, appUrl: APP, ...over });
 
-async function turf(mapRouteId: number, over: Record<string, string | null> = {}): Promise<void> {
+async function turf(turfId: number, over: Record<string, string | null> = {}): Promise<void> {
 	const row: Record<string, string | number | null> = {
-		map_route_id: mapRouteId,
+		turf_id: turfId,
 		map_region_id: 1,
 		folder_id: 1,
 		chapter_id: 71,
 		chapter_name: 'Livingston County',
 		region_name: 'Brighton',
-		name: `Turf ${mapRouteId}`,
+		name: `Turf ${turfId}`,
 		printed_list_number: '35536745-88712',
 		printed_list_created_at: createdExpiringIn(3),
 		first_seen_at: iso(NOW.getTime()),
@@ -50,9 +50,7 @@ async function turf(mapRouteId: number, over: Record<string, string | null> = {}
 }
 
 async function stamps(): Promise<Array<string | null>> {
-	const res = await client.execute(
-		'SELECT list_expiry_warned_for FROM van_turfs ORDER BY map_route_id',
-	);
+	const res = await client.execute('SELECT list_expiry_warned_for FROM van_turfs ORDER BY turf_id');
 	return res.rows.map((r) => (r.list_expiry_warned_for as string | null) ?? null);
 }
 
@@ -125,7 +123,7 @@ describe('sendListExpiryAlerts', () => {
 	it('notes turf someone is holding', async () => {
 		await turf(100);
 		await client.execute(
-			`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+			`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
 			 VALUES (100, 'U_VOL', 'Dana', '${iso(NOW.getTime() - DAY)}', '${iso(NOW.getTime() + DAY)}')`,
 		);
 		await run();

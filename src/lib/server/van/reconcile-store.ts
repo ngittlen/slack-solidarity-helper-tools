@@ -85,7 +85,7 @@ async function loadLiveClaims(db: Db): Promise<ReconcileClaim[]> {
 	const rows = await db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			issuedListNumber: vanTurfCheckouts.issuedListNumber,
@@ -98,17 +98,17 @@ async function loadLiveClaims(db: Db): Promise<ReconcileClaim[]> {
 			retiredAt: vanTurfs.retiredAt,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(and(isNull(vanTurfCheckouts.releasedAt), isNull(vanTurfCheckouts.completedAt)));
 
 	return rows.map((row) => ({
 		checkoutId: row.checkoutId,
-		mapRouteId: row.mapRouteId,
+		turfId: row.turfId,
 		slackUserId: row.slackUserId,
 		slackUserName: row.slackUserName,
 		issuedListNumber: row.issuedListNumber,
 		turf: {
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			mapRegionId: row.mapRegionId,
 			chapterId: row.chapterId,
 			name: row.name,
@@ -131,7 +131,7 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 	const rows = await db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			releasedAt: vanTurfCheckouts.releasedAt,
@@ -141,7 +141,7 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 			regionName: vanTurfs.regionName,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(eq(vanTurfCheckouts.releaseReason, 'retired'), isNull(vanTurfCheckouts.recutNotifiedAt)),
 		);
@@ -150,7 +150,7 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 		.filter((row): row is typeof row & { releasedAt: string } => row.releasedAt !== null)
 		.map((row) => ({
 			checkoutId: row.checkoutId,
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			slackUserId: row.slackUserId,
 			slackUserName: row.slackUserName,
 			releasedAt: row.releasedAt,
@@ -174,28 +174,28 @@ async function loadReplacements(db: Db, mapRegionIds: number[]): Promise<Replace
 	if (rows.length === 0) return [];
 
 	const claimed = await db
-		.select({ mapRouteId: vanTurfCheckouts.mapRouteId })
+		.select({ turfId: vanTurfCheckouts.turfId })
 		.from(vanTurfCheckouts)
 		.where(
 			and(
 				inArray(
-					vanTurfCheckouts.mapRouteId,
-					rows.map((r) => r.mapRouteId),
+					vanTurfCheckouts.turfId,
+					rows.map((r) => r.turfId),
 				),
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
 			),
 		);
-	const claimedIds = new Set(claimed.map((c) => c.mapRouteId));
+	const claimedIds = new Set(claimed.map((c) => c.turfId));
 
 	return rows.map((row) => ({
-		mapRouteId: row.mapRouteId,
+		turfId: row.turfId,
 		mapRegionId: row.mapRegionId,
 		name: row.name,
 		printedListNumber: row.printedListNumber,
 		doorCount: row.doorCount,
 		retiredAt: row.retiredAt,
-		claimed: claimedIds.has(row.mapRouteId),
+		claimed: claimedIds.has(row.turfId),
 	}));
 }
 
@@ -313,7 +313,7 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 					const inserted = await db
 						.insert(vanTurfCheckouts)
 						.values({
-							mapRouteId: action.replacement.mapRouteId,
+							turfId: action.replacement.turfId,
 							slackUserId: action.slackUserId,
 							slackUserName: action.slackUserName,
 							claimedAt: nowIso,
@@ -341,7 +341,7 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 					result.recutReplaced += 1;
 					if (!(await sendDm(action.slackUserId, action.text, LOG))) result.dmFailed += 1;
 					console.log(
-						`${LOG} re-cut: checkout=${action.checkoutId} moved to route=${action.replacement.mapRouteId}`,
+						`${LOG} re-cut: checkout=${action.checkoutId} moved to route=${action.replacement.turfId}`,
 					);
 					break;
 				}

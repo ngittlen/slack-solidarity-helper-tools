@@ -37,7 +37,7 @@ const event = (session: unknown, query?: string) =>
 function row(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,

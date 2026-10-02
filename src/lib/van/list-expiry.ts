@@ -26,7 +26,7 @@ export const LIST_EXPIRY_ALERT_MAX_ROWS = 15;
 
 /** One live turf, as this module needs to see it. */
 export interface ListExpiryTurf {
-	mapRouteId: number;
+	turfId: number;
 	name: string;
 	regionName: string;
 	chapterName: string;
@@ -38,7 +38,7 @@ export interface ListExpiryTurf {
 }
 
 export interface ListExpiryAlert {
-	mapRouteId: number;
+	turfId: number;
 	turfName: string;
 	regionName: string;
 	chapterName: string;
@@ -99,14 +99,14 @@ export function listExpiryAlerts(
 		const msLeft = expiresAt.getTime() - now.getTime();
 		if (msLeft > warningDays * DAY_MS) continue;
 		alerts.push({
-			mapRouteId: turf.mapRouteId,
+			turfId: turf.turfId,
 			turfName: turf.name,
 			regionName: turf.regionName,
 			chapterName: turf.chapterName,
 			createdAt: turf.printedListCreatedAt,
 			expiresAt: expiresAt.toISOString(),
 			daysLeft: Math.floor(msLeft / DAY_MS),
-			held: heldRouteIds.has(turf.mapRouteId),
+			held: heldRouteIds.has(turf.turfId),
 		});
 	}
 	// Soonest first, so the rows that survive the cap are the urgent ones.

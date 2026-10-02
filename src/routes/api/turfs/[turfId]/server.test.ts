@@ -20,14 +20,14 @@ vi.mock('$lib/server/van/checkout-store.js', () => ({
 
 const VOLUNTEER = { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false };
 
-const event = (session: unknown, body: unknown, mapRouteId = '100') =>
+const event = (session: unknown, body: unknown, turfId = '100') =>
 	({
 		locals: { session },
-		params: { mapRouteId },
+		params: { turfId },
 		request: { json: async () => body } as Request,
 	}) as never;
 
-describe('POST /api/turfs/[mapRouteId]', () => {
+describe('POST /api/turfs/[turfId]', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockLoadSettings.mockResolvedValue({
@@ -79,7 +79,7 @@ describe('POST /api/turfs/[mapRouteId]', () => {
 		await POST(event(VOLUNTEER, { action: 'claim', slackUserId: 'U_SOMEONE_ELSE' }));
 		expect(mockClaim).toHaveBeenCalledWith(
 			{},
-			expect.objectContaining({ slackUserId: 'U_VOL', mapRouteId: 100 }),
+			expect.objectContaining({ slackUserId: 'U_VOL', turfId: 100 }),
 		);
 	});
 
@@ -142,7 +142,7 @@ describe('POST /api/turfs/[mapRouteId]', () => {
 	it('rejects a malformed body with 400 rather than throwing', async () => {
 		const res = await POST({
 			locals: { session: VOLUNTEER },
-			params: { mapRouteId: '100' },
+			params: { turfId: '100' },
 			request: {
 				json: async () => {
 					throw new Error('bad json');
@@ -156,7 +156,7 @@ describe('POST /api/turfs/[mapRouteId]', () => {
 // Story 7.4. The page greys out a turf it thinks is unclaimable, but canClaim
 // inside claimTurf is what actually refuses — so the enforcing side has to be
 // handed the admin's numbers, not checkout.ts's defaults.
-describe('POST /api/turfs/[mapRouteId] — configured claim options', () => {
+describe('POST /api/turfs/[turfId] — configured claim options', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.spyOn(console, 'log').mockImplementation(() => {});

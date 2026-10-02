@@ -41,7 +41,7 @@ export type HoldingUrgency = 'expiring' | 'due-soon' | 'fine';
 
 export interface Holding {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	turfName: string;
 	regionName: string;
 	chapterId: number;
@@ -103,7 +103,7 @@ export function currentHoldings(rows: readonly HoldingRow[], now: Date): Holding
 			const hoursLeft = hoursRemaining(row, now);
 			return {
 				checkoutId: row.checkoutId,
-				mapRouteId: row.mapRouteId,
+				turfId: row.turfId,
 				turfName: row.turfName,
 				regionName: row.regionName,
 				chapterId: row.chapterId,
@@ -161,7 +161,7 @@ export function summarise(holdings: readonly Holding[]): HoldingSummary {
 
 export interface CompletionRow {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	turfName: string;
 	regionName: string;
 	chapterId: number;

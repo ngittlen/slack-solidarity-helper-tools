@@ -84,7 +84,7 @@ export async function loadClearedRows(
 ): Promise<ClearedRow[]> {
 	const rows = await db
 		.select({
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
 			slackUserId: vanTurfCheckouts.slackUserId,
@@ -97,7 +97,7 @@ export async function loadClearedRows(
 			>`coalesce(${vanTurfCheckouts.doorsKnocked}, ${vanTurfCheckouts.confirmedDoorDelta})`,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				isNotNull(vanTurfCheckouts.completedAt),
@@ -112,7 +112,7 @@ export async function loadClearedRows(
 				row.completedAt !== null && !(excluded?.has(row.chapterId) ?? false),
 		)
 		.map((row) => ({
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			chapterId: row.chapterId,
 			chapterName: row.chapterName,
 			slackUserId: row.slackUserId,

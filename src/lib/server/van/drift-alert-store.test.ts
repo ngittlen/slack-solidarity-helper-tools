@@ -31,17 +31,17 @@ const run = (over: Partial<Parameters<typeof sendDriftAlerts>[1]> = {}) =>
 const lastText = (): string => mockPostAlert.mock.calls.at(-1)![1] as string;
 
 async function turf(
-	mapRouteId: number,
+	turfId: number,
 	over: Record<string, string | number | null> = {},
 ): Promise<void> {
 	const row: Record<string, string | number | null> = {
-		map_route_id: mapRouteId,
+		turf_id: turfId,
 		map_region_id: 1,
 		folder_id: 1,
 		chapter_id: 71,
 		chapter_name: 'Washtenaw County',
 		region_name: 'Ann Arbor',
-		name: `Turf ${mapRouteId}`,
+		name: `Turf ${turfId}`,
 		printed_list_number: '35536745-88712',
 		door_count: 250,
 		van_distributed_to: null,
@@ -74,9 +74,9 @@ async function exportedTurf(): Promise<void> {
 	await claim(999, { loaded_in_minivan_at: iso(NOW.getTime() - HOUR) });
 }
 
-async function claim(mapRouteId: number, over: Record<string, string | null> = {}): Promise<void> {
+async function claim(turfId: number, over: Record<string, string | null> = {}): Promise<void> {
 	const row: Record<string, string | number | null> = {
-		map_route_id: mapRouteId,
+		turf_id: turfId,
 		slack_user_id: 'U_VOL',
 		slack_user_name: 'Dana',
 		claimed_at: iso(NOW.getTime() - 5 * HOUR),
@@ -97,10 +97,10 @@ async function stampsInDb(): Promise<
 	Array<{ id: number; kind: string | null; at: string | null }>
 > {
 	const res = await client.execute(
-		'SELECT map_route_id, drift_alerted_kind, drift_alerted_at FROM van_turfs ORDER BY map_route_id',
+		'SELECT turf_id, drift_alerted_kind, drift_alerted_at FROM van_turfs ORDER BY turf_id',
 	);
 	return res.rows.map((r) => ({
-		id: Number(r.map_route_id),
+		id: Number(r.turf_id),
 		kind: (r.drift_alerted_kind as string | null) ?? null,
 		at: (r.drift_alerted_at as string | null) ?? null,
 	}));
@@ -232,7 +232,7 @@ describe('sendDriftAlerts', () => {
 
 		// The volunteer loads the list, so VAN now has it and the sides agree.
 		await client.execute(
-			`UPDATE van_turf_checkouts SET loaded_in_minivan_at = '${iso(NOW.getTime())}' WHERE map_route_id = 100`,
+			`UPDATE van_turf_checkouts SET loaded_in_minivan_at = '${iso(NOW.getTime())}' WHERE turf_id = 100`,
 		);
 		expect(await run()).toMatchObject({ announced: 0, cleared: 1 });
 		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
@@ -242,7 +242,7 @@ describe('sendDriftAlerts', () => {
 		// It drifts again: the volunteer gives it back and someone new claims it
 		// without loading it. This must be heard, not swallowed.
 		await client.execute(
-			`UPDATE van_turf_checkouts SET released_at = '${iso(NOW.getTime())}' WHERE map_route_id = 100`,
+			`UPDATE van_turf_checkouts SET released_at = '${iso(NOW.getTime())}' WHERE turf_id = 100`,
 		);
 		await claim(100, { slack_user_id: 'U_NEXT' });
 		expect(await run()).toMatchObject({ announced: 1 });

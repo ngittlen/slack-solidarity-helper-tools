@@ -34,7 +34,7 @@ import { campaignDayLabel } from '../campaign-time.js';
 /** The van_turfs columns this module reads. Narrow on purpose: the row type
  *  can grow without widening what the browser can be shown. */
 export interface TurfRowInput {
-	mapRouteId: number;
+	turfId: number;
 	mapRegionId: number;
 	chapterId: number;
 	name: string;
@@ -139,7 +139,7 @@ function doorsLeftAsOf(row: TurfRowInput, contactsThrough: string | null): strin
 }
 
 export interface TurfView {
-	mapRouteId: number;
+	turfId: number;
 	chapterId: number;
 	name: string;
 	regionName: string;
@@ -344,7 +344,7 @@ export function turfSnapshot(
 ): TurfSnapshot {
 	const { walkReports, vanAssignmentTtlHours } = options;
 	return {
-		mapRouteId: row.mapRouteId,
+		turfId: row.turfId,
 		printedListNumber: row.printedListNumber,
 		retiredAt: row.retiredAt,
 		// Handed out outside this app — through VAN, or written into the
@@ -360,9 +360,9 @@ export function turfSnapshot(
 		// sees, so a turf never shows doors it will then refuse to hand out.
 		doorCount: doorsLeft(row),
 		uncontactedDoors: currentUncontacted(row),
-		reportedPercent: walkReports?.get(row.mapRouteId)?.percent ?? null,
-		walked: walkReports?.has(row.mapRouteId) ?? false,
-		walkAwaitingCount: walkReports?.get(row.mapRouteId)?.awaitingCount ?? false,
+		reportedPercent: walkReports?.get(row.turfId)?.percent ?? null,
+		walked: walkReports?.has(row.turfId) ?? false,
+		walkAwaitingCount: walkReports?.get(row.turfId)?.awaitingCount ?? false,
 	};
 }
 
@@ -380,11 +380,11 @@ export function toTurfView(
 	now: Date,
 	options: TurfViewOptions = {},
 ): TurfView {
-	const report = options.walkReports?.get(row.mapRouteId) ?? null;
+	const report = options.walkReports?.get(row.turfId) ?? null;
 	const snapshot = turfSnapshot(row, now, options);
 
 	const rawStatus = turfStatus(snapshot, claims, viewer.slackUserId, now);
-	const active = activeClaimFor(row.mapRouteId, claims, now);
+	const active = activeClaimFor(row.turfId, claims, now);
 	const visible = visibleTurfState(
 		{
 			status: rawStatus,
@@ -399,7 +399,7 @@ export function toTurfView(
 	const { centre, bounds } = geometryFor(row, hull);
 
 	return {
-		mapRouteId: row.mapRouteId,
+		turfId: row.turfId,
 		chapterId: row.chapterId,
 		name: row.name,
 		regionName: row.regionName,

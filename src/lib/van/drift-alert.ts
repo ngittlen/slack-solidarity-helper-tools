@@ -69,7 +69,7 @@ export function staleDriftStamps(
 	items: readonly AlertableDrift[],
 ): number[] {
 	const drifting = new Map<number, DriftKind>();
-	for (const item of items) drifting.set(item.mapRouteId, item.kind);
+	for (const item of items) drifting.set(item.turfId, item.kind);
 	// A route whose drift changed kind is NOT stale — the alert path rewrites its
 	// stamp in the same run, and clearing it here as well would mean two writes
 	// racing to describe one route.

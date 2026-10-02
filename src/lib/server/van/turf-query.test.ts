@@ -11,7 +11,7 @@ vi.mock('./contact-sync.js', () => ({
 
 function turfRow(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		mapRegionId: 10,
 		chapterId: 71,
 		name: 'Turf 01',
@@ -33,7 +33,7 @@ function turfRow(over: Record<string, unknown> = {}) {
 
 function claimRow(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U_OTHER',
 		slackUserName: 'Sam',
 		claimedAt: '2026-08-23T00:00:00.000Z',
@@ -97,7 +97,7 @@ describe('loadChapterTurfs', () => {
 		// Turf rows, then claims, then the regions VAN is re-cutting.
 		expect(without.queryCount()).toBe(3);
 
-		const withHeld = makeDb([[{ mapRouteId: 100 }], [turfRow()], [claimRow()]]);
+		const withHeld = makeDb([[{ turfId: 100 }], [turfRow()], [claimRow()]]);
 		await loadChapterTurfs(withHeld.db, {
 			chapterId: 71,
 			viewer: VIEWER,
@@ -112,7 +112,7 @@ describe('loadChapterTurfs', () => {
 	// are built. Observable here as the claim query being scoped to the page.
 	it('cuts rows before building views', async () => {
 		const rows = Array.from({ length: 10 }, (_, i) =>
-			turfRow({ mapRouteId: 100 + i, name: `Turf ${String(i).padStart(2, '0')}` }),
+			turfRow({ turfId: 100 + i, name: `Turf ${String(i).padStart(2, '0')}` }),
 		);
 		const { db } = makeDb([rows, []]);
 		const { turfs, total, omitted } = await loadChapterTurfs(db, {
@@ -127,7 +127,7 @@ describe('loadChapterTurfs', () => {
 
 	it('pages by offset', async () => {
 		const rows = Array.from({ length: 10 }, (_, i) =>
-			turfRow({ mapRouteId: 100 + i, name: `Turf ${String(i).padStart(2, '0')}` }),
+			turfRow({ turfId: 100 + i, name: `Turf ${String(i).padStart(2, '0')}` }),
 		);
 		const { db } = makeDb([rows, []]);
 		const { turfs, omitted } = await loadChapterTurfs(db, {
@@ -142,8 +142,8 @@ describe('loadChapterTurfs', () => {
 
 	it('orders by distance when a location is known', async () => {
 		const rows = [
-			turfRow({ mapRouteId: 1, name: 'Far', centroidLat: 42.6, centroidLng: -83.2 }),
-			turfRow({ mapRouteId: 2, name: 'Near', centroidLat: 42.281, centroidLng: -83.741 }),
+			turfRow({ turfId: 1, name: 'Far', centroidLat: 42.6, centroidLng: -83.2 }),
+			turfRow({ turfId: 2, name: 'Near', centroidLat: 42.281, centroidLng: -83.741 }),
 		];
 		const { db } = makeDb([rows, []]);
 		const { turfs } = await loadChapterTurfs(db, {
@@ -156,8 +156,8 @@ describe('loadChapterTurfs', () => {
 
 	it('restricts to the viewport when bounds are given', async () => {
 		const rows = [
-			turfRow({ mapRouteId: 1, name: 'Inside', centroidLat: 42.28, centroidLng: -83.74 }),
-			turfRow({ mapRouteId: 2, name: 'Outside', centroidLat: 45, centroidLng: -80 }),
+			turfRow({ turfId: 1, name: 'Inside', centroidLat: 42.28, centroidLng: -83.74 }),
+			turfRow({ turfId: 2, name: 'Outside', centroidLat: 45, centroidLng: -80 }),
 		];
 		const { db } = makeDb([rows, []]);
 		const { turfs, total } = await loadChapterTurfs(db, {
@@ -191,9 +191,9 @@ describe('loadChapterTurfs', () => {
 		expect(turfs[0]).not.toHaveProperty('folderId');
 	});
 
-	describe('mapRouteIds', () => {
+	describe('turfIds', () => {
 		it('restricts the query to the named routes', async () => {
-			const rows = [turfRow({ mapRouteId: 100 }), turfRow({ mapRouteId: 101, name: 'Turf 02' })];
+			const rows = [turfRow({ turfId: 100 }), turfRow({ turfId: 101, name: 'Turf 02' })];
 			const { db } = makeDb([rows, []]);
 			// The stub cannot filter, so this asserts the contract the caller
 			// depends on: asking for one route and a limit of 1 must not silently
@@ -201,10 +201,10 @@ describe('loadChapterTurfs', () => {
 			const { turfs } = await loadChapterTurfs(db, {
 				chapterId: 71,
 				viewer: VIEWER,
-				mapRouteIds: [101],
+				turfIds: [101],
 				limit: 2,
 			});
-			expect(turfs.map((t) => t.mapRouteId)).toContain(101);
+			expect(turfs.map((t) => t.turfId)).toContain(101);
 		});
 
 		// An empty list is a request for nothing. `inArray` with no values is
@@ -215,7 +215,7 @@ describe('loadChapterTurfs', () => {
 			const result = await loadChapterTurfs(db, {
 				chapterId: 71,
 				viewer: VIEWER,
-				mapRouteIds: [],
+				turfIds: [],
 			});
 			expect(result).toEqual({
 				turfs: [],
@@ -234,8 +234,8 @@ describe('loadChapterTurfs', () => {
 	// surface — not shown turf as claimable that the click then refuses.
 	it('counts the viewer’s claims in other chapters against their limit', async () => {
 		const elsewhere = [
-			claimRow({ mapRouteId: 900, slackUserId: 'U_VOL' }),
-			claimRow({ mapRouteId: 901, slackUserId: 'U_VOL' }),
+			claimRow({ turfId: 900, slackUserId: 'U_VOL' }),
+			claimRow({ turfId: 901, slackUserId: 'U_VOL' }),
 		];
 		const { db } = makeDb([[turfRow()], elsewhere]);
 		const { turfs } = await loadChapterTurfs(db, {
@@ -255,15 +255,15 @@ describe('loadChapterTurfs', () => {
 
 	describe('claimableOnly', () => {
 		const rows = () => [
-			turfRow({ mapRouteId: 1, name: 'Free' }),
-			turfRow({ mapRouteId: 2, name: 'Taken' }),
-			turfRow({ mapRouteId: 3, name: 'Assigned', vanDistributedTo: 'Pat' }),
-			turfRow({ mapRouteId: 4, name: 'Unprinted', printedListNumber: null }),
-			turfRow({ mapRouteId: 5, name: 'Mine' }),
+			turfRow({ turfId: 1, name: 'Free' }),
+			turfRow({ turfId: 2, name: 'Taken' }),
+			turfRow({ turfId: 3, name: 'Assigned', vanDistributedTo: 'Pat' }),
+			turfRow({ turfId: 4, name: 'Unprinted', printedListNumber: null }),
+			turfRow({ turfId: 5, name: 'Mine' }),
 		];
 		const claims = () => [
-			claimRow({ mapRouteId: 2, slackUserId: 'U_OTHER' }),
-			claimRow({ mapRouteId: 5, slackUserId: 'U_VOL' }),
+			claimRow({ turfId: 2, slackUserId: 'U_OTHER' }),
+			claimRow({ turfId: 5, slackUserId: 'U_VOL' }),
 		];
 
 		it('leaves out turf nobody can take, and keeps the viewer’s own', async () => {
@@ -298,7 +298,7 @@ describe('loadChapterTurfs', () => {
 			vi.mocked(latestWalkReports).mockResolvedValueOnce(
 				new Map([[1, { percent: 100, at: '2026-09-23T18:00:00.000Z', awaitingCount: false }]]),
 			);
-			const { db } = makeDb([[turfRow({ mapRouteId: 1 })], []]);
+			const { db } = makeDb([[turfRow({ turfId: 1 })], []]);
 			const result = await loadChapterTurfs(db, {
 				chapterId: 71,
 				viewer: VIEWER,

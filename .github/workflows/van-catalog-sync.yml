@@ -23,7 +23,7 @@ name: VAN turf catalog sync
 # Rule of thumb for anyone editing this: no two consecutive runs may be more
 # than six hours apart, and the tighter the better.
 #
-# Runs are idempotent — the endpoint upserts by mapRouteId and takes a
+# Runs are idempotent — the endpoint upserts by turf id and takes a
 # sync_locks lock, so an overlapping or delayed run is a no-op rather than a
 # double write. GitHub cron is best-effort and skipping one is harmless.
 on:

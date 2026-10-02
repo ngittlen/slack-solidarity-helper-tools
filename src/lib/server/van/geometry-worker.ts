@@ -88,7 +88,7 @@ export interface GeometryWorkerOptions {
 	 *  string against the job and echoes it back on every later read, so it
 	 *  carries a capability token scoped to that turf instead of a shared
 	 *  secret — see webhook-token.ts. Called immediately before each POST. */
-	webhookUrlFor: (mapRouteId: number) => string;
+	webhookUrlFor: (turfId: number) => string;
 	now?: Date;
 	timeBudgetMs?: number;
 	/** Cap on items per run. Null means "as many as the budget allows". */
@@ -164,7 +164,7 @@ export interface GeometryWorkerResult {
 }
 
 interface QueueItem {
-	mapRouteId: number;
+	turfId: number;
 	savedListId: number;
 	exportJobId: number | null;
 	attempts: number;
@@ -219,7 +219,7 @@ export async function runGeometryQueue(
 	// the POST; it is indistinguishable from pending, so treat it as such.
 	const items = (await db
 		.select({
-			mapRouteId: vanGeometryQueue.mapRouteId,
+			turfId: vanGeometryQueue.turfId,
 			savedListId: vanGeometryQueue.savedListId,
 			exportJobId: vanGeometryQueue.exportJobId,
 			attempts: vanGeometryQueue.attempts,
@@ -235,7 +235,7 @@ export async function runGeometryQueue(
 			// so a poison row cannot monopolise every run.
 			sql`case when ${vanGeometryQueue.exportJobId} is null then 1 else 0 end`,
 			vanGeometryQueue.attempts,
-			vanGeometryQueue.mapRouteId,
+			vanGeometryQueue.turfId,
 		)) as QueueItem[];
 
 	const queue = options.maxItems == null ? items : items.slice(0, options.maxItems);
@@ -262,7 +262,7 @@ export async function runGeometryQueue(
 				requestedAt: now.toISOString(),
 				lastError: null,
 			})
-			.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+			.where(eq(vanGeometryQueue.turfId, item.turfId));
 
 		try {
 			// Resume by polling; otherwise submit. Both paths converge on a job
@@ -274,7 +274,7 @@ export async function runGeometryQueue(
 				job = await client.createExportJob({
 					savedListId: item.savedListId,
 					exportJobTypeId: options.exportJobTypeId,
-					webhookUrl: options.webhookUrlFor(item.mapRouteId),
+					webhookUrl: options.webhookUrlFor(item.turfId),
 				});
 				// Persisted before the download so a crash mid-download resumes
 				// by polling instead of submitting a second job.
@@ -282,7 +282,7 @@ export async function runGeometryQueue(
 				await db
 					.update(vanGeometryQueue)
 					.set({ exportJobId })
-					.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+					.where(eq(vanGeometryQueue.turfId, item.turfId));
 			}
 
 			// Small lists are already Completed here and skip the loop entirely.
@@ -304,7 +304,7 @@ export async function runGeometryQueue(
 				await db
 					.update(vanGeometryQueue)
 					.set({ status: 'running', attempts: priorAttempts })
-					.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+					.where(eq(vanGeometryQueue.turfId, item.turfId));
 				result.stillRunning++;
 				return;
 			}
@@ -317,7 +317,7 @@ export async function runGeometryQueue(
 				await db
 					.update(vanGeometryQueue)
 					.set({ status: 'running', attempts: priorAttempts })
-					.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+					.where(eq(vanGeometryQueue.turfId, item.turfId));
 				result.stillRunning++;
 				result.budgetLapsed = true;
 				return;
@@ -335,7 +335,7 @@ export async function runGeometryQueue(
 					hullSourceRouteSize: vanTurfs.hullSourceRouteSize,
 				})
 				.from(vanTurfs)
-				.where(eq(vanTurfs.mapRouteId, item.mapRouteId))
+				.where(eq(vanTurfs.turfId, item.turfId))
 				.limit(1);
 			const wantsHull = needsGeometry({
 				hullJson: turf?.hullJson ?? null,
@@ -391,15 +391,15 @@ export async function runGeometryQueue(
 						// re-queues it rather than treating "no hull" as settled.
 						hullSourceRouteSize: extract.centre ? (turf?.routeSize ?? 0) : null,
 					})
-					.where(eq(vanTurfs.mapRouteId, item.mapRouteId));
+					.where(eq(vanTurfs.turfId, item.turfId));
 			}
 
 			// Stamped with the QUEUE row's saved list, which is the one this
 			// export was cut from. If VAN has re-cut since, the planner sees the
 			// mismatch and queues again.
 			if (extract.roster) {
-				await replaceRoster(db, item.mapRouteId, item.savedListId, extract.roster);
-				await recomputeUncontacted(db, { now: new Date(), mapRouteIds: [item.mapRouteId] });
+				await replaceRoster(db, item.turfId, item.savedListId, extract.roster);
+				await recomputeUncontacted(db, { now: new Date(), turfIds: [item.turfId] });
 				result.rostersStored++;
 			}
 
@@ -415,7 +415,7 @@ export async function runGeometryQueue(
 					completedAt: new Date().toISOString(),
 					lastError: extract.rosterUnavailable,
 				})
-				.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+				.where(eq(vanGeometryQueue.turfId, item.turfId));
 
 			result.geocodedFromAddress += extract.geocodedFromAddress;
 			// A roster-only pass says nothing new about the shape, so it counts
@@ -427,7 +427,7 @@ export async function runGeometryQueue(
 
 			if (!extract.centre) {
 				warnings.push(
-					`Turf ${item.mapRouteId}: export returned ${extract.rowCount} row(s) but no usable ` +
+					`Turf ${item.turfId}: export returned ${extract.rowCount} row(s) but no usable ` +
 						`coordinates (${extract.rowsWithoutCoordinates} ungeocoded) — it will render without a pin.`,
 				);
 			} else if (extract.hullTooLarge) {
@@ -440,11 +440,11 @@ export async function runGeometryQueue(
 				// at re-cutting turf that was already correct.
 				warnings.push(
 					extract.pointCount < MIN_POINTS_FOR_SPAN_VERDICT
-						? `Turf ${item.mapRouteId}: addresses span ~${km} km across only ` +
+						? `Turf ${item.turfId}: addresses span ~${km} km across only ` +
 								`${extract.pointCount} coordinate(s) — too few to tell a mis-scoped saved list ` +
 								`from a map region that is simply sparsely populated. The shape is stored; ` +
 								`treat it as approximate rather than as a turf boundary.`
-						: `Turf ${item.mapRouteId}: addresses span ~${km} km across ` +
+						: `Turf ${item.turfId}: addresses span ~${km} km across ` +
 								`${extract.pointCount} coordinates, far past a walkable turf. The shape is ` +
 								`stored but is almost certainly not a turf boundary — the saved list is ` +
 								`probably not a cut map region.`,
@@ -480,12 +480,12 @@ export async function runGeometryQueue(
 				lastError: message.slice(0, 500),
 				completedAt: dead ? new Date().toISOString() : null,
 			})
-			.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+			.where(eq(vanGeometryQueue.turfId, item.turfId));
 
 		if (dead) {
 			result.deadLettered++;
 			deadLetters.push(
-				`Turf ${item.mapRouteId} geometry gave up after ${attempts} attempt(s): ${message}`,
+				`Turf ${item.turfId} geometry gave up after ${attempts} attempt(s): ${message}`,
 			);
 		} else {
 			result.retried++;

@@ -112,13 +112,13 @@ const OPTIONS = {
 	exportJobTypeId: 5,
 	// Per turf, as in production: the URL VAN stores carries a token scoped to
 	// the turf rather than a shared secret. See webhook-token.ts.
-	webhookUrlFor: (mapRouteId: number) =>
-		`https://solidarity-slack-helper-tools.fly.dev/api/internal/van-export-callback?turf=${mapRouteId}&token=sig${mapRouteId}`,
+	webhookUrlFor: (turfId: number) =>
+		`https://solidarity-slack-helper-tools.fly.dev/api/internal/van-export-callback?turf=${turfId}&token=sig${turfId}`,
 	sleep: async () => undefined,
 };
 
 function pendingRow(over: Record<string, unknown> = {}) {
-	return { mapRouteId: 100, savedListId: 585052, exportJobId: null, attempts: 0, ...over };
+	return { turfId: 100, savedListId: 585052, exportJobId: null, attempts: 0, ...over };
 }
 
 let calls = 0;
@@ -128,7 +128,7 @@ beforeEach(() => {
 
 describe('runGeometryQueue', () => {
 	it('turns a pending turf into a stored hull', async () => {
-		const { db, updates, turfRows } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db, updates, turfRows } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		const result = await runGeometryQueue(db, makeClient(), { ...OPTIONS, fetchFn: okCsv() });
 
 		expect(result.hullsStored).toBe(1);
@@ -155,8 +155,8 @@ describe('runGeometryQueue', () => {
 		async function widthOf(concurrency: number | undefined, items: number): Promise<number> {
 			let inFlight = 0;
 			let peak = 0;
-			const rows = Array.from({ length: items }, (_, i) => pendingRow({ mapRouteId: 100 + i }));
-			const turfs = rows.map((r) => ({ mapRouteId: r.mapRouteId, routeSize: 76 }));
+			const rows = Array.from({ length: items }, (_, i) => pendingRow({ turfId: 100 + i }));
+			const turfs = rows.map((r) => ({ turfId: r.turfId, routeSize: 76 }));
 			const { db } = makeDb(rows, turfs);
 			const fetchFn = async () => {
 				inFlight += 1;
@@ -182,7 +182,7 @@ describe('runGeometryQueue', () => {
 	// shared URL carrying INTERNAL_CRON_SECRET.
 	it('passes the configured type id and this turf own webhook url to VAN', async () => {
 		const createExportJob = vi.fn(async () => job());
-		const { db } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		await runGeometryQueue(db, makeClient({ createExportJob }), { ...OPTIONS, fetchFn: okCsv() });
 
 		expect(createExportJob).toHaveBeenCalledWith({
@@ -197,7 +197,7 @@ describe('runGeometryQueue', () => {
 	// POST response, so the common case must not poll at all.
 	it('does not poll when the POST already returned a downloadUrl', async () => {
 		const exportJob = vi.fn(async () => job());
-		const { db } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		await runGeometryQueue(db, makeClient({ exportJob }), { ...OPTIONS, fetchFn: okCsv() });
 		expect(exportJob).not.toHaveBeenCalled();
 	});
@@ -206,7 +206,7 @@ describe('runGeometryQueue', () => {
 	// VAN client would attach our Basic credentials to a third-party host.
 	it('downloads the CSV with a bare fetch and no credentials', async () => {
 		const fetchFn = vi.fn(okCsv());
-		const { db } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		await runGeometryQueue(db, makeClient(), { ...OPTIONS, fetchFn });
 
 		expect(fetchFn).toHaveBeenCalledTimes(1);
@@ -222,7 +222,7 @@ describe('runGeometryQueue', () => {
 	// in the file — the poll loop has already returned by then.
 	it('bounds the download with the run deadline', async () => {
 		const fetchFn = vi.fn(okCsv());
-		const { db } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		await runGeometryQueue(db, makeClient(), { ...OPTIONS, fetchFn, timeBudgetMs: 30_000 });
 
 		const signal = fetchFn.mock.calls[0]![1]!.signal!;
@@ -234,7 +234,7 @@ describe('runGeometryQueue', () => {
 	// an extract we cannot finish would overrun the request the sync is allowed.
 	it('leaves a turf resumable rather than downloading past the deadline', async () => {
 		const fetchFn = vi.fn(okCsv());
-		const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		const result = await runGeometryQueue(
 			db,
 			// The budget is alive when the item starts and spent by the time the
@@ -264,7 +264,7 @@ describe('runGeometryQueue', () => {
 		const exportJob = vi.fn(async () => job({ exportJobId: 901 }));
 		const { db } = makeDb(
 			[pendingRow({ exportJobId: 901, attempts: 1 })],
-			[{ mapRouteId: 100, routeSize: 76 }],
+			[{ turfId: 100, routeSize: 76 }],
 		);
 		const result = await runGeometryQueue(db, makeClient({ createExportJob, exportJob }), {
 			...OPTIONS,
@@ -278,7 +278,7 @@ describe('runGeometryQueue', () => {
 
 	// A slow export must not dead-letter itself just by being looked at.
 	it('leaves a job with no downloadUrl running without spending an attempt', async () => {
-		const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		const stillPending = job({ status: 'Pending', downloadUrl: null });
 		const result = await runGeometryQueue(
 			db,
@@ -298,7 +298,7 @@ describe('runGeometryQueue', () => {
 
 	it('stores a centroid but no hull when the points are degenerate', async () => {
 		const twoDoors = [HEADER, '1,A,B,"x",28.5,-81.4,', '2,C,D,"y",28.6,-81.3,', ''].join('\r\n');
-		const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 2 }]);
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 2 }]);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
 			fetchFn: okCsv(twoDoors),
@@ -317,7 +317,7 @@ describe('runGeometryQueue', () => {
 		const alert = vi.fn(async (...args: [string]) => {
 			void args;
 		});
-		const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
 			alert,
@@ -339,7 +339,7 @@ describe('runGeometryQueue', () => {
 	// back onto the item at submission, so the failure below dead-letters the
 	// row WITH it rather than with the null the row was selected with.
 	it('keeps the job id it just created on a dead-lettered row', async () => {
-		const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
 			fetchFn: okCsv('CanvassFileRequestID,VanID\r\n255848,3328\r\n'),
@@ -369,10 +369,10 @@ describe('runGeometryQueue', () => {
 			'',
 		].join('\r\n');
 		const { db } = makeDb(
-			[pendingRow(), pendingRow({ mapRouteId: 101 })],
+			[pendingRow(), pendingRow({ turfId: 101 })],
 			[
-				{ mapRouteId: 100, routeSize: 76 },
-				{ mapRouteId: 101, routeSize: 3 },
+				{ turfId: 100, routeSize: 76 },
+				{ turfId: 101, routeSize: 3 },
 			],
 		);
 		const result = await runGeometryQueue(db, makeClient(), {
@@ -414,7 +414,7 @@ describe('runGeometryQueue', () => {
 			return `${i + 1},A,B,"${i} Main St , Orlando, FL",${lat},${lng},1968-08-09`;
 		});
 		const dense = [HEADER, ...rows, ''].join('\r\n');
-		const { db } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 30 }]);
+		const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 30 }]);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
 			fetchFn: async () => new Response(dense, { status: 200 }),
@@ -429,7 +429,7 @@ describe('runGeometryQueue', () => {
 	});
 
 	it('dead-letters a 403 immediately rather than retrying a permission error', async () => {
-		const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		const result = await runGeometryQueue(
 			db,
 			makeClient({
@@ -444,7 +444,7 @@ describe('runGeometryQueue', () => {
 	});
 
 	it('returns a transient failure to pending and clears the job id', async () => {
-		const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
 			fetchFn: async () => new Response('nope', { status: 503 }),
@@ -462,7 +462,7 @@ describe('runGeometryQueue', () => {
 	it('dead-letters once the attempt cap is reached', async () => {
 		const { db, updates } = makeDb(
 			[pendingRow({ attempts: MAX_ATTEMPTS - 1 })],
-			[{ mapRouteId: 100, routeSize: 76 }],
+			[{ turfId: 100, routeSize: 76 }],
 		);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
@@ -476,8 +476,8 @@ describe('runGeometryQueue', () => {
 	it('keeps at most two turfs in flight', async () => {
 		let active = 0;
 		let peak = 0;
-		const rows = Array.from({ length: 6 }, (_, i) => pendingRow({ mapRouteId: 100 + i }));
-		const turfs = rows.map((r) => ({ mapRouteId: r.mapRouteId, routeSize: 76 }));
+		const rows = Array.from({ length: 6 }, (_, i) => pendingRow({ turfId: 100 + i }));
+		const turfs = rows.map((r) => ({ turfId: r.turfId, routeSize: 76 }));
 		const { db } = makeDb(rows, turfs);
 
 		await runGeometryQueue(db, makeClient(), {
@@ -494,10 +494,10 @@ describe('runGeometryQueue', () => {
 	});
 
 	it('stops when the time budget lapses and reports it', async () => {
-		const rows = Array.from({ length: 6 }, (_, i) => pendingRow({ mapRouteId: 100 + i }));
+		const rows = Array.from({ length: 6 }, (_, i) => pendingRow({ turfId: 100 + i }));
 		const { db } = makeDb(
 			rows,
-			rows.map((r) => ({ mapRouteId: r.mapRouteId, routeSize: 76 })),
+			rows.map((r) => ({ turfId: r.turfId, routeSize: 76 })),
 		);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
@@ -517,10 +517,10 @@ describe('runGeometryQueue', () => {
 	});
 
 	it('respects maxItems', async () => {
-		const rows = Array.from({ length: 5 }, (_, i) => pendingRow({ mapRouteId: 100 + i }));
+		const rows = Array.from({ length: 5 }, (_, i) => pendingRow({ turfId: 100 + i }));
 		const { db } = makeDb(
 			rows,
-			rows.map((r) => ({ mapRouteId: r.mapRouteId, routeSize: 76 })),
+			rows.map((r) => ({ turfId: r.turfId, routeSize: 76 })),
 		);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
@@ -544,7 +544,7 @@ describe('runGeometryQueue', () => {
 
 		it('does not call the geocoder when VAN geocoded every row', async () => {
 			const geocode = vi.fn(async () => new Map());
-			const { db } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 76 }]);
+			const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
 			const result = await runGeometryQueue(db, makeClient(), {
 				...OPTIONS,
 				geocode,
@@ -567,7 +567,7 @@ describe('runGeometryQueue', () => {
 				rows.forEach((row, i) => out.set(row.id, points[i]!));
 				return out;
 			});
-			const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 3 }]);
+			const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 3 }]);
 			const result = await runGeometryQueue(db, makeClient(), {
 				...OPTIONS,
 				geocode,
@@ -584,7 +584,7 @@ describe('runGeometryQueue', () => {
 		// extractor reading address columns at all rather than merely skipping
 		// the call.
 		it('reads no address when the geocoder is explicitly null', async () => {
-			const { db } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 3 }]);
+			const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 3 }]);
 			const result = await runGeometryQueue(db, makeClient(), {
 				...OPTIONS,
 				geocode: null,
@@ -606,7 +606,7 @@ describe('runGeometryQueue', () => {
 			'4,G,H,"w",28.34956,-81.16984,',
 			'',
 		].join('\r\n');
-		const { db, updates } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 4 }]);
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 4 }]);
 		const result = await runGeometryQueue(db, makeClient(), {
 			...OPTIONS,
 			fetchFn: okCsv(county),

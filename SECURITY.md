@@ -141,7 +141,7 @@ regression even though nothing would visibly break:
   `src/lib/server/van/rate-limit-store.ts`. They follow the user, not the URL — an earlier
   module-scoped limiter was bypassed simply by using the API instead of the page.
 - **Turf claim races are resolved in storage**, by a partial unique index on
-  `van_turf_checkouts (map_route_id) WHERE released_at IS NULL AND completed_at IS NULL`, not in
+  `van_turf_checkouts (turf_id) WHERE released_at IS NULL AND completed_at IS NULL`, not in
   application code.
 - **Release and complete are scoped to the caller's own active claim**, so posting someone
   else's route ID does nothing.

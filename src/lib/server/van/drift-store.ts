@@ -34,7 +34,7 @@ function chapterFilter(chapterId: number | null): SQL | undefined {
 export async function loadDriftTurfs(db: Db, query: DriftQuery): Promise<DriftTurfRow[]> {
 	return db
 		.select({
-			mapRouteId: vanTurfs.mapRouteId,
+			turfId: vanTurfs.turfId,
 			name: vanTurfs.name,
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
@@ -58,7 +58,7 @@ export async function loadDriftTurfs(db: Db, query: DriftQuery): Promise<DriftTu
 export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<DriftClaim[]> {
 	return db
 		.select({
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			claimedAt: vanTurfCheckouts.claimedAt,
@@ -68,7 +68,7 @@ export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<DriftC
 			loadedInMinivanAt: vanTurfCheckouts.loadedInMinivanAt,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				isNull(vanTurfCheckouts.releasedAt),

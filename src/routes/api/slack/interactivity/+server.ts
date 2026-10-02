@@ -279,21 +279,21 @@ function handleTurfAction(
 			location: decoded.location ?? null,
 		};
 
-		// Every branch needing a mapRouteId checks for one: the value came back
+		// Every branch needing a turfId checks for one: the value came back
 		// from a client, so "the button said complete but named no turf" is a
 		// request that has to land somewhere sane rather than throw.
-		const routeId = decoded.mapRouteId;
+		const routeId = decoded.turfId;
 		const message =
 			action.action_id === TURF_CLAIM_ACTION_ID && routeId !== undefined
-				? await claimFromSlack(db, { ...ctx, mapRouteId: routeId })
+				? await claimFromSlack(db, { ...ctx, turfId: routeId })
 				: action.action_id === TURF_RELEASE_ACTION_ID && routeId !== undefined
-					? await releaseFromSlack(db, { ...ctx, mapRouteId: routeId })
+					? await releaseFromSlack(db, { ...ctx, turfId: routeId })
 					: action.action_id === TURF_RELEASE_MINE_ACTION_ID && routeId !== undefined
-						? await releaseMineFromSlack(db, { ...ctx, mapRouteId: routeId })
+						? await releaseMineFromSlack(db, { ...ctx, turfId: routeId })
 						: action.action_id === TURF_COMPLETE_ACTION_ID &&
 							  routeId !== undefined &&
 							  !fromOldDropdown
-							? await completeFromSlack(db, { ...ctx, mapRouteId: routeId })
+							? await completeFromSlack(db, { ...ctx, turfId: routeId })
 							: // A mine-list button that lost its turf id redraws the mine
 								// list, not the nearby one — landing somewhere unrelated to
 								// where the tap happened is its own small betrayal.

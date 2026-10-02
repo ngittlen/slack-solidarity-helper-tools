@@ -32,7 +32,7 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 
 	await client.execute({
-		sql: `INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+		sql: `INSERT INTO van_turfs (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
 		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?),
 		             (200, 1, 2, 72, 'Wayne County', 'Detroit East', 'Turf 02', 180, ?, ?),
 		             (300, 1, 1, 71, 'Washtenaw County', 'Ypsilanti', 'Retired turf', 90, ?, ?),
@@ -49,13 +49,13 @@ beforeEach(async () => {
 	);
 	// The third turf is retired — history about it must still read.
 	await client.execute(
-		`UPDATE van_turfs SET retired_at = '2026-08-20T00:00:00.000Z' WHERE map_route_id = 300`,
+		`UPDATE van_turfs SET retired_at = '2026-08-20T00:00:00.000Z' WHERE turf_id = 300`,
 	);
 });
 
 async function checkout(over: Record<string, string | number | null> = {}) {
 	const row = {
-		map_route_id: 100,
+		turf_id: 100,
 		slack_user_id: 'U_VOL',
 		slack_user_name: 'Dana',
 		claimed_at: '2026-08-24T13:10:00.000Z',
@@ -67,8 +67,8 @@ async function checkout(over: Record<string, string | number | null> = {}) {
 		...over,
 	};
 	await db.run(
-		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, release_reason, confirmed_door_delta)
-		 VALUES (${row.map_route_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}',
+		`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, release_reason, confirmed_door_delta)
+		 VALUES (${row.turf_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}',
 		         ${row.released_at === null ? 'NULL' : `'${row.released_at}'`},
 		         ${row.completed_at === null ? 'NULL' : `'${row.completed_at}'`},
 		         ${row.release_reason === null ? 'NULL' : `'${row.release_reason}'`},
@@ -90,7 +90,7 @@ describe('loadActivityRows', () => {
 		await checkout();
 		const [row] = await loadActivityRows(db, allChapters);
 		expect(row).toMatchObject({
-			mapRouteId: 100,
+			turfId: 100,
 			name: 'Turf 01',
 			regionName: 'Ann Arbor',
 			chapterId: 71,
@@ -104,7 +104,7 @@ describe('loadActivityRows', () => {
 	// enters the payload.
 	it('never selects the MiniVAN list number', async () => {
 		await db.run(
-			`UPDATE van_turfs SET printed_list_number = '35536745-88712' WHERE map_route_id = 100` as never,
+			`UPDATE van_turfs SET printed_list_number = '35536745-88712' WHERE turf_id = 100` as never,
 		);
 		await checkout();
 		const rows = await loadActivityRows(db, allChapters);
@@ -113,15 +113,15 @@ describe('loadActivityRows', () => {
 	});
 
 	it('filters to one chapter', async () => {
-		await checkout({ map_route_id: 100 });
-		await checkout({ map_route_id: 200 });
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 200 });
 		const rows = await loadActivityRows(db, { chapterId: 72, range: WEEK });
-		expect(rows.map((r) => r.mapRouteId)).toEqual([200]);
+		expect(rows.map((r) => r.turfId)).toEqual([200]);
 	});
 
 	it('returns every chapter when none is given', async () => {
-		await checkout({ map_route_id: 100 });
-		await checkout({ map_route_id: 200 });
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 200 });
 		const rows = await loadActivityRows(db, allChapters);
 		expect(rows).toHaveLength(2);
 	});
@@ -129,7 +129,7 @@ describe('loadActivityRows', () => {
 	// A turf VAN no longer has still happened; dropping it would rewrite the
 	// record of a canvass that really took place.
 	it('keeps history for retired turf', async () => {
-		await checkout({ map_route_id: 300 });
+		await checkout({ turf_id: 300 });
 		const rows = await loadActivityRows(db, allChapters);
 		expect(rows.map((r) => r.name)).toEqual(['Retired turf']);
 	});
@@ -140,21 +140,21 @@ describe('loadActivityRows', () => {
 		// max() would sort every live claim to one end regardless of its age.
 		it('orders by each row’s newest stamp, not by claim time', async () => {
 			// Distinct routes: only one claim per route may be active at a time.
-			await checkout({ map_route_id: 100, claimed_at: '2026-08-24T09:00:00.000Z' }); // active, oldest claim
+			await checkout({ turf_id: 100, claimed_at: '2026-08-24T09:00:00.000Z' }); // active, oldest claim
 			await checkout({
-				map_route_id: 200,
+				turf_id: 200,
 				claimed_at: '2026-08-24T08:00:00.000Z',
 				completed_at: '2026-08-24T17:00:00.000Z',
 			}); // older claim, newest activity
-			await checkout({ map_route_id: 300, claimed_at: '2026-08-24T10:00:00.000Z' });
+			await checkout({ turf_id: 300, claimed_at: '2026-08-24T10:00:00.000Z' });
 
 			const rows = await loadActivityRows(db, allChapters);
 			expect(rows.map((r) => r.checkoutId)).toEqual([2, 3, 1]);
 		});
 
 		it('sorts an active claim by its claim time', async () => {
-			await checkout({ map_route_id: 100, claimed_at: '2026-08-24T09:00:00.000Z' });
-			await checkout({ map_route_id: 200, claimed_at: '2026-08-24T16:00:00.000Z' });
+			await checkout({ turf_id: 100, claimed_at: '2026-08-24T09:00:00.000Z' });
+			await checkout({ turf_id: 200, claimed_at: '2026-08-24T16:00:00.000Z' });
 			const rows = await loadActivityRows(db, allChapters);
 			expect(rows.map((r) => r.checkoutId)).toEqual([2, 1]);
 		});
@@ -195,7 +195,7 @@ describe('loadActivityRows', () => {
 
 	it('applies the limit in SQL', async () => {
 		for (const [i, route] of [100, 200, 300, 400, 500].entries()) {
-			await checkout({ map_route_id: route, claimed_at: `2026-08-24T1${i}:00:00.000Z` });
+			await checkout({ turf_id: route, claimed_at: `2026-08-24T1${i}:00:00.000Z` });
 		}
 		const rows = await loadActivityRows(db, { ...allChapters, limit: 2 });
 		expect(rows).toHaveLength(2);
@@ -257,8 +257,8 @@ describe('loadActivityCounts', () => {
 	});
 
 	it('filters to one chapter', async () => {
-		await checkout({ map_route_id: 100 });
-		await checkout({ map_route_id: 200 });
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 200 });
 		expect((await loadActivityCounts(db, { chapterId: 71, range: WEEK })).claimed).toBe(1);
 		expect((await loadActivityCounts(db, allChapters)).claimed).toBe(2);
 	});
@@ -302,7 +302,7 @@ describe('counts agree with the expanded events', () => {
 		await checkout({ completed_at: '2026-08-24T15:30:00.000Z' });
 		await checkout({ released_at: '2026-08-24T16:00:00.000Z', release_reason: 'expired' });
 		await checkout({
-			map_route_id: 200,
+			turf_id: 200,
 			released_at: '2026-08-24T16:00:00.000Z',
 			release_reason: 'blocked',
 		});

@@ -97,7 +97,7 @@ export function parseTurfArgument(text: string | null | undefined): TurfArgument
 
 export interface TurfActionValue {
 	/** Absent on the paging button, which acts on no particular turf. */
-	mapRouteId?: number;
+	turfId?: number;
 	chapterId: number;
 	offset: number;
 	location?: LatLng | null;
@@ -108,7 +108,7 @@ export interface TurfActionValue {
  *  message. */
 export function encodeTurfAction(value: TurfActionValue): string {
 	const payload: Record<string, number> = { c: value.chapterId, o: value.offset };
-	if (value.mapRouteId !== undefined) payload.r = value.mapRouteId;
+	if (value.turfId !== undefined) payload.r = value.turfId;
 	if (value.location) {
 		payload.lat = round3(value.location.lat);
 		payload.lng = round3(value.location.lng);
@@ -142,8 +142,8 @@ export function decodeTurfAction(raw: string | null | undefined): TurfActionValu
 		chapterId,
 		offset: clampOffset(asInt(p.o) ?? 0),
 	};
-	const mapRouteId = asInt(p.r);
-	if (mapRouteId !== null) value.mapRouteId = mapRouteId;
+	const turfId = asInt(p.r);
+	if (turfId !== null) value.turfId = turfId;
 
 	const lat = asFinite(p.lat);
 	const lng = asFinite(p.lng);
@@ -384,14 +384,14 @@ function turfSection(
 			text: { type: 'plain_text', text: 'Claim' },
 			style: 'primary',
 			action_id: TURF_CLAIM_ACTION_ID,
-			value: encodeTurfAction({ mapRouteId: turf.mapRouteId, chapterId, offset, location }),
+			value: encodeTurfAction({ turfId: turf.turfId, chapterId, offset, location }),
 		};
 	} else if (turf.status === 'held-by-you') {
 		section.accessory = {
 			type: 'button',
 			text: { type: 'plain_text', text: 'Give back' },
 			action_id: TURF_RELEASE_ACTION_ID,
-			value: encodeTurfAction({ mapRouteId: turf.mapRouteId, chapterId, offset, location }),
+			value: encodeTurfAction({ turfId: turf.turfId, chapterId, offset, location }),
 		};
 	}
 	return section;
@@ -433,7 +433,7 @@ function distanceTo(turf: TurfView, location: LatLng | null): number | null {
 }
 
 export interface ClaimedInput {
-	turf: { mapRouteId: number; name: string; regionName: string; doorsRemaining: number };
+	turf: { turfId: number; name: string; regionName: string; doorsRemaining: number };
 	chapter: ChapterRef;
 	printedListNumber: string;
 	expiresAt: string;
@@ -510,7 +510,7 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 						text: { type: 'plain_text', text: 'Give it back' },
 						action_id: TURF_RELEASE_ACTION_ID,
 						value: encodeTurfAction({
-							mapRouteId: turf.mapRouteId,
+							turfId: turf.turfId,
 							chapterId: chapter.chapterId,
 							offset: 0,
 							location,
@@ -529,7 +529,7 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 }
 
 export interface MineTurf {
-	mapRouteId: number;
+	turfId: number;
 	name: string;
 	regionName: string;
 	doorCount: number;
@@ -616,7 +616,7 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 					style: 'primary',
 					action_id: TURF_COMPLETE_ACTION_ID,
 					value: encodeTurfAction({
-						mapRouteId: turf.mapRouteId,
+						turfId: turf.turfId,
 						chapterId: turf.chapterId,
 						offset: 0,
 					}),
@@ -635,7 +635,7 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 					text: { type: 'plain_text', text: 'Give it back' },
 					action_id: TURF_RELEASE_MINE_ACTION_ID,
 					value: encodeTurfAction({
-						mapRouteId: turf.mapRouteId,
+						turfId: turf.turfId,
 						chapterId: turf.chapterId,
 						offset: 0,
 					}),

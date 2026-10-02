@@ -249,7 +249,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each data.drift.items as item (item.kind + ':' + item.mapRouteId)}
+						{#each data.drift.items as item (item.kind + ':' + item.turfId)}
 							<tr class="drift-{item.kind}">
 								<td class="col-flag">
 									<span class="badge badge-{item.kind}">{driftLabel(item.kind)}</span>

@@ -46,7 +46,7 @@ export const DELTA_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
 /** A completed checkout, with the turf as VAN now reports it. */
 export interface CompletionCandidate {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	slackUserId: string;
 	slackUserName: string;
 	completedAt: string;
@@ -70,7 +70,7 @@ export interface CompletionCandidate {
 
 /** A live route that may have replaced a retired, completed one. */
 export interface ReplacementRoute {
-	mapRouteId: number;
+	turfId: number;
 	mapRegionId: number;
 	name: string;
 	doorCount: number;
@@ -124,7 +124,7 @@ export function measuredAgainst(
 	const matches = replacements.filter(
 		(r) =>
 			r.mapRegionId === candidate.mapRegionId &&
-			r.mapRouteId !== candidate.mapRouteId &&
+			r.turfId !== candidate.turfId &&
 			turfNameKey(r.name) === key,
 	);
 	if (matches.length !== 1) return null;

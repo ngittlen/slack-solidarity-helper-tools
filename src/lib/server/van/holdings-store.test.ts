@@ -30,7 +30,7 @@ beforeEach(async () => {
 		[300, 2, 72, 'Wayne County', 'Turf 03'],
 	] as const) {
 		await client.execute(
-			`INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+			`INSERT INTO van_turfs (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
 			 VALUES (${id}, 1, ${folder}, ${chapter}, '${chapterName}', 'Ann Arbor', '${name}', 250, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
 		);
 	}
@@ -46,7 +46,7 @@ beforeEach(async () => {
 
 async function checkout(over: Record<string, string | number | null> = {}) {
 	const row = {
-		map_route_id: 100,
+		turf_id: 100,
 		slack_user_id: 'U_VOL',
 		slack_user_name: 'Dana',
 		claimed_at: iso(NOW.getTime() - 10 * HOUR),
@@ -60,8 +60,8 @@ async function checkout(over: Record<string, string | number | null> = {}) {
 	};
 	const q = (v: string | number | null) => (v === null ? 'NULL' : `'${v}'`);
 	await client.execute(
-		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, release_reason, confirmed_door_delta, expiry_warned_at)
-		 VALUES (${row.map_route_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}',
+		`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, release_reason, confirmed_door_delta, expiry_warned_at)
+		 VALUES (${row.turf_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}',
 		         ${q(row.released_at)}, ${q(row.completed_at)}, ${q(row.release_reason)}, ${q(row.confirmed_door_delta)}, ${q(row.expiry_warned_at)})`,
 	);
 }
@@ -80,7 +80,7 @@ describe('loadCurrentHoldings', () => {
 		await checkout();
 		const [row] = await loadCurrentHoldings(db, allChapters);
 		expect(row).toMatchObject({
-			mapRouteId: 100,
+			turfId: 100,
 			turfName: 'Turf 01',
 			chapterName: 'Washtenaw County',
 			doorCount: 250,
@@ -92,7 +92,7 @@ describe('loadCurrentHoldings', () => {
 	// An organizer looking at a board is not the holder.
 	it('never selects the MiniVAN list number', async () => {
 		await client.execute(
-			`UPDATE van_turfs SET printed_list_number = '35536745-88712' WHERE map_route_id = 100`,
+			`UPDATE van_turfs SET printed_list_number = '35536745-88712' WHERE turf_id = 100`,
 		);
 		await checkout();
 		const rows = await loadCurrentHoldings(db, allChapters);
@@ -119,10 +119,10 @@ describe('loadCurrentHoldings', () => {
 	});
 
 	it('filters to one chapter', async () => {
-		await checkout({ map_route_id: 100 });
-		await checkout({ map_route_id: 300 });
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 300 });
 		const wayne = await loadCurrentHoldings(db, { chapterId: 72 });
-		expect(wayne.map((r) => r.mapRouteId)).toEqual([300]);
+		expect(wayne.map((r) => r.turfId)).toEqual([300]);
 		expect(await loadCurrentHoldings(db, allChapters)).toHaveLength(2);
 	});
 
@@ -139,29 +139,29 @@ describe('loadCurrentHoldings', () => {
 
 describe('loadRecentCompletions', () => {
 	it('returns only completed rows', async () => {
-		await checkout({ map_route_id: 100 }); // live
-		await checkout({ map_route_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 100 }); // live
+		await checkout({ turf_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
 		const rows = await loadRecentCompletions(db, allChapters);
-		expect(rows.map((r) => r.mapRouteId)).toEqual([200]);
+		expect(rows.map((r) => r.turfId)).toEqual([200]);
 	});
 
 	it('orders most recent first', async () => {
-		await checkout({ map_route_id: 100, completed_at: iso(NOW.getTime() - 5 * HOUR) });
-		await checkout({ map_route_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 100, completed_at: iso(NOW.getTime() - 5 * HOUR) });
+		await checkout({ turf_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
 		const rows = await loadRecentCompletions(db, allChapters);
-		expect(rows.map((r) => r.mapRouteId)).toEqual([200, 100]);
+		expect(rows.map((r) => r.turfId)).toEqual([200, 100]);
 	});
 
 	it('applies the limit in SQL', async () => {
 		for (const route of [100, 200, 300]) {
-			await checkout({ map_route_id: route, completed_at: iso(NOW.getTime() - route * 1000) });
+			await checkout({ turf_id: route, completed_at: iso(NOW.getTime() - route * 1000) });
 		}
 		expect(await loadRecentCompletions(db, { ...allChapters, limit: 2 })).toHaveLength(2);
 	});
 
 	it('filters to one chapter', async () => {
-		await checkout({ map_route_id: 100, completed_at: iso(NOW.getTime() - HOUR) });
-		await checkout({ map_route_id: 300, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 100, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 300, completed_at: iso(NOW.getTime() - HOUR) });
 		expect(await loadRecentCompletions(db, { chapterId: 72 })).toHaveLength(1);
 	});
 
@@ -193,29 +193,29 @@ describe('loadRecentCompletions', () => {
 describe('loadHoldingsFor', () => {
 	/** The claim-message path fills issued_list_number; the fixture above does
 	 *  not, so set it explicitly where the test is about the number. */
-	async function withList(mapRouteId: number, slackUserId: string, listNumber: string | null) {
-		await checkout({ map_route_id: mapRouteId, slack_user_id: slackUserId });
+	async function withList(turfId: number, slackUserId: string, listNumber: string | null) {
+		await checkout({ turf_id: turfId, slack_user_id: slackUserId });
 		await client.execute(
 			`UPDATE van_turf_checkouts SET issued_list_number = ${
 				listNumber === null ? 'NULL' : `'${listNumber}'`
-			} WHERE map_route_id = ${mapRouteId} AND slack_user_id = '${slackUserId}'`,
+			} WHERE turf_id = ${turfId} AND slack_user_id = '${slackUserId}'`,
 		);
 	}
 
 	// The property the whole command rests on. A command called "mine" that
 	// returned somebody else's claim would be handing out their list number.
 	it('returns only the caller’s own claims', async () => {
-		await checkout({ map_route_id: 100, slack_user_id: 'U_VOL' });
-		await checkout({ map_route_id: 200, slack_user_id: 'U_OTHER' });
+		await checkout({ turf_id: 100, slack_user_id: 'U_VOL' });
+		await checkout({ turf_id: 200, slack_user_id: 'U_OTHER' });
 
 		const mine = await loadHoldingsFor(db, 'U_VOL');
 
-		expect(mine.map((r) => r.mapRouteId)).toEqual([100]);
+		expect(mine.map((r) => r.turfId)).toEqual([100]);
 	});
 
 	it('crosses chapters, because holding turf in two counties is holding two turfs', async () => {
-		await checkout({ map_route_id: 100, slack_user_id: 'U_VOL' });
-		await checkout({ map_route_id: 300, slack_user_id: 'U_VOL' });
+		await checkout({ turf_id: 100, slack_user_id: 'U_VOL' });
+		await checkout({ turf_id: 300, slack_user_id: 'U_VOL' });
 
 		const mine = await loadHoldingsFor(db, 'U_VOL');
 
@@ -236,7 +236,7 @@ describe('loadHoldingsFor', () => {
 		['released', { released_at: iso(NOW.getTime() - HOUR), release_reason: 'volunteer' }],
 		['completed', { completed_at: iso(NOW.getTime() - HOUR) }],
 	])('leaves out a claim already %s', async (_label, over) => {
-		await checkout({ map_route_id: 100, slack_user_id: 'U_VOL', ...over });
+		await checkout({ turf_id: 100, slack_user_id: 'U_VOL', ...over });
 		expect(await loadHoldingsFor(db, 'U_VOL')).toEqual([]);
 	});
 
@@ -245,7 +245,7 @@ describe('loadHoldingsFor', () => {
 	// must not grow a second opinion.
 	it('still returns a lapsed-but-unswept claim, leaving isActive to judge it', async () => {
 		await checkout({
-			map_route_id: 100,
+			turf_id: 100,
 			slack_user_id: 'U_VOL',
 			expires_at: iso(NOW.getTime() - HOUR),
 		});
@@ -253,7 +253,7 @@ describe('loadHoldingsFor', () => {
 	});
 
 	it('names the turf and its region so the reply needs no second read', async () => {
-		await checkout({ map_route_id: 100, slack_user_id: 'U_VOL' });
+		await checkout({ turf_id: 100, slack_user_id: 'U_VOL' });
 		const [row] = await loadHoldingsFor(db, 'U_VOL');
 		expect(row).toMatchObject({ turfName: 'Turf 01', regionName: 'Ann Arbor', doorCount: 250 });
 	});

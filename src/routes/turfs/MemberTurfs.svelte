@@ -65,7 +65,7 @@
 	}
 
 	/** Turf fetched by panning the map, merged over what the load function
-	 *  gave us. Keyed by mapRouteId so a turf that arrives from both sources
+	 *  gave us. Keyed by turfId so a turf that arrives from both sources
 	 *  appears once, with the fresher copy winning. */
 	let paged = $state<Record<number, TurfView>>({});
 	let loadingMore = $state(false);
@@ -114,8 +114,8 @@
 		// only as fresh as the last pan. Letting a stale paged copy override
 		// them would show turf as available seconds after someone took it.
 		const byId: Record<number, TurfView> = {};
-		for (const turf of Object.values(paged)) byId[turf.mapRouteId] = turf;
-		for (const turf of data.turfs ?? []) byId[turf.mapRouteId] = turf;
+		for (const turf of Object.values(paged)) byId[turf.turfId] = turf;
+		for (const turf of data.turfs ?? []) byId[turf.turfId] = turf;
 		return Object.values(byId);
 	});
 
@@ -158,10 +158,10 @@
 			// Only reassign when something genuinely new arrived. A fresh object
 			// every time would re-trigger every downstream derived — including
 			// the map's own framing — for no change in content.
-			const added = body.turfs.filter((t) => !(t.mapRouteId in paged));
+			const added = body.turfs.filter((t) => !(t.turfId in paged));
 			if (added.length > 0) {
 				const next = { ...paged };
-				for (const turf of added) next[turf.mapRouteId] = turf;
+				for (const turf of added) next[turf.turfId] = turf;
 				paged = next;
 			}
 			totalNow = body.total;
@@ -182,7 +182,7 @@
 		const out: Record<number, number> = {};
 		if (!here) return out;
 		for (const turf of turfs) {
-			if (turf.centre) out[turf.mapRouteId] = haversineMeters(here, turf.centre);
+			if (turf.centre) out[turf.turfId] = haversineMeters(here, turf.centre);
 		}
 		return out;
 	});
@@ -203,7 +203,7 @@
 							: 1;
 			return (
 				rank(a) - rank(b) ||
-				(distances[a.mapRouteId] ?? Infinity) - (distances[b.mapRouteId] ?? Infinity) ||
+				(distances[a.turfId] ?? Infinity) - (distances[b.turfId] ?? Infinity) ||
 				a.name.localeCompare(b.name)
 			);
 		}),
@@ -219,11 +219,11 @@
 	 *  the list; individual rows carry their own chip. */
 	const updatingCount = $derived(turfs.filter((t) => t.updating).length);
 
-	function select(mapRouteId: number) {
-		selectedId = mapRouteId;
+	function select(turfId: number) {
+		selectedId = turfId;
 	}
-	function toggle(mapRouteId: number) {
-		selectedId = selectedId === mapRouteId ? null : mapRouteId;
+	function toggle(turfId: number) {
+		selectedId = selectedId === turfId ? null : turfId;
 	}
 
 	let listEl = $state<HTMLUListElement | null>(null);
@@ -251,10 +251,10 @@
 	 * order. `preventScroll` leaves the scrolling to `scrollIntoView`, whose
 	 * behaviour respects the reduced-motion preference below.
 	 */
-	async function revealClaimedTurf(mapRouteId: number): Promise<void> {
+	async function revealClaimedTurf(turfId: number): Promise<void> {
 		// The card does not exist until the claim has re-rendered the list.
 		await tick();
-		const card = document.getElementById(`my-turf-${mapRouteId}`);
+		const card = document.getElementById(`my-turf-${turfId}`);
 		if (!card) return;
 		const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 		card.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
@@ -262,14 +262,14 @@
 	}
 
 	async function act(turf: TurfView, action: 'claim' | 'release' | 'complete') {
-		busy[turf.mapRouteId] = true;
+		busy[turf.turfId] = true;
 		error = null;
 		try {
-			const res = await fetch(`/api/turfs/${turf.mapRouteId}`, {
+			const res = await fetch(`/api/turfs/${turf.turfId}`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(
-					action === 'complete' ? { action, synced: synced[turf.mapRouteId] === true } : { action },
+					action === 'complete' ? { action, synced: synced[turf.turfId] === true } : { action },
 				),
 			});
 			const body = await res.json().catch(() => ({}));
@@ -281,12 +281,12 @@
 				return;
 			}
 			if (action === 'claim' && body.printedListNumber) {
-				issued[turf.mapRouteId] = body.printedListNumber;
-				selectedId = turf.mapRouteId;
+				issued[turf.turfId] = body.printedListNumber;
+				selectedId = turf.turfId;
 			} else {
-				delete issued[turf.mapRouteId];
-				delete copied[turf.mapRouteId];
-				delete synced[turf.mapRouteId];
+				delete issued[turf.turfId];
+				delete copied[turf.turfId];
+				delete synced[turf.turfId];
 			}
 			// Re-run the load function so every turf's status, claimability and
 			// door count come back from the server rather than being patched
@@ -294,11 +294,11 @@
 			await invalidateAll();
 			// After the reload, so the card scrolled to is the one the server
 			// confirmed rather than an optimistic one that might not survive it.
-			if (action === 'claim') await revealClaimedTurf(turf.mapRouteId);
+			if (action === 'claim') await revealClaimedTurf(turf.turfId);
 		} catch {
 			error = "Couldn't reach the server. Check your signal and try again.";
 		} finally {
-			delete busy[turf.mapRouteId];
+			delete busy[turf.turfId];
 		}
 	}
 
@@ -307,18 +307,18 @@
 	}
 
 	function listNumberFor(turf: TurfView): string | null {
-		return issued[turf.mapRouteId] ?? turf.printedListNumber;
+		return issued[turf.turfId] ?? turf.printedListNumber;
 	}
 
-	async function copyCode(mapRouteId: number, code: string) {
+	async function copyCode(turfId: number, code: string) {
 		try {
 			await navigator.clipboard.writeText(code);
-			copied[mapRouteId] = true;
-			setTimeout(() => delete copied[mapRouteId], 2000);
+			copied[turfId] = true;
+			setTimeout(() => delete copied[turfId], 2000);
 		} catch {
 			// Clipboard access is permission-gated and blocked outright in some
 			// browsers. The number is selectable text either way.
-			delete copied[mapRouteId];
+			delete copied[turfId];
 		}
 	}
 
@@ -413,10 +413,10 @@
 			<p class="sync-warning" role="alert">{error}</p>
 		{/if}
 
-		{#each myTurfs as turf (turf.mapRouteId)}
+		{#each myTurfs as turf (turf.turfId)}
 			<!-- tabindex -1: not in the tab order, but focusable so a claim can
 			     move focus here and a screen reader announces the list number. -->
-			<section class="my-turfs" id="my-turf-{turf.mapRouteId}" aria-label="Your turf" tabindex="-1">
+			<section class="my-turfs" id="my-turf-{turf.turfId}" aria-label="Your turf" tabindex="-1">
 				<article class="code-card">
 					<header>
 						<h2>{turf.name}</h2>
@@ -443,9 +443,9 @@
 							<button
 								type="button"
 								class="copy-btn"
-								onclick={() => copyCode(turf.mapRouteId, listNumberFor(turf)!)}
+								onclick={() => copyCode(turf.turfId, listNumberFor(turf)!)}
 							>
-								{copied[turf.mapRouteId] ? 'Copied' : 'Copy'}
+								{copied[turf.turfId] ? 'Copied' : 'Copy'}
 							</button>
 						</div>
 					{/if}
@@ -473,19 +473,19 @@
 					<div class="card-actions">
 						<div class="action-choice">
 							<label class="synced-check">
-								<input type="checkbox" bind:checked={synced[turf.mapRouteId]} />
+								<input type="checkbox" bind:checked={synced[turf.turfId]} />
 								I synced MiniVAN
 							</label>
 							<button
 								type="button"
 								class="claim-btn"
-								disabled={busy[turf.mapRouteId] || !synced[turf.mapRouteId]}
-								aria-describedby="walked-hint-{turf.mapRouteId}"
+								disabled={busy[turf.turfId] || !synced[turf.turfId]}
+								aria-describedby="walked-hint-{turf.turfId}"
 								onclick={() => act(turf, 'complete')}
 							>
-								{busy[turf.mapRouteId] ? 'Saving…' : 'I walked this turf'}
+								{busy[turf.turfId] ? 'Saving…' : 'I walked this turf'}
 							</button>
-							<p class="action-hint" id="walked-hint-{turf.mapRouteId}">
+							<p class="action-hint" id="walked-hint-{turf.turfId}">
 								Credits your doors. Hit <strong>Sync</strong> in MiniVAN first — how much is left comes
 								from VAN, so doors still on your phone count as unknocked.
 							</p>
@@ -494,13 +494,13 @@
 							<button
 								type="button"
 								class="ghost-btn"
-								disabled={busy[turf.mapRouteId]}
-								aria-describedby="unwalked-hint-{turf.mapRouteId}"
+								disabled={busy[turf.turfId]}
+								aria-describedby="unwalked-hint-{turf.turfId}"
 								onclick={() => act(turf, 'release')}
 							>
 								Give it back unwalked
 							</button>
-							<p class="action-hint" id="unwalked-hint-{turf.mapRouteId}">
+							<p class="action-hint" id="unwalked-hint-{turf.turfId}">
 								Returns the turf to the list for someone else. Nothing is credited to you.
 							</p>
 						</div>
@@ -632,8 +632,8 @@
 				{/if}
 
 				<ul class="turf-list" bind:this={listEl}>
-					{#each sortedTurfs as turf (turf.mapRouteId)}
-						{@const expanded = turf.mapRouteId === selectedId}
+					{#each sortedTurfs as turf (turf.turfId)}
+						{@const expanded = turf.turfId === selectedId}
 						<li
 							class="turf-row"
 							class:is-selected={expanded}
@@ -644,9 +644,9 @@
 							<button
 								type="button"
 								class="turf-card"
-								onclick={() => toggle(turf.mapRouteId)}
+								onclick={() => toggle(turf.turfId)}
 								aria-expanded={expanded}
-								aria-controls={expanded ? `turf-detail-${turf.mapRouteId}` : undefined}
+								aria-controls={expanded ? `turf-detail-${turf.turfId}` : undefined}
 							>
 								<!-- First in the DOM as well as on screen, so what a screen
 								     reader hears matches what the eye lands on, and both lead
@@ -708,8 +708,8 @@
 										     they hold one line even in the ~190px the list column
 										     leaves beside the door tile on a desktop. -->
 										{@const stats = [
-											distances[turf.mapRouteId] !== undefined
-												? { label: 'Distance', value: formatDistance(distances[turf.mapRouteId]) }
+											distances[turf.turfId] !== undefined
+												? { label: 'Distance', value: formatDistance(distances[turf.turfId]) }
 												: null,
 											{ label: 'People in list', value: String(turf.routeSize) },
 										].filter((stat) => stat !== null)}
@@ -729,8 +729,8 @@
 												</span>
 											{/each}
 										</span>
-									{:else if distances[turf.mapRouteId] !== undefined}
-										<span class="card-meta">{formatDistance(distances[turf.mapRouteId])} away</span>
+									{:else if distances[turf.turfId] !== undefined}
+										<span class="card-meta">{formatDistance(distances[turf.turfId])} away</span>
 									{/if}
 									{#if turf.heldBy}
 										<!-- Only ever populated for admins; the server nulls it for
@@ -756,7 +756,7 @@
 							</button>
 
 							{#if expanded}
-								<div class="row-detail" id="turf-detail-{turf.mapRouteId}">
+								<div class="row-detail" id="turf-detail-{turf.turfId}">
 									{#if turf.updating}
 										<p class="detail-note">
 											VAN is recounting this area — the doors left may change shortly. You can still
@@ -768,12 +768,10 @@
 											type="button"
 											class="claim-btn"
 											class:is-no-list={turf.noListNumber}
-											disabled={!turf.claimable ||
-												turf.doorsRemaining <= 0 ||
-												busy[turf.mapRouteId]}
+											disabled={!turf.claimable || turf.doorsRemaining <= 0 || busy[turf.turfId]}
 											onclick={() => act(turf, 'claim')}
 										>
-											{busy[turf.mapRouteId] ? 'Checking out…' : 'Check out this turf'}
+											{busy[turf.turfId] ? 'Checking out…' : 'Check out this turf'}
 										</button>
 										<!-- `claimable` gates the promise, not the absence of a
 										     reason. Written the other way round, a refusal that

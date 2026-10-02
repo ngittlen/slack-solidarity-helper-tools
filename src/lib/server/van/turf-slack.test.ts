@@ -59,7 +59,7 @@ const CHANNEL_MAP = [
 
 function turfView(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		chapterId: 71,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
@@ -426,7 +426,7 @@ describe('claimFromSlack', () => {
 		const msg = await claimFromSlack(makeDb(), {
 			slackUserId: freshUser(),
 			chapterId: 71,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 		expect(body(msg)).toContain('35536745-88712');
 		expect(body(msg)).toContain('Open MiniVAN');
@@ -446,7 +446,7 @@ describe('claimFromSlack', () => {
 		await claimFromSlack(makeDb(), {
 			slackUserId: freshUser(),
 			chapterId: 71,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 
 		expect(mockClaimTurf).toHaveBeenCalledWith(
@@ -467,10 +467,10 @@ describe('claimFromSlack', () => {
 
 	it('records the claim under the volunteer’s display name', async () => {
 		const user = freshUser();
-		await claimFromSlack(makeDb(), { slackUserId: user, chapterId: 71, mapRouteId: 100 });
+		await claimFromSlack(makeDb(), { slackUserId: user, chapterId: 71, turfId: 100 });
 		expect(mockClaimTurf).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ mapRouteId: 100, slackUserId: user, slackUserName: 'Dana' }),
+			expect.objectContaining({ turfId: 100, slackUserId: user, slackUserName: 'Dana' }),
 		);
 	});
 
@@ -485,7 +485,7 @@ describe('claimFromSlack', () => {
 		const msg = await claimFromSlack(makeDb(), {
 			slackUserId: freshUser(),
 			chapterId: 71,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 		expect(msg.text).toContain('a moment before you did');
 		expect(body(msg)).toContain('Turf 01');
@@ -497,7 +497,7 @@ describe('claimFromSlack', () => {
 		const msg = await claimFromSlack(makeDb(), {
 			slackUserId: user,
 			chapterId: 71,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 		expect(msg.text).toContain("isn't available for your account");
 		expect(mockClaimTurf).not.toHaveBeenCalled();
@@ -507,7 +507,7 @@ describe('claimFromSlack', () => {
 		const msg = await claimFromSlack(makeDb(), {
 			slackUserId: freshUser(),
 			chapterId: 4242,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 		expect(msg.text).toContain('ZIP code or address');
 		expect(mockClaimTurf).not.toHaveBeenCalled();
@@ -518,36 +518,36 @@ describe('claimFromSlack', () => {
 	// actually canvassing.
 	it('spends exactly one request slot per press', async () => {
 		const user = freshUser();
-		await claimFromSlack(makeDb(), { slackUserId: user, chapterId: 71, mapRouteId: 100 });
+		await claimFromSlack(makeDb(), { slackUserId: user, chapterId: 71, turfId: 100 });
 		expect(turfRequests.get(user)).toHaveLength(1);
 	});
 
 	it('spends one request slot even when the claim is refused', async () => {
 		const user = freshUser();
 		mockClaimTurf.mockResolvedValue({ ok: false, status: 409, message: 'Already taken.' });
-		await claimFromSlack(makeDb(), { slackUserId: user, chapterId: 71, mapRouteId: 100 });
+		await claimFromSlack(makeDb(), { slackUserId: user, chapterId: 71, turfId: 100 });
 		expect(turfRequests.get(user)).toHaveLength(1);
 	});
 
-	// Without the mapRouteIds filter this reads back whichever turf sorts first
+	// Without the turfIds filter this reads back whichever turf sorts first
 	// in the chapter, so the confirmation names a turf the volunteer did not
 	// claim — with the right list number beside the wrong name.
 	it('reads the claimed turf back by id, not by sort order', async () => {
-		await claimFromSlack(makeDb(), { slackUserId: freshUser(), chapterId: 71, mapRouteId: 100 });
+		await claimFromSlack(makeDb(), { slackUserId: freshUser(), chapterId: 71, turfId: 100 });
 		const readback = mockLoadChapterTurfs.mock.calls.at(-1)![1];
-		expect(readback).toMatchObject({ mapRouteIds: [100] });
+		expect(readback).toMatchObject({ turfIds: [100] });
 	});
 
 	it('names the turf that was actually claimed', async () => {
 		mockLoadChapterTurfs.mockResolvedValue({
-			turfs: [turfView({ mapRouteId: 100, name: 'Turf 07', doorsRemaining: 130 })],
+			turfs: [turfView({ turfId: 100, name: 'Turf 07', doorsRemaining: 130 })],
 			total: 1,
 			omitted: 0,
 		});
 		const msg = await claimFromSlack(makeDb(), {
 			slackUserId: freshUser(),
 			chapterId: 71,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 		expect(body(msg)).toContain('Turf 07');
 		expect(body(msg)).toContain('130 doors');
@@ -581,11 +581,11 @@ describe('releaseFromSlack', () => {
 		const msg = await releaseFromSlack(makeDb(), {
 			slackUserId: user,
 			chapterId: 71,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 		expect(mockEndClaim).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ mapRouteId: 100, slackUserId: user, kind: 'release' }),
+			expect.objectContaining({ turfId: 100, slackUserId: user, kind: 'release' }),
 		);
 		expect(msg.text).toContain('Given back');
 		expect(body(msg)).toContain('Turf 01');
@@ -600,7 +600,7 @@ describe('releaseFromSlack', () => {
 		const msg = await releaseFromSlack(makeDb(), {
 			slackUserId: freshUser(),
 			chapterId: 71,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 		expect(msg.text).toContain("don't currently hold");
 	});
@@ -608,13 +608,13 @@ describe('releaseFromSlack', () => {
 	it('refuses a blocked user without writing anything', async () => {
 		const user = freshUser();
 		mockBlockedIds.mockResolvedValue(new Set([user]));
-		await releaseFromSlack(makeDb(), { slackUserId: user, chapterId: 71, mapRouteId: 100 });
+		await releaseFromSlack(makeDb(), { slackUserId: user, chapterId: 71, turfId: 100 });
 		expect(mockEndClaim).not.toHaveBeenCalled();
 	});
 
 	it('spends exactly one request slot per press', async () => {
 		const user = freshUser();
-		await releaseFromSlack(makeDb(), { slackUserId: user, chapterId: 71, mapRouteId: 100 });
+		await releaseFromSlack(makeDb(), { slackUserId: user, chapterId: 71, turfId: 100 });
 		expect(turfRequests.get(user)).toHaveLength(1);
 	});
 
@@ -624,7 +624,7 @@ describe('releaseFromSlack', () => {
 		await releaseFromSlack(makeDb(), {
 			slackUserId: freshUser(),
 			chapterId: 71,
-			mapRouteId: 100,
+			turfId: 100,
 			location: { lat: 42.28, lng: -83.74 },
 		});
 		expect(mockResolveLocation).not.toHaveBeenCalled();
@@ -648,11 +648,11 @@ describe('/turfs-mine actions', () => {
 	it.each([
 		[
 			'give it back',
-			(user: string) => releaseMineFromSlack(makeDb(), { slackUserId: user, mapRouteId: 100 }),
+			(user: string) => releaseMineFromSlack(makeDb(), { slackUserId: user, turfId: 100 }),
 		],
 		[
 			'mark it done',
-			(user: string) => completeFromSlack(makeDb(), { slackUserId: user, mapRouteId: 100 }),
+			(user: string) => completeFromSlack(makeDb(), { slackUserId: user, turfId: 100 }),
 		],
 	])('refuses a blocked user before %s writes anything', async (_label, act) => {
 		const user = freshUser();
@@ -667,7 +667,7 @@ describe('/turfs-mine actions', () => {
 		for (let i = 0; i < MAX_REQUESTS; i++) await myTurfMessage(makeDb(), { slackUserId: user });
 		const msg = await completeFromSlack(makeDb(), {
 			slackUserId: user,
-			mapRouteId: 100,
+			turfId: 100,
 		});
 		expect(mockEndClaim).not.toHaveBeenCalled();
 		expect(msg.text).toContain('a lot of requests');
@@ -675,7 +675,7 @@ describe('/turfs-mine actions', () => {
 
 	it('spends exactly one request slot per press, redraw included', async () => {
 		const user = freshUser();
-		await releaseMineFromSlack(makeDb(), { slackUserId: user, mapRouteId: 100 });
+		await releaseMineFromSlack(makeDb(), { slackUserId: user, turfId: 100 });
 		expect(mockEndClaim).toHaveBeenCalledOnce();
 		expect(turfRequests.get(user)).toHaveLength(1);
 	});

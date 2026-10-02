@@ -21,6 +21,7 @@ const mockDoorsHealth = vi.hoisted(() => vi.fn());
 const mockRunPacketTracker = vi.hoisted(() => vi.fn());
 const mockRunContactStage = vi.hoisted(() => vi.fn());
 const mockHasher = vi.hoisted(() => vi.fn());
+const mockEnsureCampaignRows = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
 // On in most tests so the sweep's own behaviour is exercised; the default-off
 // case has its own test below.
@@ -48,6 +49,7 @@ vi.mock('$lib/server/sync-lock.js', () => ({
 	releaseSyncLock: mockRelease,
 }));
 vi.mock('$lib/server/van-env.js', () => ({
+	ensureCampaignRows: mockEnsureCampaignRows,
 	vanClient: mockVanClient,
 	vanExportJobTypeId: mockExportJobTypeId,
 	vanPersonHasher: mockHasher,
@@ -169,6 +171,7 @@ describe('POST /api/internal/van-sync', () => {
 		mockRunPacketTracker.mockResolvedValue(sheetLogResult);
 		mockHasher.mockReturnValue(null);
 		mockRunContactStage.mockResolvedValue(null);
+		mockEnsureCampaignRows.mockResolvedValue([]);
 	});
 
 	it('returns 401 for a wrong key', async () => {
@@ -182,6 +185,20 @@ describe('POST /api/internal/van-sync', () => {
 		const res = await POST(event(''));
 		expect(res.status).toBe(500);
 		expect(mockRunCatalogSync).not.toHaveBeenCalled();
+	});
+
+	it('records new campaign secrets even when the primary campaign is unconfigured', async () => {
+		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
+		mockEnsureCampaignRows.mockResolvedValue(['other']);
+		await POST(event());
+		expect(mockEnsureCampaignRows).toHaveBeenCalledOnce();
+	});
+
+	it('does not fail the sync when campaign discovery throws', async () => {
+		mockEnsureCampaignRows.mockRejectedValue(new Error('database is locked'));
+		const res = await POST(event());
+		expect(res.status).toBe(200);
+		expect(mockRunCatalogSync).toHaveBeenCalledOnce();
 	});
 
 	it('returns 500 with the reason when VAN is not configured', async () => {
@@ -558,7 +575,7 @@ describe('POST /api/internal/van-sync', () => {
 
 			expect(mockRunContactStage).toHaveBeenCalledOnce();
 			const [, options] = mockRunContactStage.mock.calls[0]!;
-			expect(options.mapRouteIds).toBeUndefined();
+			expect(options.turfIds).toBeUndefined();
 			const stage = mockRunContactStage.mock.invocationCallOrder[0]!;
 			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(stage);
 			expect(stage).toBeLessThan(mockRunGeometryQueue.mock.invocationCallOrder[0]!);

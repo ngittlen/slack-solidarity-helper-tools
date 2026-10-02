@@ -61,7 +61,7 @@ async function loadCandidates(db: Db, horizon: string): Promise<CandidateRow[]> 
 	const rows = await db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			claimedAt: vanTurfCheckouts.claimedAt,
@@ -75,7 +75,7 @@ async function loadCandidates(db: Db, horizon: string): Promise<CandidateRow[]> 
 			chapterId: vanTurfs.chapterId,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				isNull(vanTurfCheckouts.releasedAt),

@@ -143,7 +143,7 @@ async function buildList(
 /** Claim a turf, then show the volunteer their list number. */
 export async function claimFromSlack(
 	db: Db,
-	ctx: TurfRequestContext & { mapRouteId: number },
+	ctx: TurfRequestContext & { turfId: number },
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
 	const gate = await passGates(db, ctx, now);
@@ -151,7 +151,7 @@ export async function claimFromSlack(
 	if (!gate.chapter) return buildChapterPickerBlocks(gate.chapters, APP_URL, gate.prompt);
 
 	const result = await claimTurf(db, {
-		mapRouteId: ctx.mapRouteId,
+		turfId: ctx.turfId,
 		slackUserId: ctx.slackUserId,
 		slackUserName: await displayName(ctx.slackUserId),
 		now: new Date(now),
@@ -175,20 +175,20 @@ export async function claimFromSlack(
 	const { turfs } = await loadChapterTurfs(db, {
 		chapterId: gate.chapter.chapterId,
 		viewer: gate.viewer,
-		mapRouteIds: [ctx.mapRouteId],
+		turfIds: [ctx.turfId],
 		limit: 1,
 		includeHeldByViewer: true,
 		claimOptions: gate.claimOptions,
 		now: new Date(now),
 	});
-	const claimed = turfs.find((t) => t.mapRouteId === ctx.mapRouteId);
+	const claimed = turfs.find((t) => t.turfId === ctx.turfId);
 
-	console.log(`${LOG} slack claim: user=${ctx.slackUserId} route=${ctx.mapRouteId}`);
-	nudgePacketTracker(db, ctx.mapRouteId);
+	console.log(`${LOG} slack claim: user=${ctx.slackUserId} route=${ctx.turfId}`);
+	nudgePacketTracker(db, ctx.turfId);
 	return buildClaimedBlocks({
 		turf: {
-			mapRouteId: ctx.mapRouteId,
-			name: claimed?.name ?? `Turf ${ctx.mapRouteId}`,
+			turfId: ctx.turfId,
+			name: claimed?.name ?? `Turf ${ctx.turfId}`,
 			regionName: claimed?.regionName ?? '',
 			doorsRemaining: claimed?.doorsRemaining ?? 0,
 		},
@@ -204,20 +204,20 @@ export async function claimFromSlack(
 /** Give turf back, then show the list again so the next one is a tap away. */
 export async function releaseFromSlack(
 	db: Db,
-	ctx: TurfRequestContext & { mapRouteId: number },
+	ctx: TurfRequestContext & { turfId: number },
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
 	const gate = await passGates(db, ctx, now);
 	if (!gate.ok) return gate.message;
 
 	const result = await endClaim(db, {
-		mapRouteId: ctx.mapRouteId,
+		turfId: ctx.turfId,
 		slackUserId: ctx.slackUserId,
 		now: new Date(now),
 		kind: 'release',
 	});
 
-	if (result.ok) nudgePacketTracker(db, ctx.mapRouteId);
+	if (result.ok) nudgePacketTracker(db, ctx.turfId);
 	const note = result.ok
 		? 'Given back. Thanks for saying so — someone else can take it now.'
 		: result.message;
@@ -254,18 +254,18 @@ async function renderMine(db: Db, slackUserId: string, now: number): Promise<Sla
  */
 export async function releaseMineFromSlack(
 	db: Db,
-	ctx: TurfRequestContext & { mapRouteId: number },
+	ctx: TurfRequestContext & { turfId: number },
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
 	const gate = await passMineGate(db, ctx.slackUserId, now);
 	if (gate) return gate;
 	const result = await endClaim(db, {
-		mapRouteId: ctx.mapRouteId,
+		turfId: ctx.turfId,
 		slackUserId: ctx.slackUserId,
 		now: new Date(now),
 		kind: 'release',
 	});
-	if (result.ok) nudgePacketTracker(db, ctx.mapRouteId);
+	if (result.ok) nudgePacketTracker(db, ctx.turfId);
 	const note = result.ok
 		? 'Given back. Thanks for saying so — someone else can take it now.'
 		: result.message;
@@ -286,13 +286,13 @@ export async function releaseMineFromSlack(
  */
 export async function completeFromSlack(
 	db: Db,
-	ctx: TurfRequestContext & { mapRouteId: number },
+	ctx: TurfRequestContext & { turfId: number },
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
 	const gate = await passMineGate(db, ctx.slackUserId, now);
 	if (gate) return gate;
 	const result = await endClaim(db, {
-		mapRouteId: ctx.mapRouteId,
+		turfId: ctx.turfId,
 		slackUserId: ctx.slackUserId,
 		now: new Date(now),
 		kind: 'complete',
@@ -301,8 +301,8 @@ export async function completeFromSlack(
 		syncedMinivan: true,
 	});
 	if (result.ok) {
-		nudgePacketTracker(db, ctx.mapRouteId);
-		nudgeContactCount(db, ctx.mapRouteId);
+		nudgePacketTracker(db, ctx.turfId);
+		nudgeContactCount(db, ctx.turfId);
 	}
 	const note = result.ok
 		? 'Marked walked. Thanks! The doors left on this turf update once VAN has your answers.'
@@ -323,7 +323,7 @@ async function mineFor(db: Db, slackUserId: string, now: number) {
 		.filter((row) =>
 			isActive(
 				{
-					mapRouteId: row.mapRouteId,
+					turfId: row.turfId,
 					slackUserId,
 					slackUserName: '',
 					claimedAt: row.claimedAt,
@@ -335,7 +335,7 @@ async function mineFor(db: Db, slackUserId: string, now: number) {
 			),
 		)
 		.map((row) => ({
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			name: row.turfName,
 			regionName: row.regionName,
 			doorCount: row.doorCount,

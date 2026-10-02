@@ -210,7 +210,7 @@ async function main(): Promise<void> {
 			try {
 				result = await runGeometryQueue(db, client, {
 					exportJobTypeId,
-					webhookUrlFor: (mapRouteId) => exportCallbackUrl(appUrl, cronSecret, mapRouteId),
+					webhookUrlFor: (turfId) => exportCallbackUrl(appUrl, cronSecret, turfId),
 					timeBudgetMs: Math.min(SLICE_MS, remaining),
 					concurrency: CONCURRENCY,
 					maxItems: MAX_ITEMS,

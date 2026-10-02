@@ -37,7 +37,7 @@ describe('POST /api/settings/van-blocklist', () => {
 		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['U_ADMIN']) });
 		mockValidateSlackUser.mockResolvedValue({ ok: true, displayName: 'Bob' });
 		mockBlock.mockResolvedValue({
-			released: [{ mapRouteId: 4101, name: 'Turf 01' }],
+			released: [{ turfId: 4101, name: 'Turf 01' }],
 			sessionsRevoked: 2,
 		});
 		mockSendDm.mockResolvedValue(true);

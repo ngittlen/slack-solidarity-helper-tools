@@ -44,7 +44,7 @@ const LIVE_CHECK_BUDGET_MS = 6_000;
  */
 export async function runPacketTracker(
 	db: Db,
-	input: { timeBudgetMs: number; channelId: string; onlyMapRouteId?: number },
+	input: { timeBudgetMs: number; channelId: string; onlyTurfId?: number },
 ): Promise<TrackerResult | null> {
 	const configured = sheetsClient();
 	if (!configured.ok) return null;
@@ -60,7 +60,7 @@ export async function runPacketTracker(
 			tabName: vanSheetTabName,
 			timeBudgetMs: input.timeBudgetMs,
 			channelId: input.channelId,
-			onlyMapRouteId: input.onlyMapRouteId,
+			onlyTurfId: input.onlyTurfId,
 		}),
 	);
 	return run.skipped ? null : run.result;
@@ -74,7 +74,7 @@ export async function runPacketTracker(
  * scheduled sync picks up. Failures are alerted by that sync, not here — a
  * nudge that alerted too would say everything twice.
  */
-export function nudgePacketTracker(db: Db, mapRouteId: number): void {
+export function nudgePacketTracker(db: Db, turfId: number): void {
 	void (async () => {
 		for (let attempt = 0; ; attempt++) {
 			if (!sheetsClient().ok) return;
@@ -82,7 +82,7 @@ export function nudgePacketTracker(db: Db, mapRouteId: number): void {
 				timeBudgetMs: NUDGE_BUDGET_MS,
 				// Alerts belong to the scheduled sync; see above.
 				channelId: '',
-				onlyMapRouteId: mapRouteId,
+				onlyTurfId: turfId,
 			});
 			if (result !== null) {
 				// Notes about this checkout — a packet the tracker does not list,
@@ -111,7 +111,7 @@ export function nudgePacketTracker(db: Db, mapRouteId: number): void {
  */
 export function packetTrackerCheck(db: Db) {
 	return async (turf: {
-		mapRouteId: number;
+		turfId: number;
 		regionName: string;
 		printedListNumber: string | null;
 	}): Promise<string | null | undefined> => {

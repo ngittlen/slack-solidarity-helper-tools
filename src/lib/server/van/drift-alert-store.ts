@@ -78,14 +78,14 @@ interface Stamps {
  */
 async function loadStamps(db: Db): Promise<Stamps> {
 	const rows = await db
-		.select({ mapRouteId: vanTurfs.mapRouteId, kind: vanTurfs.driftAlertedKind })
+		.select({ turfId: vanTurfs.turfId, kind: vanTurfs.driftAlertedKind })
 		.from(vanTurfs)
 		.where(isNotNull(vanTurfs.driftAlertedKind));
 	const kinds = new Map<number, DriftKind>();
 	for (const row of rows) {
-		if (isDriftKind(row.kind)) kinds.set(row.mapRouteId, row.kind);
+		if (isDriftKind(row.kind)) kinds.set(row.turfId, row.kind);
 	}
-	return { kinds, routeIds: rows.map((r) => r.mapRouteId) };
+	return { kinds, routeIds: rows.map((r) => r.turfId) };
 }
 
 /** Stamp the routes named in a message that landed. */
@@ -99,7 +99,7 @@ async function markAlerted(
 		await db
 			.update(vanTurfs)
 			.set({ driftAlertedAt: at, driftAlertedKind: kind })
-			.where(inArray(vanTurfs.mapRouteId, batch));
+			.where(inArray(vanTurfs.turfId, batch));
 	}
 }
 
@@ -109,7 +109,7 @@ async function clearStamps(db: Db, routeIds: readonly number[]): Promise<void> {
 		await db
 			.update(vanTurfs)
 			.set({ driftAlertedAt: null, driftAlertedKind: null })
-			.where(inArray(vanTurfs.mapRouteId, batch));
+			.where(inArray(vanTurfs.turfId, batch));
 	}
 }
 
@@ -171,7 +171,7 @@ export async function sendDriftAlerts(
 
 		items = report.items.map((item) => ({
 			...item,
-			alertedKind: stamps.kinds.get(item.mapRouteId) ?? null,
+			alertedKind: stamps.kinds.get(item.turfId) ?? null,
 		}));
 		stampedRouteIds = stamps.routeIds;
 	} catch (err) {
@@ -221,8 +221,8 @@ export async function sendDriftAlerts(
 		const byKind = new Map<DriftKind, number[]>();
 		for (const item of fresh) {
 			const list = byKind.get(item.kind);
-			if (list) list.push(item.mapRouteId);
-			else byKind.set(item.kind, [item.mapRouteId]);
+			if (list) list.push(item.turfId);
+			else byKind.set(item.kind, [item.turfId]);
 		}
 		const at = now.toISOString();
 		for (const [kind, routeIds] of byKind) await markAlerted(db, routeIds, kind, at);

@@ -50,7 +50,7 @@ const geometryResult = {
 	warnings: [],
 };
 
-/** The URL VAN would post to for `mapRouteId`, as this route issues it. */
+/** The URL VAN would post to for `turfId`, as this route issues it. */
 function event(query = `turf=100&token=${signWebhookToken('cron-secret', 100)}`) {
 	return {
 		url: new URL(`https://app.example/api/internal/van-export-callback?${query}`),

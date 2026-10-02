@@ -14,10 +14,10 @@ let db: ReturnType<typeof drizzle>;
 let client: Client;
 const AT = '2026-09-20T00:00:00.000Z';
 
-async function turf(mapRouteId: number, folderId: number, chapterId = 71): Promise<void> {
+async function turf(turfId: number, folderId: number, chapterId = 71): Promise<void> {
 	await client.execute(
-		`INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
-		 VALUES (${mapRouteId}, 1, ${folderId}, ${chapterId}, 'Owning chapter', 'Region', 'Turf ${mapRouteId}', 100, '${AT}', '${AT}')`,
+		`INSERT INTO van_turfs (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+		 VALUES (${turfId}, 1, ${folderId}, ${chapterId}, 'Owning chapter', 'Region', 'Turf ${turfId}', 100, '${AT}', '${AT}')`,
 	);
 }
 
@@ -30,10 +30,10 @@ async function map(chapterId: number, folderId: number): Promise<void> {
 
 async function visible(chapterId: number | null): Promise<number[]> {
 	const rows = await db
-		.select({ mapRouteId: vanTurfs.mapRouteId })
+		.select({ turfId: vanTurfs.turfId })
 		.from(vanTurfs)
 		.where(and(visibleToChapter(chapterId), isNull(vanTurfs.retiredAt)));
-	return rows.map((r) => r.mapRouteId).sort((a, b) => a - b);
+	return rows.map((r) => r.turfId).sort((a, b) => a - b);
 }
 
 beforeEach(async () => {

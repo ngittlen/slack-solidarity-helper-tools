@@ -50,7 +50,7 @@ export const TURFS_PER_PAYLOAD = 600;
  * whichever field is present.
  */
 export interface Locatable {
-	mapRouteId: number;
+	turfId: number;
 	name: string;
 	/** As stored on a van_turfs row. */
 	centroidLat?: number | null;
@@ -137,11 +137,11 @@ export function selectNearest<T extends Locatable>(
 		const distance = new Map<number, number>();
 		for (const row of ordered) {
 			const point = pointOf(row);
-			distance.set(row.mapRouteId, point ? haversineMeters(location, point) : Infinity);
+			distance.set(row.turfId, point ? haversineMeters(location, point) : Infinity);
 		}
 		ordered.sort(
 			(a, b) =>
-				(distance.get(a.mapRouteId) ?? Infinity) - (distance.get(b.mapRouteId) ?? Infinity) ||
+				(distance.get(a.turfId) ?? Infinity) - (distance.get(b.turfId) ?? Infinity) ||
 				a.name.localeCompare(b.name),
 		);
 	} else {
@@ -155,11 +155,9 @@ export function selectNearest<T extends Locatable>(
 	// leaving them in on later pages shifted the offsets, so a held turf that
 	// sorted onto page two was shown twice and pushed another turf off both.
 	const pinnedIds = new Set(options.alwaysInclude ?? []);
-	const allPinned =
-		pinnedIds.size > 0 ? ordered.filter((row) => pinnedIds.has(row.mapRouteId)) : [];
+	const allPinned = pinnedIds.size > 0 ? ordered.filter((row) => pinnedIds.has(row.turfId)) : [];
 	const pinned = offset === 0 ? allPinned : [];
-	const rest =
-		allPinned.length > 0 ? ordered.filter((row) => !pinnedIds.has(row.mapRouteId)) : ordered;
+	const rest = allPinned.length > 0 ? ordered.filter((row) => !pinnedIds.has(row.turfId)) : ordered;
 	// Pinned rows spend the budget too, so a payload never exceeds the cap.
 	const room = Math.max(0, limit - pinned.length);
 	const page = rest.slice(offset, offset + room);

@@ -11,8 +11,9 @@ import type { VanMapRegion } from './types.js';
 // certain way — which would keep passing if the WHERE stopped matching.
 //
 // What this protects is Story 2.5's re-cut path end to end. A re-cut turf keeps
-// its mapRouteId and gets a new savedListId, so a queue keyed by mapRouteId has
-// to notice the saved list changed or the turf never gets fresh geometry.
+// its VAN route id, and so its turfId, but gets a new savedListId, so a queue
+// keyed by turfId has to notice the saved list changed or the turf never gets
+// fresh geometry.
 
 // Inferred rather than annotated as LibSQLDatabase<...>: runCatalogSync takes
 // the wider `ReturnType<typeof drizzle>`, which also carries `$client`.
@@ -23,7 +24,7 @@ beforeEach(async () => {
 	client = createClient({ url: ':memory:' });
 	for (const ddl of [
 		`CREATE TABLE van_turfs (
-			map_route_id integer PRIMARY KEY NOT NULL, map_region_id integer, folder_id integer,
+			turf_id integer PRIMARY KEY NOT NULL, map_region_id integer, folder_id integer,
 			chapter_id integer, chapter_name text DEFAULT '' NOT NULL, region_name text DEFAULT '' NOT NULL,
 			name text NOT NULL, saved_list_id integer, printed_list_number text,
 			printed_list_created_at text, list_expiry_warned_for text, route_number integer,
@@ -35,14 +36,14 @@ beforeEach(async () => {
 			uncontacted_doors integer, uncontacted_doors_at text, roster_saved_list_id integer,
 			retired_at text)`,
 		`CREATE TABLE van_turf_roster (
-			map_route_id integer NOT NULL, person_hash blob NOT NULL, door_hash blob NOT NULL,
-			PRIMARY KEY(map_route_id, person_hash))`,
+			turf_id integer NOT NULL, person_hash blob NOT NULL, door_hash blob NOT NULL,
+			PRIMARY KEY(turf_id, person_hash))`,
 		`CREATE TABLE van_geometry_queue (
-			map_route_id integer PRIMARY KEY NOT NULL, saved_list_id integer NOT NULL,
+			turf_id integer PRIMARY KEY NOT NULL, saved_list_id integer NOT NULL,
 			export_job_id integer, status text DEFAULT 'pending' NOT NULL,
 			attempts integer DEFAULT 0 NOT NULL, requested_at text, completed_at text, last_error text)`,
 		`CREATE TABLE van_turf_checkouts (
-			id integer PRIMARY KEY AUTOINCREMENT NOT NULL, map_route_id integer NOT NULL,
+			id integer PRIMARY KEY AUTOINCREMENT NOT NULL, turf_id integer NOT NULL,
 			slack_user_id text NOT NULL, slack_user_name text NOT NULL, claimed_at text NOT NULL,
 			expires_at text NOT NULL, released_at text, completed_at text, release_reason text,
 			loaded_in_minivan_at text)`,
@@ -99,14 +100,14 @@ function vanClientWith(savedListId: number, routeSize = 76): VanClient {
 const MAPPINGS = [{ chapterId: 71, chapterName: 'Orange County', folderIds: [2731] }];
 
 async function queueRow() {
-	const res = await client.execute('SELECT * FROM van_geometry_queue WHERE map_route_id = 56456');
+	const res = await client.execute('SELECT * FROM van_geometry_queue WHERE turf_id = 56456');
 	return res.rows[0] ?? null;
 }
 
 /** Mark the row the way a successful worker run would. */
 async function markDone(savedListId: number) {
 	await client.execute({
-		sql: `UPDATE van_geometry_queue SET status='done', attempts=1, export_job_id=?, completed_at='2026-09-01T00:00:00Z' WHERE map_route_id=56456`,
+		sql: `UPDATE van_geometry_queue SET status='done', attempts=1, export_job_id=?, completed_at='2026-09-01T00:00:00Z' WHERE turf_id=56456`,
 		args: [savedListId],
 	});
 }
@@ -166,7 +167,7 @@ describe('geometry queue re-arming', () => {
 	it('does not resurrect a dead-lettered row on an unchanged saved list', async () => {
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
 		await client.execute(
-			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE map_route_id=56456`,
+			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE turf_id=56456`,
 		);
 
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
@@ -181,7 +182,7 @@ describe('geometry queue re-arming', () => {
 	it('does resurrect a dead-lettered row when the saved list changes', async () => {
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
 		await client.execute(
-			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE map_route_id=56456`,
+			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE turf_id=56456`,
 		);
 
 		await runCatalogSync(db, vanClientWith(585484), MAPPINGS);
@@ -197,7 +198,7 @@ describe('geometry queue re-arming', () => {
 	it('does not disturb a running row on an unchanged saved list', async () => {
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
 		await client.execute(
-			`UPDATE van_geometry_queue SET status='running', attempts=1, export_job_id=900 WHERE map_route_id=56456`,
+			`UPDATE van_geometry_queue SET status='running', attempts=1, export_job_id=900 WHERE turf_id=56456`,
 		);
 
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
@@ -229,7 +230,7 @@ describe('geometry queue roster re-arming', () => {
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
 		await markDone(585052);
 		await client.execute(
-			`UPDATE van_turfs SET roster_saved_list_id = 585052 WHERE map_route_id = 56456`,
+			`UPDATE van_turfs SET roster_saved_list_id = 585052 WHERE turf_id = 56456`,
 		);
 
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, ROSTER);
@@ -240,7 +241,7 @@ describe('geometry queue roster re-arming', () => {
 	it('does not resurrect a dead-lettered row just for a roster', async () => {
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
 		await client.execute(
-			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE map_route_id=56456`,
+			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE turf_id=56456`,
 		);
 
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, ROSTER);
@@ -254,7 +255,7 @@ describe('geometry queue roster re-arming', () => {
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
 		await markDone(585052);
 		await client.execute(
-			`UPDATE van_geometry_queue SET last_error='export CSV has no VanID column' WHERE map_route_id=56456`,
+			`UPDATE van_geometry_queue SET last_error='export CSV has no VanID column' WHERE turf_id=56456`,
 		);
 
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, ROSTER);
@@ -278,7 +279,7 @@ describe('geometry queue roster re-arming', () => {
 		const t0 = new Date('2026-09-28T12:00:00.000Z');
 		await runCatalogSync(db, vanClientWith(585052), MAPPINGS, { now: t0 });
 		await client.execute(
-			`INSERT INTO van_turf_roster (map_route_id, person_hash, door_hash) VALUES (56456, x'01', x'02')`,
+			`INSERT INTO van_turf_roster (turf_id, person_hash, door_hash) VALUES (56456, x'01', x'02')`,
 		);
 		const empty: VanClient = { ...vanClientWith(585052), mapRegions: async () => [] };
 		const rosterRows = async () =>
