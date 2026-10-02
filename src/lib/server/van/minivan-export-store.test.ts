@@ -76,11 +76,11 @@ describe('pullMinivanExports', () => {
 			exp(1, '2026-09-13T17:19:02.657Z'),
 			exp(2, '2026-09-22T11:52:28.15Z'),
 		]);
-		const result = await pullMinivanExports(db, first.client, { now: NOW });
+		const result = await pullMinivanExports(db, first.client, { campaignId: 1, now: NOW });
 		expect(result).toEqual({ from: '2026-08-24', fetched: 2, complete: true });
 
 		const second = vanReturning([]);
-		await pullMinivanExports(db, second.client, { now: NOW });
+		await pullMinivanExports(db, second.client, { campaignId: 1, now: NOW });
 		expect(second.minivanExportsSince).toHaveBeenCalledWith('2026-09-22', 150);
 	});
 
@@ -89,7 +89,7 @@ describe('pullMinivanExports', () => {
 			exp(1, '2026-09-22T11:52:28.15Z', 'List 59430821-62783'),
 			exp(2, '2026-09-22T11:52:28.15Z', 'downtown LO Turf 01'),
 		]);
-		await pullMinivanExports(db, van, { now: NOW });
+		await pullMinivanExports(db, van, { campaignId: 1, now: NOW });
 		const rows = await client.execute(
 			'SELECT minivan_export_id, list_number FROM van_minivan_exports ORDER BY minivan_export_id',
 		);
@@ -100,13 +100,14 @@ describe('pullMinivanExports', () => {
 	// or fail on the primary key.
 	it('upserts an export read twice, keeping VAN’s latest canvassers', async () => {
 		await pullMinivanExports(db, vanReturning([exp(1, '2026-09-22T11:52:28.15Z')]).client, {
+			campaignId: 1,
 			now: NOW,
 		});
 		await pullMinivanExports(
 			db,
 			vanReturning([exp(1, '2026-09-22T11:52:28.15Z', 'List 1-00000', [{ firstName: 'Sam' }])])
 				.client,
-			{ now: NOW },
+			{ campaignId: 1, now: NOW },
 		);
 		const rows = await client.execute('SELECT canvassers_json FROM van_minivan_exports');
 		expect(rows.rows).toHaveLength(1);
@@ -117,13 +118,13 @@ describe('pullMinivanExports', () => {
 		const result = await pullMinivanExports(
 			db,
 			vanReturning([exp(1, '2026-08-30T10:00:00Z')], false).client,
-			{ now: NOW },
+			{ campaignId: 1, now: NOW },
 		);
 		expect(result.complete).toBe(false);
 
 		// …and the next run picks up where that one stopped.
 		const next = vanReturning([]);
-		await pullMinivanExports(db, next.client, { now: NOW });
+		await pullMinivanExports(db, next.client, { campaignId: 1, now: NOW });
 		expect(next.minivanExportsSince).toHaveBeenCalledWith('2026-08-30', 150);
 	});
 
@@ -131,7 +132,7 @@ describe('pullMinivanExports', () => {
 		await pullMinivanExports(
 			db,
 			vanReturning([exp(1, '2026-07-01T10:00:00Z'), exp(2, '2026-09-20T10:00:00Z')]).client,
-			{ now: NOW },
+			{ campaignId: 1, now: NOW },
 		);
 		const rows = await client.execute('SELECT minivan_export_id FROM van_minivan_exports');
 		expect(rows.rows.map((r) => r.minivan_export_id)).toEqual([2]);
@@ -141,6 +142,7 @@ describe('pullMinivanExports', () => {
 	// which is what stops a bad sync from blanking van_distributed_to.
 	it('throws when VAN does, leaving the store as it was', async () => {
 		await pullMinivanExports(db, vanReturning([exp(1, '2026-09-22T11:52:28.15Z')]).client, {
+			campaignId: 1,
 			now: NOW,
 		});
 		const failing = {
@@ -148,7 +150,9 @@ describe('pullMinivanExports', () => {
 				throw new Error('VAN /minivanExports returned 503');
 			},
 		} as unknown as VanClient;
-		await expect(pullMinivanExports(db, failing, { now: NOW })).rejects.toThrow(/503/);
+		await expect(pullMinivanExports(db, failing, { campaignId: 1, now: NOW })).rejects.toThrow(
+			/503/,
+		);
 		const rows = await client.execute('SELECT count(*) AS n FROM van_minivan_exports');
 		expect(rows.rows[0]!.n).toBe(1);
 	});
@@ -167,12 +171,12 @@ describe('loadMinivanExports', () => {
 				]),
 				exp(2, '2026-09-13T17:19:02.657Z', 'List 11111111-22222'),
 			]).client,
-			{ now: NOW },
+			{ campaignId: 1, now: NOW },
 		);
 	});
 
 	it('returns only exports for the requested list numbers, oldest first', async () => {
-		const exports = await loadMinivanExports(db, ['59430821-62783', '99999999-00000']);
+		const exports = await loadMinivanExports(db, 1, ['59430821-62783', '99999999-00000']);
 		expect(exports.map((e) => e.minivanExportId)).toEqual([1, 3]);
 		expect(exports[1]).toMatchObject({
 			name: 'List 59430821-62783',
@@ -181,20 +185,33 @@ describe('loadMinivanExports', () => {
 	});
 
 	it('returns nothing for no list numbers', async () => {
-		expect(await loadMinivanExports(db, [])).toEqual([]);
+		expect(await loadMinivanExports(db, 1, [])).toEqual([]);
 	});
 
 	it('reads a corrupt canvasser column as nobody, not as an exception', async () => {
 		await client.execute(
 			"UPDATE van_minivan_exports SET canvassers_json = '{oops' WHERE minivan_export_id = 2",
 		);
-		const [only] = await loadMinivanExports(db, ['11111111-22222']);
+		const [only] = await loadMinivanExports(db, 1, ['11111111-22222']);
 		expect(only!.canvassers).toEqual([]);
 	});
 });
 
 describe('our claims, for export attribution', () => {
-	async function checkout(id: number, claimedAt: string, over: Record<string, string> = {}) {
+	/** A claim on its own turf. Claims reach their campaign through the turf,
+	 *  so the turf is written too — in campaign 1 unless `campaignId` says. */
+	async function checkout(
+		id: number,
+		claimedAt: string,
+		over: Record<string, string> = {},
+		campaignId = 1,
+	) {
+		await client.execute({
+			sql: `INSERT INTO van_turfs (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id,
+			        chapter_id, name, first_seen_at, last_seen_at)
+			      VALUES (?, ?, ?, 1, 1, 71, 'Turf', ?, ?)`,
+			args: [100 + id, campaignId, 100 + id, claimedAt, claimedAt],
+		});
 		const row: Record<string, string | number> = {
 			id,
 			// One route each: the real schema allows one open claim per route.
@@ -221,12 +238,25 @@ describe('our claims, for export attribution', () => {
 		// Older than anything the export store still holds.
 		await checkout(4, '2026-07-01T10:00:00.000Z');
 
-		const claims = await loadClaimsForExports(db, NOW);
+		const claims = await loadClaimsForExports(db, 1, NOW);
 		expect(claims.map((c) => [c.checkoutId, c.endedAt])).toEqual([
 			[1, '2026-09-20T14:00:00.000Z'],
 			[2, '2026-09-22T11:00:00.000Z'],
 			[3, '2026-09-30T00:00:00.000Z'],
 		]);
+	});
+
+	// Another committee's exports are read with another key, and its list
+	// numbers mean nothing here, so its claims cannot explain this one's.
+	it("leaves out another campaign's claims", async () => {
+		await client.execute(
+			"INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at) VALUES (2, 'other', 1, 's', 's', 'x')",
+		);
+		await checkout(1, '2026-09-23T10:00:00.000Z');
+		await checkout(2, '2026-09-23T10:00:00.000Z', {}, 2);
+
+		expect((await loadClaimsForExports(db, 1, NOW)).map((c) => c.checkoutId)).toEqual([1]);
+		expect((await loadClaimsForExports(db, 2, NOW)).map((c) => c.checkoutId)).toEqual([2]);
 	});
 
 	it('stamps the claims whose list was seen loaded', async () => {

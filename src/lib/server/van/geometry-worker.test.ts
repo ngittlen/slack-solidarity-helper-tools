@@ -31,6 +31,9 @@ function makeDb(queueRows: Record<string, unknown>[], turfRows: Record<string, u
 
 	function thenableFor(table: unknown) {
 		const chain: Record<string, unknown> = {
+			// The worker joins the queue to van_turfs to keep to one campaign;
+			// every row here is that campaign's, so the stub reads the queue.
+			innerJoin: () => chain,
 			where: () => chain,
 			orderBy: () => chain,
 			limit: () => chain,
@@ -109,6 +112,7 @@ function okCsv(body = SQUARE_CSV) {
 }
 
 const OPTIONS = {
+	campaignId: 1,
 	exportJobTypeId: 5,
 	// Per turf, as in production: the URL VAN stores carries a token scoped to
 	// the turf rather than a shared secret. See webhook-token.ts.

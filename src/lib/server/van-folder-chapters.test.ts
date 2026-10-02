@@ -15,8 +15,12 @@ vi.mock('./env.js', () => ({
 	MOBILIZE_CONTACT_PHONE: '',
 }));
 
-const { saveVanChapterFolders, saveVanFolderChapters, loadVanChapterFolders } =
-	await import('./settings.js');
+const {
+	saveVanChapterFolders,
+	saveVanFolderChapters,
+	deleteVanChapterFolders,
+	loadVanChapterFolders,
+} = await import('./settings.js');
 
 // A real engine rather than a chained fake: the guarantee here is that two
 // editors of ONE table — /settings writing a chapter's folders, and
@@ -30,7 +34,7 @@ const EDITOR = { id: 'U_ADMIN', name: 'Alice' };
 
 /** chapterId → folderIds, which is the shape /settings and the sync read. */
 async function mapping(): Promise<Record<number, number[]>> {
-	const rows = await loadVanChapterFolders(db);
+	const rows = await loadVanChapterFolders(db, 1);
 	return Object.fromEntries(rows.map((r) => [r.chapterId, [...r.folderIds].sort((a, b) => a - b)]));
 }
 
@@ -56,6 +60,7 @@ describe('saveVanFolderChapters', () => {
 		await saveVanFolderChapters(
 			db,
 			{
+				campaignId: 1,
 				folderId: 68300,
 				chapters: [
 					{ chapterId: 71, chapterName: 'Macomb County' },
@@ -71,13 +76,17 @@ describe('saveVanFolderChapters', () => {
 		// Washtenaw already has two folders, set chapter-first on /settings.
 		await saveVanChapterFolders(
 			db,
-			{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [68298, 68295] },
+			{ campaignId: 1, chapterId: 71, chapterName: 'Washtenaw County', folderIds: [68298, 68295] },
 			EDITOR,
 		);
 		// Now the folder-map page gives folder 68298 to a different chapter.
 		await saveVanFolderChapters(
 			db,
-			{ folderId: 68298, chapters: [{ chapterId: 72, chapterName: 'Oakland County' }] },
+			{
+				campaignId: 1,
+				folderId: 68298,
+				chapters: [{ chapterId: 72, chapterName: 'Oakland County' }],
+			},
 			EDITOR,
 		);
 		// 68298 moved; Washtenaw keeps 68295, which this edit never mentioned.
@@ -87,16 +96,16 @@ describe('saveVanFolderChapters', () => {
 	it('an empty list unmaps the folder and nothing else', async () => {
 		await saveVanChapterFolders(
 			db,
-			{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [68298, 68295] },
+			{ campaignId: 1, chapterId: 71, chapterName: 'Washtenaw County', folderIds: [68298, 68295] },
 			EDITOR,
 		);
-		await saveVanFolderChapters(db, { folderId: 68298, chapters: [] }, EDITOR);
+		await saveVanFolderChapters(db, { campaignId: 1, folderId: 68298, chapters: [] }, EDITOR);
 		expect(await mapping()).toEqual({ 71: [68295] });
 	});
 
 	it('replaces the folder’s list wholesale, rather than adding to it', async () => {
 		const save = (chapters: Array<{ chapterId: number; chapterName: string }>) =>
-			saveVanFolderChapters(db, { folderId: 68299, chapters }, EDITOR);
+			saveVanFolderChapters(db, { campaignId: 1, folderId: 68299, chapters }, EDITOR);
 		await save([
 			{ chapterId: 71, chapterName: 'Macomb County' },
 			{ chapterId: 72, chapterName: 'Oakland County' },
@@ -111,6 +120,7 @@ describe('saveVanFolderChapters', () => {
 		await saveVanFolderChapters(
 			db,
 			{
+				campaignId: 1,
 				folderId: 68299,
 				chapters: [
 					{ chapterId: 72, chapterName: 'Oakland County' },
@@ -125,7 +135,11 @@ describe('saveVanFolderChapters', () => {
 	it('records who edited it', async () => {
 		await saveVanFolderChapters(
 			db,
-			{ folderId: 68299, chapters: [{ chapterId: 72, chapterName: 'Oakland County' }] },
+			{
+				campaignId: 1,
+				folderId: 68299,
+				chapters: [{ chapterId: 72, chapterName: 'Oakland County' }],
+			},
 			EDITOR,
 		);
 		const res = await client.execute(
@@ -136,5 +150,50 @@ describe('saveVanFolderChapters', () => {
 			last_edited_by_name: 'Alice',
 			chapter_name: 'Oakland County',
 		});
+	});
+});
+
+// A chapter can have folders in several campaigns, and the editors only ever
+// save one campaign's. Before campaigns existed the saves deleted by chapter or
+// by folder alone, which would now wipe another campaign's mapping.
+describe('campaigns', () => {
+	beforeEach(async () => {
+		await client.execute(
+			"INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at) VALUES (2, 'other', 1, 's', 's', 'x')",
+		);
+		await saveVanChapterFolders(
+			db,
+			{ campaignId: 2, chapterId: 71, chapterName: 'Washtenaw County', folderIds: [68299] },
+			EDITOR,
+		);
+	});
+
+	it("saving one campaign's chapter leaves another campaign's folders for it alone", async () => {
+		await saveVanChapterFolders(
+			db,
+			{ campaignId: 1, chapterId: 71, chapterName: 'Washtenaw County', folderIds: [1] },
+			EDITOR,
+		);
+		await saveVanChapterFolders(
+			db,
+			{ campaignId: 1, chapterId: 71, chapterName: 'Washtenaw County', folderIds: [] },
+			EDITOR,
+		);
+		const other = await loadVanChapterFolders(db, 2);
+		expect(other.map((r) => [r.chapterId, r.folderIds])).toEqual([[71, [68299]]]);
+	});
+
+	it("saving a folder in one campaign leaves another campaign's folder with the same id", async () => {
+		await saveVanFolderChapters(db, { campaignId: 1, folderId: 68299, chapters: [] }, EDITOR);
+		expect((await loadVanChapterFolders(db, 2)).map((r) => r.folderIds)).toEqual([[68299]]);
+	});
+
+	it('removing a chapter in one campaign leaves its mapping in another', async () => {
+		await deleteVanChapterFolders(db, 1, 71, EDITOR);
+		expect((await loadVanChapterFolders(db, 2)).map((r) => r.chapterId)).toEqual([71]);
+	});
+
+	it('loads only the campaign asked for', async () => {
+		expect(await mapping()).toEqual({});
 	});
 });

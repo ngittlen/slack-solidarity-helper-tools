@@ -91,43 +91,49 @@ describe('recordChapterView', () => {
 describe('shared VAN folders', () => {
 	it('does not charge for a chapter whose folders were all already seen', () => {
 		const log = freshLog();
-		recordChapterView(log, 'U1', 71, T0, { folderIds: [5, 6] });
-		const decision = recordChapterView(log, 'U1', 72, T0, { folderIds: [5] });
+		recordChapterView(log, 'U1', 71, T0, { folderIds: ['1:5', '1:6'] });
+		const decision = recordChapterView(log, 'U1', 72, T0, { folderIds: ['1:5'] });
 		expect(decision).toMatchObject({ allowed: true, chargedChapters: 1, shouldLog: false });
 	});
 
 	it('lets any number of chapters sharing one list through', () => {
 		const log = freshLog();
 		for (let i = 0; i < MAX_CHAPTER_SWITCHES * 3; i++) {
-			expect(recordChapterView(log, 'U1', i, T0, { folderIds: [5] }).allowed).toBe(true);
+			expect(recordChapterView(log, 'U1', i, T0, { folderIds: ['1:5'] }).allowed).toBe(true);
 		}
 	});
 
 	it('still allows a shared chapter once the cap is spent on other turf', () => {
 		const log = freshLog();
 		for (let i = 0; i < MAX_CHAPTER_SWITCHES; i++) {
-			recordChapterView(log, 'U1', i, T0, { folderIds: [100 + i] });
+			recordChapterView(log, 'U1', i, T0, { folderIds: [`1:${100 + i}`] });
 		}
-		expect(recordChapterView(log, 'U1', 999, T0, { folderIds: [100, 103] }).allowed).toBe(true);
-		expect(recordChapterView(log, 'U1', 998, T0, { folderIds: [100, 555] }).allowed).toBe(false);
+		expect(recordChapterView(log, 'U1', 999, T0, { folderIds: ['1:100', '1:103'] }).allowed).toBe(
+			true,
+		);
+		expect(recordChapterView(log, 'U1', 998, T0, { folderIds: ['1:100', '1:555'] }).allowed).toBe(
+			false,
+		);
 	});
 
 	it('charges for a chapter that adds even one folder', () => {
 		const log = freshLog();
-		recordChapterView(log, 'U1', 71, T0, { folderIds: [5] });
-		expect(recordChapterView(log, 'U1', 72, T0, { folderIds: [5, 6] }).chargedChapters).toBe(2);
+		recordChapterView(log, 'U1', 71, T0, { folderIds: ['1:5'] });
+		expect(
+			recordChapterView(log, 'U1', 72, T0, { folderIds: ['1:5', '1:6'] }).chargedChapters,
+		).toBe(2);
 	});
 
 	it('treats a chapter without folder ids as its own turf', () => {
 		const log = freshLog();
-		recordChapterView(log, 'U1', 71, T0, { folderIds: [5] });
+		recordChapterView(log, 'U1', 71, T0, { folderIds: ['1:5'] });
 		expect(recordChapterView(log, 'U1', 72, T0).chargedChapters).toBe(2);
 	});
 
 	it('treats a chapter with no folders as showing nothing new', () => {
 		const log = freshLog();
 		for (let i = 0; i < MAX_CHAPTER_SWITCHES; i++) {
-			recordChapterView(log, 'U1', i, T0, { folderIds: [100 + i] });
+			recordChapterView(log, 'U1', i, T0, { folderIds: [`1:${100 + i}`] });
 		}
 		expect(recordChapterView(log, 'U1', 999, T0, { folderIds: [] }).allowed).toBe(true);
 	});
@@ -135,15 +141,15 @@ describe('shared VAN folders', () => {
 	it('times a refusal from the oldest charged visit, not a free one', () => {
 		const MIN = 60 * 1000;
 		const log = freshLog();
-		recordChapterView(log, 'U1', 1, T0, { folderIds: [1] });
-		recordChapterView(log, 'U1', 2, T0 + MIN, { folderIds: [1] }); // free
+		recordChapterView(log, 'U1', 1, T0, { folderIds: ['1:1'] });
+		recordChapterView(log, 'U1', 2, T0 + MIN, { folderIds: ['1:1'] }); // free
 		// Re-opened, so the free visit outlives the charged one it rode on and
 		// becomes the oldest visit in the window.
-		recordChapterView(log, 'U1', 2, T0 + 50 * MIN, { folderIds: [1] });
+		recordChapterView(log, 'U1', 2, T0 + 50 * MIN, { folderIds: ['1:1'] });
 		for (let i = 0; i < MAX_CHAPTER_SWITCHES; i++) {
-			recordChapterView(log, 'U1', 100 + i, T0 + 70 * MIN, { folderIds: [100 + i] });
+			recordChapterView(log, 'U1', 100 + i, T0 + 70 * MIN, { folderIds: [`1:${100 + i}`] });
 		}
-		const decision = recordChapterView(log, 'U1', 999, T0 + 75 * MIN, { folderIds: [999] });
+		const decision = recordChapterView(log, 'U1', 999, T0 + 75 * MIN, { folderIds: ['1:999'] });
 		expect(decision.allowed).toBe(false);
 		// Fifty-five minutes until the first charged visit at +70 ages out —
 		// not thirty-five, which is when the free one at +50 does and frees nothing.

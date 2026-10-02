@@ -26,7 +26,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { refreshingRegionIds } from './refresh.js';
 import { latestWalkReports } from './checkout-store.js';
-import { loadContactMarks } from './contact-sync.js';
+import { loadContactMarks, marksFor, type ContactMarks } from './contact-sync.js';
 import { chunked } from './sql-chunk.js';
 import {
 	activeClaimFor,
@@ -197,11 +197,13 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// table holds one row per region and only in-flight ones are returned, so
 	// this is usually empty and never more than a handful — and an empty page
 	// skips it entirely, like the claim query above.
-	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<number>();
+	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<string>();
 	// What volunteers last reported walking, for this page's turf only.
 	const walkReports = judged?.walkReports ?? (await latestWalkReports(db, selectedIds));
-	// The uncontacted count's "as of"; one row, and skipped for an empty page.
-	const contactsThrough = selected.length > 0 ? (await loadContactMarks(db)).cursor : null;
+	// The uncontacted count's "as of" — per campaign, since each pulls its own
+	// ContactHistory. One small read, skipped for an empty page.
+	const contactMarks =
+		selected.length > 0 ? await loadContactMarks(db) : new Map<number, ContactMarks>();
 
 	return {
 		// toTurfView is the single gate on what reaches a viewer; see its header.
@@ -211,7 +213,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				...claimOptions,
 				refreshingRegions,
 				walkReports,
-				contactsThrough,
+				contactsThrough: marksFor(contactMarks, row.campaignId).cursor,
 			}),
 		),
 		total: claimableOnly ? candidates.length : rows.length,

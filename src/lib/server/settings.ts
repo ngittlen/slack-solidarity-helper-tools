@@ -974,11 +974,18 @@ export interface VanBlockedUserEntry {
 	lastEditedAt: string;
 }
 
-/** Chapter → VAN folder mapping, grouped by chapter and sorted by name so
- *  /settings renders stably. This is an INPUT to the catalog sync: a chapter
- *  absent here has no turf, and the sync is a no-op until an admin fills it in. */
-export async function loadVanChapterFolders(db: Database): Promise<VanChapterFolderEntry[]> {
-	const rows = await db.select().from(vanChapterFolders);
+/** One campaign's chapter → VAN folder mapping, grouped by chapter and sorted
+ *  by name so /settings renders stably. This is an INPUT to that campaign's
+ *  catalog sync: a chapter absent here has no turf from it, and the sync is a
+ *  no-op until an admin fills it in. */
+export async function loadVanChapterFolders(
+	db: Database,
+	campaignId: number,
+): Promise<VanChapterFolderEntry[]> {
+	const rows = await db
+		.select()
+		.from(vanChapterFolders)
+		.where(eq(vanChapterFolders.campaignId, campaignId));
 	const byChapter = new Map<number, VanChapterFolderEntry>();
 	for (const row of rows) {
 		const existing = byChapter.get(row.chapterId);
@@ -1029,16 +1036,32 @@ export async function loadVanBlockedUsers(db: Database): Promise<VanBlockedUserE
  */
 export async function saveVanChapterFolders(
 	db: Database,
-	entry: { chapterId: number; chapterName: string; folderIds: readonly number[] },
+	entry: {
+		campaignId: number;
+		chapterId: number;
+		chapterName: string;
+		folderIds: readonly number[];
+	},
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
-	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, entry.chapterId));
+	// Scoped to the campaign as well as the chapter: the same chapter can have
+	// folders in several campaigns, and saving one campaign's list must not
+	// delete the others.
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(
+				eq(vanChapterFolders.campaignId, entry.campaignId),
+				eq(vanChapterFolders.chapterId, entry.chapterId),
+			),
+		);
 
 	const unique = [...new Set(entry.folderIds)];
 	if (unique.length > 0) {
 		await db.insert(vanChapterFolders).values(
 			unique.map((folderId) => ({
+				campaignId: entry.campaignId,
 				chapterId: entry.chapterId,
 				folderId,
 				chapterName: entry.chapterName,
@@ -1066,13 +1089,22 @@ export async function saveVanChapterFolders(
 export async function saveVanFolderChapters(
 	db: Database,
 	entry: {
+		campaignId: number;
 		folderId: number;
 		chapters: ReadonlyArray<{ chapterId: number; chapterName: string }>;
 	},
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
-	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.folderId, entry.folderId));
+	// A folder id names a folder only within its campaign.
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(
+				eq(vanChapterFolders.campaignId, entry.campaignId),
+				eq(vanChapterFolders.folderId, entry.folderId),
+			),
+		);
 
 	// First spelling of a chapter id wins, so a duplicated pick cannot violate
 	// the (chapter_id, folder_id) primary key.
@@ -1080,6 +1112,7 @@ export async function saveVanFolderChapters(
 	if (unique.size > 0) {
 		await db.insert(vanChapterFolders).values(
 			[...unique].map(([chapterId, chapterName]) => ({
+				campaignId: entry.campaignId,
 				chapterId,
 				folderId: entry.folderId,
 				chapterName,
@@ -1096,10 +1129,15 @@ export async function saveVanFolderChapters(
 
 export async function deleteVanChapterFolders(
 	db: Database,
+	campaignId: number,
 	chapterId: number,
 	editor: Editor,
 ): Promise<void> {
-	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, chapterId));
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(eq(vanChapterFolders.campaignId, campaignId), eq(vanChapterFolders.chapterId, chapterId)),
+		);
 	console.log(
 		`[van] deleted van_chapter_folders chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
 	);

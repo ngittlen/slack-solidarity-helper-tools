@@ -66,6 +66,7 @@ function turfRow(over: Record<string, unknown> = {}) {
 		retiredAt: null,
 		lastRefreshedAt: '2026-08-22T06:00:00.000Z',
 		folderId: 2731,
+		campaignId: 1,
 		savedListId: 585052,
 		...over,
 	};
@@ -80,7 +81,9 @@ function stubQueries(turfRows: unknown[], claimRows: unknown[] = []) {
 	const results = [claimRows, turfRows, claimRows];
 	let call = 0;
 	mockSelect.mockImplementation(() => ({
-		from: () => ({ where: async () => results[call++] ?? [] }),
+		// Awaited without `.where()` — every campaign's contact-pull marks — it
+		// reads as empty and does not use up one of the scripted results.
+		from: () => Object.assign(Promise.resolve([]), { where: async () => results[call++] ?? [] }),
 	}));
 }
 
@@ -204,7 +207,9 @@ describe('/turfs load', () => {
 	// fails its own promise, so the filter is asserted at the query level.
 	it('filters by chapter on the SERVER, not in the browser', async () => {
 		const where = vi.fn(async () => [turfRow()]);
-		mockSelect.mockImplementation(() => ({ from: () => ({ where }) }));
+		mockSelect.mockImplementation(() => ({
+			from: () => Object.assign(Promise.resolve([]), { where }),
+		}));
 		await run(event(VOLUNTEER, 'chapter=71'));
 		// A load that returned every chapter and let the client filter would
 		// never call .where() on the turf query.
@@ -491,7 +496,9 @@ describe('/turfs load', () => {
 
 		it('widens the turf query only when the viewer holds something', async () => {
 			const where = vi.fn(async () => []);
-			mockSelect.mockImplementation(() => ({ from: () => ({ where }) }));
+			mockSelect.mockImplementation(() => ({
+				from: () => Object.assign(Promise.resolve([]), { where }),
+			}));
 			await run(event(VOLUNTEER, 'chapter=71'));
 			// Two calls: the viewer's claims, then the turf query. No third,
 			// because no rows came back to fetch claims for.

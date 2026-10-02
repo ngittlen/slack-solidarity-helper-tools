@@ -43,10 +43,10 @@ async function turf(
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, map_region_id, folder_id, chapter_id, name, door_count,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, name, door_count,
 		         printed_list_number, van_distributed_to, sheet_assigned_to,
 		         centroid_lat, centroid_lng, retired_at, van_assigned_at, first_seen_at, last_seen_at)
-		      VALUES (?, 1, 1, 71, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		      VALUES (?1, ?1, 1, 1, 71, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		args: [
 			id,
 			`Turf ${id}`,

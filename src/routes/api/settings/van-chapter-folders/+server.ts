@@ -1,6 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
+// Until /settings has a campaign picker (spec Phase 5), this editor maps the
+// primary campaign's folders. Every write is scoped to it, so another
+// campaign's mapping for the same chapter is left alone.
+import { PRIMARY_CAMPAIGN_ID } from '$lib/server/schema.js';
 import {
 	saveVanChapterFolders,
 	saveVanFolderChapters,
@@ -106,7 +110,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			entries.push({ chapterId: chapter.chapterId, chapterName: chapter.chapterName.trim() });
 		}
 
-		await saveVanFolderChapters(db, { folderId, chapters: entries }, editor);
+		await saveVanFolderChapters(
+			db,
+			{ campaignId: PRIMARY_CAMPAIGN_ID, folderId, chapters: entries },
+			editor,
+		);
 		return json({ ok: true });
 	}
 
@@ -115,7 +123,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	if (action === 'remove') {
-		await deleteVanChapterFolders(db, chapterId, editor);
+		await deleteVanChapterFolders(db, PRIMARY_CAMPAIGN_ID, chapterId, editor);
 		return json({ ok: true });
 	}
 
@@ -139,7 +147,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	await saveVanChapterFolders(
 		db,
-		{ chapterId, chapterName: chapterName.trim(), folderIds: folderIds as number[] },
+		{
+			campaignId: PRIMARY_CAMPAIGN_ID,
+			chapterId,
+			chapterName: chapterName.trim(),
+			folderIds: folderIds as number[],
+		},
 		editor,
 	);
 	return json({ ok: true });

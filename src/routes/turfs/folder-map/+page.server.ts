@@ -1,7 +1,9 @@
 import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
-import { vanClient } from '$lib/server/van-env.js';
+import { PRIMARY_CAMPAIGN_ID } from '$lib/server/schema.js';
+import { vanClientFor } from '$lib/server/van-env.js';
+import { PRIMARY_CAMPAIGN_KEY } from '$lib/server/van/campaign-credentials.js';
 import { loadVanChapterFolders } from '$lib/server/settings.js';
 import { getSolidarityChapters } from '$lib/server/autocomplete-sources.js';
 import {
@@ -79,7 +81,8 @@ let cacheAt = 0;
 let inFlight: Promise<Snapshot> | null = null;
 
 async function buildSnapshot(): Promise<Snapshot> {
-	const configured = vanClient();
+	// The primary campaign's folders, matching the mapping this page edits.
+	const configured = vanClientFor({ credentialKey: PRIMARY_CAMPAIGN_KEY });
 	if (!configured.ok) throw new Error(configured.error);
 	const client = configured.client;
 
@@ -192,7 +195,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// counties still answer the question the page is for, and the editor says
 	// why it is empty instead of offering an empty dropdown.
 	const [mappingResult, chapterResult, snapshotResult] = await Promise.allSettled([
-		loadVanChapterFolders(db),
+		// The primary campaign's: this page reads folders with its key.
+		loadVanChapterFolders(db, PRIMARY_CAMPAIGN_ID),
 		getSolidarityChapters(SOLIDARITY_API_TOKEN),
 		snapshot(url.searchParams.get('refresh') === '1'),
 	]);

@@ -14,6 +14,7 @@ async function turf(
 ): Promise<void> {
 	const row: Record<string, string | number | null> = {
 		turf_id: turfId,
+		van_map_route_id: turfId,
 		map_region_id: 1,
 		folder_id: 1,
 		chapter_id: 71,

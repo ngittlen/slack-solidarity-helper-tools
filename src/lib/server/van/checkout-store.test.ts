@@ -26,9 +26,9 @@ beforeEach(async () => {
 
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
 		         region_name, name, printed_list_number, door_count, first_seen_at, last_seen_at)
-		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 'L-100', 250, ?, ?)`,
+		      VALUES (100, 100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 'L-100', 250, ?, ?)`,
 		args: [NOW.toISOString(), NOW.toISOString()],
 	});
 });
@@ -170,9 +170,9 @@ describe('claimTurf — the per-volunteer cap', () => {
 		for (const id of routeIds) {
 			await client.execute({
 				sql: `INSERT INTO van_turfs
-				        (turf_id, map_region_id, folder_id, chapter_id, chapter_name,
+				        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
 				         region_name, name, printed_list_number, door_count, first_seen_at, last_seen_at)
-				      VALUES (?, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, 250, ?, ?)`,
+				      VALUES (?1, ?1, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, 250, ?, ?)`,
 				args: [id, `Turf ${id}`, `L-${id}`, NOW.toISOString(), NOW.toISOString()],
 			});
 		}
@@ -513,8 +513,8 @@ describe('latestWalkReports', () => {
 
 	async function countedThrough(at: string) {
 		await client.execute({
-			sql: `INSERT INTO van_contact_sync_state (id, counted_through) VALUES (1, ?)
-			      ON CONFLICT(id) DO UPDATE SET counted_through = excluded.counted_through`,
+			sql: `INSERT INTO van_contact_sync_state (campaign_id, counted_through) VALUES (1, ?)
+			      ON CONFLICT(campaign_id) DO UPDATE SET counted_through = excluded.counted_through`,
 			args: [at],
 		});
 	}

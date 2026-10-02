@@ -19,7 +19,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
-import { loadContactMarks } from './contact-sync.js';
+import { loadContactMarks, marksFor } from './contact-sync.js';
 import { sheetBlocksClaim, turfSnapshot } from '../../van/turf-view.js';
 import {
 	canClaim,
@@ -60,15 +60,19 @@ export async function latestWalkReports(
 ): Promise<Map<number, WalkReport>> {
 	const reports = new Map<number, WalkReport>();
 	if (turfIds.length === 0) return reports;
-	const { countedThrough } = await loadContactMarks(db);
+	// Per campaign: each pulls its own ContactHistory, so whether a completion
+	// is in the count depends on how far its OWN campaign has read.
+	const marks = await loadContactMarks(db);
 	for (const batch of chunked([...new Set(turfIds)])) {
 		const rows = await db
 			.select({
 				turfId: vanTurfCheckouts.turfId,
+				campaignId: vanTurfs.campaignId,
 				percent: vanTurfCheckouts.reportedPercent,
 				at: vanTurfCheckouts.completedAt,
 			})
 			.from(vanTurfCheckouts)
+			.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
 			.where(
 				and(
 					inArray(vanTurfCheckouts.turfId, batch),
@@ -82,6 +86,7 @@ export async function latestWalkReports(
 		for (const row of rows) {
 			// Newest first, so the first row per route is the one that counts.
 			if (!reports.has(row.turfId) && row.at !== null) {
+				const { countedThrough } = marksFor(marks, row.campaignId);
 				reports.set(row.turfId, {
 					percent: row.percent,
 					at: row.at,
@@ -364,12 +369,20 @@ export async function endClaim(
 	// helper never throws, so a completion that is already written cannot fail
 	// on its bookkeeping.
 	if (kind === 'complete') {
+		// Recorded for every campaign. Whether a campaign's wants are ever SENT
+		// is the sweep's call (van-sync), so a campaign that must not be re-cut
+		// only ever accumulates wants nobody acts on.
 		const [turf] = await db
-			.select({ folderId: vanTurfs.folderId, mapRegionId: vanTurfs.mapRegionId })
+			.select({
+				campaignId: vanTurfs.campaignId,
+				folderId: vanTurfs.folderId,
+				mapRegionId: vanTurfs.mapRegionId,
+			})
 			.from(vanTurfs)
 			.where(eq(vanTurfs.turfId, turfId));
 		if (turf) {
 			await requestRegionRefresh(db, {
+				campaignId: turf.campaignId,
 				folderId: turf.folderId,
 				mapRegionId: turf.mapRegionId,
 				now,

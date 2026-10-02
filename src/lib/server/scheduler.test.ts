@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
+import { migrate } from 'drizzle-orm/libsql/migrator';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
@@ -22,15 +23,10 @@ let client: ReturnType<typeof createClient>;
 
 beforeEach(async () => {
 	client = createClient({ url: ':memory:' });
-	await client.execute(`
-		CREATE TABLE sync_locks (
-			name text PRIMARY KEY NOT NULL,
-			token text NOT NULL,
-			acquired_at text NOT NULL,
-			expires_at text NOT NULL
-		);
-	`);
 	db = drizzle(client);
+	// The real schema: the locks, and the VAN job reads which campaigns are
+	// enabled (the migrations seed the primary one, enabled).
+	await migrate(db, { migrationsFolder: 'drizzle' });
 	vi.useFakeTimers({ toFake: ['Date'] });
 	vi.spyOn(console, 'log').mockImplementation(() => {});
 	vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -113,6 +109,69 @@ function recorder(answer: (path: string, n: number) => Record<string, unknown> =
 	};
 	return { calls, call };
 }
+
+describe('the van-sync job', () => {
+	const enable = (id: number, key: string, lastSyncAt: string | null) =>
+		client.batch([
+			{
+				sql: `INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+				      VALUES (?, ?, 1, 's', 's', 'x')`,
+				args: [id, key],
+			},
+			{
+				sql: 'INSERT INTO van_sync_state (campaign_id, last_sync_at) VALUES (?, ?)',
+				args: [id, lastSyncAt],
+			},
+		]);
+
+	it('calls the endpoint once per enabled campaign, stalest first', async () => {
+		await client.execute(
+			"INSERT INTO van_sync_state (campaign_id, last_sync_at) VALUES (1, '2026-09-25T10:00:00.000Z')",
+		);
+		await enable(2, 'other', '2026-09-25T09:00:00.000Z');
+		await enable(3, 'third', null);
+		const { calls, call } = recorder();
+		await job('van-sync').run(at('11:07'), call, db);
+		expect(calls.map((c) => c.params)).toEqual([
+			{ campaign: '3' },
+			{ campaign: '2' },
+			{ campaign: '1' },
+		]);
+	});
+
+	it('skips a disabled campaign', async () => {
+		await enable(2, 'other', null);
+		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 2');
+		const { calls, call } = recorder();
+		await job('van-sync').run(at('11:07'), call, db);
+		expect(calls.map((c) => c.params)).toEqual([{ campaign: '1' }]);
+	});
+
+	// The endpoint also expires claims and sends the six-hour warnings, which
+	// must keep happening with VAN switched off entirely.
+	it('still calls once, with no campaign, when none is enabled', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 0');
+		const { calls, call } = recorder();
+		await job('van-sync').run(at('11:07'), call, db);
+		expect(calls).toEqual([{ path: '/api/internal/van-sync', params: {} }]);
+	});
+
+	it('carries on past a campaign that fails, then reports it', async () => {
+		await enable(2, 'other', null);
+		const calls: string[] = [];
+		const call: Caller = async (_path, params) => {
+			calls.push(params.campaign!);
+			// Campaign 1 is called first (neither has synced, so id order) and
+			// fails; campaign 2 must still be synced.
+			if (params.campaign === '1') throw new Error('HTTP 500');
+			return {};
+		};
+		await expect(job('van-sync').run(at('11:07'), call, db)).rejects.toThrow(
+			'campaign 1: HTTP 500',
+		);
+		expect(calls).toEqual(['1', '2']);
+	});
+});
 
 describe('createScheduler', () => {
 	it('runs a slot once, however many ticks see it', async () => {
@@ -205,7 +264,7 @@ describe('createScheduler', () => {
 });
 
 describe('the Mobilize job', () => {
-	const run = (slot: string, call: Caller) => job('mobilize-sync').run(at(slot), call);
+	const run = (slot: string, call: Caller) => job('mobilize-sync').run(at(slot), call, db);
 
 	it('runs events quietly and then signups inside the 4.5-hour window', async () => {
 		const { calls, call } = recorder();

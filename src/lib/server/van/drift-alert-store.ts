@@ -15,7 +15,7 @@
 // Never throws. The sync's rows are already written by the time this runs, and a
 // Slack outage must not turn a good sync into a failed workflow run.
 
-import { inArray, isNotNull } from 'drizzle-orm';
+import { and, inArray, isNotNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
@@ -28,7 +28,12 @@ import {
 	staleDriftStamps,
 	type AlertableDrift,
 } from '../../van/drift-alert.js';
-import { loadDriftClaims, loadDriftTurfs, loadDriftVisibility } from './drift-store.js';
+import {
+	exportsVisibleFilter,
+	loadDriftClaims,
+	loadDriftTurfs,
+	loadDriftVisibility,
+} from './drift-store.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -80,7 +85,10 @@ async function loadStamps(db: Db): Promise<Stamps> {
 	const rows = await db
 		.select({ turfId: vanTurfs.turfId, kind: vanTurfs.driftAlertedKind })
 		.from(vanTurfs)
-		.where(isNotNull(vanTurfs.driftAlertedKind));
+		// Only the campaigns the report can see. A stamp on another campaign's
+		// turf is absent from the report because we could not look, not because
+		// the drift ended, so it must not be swept as stale.
+		.where(and(isNotNull(vanTurfs.driftAlertedKind), exportsVisibleFilter()));
 	const kinds = new Map<number, DriftKind>();
 	for (const row of rows) {
 		if (isDriftKind(row.kind)) kinds.set(row.turfId, row.kind);

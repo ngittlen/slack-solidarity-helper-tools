@@ -1,18 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { drizzle } from 'drizzle-orm/libsql';
 
-const { mockHasher, mockWithSyncLock, mockRunContactSync, mockClear, mockNudgeTracker } =
-	vi.hoisted(() => ({
-		mockHasher: vi.fn(),
-		mockWithSyncLock: vi.fn(),
-		mockRunContactSync: vi.fn(),
-		mockClear: vi.fn(),
-		mockNudgeTracker: vi.fn(),
-	}));
+const {
+	mockHasher,
+	mockWithSyncLock,
+	mockRunContactSync,
+	mockClear,
+	mockNudgeTracker,
+	mockClientFor,
+} = vi.hoisted(() => ({
+	mockHasher: vi.fn(),
+	mockWithSyncLock: vi.fn(),
+	mockRunContactSync: vi.fn(),
+	mockClear: vi.fn(),
+	mockNudgeTracker: vi.fn(),
+	mockClientFor: vi.fn(),
+}));
 
 vi.mock('../van-env.js', () => ({
 	vanPersonHasher: mockHasher,
-	vanClient: () => ({ ok: true, client: {} }),
+	vanClientFor: mockClientFor,
 }));
 vi.mock('../sync-lock.js', () => ({ withSyncLock: mockWithSyncLock }));
 vi.mock('./contact-sync.js', () => ({
@@ -23,7 +30,13 @@ vi.mock('./packet-tracker-live.js', () => ({ nudgePacketTracker: mockNudgeTracke
 
 import { nudgeWithRetry, runContactStage } from './contact-live.js';
 
-const db = {} as ReturnType<typeof drizzle>;
+/** The turf's campaign, as the nudge looks it up: turf 42 is campaign 2's. */
+const CAMPAIGN = { id: 2, credentialKey: 'other' };
+const db = {
+	select: () => ({
+		from: () => ({ innerJoin: () => ({ where: async () => [CAMPAIGN] }) }),
+	}),
+} as unknown as ReturnType<typeof drizzle>;
 const RESULT = { percentsStamped: 1, error: null };
 const noSleep = async () => {};
 
@@ -39,6 +52,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mockHasher.mockReturnValue({});
 	mockRunContactSync.mockResolvedValue(RESULT);
+	mockClientFor.mockReturnValue({ ok: true, client: {} });
 });
 
 describe('nudgeWithRetry', () => {
@@ -52,10 +66,18 @@ describe('nudgeWithRetry', () => {
 
 		expect(mockWithSyncLock).toHaveBeenCalledTimes(3);
 		expect(sleep).toHaveBeenCalledTimes(2);
+		// The turf's own campaign: its key, its lock, its ContactHistory.
+		expect(mockClientFor).toHaveBeenCalledWith(CAMPAIGN);
+		expect(mockWithSyncLock).toHaveBeenCalledWith(
+			db,
+			'van-contact-sync:2',
+			expect.any(Number),
+			expect.any(Function),
+		);
 		expect(mockRunContactSync).toHaveBeenCalledWith(
 			db,
 			{},
-			expect.objectContaining({ recomputeTurfIds: [42] }),
+			expect.objectContaining({ campaignId: 2, recomputeTurfIds: [42] }),
 		);
 		expect(mockNudgeTracker).toHaveBeenCalledWith(db, 42);
 	});
@@ -92,10 +114,16 @@ describe('nudgeWithRetry', () => {
 });
 
 describe('runContactStage', () => {
+	it("is off for a campaign without a usable key, without touching another's", async () => {
+		mockClientFor.mockReturnValue({ ok: false, error: 'VAN_CAMPAIGN_OTHER is not set' });
+		expect(await runContactStage(db, CAMPAIGN, { timeBudgetMs: 1000 })).toBeNull();
+		expect(mockWithSyncLock).not.toHaveBeenCalled();
+	});
+
 	// The scheduled sync does not wait: it runs every half hour anyway.
 	it('returns null at once when the lock is held', async () => {
 		lockBusyFor(1);
-		expect(await runContactStage(db, { timeBudgetMs: 1000 })).toBeNull();
+		expect(await runContactStage(db, CAMPAIGN, { timeBudgetMs: 1000 })).toBeNull();
 		expect(mockWithSyncLock).toHaveBeenCalledTimes(1);
 	});
 });

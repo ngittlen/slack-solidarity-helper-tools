@@ -9,9 +9,7 @@
 //
 // There can be several VAN campaigns, each a van_campaigns row whose
 // credentials are its `VAN_CAMPAIGN_<KEY>` secret. `vanClientFor`
-// is the per-campaign seam. `vanClient()` and friends below it are the
-// single-campaign API the sync still calls, kept as bridges
-// to the `primary` campaign until the sync runs per campaign.
+// is the per-campaign seam: every caller names the campaign it is working for.
 //
 // Note there is no VAN_TURF_FOLDER_IDS. Folder ids come from the
 // van_chapter_folders table, edited in /settings — turf has to be attributed
@@ -32,7 +30,11 @@ import { createPersonHasher, type PersonHasher } from './van/person-hash.js';
 
 type Db = ReturnType<typeof drizzle>;
 
-export type VanClientResult = { ok: true; client: VanClient } | { ok: false; error: string };
+/** `missing` is true when the campaign has no secret at all, as opposed to one
+ *  that is malformed. An install that never set VAN up is the former, and the
+ *  sync stays quiet about it rather than alerting on every run. */
+export type VanClientResult =
+	{ ok: true; client: VanClient } | { ok: false; error: string; missing?: boolean };
 
 /** A campaign's VAN client, or why there isn't one.
  *
@@ -50,6 +52,7 @@ export function vanClientFor(campaign: Pick<VanCampaignRow, 'credentialKey'>): V
 		if (error) return { ok: false, error };
 		return {
 			ok: false,
+			missing: true,
 			error:
 				key === PRIMARY_CAMPAIGN_KEY
 					? `${campaignSecretName(key)} (or VAN_APP_NAME/VAN_API_KEY) is not set`
@@ -77,7 +80,7 @@ export function vanExportJobTypeIdFor(
 	if (campaign.exportJobTypeId !== null && campaign.exportJobTypeId > 0) {
 		return campaign.exportJobTypeId;
 	}
-	return campaign.credentialKey === PRIMARY_CAMPAIGN_KEY ? vanExportJobTypeId() : null;
+	return campaign.credentialKey === PRIMARY_CAMPAIGN_KEY ? legacyExportJobTypeId() : null;
 }
 
 /**
@@ -140,28 +143,9 @@ export async function enabledVanCampaigns(
 	return rows.map((campaign) => ({ campaign, client: vanClientFor(campaign) }));
 }
 
-// ---------------------------------------------------------------------------
-// Single-campaign API. The sync, the export webhook, the contact pull and the
-// folder map still call these, and they mean the `primary` campaign. They go
-// once each of those runs per campaign (spec Phase 3).
-// ---------------------------------------------------------------------------
-
-/** The `primary` campaign's VAN client, or why there isn't one. */
-export function vanClient(): VanClientResult {
-	return vanClientFor({ credentialKey: PRIMARY_CAMPAIGN_KEY });
-}
-
-/** True when the `primary` campaign is fully configured. Callers that must
- *  stay silent when the integration simply isn't set up (the turf page, the
- *  dashboard) use this rather than surfacing the error text. */
-export function isVanConfigured(): boolean {
-	return vanClient().ok;
-}
-
-/** The export job type id for the coordinates-only geometry export, or null
- *  when unset. Separate from vanClient() because the catalog sync works
- *  without it — only hull geometry is blocked. */
-export function vanExportJobTypeId(): number | null {
+/** The legacy VAN_EXPORT_JOB_TYPE_ID, which the primary campaign falls back
+ *  to (vanExportJobTypeIdFor). Null when unset or unparseable. */
+function legacyExportJobTypeId(): number | null {
 	return Number.isFinite(VAN_EXPORT_JOB_TYPE_ID) && VAN_EXPORT_JOB_TYPE_ID > 0
 		? VAN_EXPORT_JOB_TYPE_ID
 		: null;

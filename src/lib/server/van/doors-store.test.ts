@@ -31,9 +31,9 @@ beforeEach(async () => {
 async function turf(over: { turfId?: number; chapterId?: number; chapterName?: string } = {}) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, door_count, first_seen_at, last_seen_at)
-		      VALUES (?, 1, 1, ?, ?, 'Region', 'Turf', 100, 'x', 'x')`,
+		      VALUES (?1, ?1, 1, 1, ?, ?, 'Region', 'Turf', 100, 'x', 'x')`,
 		args: [over.turfId ?? 100, over.chapterId ?? 71, over.chapterName ?? 'Washtenaw County'],
 	});
 }

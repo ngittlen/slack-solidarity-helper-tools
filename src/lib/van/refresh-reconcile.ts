@@ -75,12 +75,21 @@ export interface RecutClaim {
 	slackUserId: string;
 	slackUserName: string;
 	releasedAt: string;
-	turf: { mapRegionId: number; chapterId: number; name: string; regionName: string };
+	turf: {
+		/** Region ids are VAN's and unique only within one campaign, so a
+		 *  replacement must come from the same campaign as well as region. */
+		campaignId: number;
+		mapRegionId: number;
+		chapterId: number;
+		name: string;
+		regionName: string;
+	};
 }
 
 /** A route that could be the replacement for a re-cut one. */
 export interface ReplacementTurf {
 	turfId: number;
+	campaignId: number;
 	mapRegionId: number;
 	name: string;
 	printedListNumber: string | null;
@@ -271,6 +280,7 @@ export function findReplacement(
 	const key = turfNameKey(claim.turf.name);
 	const matches = replacements.filter(
 		(r) =>
+			r.campaignId === claim.turf.campaignId &&
 			r.mapRegionId === claim.turf.mapRegionId &&
 			r.retiredAt === null &&
 			!r.claimed &&

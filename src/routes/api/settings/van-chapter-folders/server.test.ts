@@ -57,7 +57,8 @@ describe('POST /api/settings/van-chapter-folders', () => {
 		expect(res.status).toBe(200);
 		expect(mockSave).toHaveBeenCalledWith(
 			{},
-			{ chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 1200] },
+			// The primary campaign's, until the editor can pick one.
+			{ campaignId: 1, chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 1200] },
 			{ id: 'U_ADMIN', name: 'Alice' },
 		);
 	});
@@ -72,7 +73,7 @@ describe('POST /api/settings/van-chapter-folders', () => {
 	it('removes a chapter mapping', async () => {
 		const res = await POST(makeEvent(authed, { action: 'remove', chapterId: 71 }) as never);
 		expect(res.status).toBe(200);
-		expect(mockDelete).toHaveBeenCalledWith({}, 71, { id: 'U_ADMIN', name: 'Alice' });
+		expect(mockDelete).toHaveBeenCalledWith({}, 1, 71, { id: 'U_ADMIN', name: 'Alice' });
 	});
 
 	it('rejects non-integer and non-positive ids', async () => {
@@ -130,7 +131,11 @@ describe('POST /api/settings/van-chapter-folders', () => {
 			expect(res.status).toBe(200);
 			expect(mockSaveFolder).toHaveBeenCalledWith(
 				{},
-				{ folderId: 68299, chapters: [{ chapterId: 71, chapterName: 'Oakland County' }] },
+				{
+					campaignId: 1,
+					folderId: 68299,
+					chapters: [{ chapterId: 71, chapterName: 'Oakland County' }],
+				},
 				{ id: 'U_ADMIN', name: 'Alice' },
 			);
 			// Never the chapter-first writer: that one would wipe the chapter's
@@ -143,7 +148,7 @@ describe('POST /api/settings/van-chapter-folders', () => {
 			expect(res.status).toBe(200);
 			expect(mockSaveFolder).toHaveBeenCalledWith(
 				{},
-				{ folderId: 68299, chapters: [] },
+				{ campaignId: 1, folderId: 68299, chapters: [] },
 				{ id: 'U_ADMIN', name: 'Alice' },
 			);
 		});

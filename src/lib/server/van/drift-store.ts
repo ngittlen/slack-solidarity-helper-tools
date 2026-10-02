@@ -9,7 +9,7 @@
 // turf that somebody has: half the drift is turf VAN says is out and our ledger
 // says is free, and that row has no checkout to find it by.
 
-import { and, eq, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanSyncState, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import type { DriftClaim, DriftTurfRow, DriftVisibility } from '../../van/turf-drift.js';
@@ -26,6 +26,23 @@ function chapterFilter(chapterId: number | null): SQL | undefined {
 	// The chapter's FOLDERS, not the label on the row: a folder mapped to
 	// several chapters is visible to all of them (chapter-visibility.ts).
 	return visibleToChapter(chapterId);
+}
+
+/**
+ * Turf whose campaign's last catalog sync could read its MiniVAN exports.
+ *
+ * Drift is judged campaign by campaign: each reads its own committee's exports
+ * with its own key, so one campaign whose key lacks /minivanExports (or is
+ * still backfilling) must not make another campaign's turf look undistributed —
+ * nor be reported itself, since for it "not in MiniVAN" means "we could not
+ * ask". Its turf is left out of the comparison entirely, stamps included, so a
+ * drift already announced for it is neither repeated nor cleared.
+ */
+export function exportsVisibleFilter(): SQL {
+	return sql`${vanTurfs.campaignId} in (
+		select ${vanSyncState.campaignId} from ${vanSyncState}
+		where ${vanSyncState.minivanExportsOk} = 1
+	)`;
 }
 
 /** Every turf in scope, claimed or not. Retired rows come back and the pure
@@ -45,7 +62,7 @@ export async function loadDriftTurfs(db: Db, query: DriftQuery): Promise<DriftTu
 			retiredAt: vanTurfs.retiredAt,
 		})
 		.from(vanTurfs)
-		.where(chapterFilter(query.chapterId));
+		.where(and(chapterFilter(query.chapterId), exportsVisibleFilter()));
 }
 
 /**
@@ -74,12 +91,14 @@ export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<DriftC
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
 				chapterFilter(query.chapterId),
+				exportsVisibleFilter(),
 			),
 		);
 }
 
 /**
- * Whether the last catalog sync could read `/minivanExports`.
+ * Whether any campaign's last catalog sync could read `/minivanExports`. The
+ * turf and claims above already leave out the campaigns that could not.
  *
  * Without this the report cannot tell "VAN reports nothing distributed" from
  * "we never got to ask", because the sync writes NULL into
@@ -94,7 +113,7 @@ export async function loadDriftVisibility(db: Db): Promise<DriftVisibility> {
 	const [row] = await db
 		.select({ minivanExportsOk: vanSyncState.minivanExportsOk })
 		.from(vanSyncState)
-		.where(eq(vanSyncState.id, 1))
+		.where(eq(vanSyncState.minivanExportsOk, true))
 		.limit(1);
 	return row?.minivanExportsOk === true ? 'visible' : 'van-side-unavailable';
 }

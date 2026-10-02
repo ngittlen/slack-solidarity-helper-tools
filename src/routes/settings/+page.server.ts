@@ -3,6 +3,7 @@ import type { PageServerLoad } from './$types';
 
 import { errMessage } from '$lib/err-message.js';
 import { db } from '$lib/server/db.js';
+import { PRIMARY_CAMPAIGN_ID } from '$lib/server/schema.js';
 import { sheetsServiceAccountEmail } from '$lib/server/google-env.js';
 import type { SheetTarget } from '$lib/van/sheet-routing.js';
 import { slack } from '$lib/server/slack.js';
@@ -200,7 +201,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// also what the site is rendering.
 	const [vanChapterFoldersResult, vanBlockedUsersResult, vanSheetTargetsResult, themeTokensResult] =
 		await Promise.allSettled([
-			loadVanChapterFolders(db),
+			// The primary campaign's until the editor can pick one (spec Phase 5).
+			loadVanChapterFolders(db, PRIMARY_CAMPAIGN_ID),
 			loadVanBlockedUsers(db),
 			loadVanSheetTargets(db),
 			loadThemeTokensJson(db),

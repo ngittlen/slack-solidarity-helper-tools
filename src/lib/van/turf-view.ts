@@ -35,6 +35,9 @@ import { campaignDayLabel } from '../campaign-time.js';
  *  can grow without widening what the browser can be shown. */
 export interface TurfRowInput {
 	turfId: number;
+	/** Which campaign the turf was read from. Region ids are VAN's, so a
+	 *  region is only identified by the pair (see regionRefreshKey). */
+	campaignId: number;
 	mapRegionId: number;
 	chapterId: number;
 	name: string;
@@ -259,14 +262,22 @@ export interface WalkReportInput {
  *  viewer: which regions VAN is currently re-cutting, and what volunteers last
  *  reported walking. */
 export type TurfViewOptions = ClaimOptions & {
-	/** Map region ids with a refresh in flight. See `TurfView.updating`. */
-	refreshingRegions?: ReadonlySet<number>;
+	/** Regions with a refresh in flight, as `regionRefreshKey`s. See
+	 *  `TurfView.updating`. */
+	refreshingRegions?: ReadonlySet<string>;
 	/** Latest walk report per route id. See `TurfView.walkReport`. */
 	walkReports?: ReadonlyMap<number, WalkReportInput>;
 	/** How far ContactHistory has been read: the "as of" for any turf showing
 	 *  its uncontacted count. Null or omitted when the pull has never run. */
 	contactsThrough?: string | null;
 };
+
+/** A map region's identity across campaigns. VAN region ids are unique only
+ *  within one committee, so a refresh in flight in one campaign's region 10
+ *  must not mark another campaign's region 10 as updating. */
+export function regionRefreshKey(campaignId: number, mapRegionId: number): string {
+	return `${campaignId}:${mapRegionId}`;
+}
 
 /** A turf that can actually be drawn. */
 export type MappableTurf = TurfView & { centre: LatLng; bounds: BoundingBox };
@@ -418,7 +429,9 @@ export function toTurfView(
 		...(decision.ok || visible.status !== 'available'
 			? {}
 			: { claimBlockedReason: decision.message }),
-		...(options.refreshingRegions?.has(row.mapRegionId) ? { updating: true as const } : {}),
+		...(options.refreshingRegions?.has(regionRefreshKey(row.campaignId, row.mapRegionId))
+			? { updating: true as const }
+			: {}),
 		...(visible.status === 'available' && !decision.ok && decision.reason === 'no-list-number'
 			? { noListNumber: true as const }
 			: {}),

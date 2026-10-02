@@ -1,17 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
-import { VAN_SYNC_LOCK } from '$lib/server/van/locks.js';
+import { vanSyncLock } from '$lib/server/van/locks.js';
 import { signWebhookToken } from '$lib/server/van/webhook-token.js';
 
 const mockRunGeometryQueue = vi.hoisted(() => vi.fn());
 const mockVanClient = vi.hoisted(() => vi.fn());
 const mockExportJobTypeId = vi.hoisted(() => vi.fn());
+/** The turf's campaign as the route looks it up; empty for an unknown turf. */
+const mockTurfCampaign = vi.hoisted(() => vi.fn());
 const mockAlertFor = vi.hoisted(() => vi.fn(() => async () => undefined));
 const mockAcquire = vi.hoisted(() => vi.fn());
 const mockRelease = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
 
-vi.mock('$lib/server/db.js', () => ({ db: {} }));
+vi.mock('$lib/server/db.js', () => ({
+	db: {
+		select: () => ({
+			from: () => ({ innerJoin: () => ({ where: async () => mockTurfCampaign() }) }),
+		}),
+	},
+}));
 vi.mock('$lib/server/slack.js', () => ({ alertFor: mockAlertFor }));
 vi.mock('$lib/server/settings.js', () => ({
 	loadSettings: async () => ({ slackTrackingChannelId: 'C_TRACK' }),
@@ -21,8 +29,8 @@ vi.mock('$lib/server/sync-lock.js', () => ({
 	releaseSyncLock: mockRelease,
 }));
 vi.mock('$lib/server/van-env.js', () => ({
-	vanClient: mockVanClient,
-	vanExportJobTypeId: mockExportJobTypeId,
+	vanClientFor: mockVanClient,
+	vanExportJobTypeIdFor: mockExportJobTypeId,
 	vanPersonHasher: () => null,
 }));
 vi.mock('$lib/server/van/geometry-worker.js', () => ({
@@ -62,6 +70,9 @@ function event(query = `turf=100&token=${signWebhookToken('cron-secret', 100)}`)
 	} as never;
 }
 
+/** Turf 100 belongs to campaign 2: the job was submitted with its key. */
+const CAMPAIGN = { id: 2, credentialKey: 'other', exportJobTypeId: 5 };
+
 describe('POST /api/internal/van-export-callback', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -73,6 +84,7 @@ describe('POST /api/internal/van-export-callback', () => {
 		mockExportJobTypeId.mockReturnValue(5);
 		mockAcquire.mockResolvedValue('lock-token');
 		mockRunGeometryQueue.mockResolvedValue(geometryResult);
+		mockTurfCampaign.mockResolvedValue([{ campaign: CAMPAIGN }]);
 	});
 
 	it('drains the queue for a correctly signed turf', async () => {
@@ -115,10 +127,26 @@ describe('POST /api/internal/van-export-callback', () => {
 	// Both this route and the catalog sync drain van_geometry_queue, and the
 	// queue has no per-row claim. Under separate lock names they would submit
 	// duplicate export jobs for the same turf.
-	it('takes the same lock the catalog sync takes', async () => {
+	it("takes the same lock the turf's campaign's catalog sync takes", async () => {
 		await POST(event());
-		expect(mockAcquire.mock.calls[0]![1]).toBe(VAN_SYNC_LOCK);
-		expect(mockRelease.mock.calls[0]![1]).toBe(VAN_SYNC_LOCK);
+		expect(mockAcquire.mock.calls[0]![1]).toBe(vanSyncLock(2));
+		expect(mockRelease.mock.calls[0]![1]).toBe(vanSyncLock(2));
+	});
+
+	// Only the key that submitted an export job can read it back.
+	it("drains with the turf's campaign's key, and only that campaign's queue", async () => {
+		await POST(event());
+		expect(mockVanClient).toHaveBeenCalledWith(CAMPAIGN);
+		expect(mockExportJobTypeId).toHaveBeenCalledWith(CAMPAIGN);
+		expect(mockRunGeometryQueue.mock.calls[0]![2]).toMatchObject({ campaignId: 2 });
+	});
+
+	it('answers 200 and does nothing for a turf that no longer exists', async () => {
+		mockTurfCampaign.mockResolvedValue([]);
+		const res = await POST(event());
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ skipped: 'unknown turf' });
+		expect(mockRunGeometryQueue).not.toHaveBeenCalled();
 	});
 
 	it('skips without running when a sync already holds the lock', async () => {

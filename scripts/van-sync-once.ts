@@ -14,8 +14,12 @@
  * the blast radius — above all the retirements, which release live checkouts —
  * before committing to it.
  *
+ * One campaign per run: `--campaign <key>` (default `primary`) picks whose key
+ * reads VAN and whose turf is written — see scripts/campaign-arg.ts.
+ *
  * Required env vars:
- *   VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE,
+ *   VAN_CAMPAIGN_<KEY>, or for `primary` the legacy VAN_APP_NAME, VAN_API_KEY,
+ *   VAN_DATABASE_MODE;
  *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN (unless the URL starts with file:)
  *
  * Optional:
@@ -27,35 +31,24 @@
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
-import { createVanClient, type VanDatabaseMode } from '../src/lib/server/van/client.js';
+import { eq } from 'drizzle-orm';
+import { createVanClient } from '../src/lib/server/van/client.js';
 import { runCatalogSync } from '../src/lib/server/van/sync.js';
 import { vanChapterFolders, vanTurfs } from '../src/lib/server/schema.js';
+import { campaignCredential, campaignKeyArg, campaignRow } from './campaign-arg.js';
 
 const DRY_RUN = process.argv.slice(2).includes('--dry-run');
 
-const appName = process.env.VAN_APP_NAME ?? '';
-const apiKey = process.env.VAN_API_KEY ?? '';
-const rawMode = (process.env.VAN_DATABASE_MODE ?? '').trim();
+const CAMPAIGN_KEY = campaignKeyArg();
+const credential = campaignCredential(CAMPAIGN_KEY);
 // Must match the route: queue roster exports only when something can build them.
 const ROSTER = (process.env.VAN_ID_HASH_SECRET ?? '') !== '';
 
-if (!appName || !apiKey) {
-	console.error('Missing required env vars: VAN_APP_NAME, VAN_API_KEY');
-	process.exit(1);
-}
-if (rawMode !== '0' && rawMode !== '1') {
-	console.error(
-		`VAN_DATABASE_MODE must be 0 (My Voters) or 1 (My Campaign), got "${rawMode}".\n` +
-			'Run `npm run van:check -- --both` to find out which one holds your turf.',
-	);
-	process.exit(1);
-}
-
 const db = drizzle(createClient(dbConfig));
 const client = createVanClient({
-	appName,
-	apiKey,
-	databaseMode: Number(rawMode) as VanDatabaseMode,
+	appName: credential.appName,
+	apiKey: credential.apiKey,
+	databaseMode: credential.databaseMode,
 });
 
 async function main(): Promise<void> {
@@ -63,14 +56,19 @@ async function main(): Promise<void> {
 	// but WHICH database is about to be written is the one thing an operator
 	// must not have to guess before a write.
 	console.log(`\nTarget database: ${dbConfig.url}`);
-	console.log(`VAN app: ${appName}, mode ${rawMode}`);
+	const campaign = await campaignRow(db, CAMPAIGN_KEY);
+	console.log(`Campaign: ${campaign.label ?? CAMPAIGN_KEY} (id ${campaign.id})`);
+	console.log(`VAN app: ${credential.appName}, mode ${credential.databaseMode}`);
 	console.log(ROSTER ? 'Rosters: on' : 'Rosters: off (VAN_ID_HASH_SECRET unset)');
 	console.log(DRY_RUN ? 'Mode: DRY RUN — nothing will be written\n' : 'Mode: WRITING\n');
 
 	// Read the chapter → folder mapping straight from the table rather than
 	// through settings.ts, which imports ./env.js and with it $env/dynamic/private
 	// — that module only exists inside the Vite bundle, never under tsx.
-	const mappingRows = await db.select().from(vanChapterFolders);
+	const mappingRows = await db
+		.select()
+		.from(vanChapterFolders)
+		.where(eq(vanChapterFolders.campaignId, campaign.id));
 	const byChapter = new Map<
 		number,
 		{ chapterId: number; chapterName: string; folderIds: number[] }
@@ -94,7 +92,10 @@ async function main(): Promise<void> {
 		}\n`,
 	);
 
-	const result = await runCatalogSync(db, client, mappings, { dryRun: DRY_RUN, roster: ROSTER });
+	const result = await runCatalogSync(db, client, campaign.id, mappings, {
+		dryRun: DRY_RUN,
+		roster: ROSTER,
+	});
 
 	console.log('Result');
 	console.log(`  folders synced      ${result.foldersSynced}`);
@@ -134,8 +135,8 @@ async function main(): Promise<void> {
 	if (!DRY_RUN) {
 		// Read back rather than trusting the return value — the point of a
 		// verification run is to prove the rows are in the database.
-		const stored = await db.select().from(vanTurfs);
-		console.log(`\nvan_turfs now holds ${stored.length} row(s).`);
+		const stored = await db.select().from(vanTurfs).where(eq(vanTurfs.campaignId, campaign.id));
+		console.log(`\nvan_turfs now holds ${stored.length} row(s) for this campaign.`);
 	} else {
 		console.log('\nNothing was written. Re-run without --dry-run to apply.');
 	}

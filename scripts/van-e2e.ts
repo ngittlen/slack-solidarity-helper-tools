@@ -40,6 +40,7 @@ import {
 } from '../src/lib/server/van/client.js';
 import { extractHull, responseChunks } from '../src/lib/server/van/hull-extract.js';
 import { runCatalogSync } from '../src/lib/server/van/sync.js';
+import { PRIMARY_CAMPAIGN_ID } from '../src/lib/server/schema.js';
 import type { VanExportJob, VanMapRegion } from '../src/lib/server/van/types.js';
 
 const SKIP_EXPORT = process.argv.slice(2).includes('--no-export');
@@ -213,6 +214,9 @@ async function main(): Promise<void> {
 				runCatalogSync(
 					db,
 					client,
+					// The legacy VAN_* key is the primary campaign's, so the dry
+					// run plans against that campaign's stored turf.
+					PRIMARY_CAMPAIGN_ID,
 					[{ chapterId: -1, chapterName: 'e2e dry run', folderIds: turfFolderIds }],
 					{ dryRun: true },
 				),

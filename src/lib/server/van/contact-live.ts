@@ -1,18 +1,26 @@
 // Where the uncontacted-door count meets configuration: the VAN client, the
 // hash secret and the lock. contact-sync.ts takes all of them injected so it
 // can be tested against an in-memory database; this resolves them for the two
-// callers — the scheduled sync (every turf) and the nudge after a volunteer
-// marks turf walked (that turf).
+// callers — the scheduled sync (every turf in one campaign) and the nudge
+// after a volunteer marks turf walked (that turf).
+//
+// Per campaign: each pulls its own ContactHistory with its own key, under its
+// own lock, so one campaign's first backfill cannot freeze another's counts.
 
+import { eq } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
+import { vanCampaigns, vanTurfs, type VanCampaignRow } from '../schema.js';
 import { withSyncLock } from '../sync-lock.js';
-import { vanClient, vanPersonHasher } from '../van-env.js';
+import { vanClientFor, vanPersonHasher } from '../van-env.js';
 import { clearUncontacted, runContactSync, type ContactSyncResult } from './contact-sync.js';
-import { VAN_CONTACT_LOCK } from './locks.js';
+import { vanContactLock } from './locks.js';
 import { nudgePacketTracker } from './packet-tracker-live.js';
 
 type Db = ReturnType<typeof drizzle>;
+
+/** What the stage needs to know about a campaign. */
+export type ContactCampaign = Pick<VanCampaignRow, 'id' | 'credentialKey'>;
 
 const LOG = '[van]';
 /** Past any run's own budget, so a crashed holder frees it within a cadence. */
@@ -29,6 +37,7 @@ type StageOutcome = { kind: 'off' } | { kind: 'busy' } | { kind: 'ran'; result: 
 
 async function attemptContactStage(
 	db: Db,
+	campaign: ContactCampaign,
 	options: { timeBudgetMs: number; turfIds?: readonly number[] },
 ): Promise<StageOutcome> {
 	const hasher = vanPersonHasher();
@@ -38,10 +47,11 @@ async function attemptContactStage(
 		await clearUncontacted(db);
 		return { kind: 'off' };
 	}
-	const configured = vanClient();
+	const configured = vanClientFor(campaign);
 	if (!configured.ok) return { kind: 'off' };
-	const run = await withSyncLock(db, VAN_CONTACT_LOCK, LOCK_TTL_MS, () =>
+	const run = await withSyncLock(db, vanContactLock(campaign.id), LOCK_TTL_MS, () =>
 		runContactSync(db, configured.client, {
+			campaignId: campaign.id,
 			hasher,
 			timeBudgetMs: options.timeBudgetMs,
 			recomputeTurfIds: options.turfIds,
@@ -51,16 +61,27 @@ async function attemptContactStage(
 }
 
 /**
- * Pull new contacts and recompute. Null — rather than zeros — when the count is
- * not configured or another run holds the lock, so "off" stays distinguishable
- * from "ran and found nothing".
+ * Pull one campaign's new contacts and recompute its turf. Null — rather than
+ * zeros — when the count is not configured or another run holds the lock, so
+ * "off" stays distinguishable from "ran and found nothing".
  */
 export async function runContactStage(
 	db: Db,
+	campaign: ContactCampaign,
 	options: { timeBudgetMs: number; turfIds?: readonly number[] },
 ): Promise<ContactSyncResult | null> {
-	const outcome = await attemptContactStage(db, options);
+	const outcome = await attemptContactStage(db, campaign, options);
 	return outcome.kind === 'ran' ? outcome.result : null;
+}
+
+/** The campaign a turf belongs to, or null for a turf that is gone. */
+async function campaignOfTurf(db: Db, turfId: number): Promise<ContactCampaign | null> {
+	const [row] = await db
+		.select({ id: vanCampaigns.id, credentialKey: vanCampaigns.credentialKey })
+		.from(vanTurfs)
+		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
+		.where(eq(vanTurfs.turfId, turfId));
+	return row ?? null;
 }
 
 /**
@@ -77,9 +98,13 @@ export async function nudgeWithRetry(
 	const waitMs = timing.waitMs ?? NUDGE_WAIT_MS;
 	const retryMs = timing.retryMs ?? NUDGE_RETRY_MS;
 	const sleep = timing.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+	// The turf's own campaign: its ContactHistory is the only one that can
+	// hold this volunteer's doors.
+	const campaign = await campaignOfTurf(db, turfId);
+	if (!campaign) return;
 	let waited = 0;
 	for (;;) {
-		const outcome = await attemptContactStage(db, {
+		const outcome = await attemptContactStage(db, campaign, {
 			timeBudgetMs: NUDGE_BUDGET_MS,
 			turfIds: [turfId],
 		});

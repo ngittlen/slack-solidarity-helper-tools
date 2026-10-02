@@ -21,6 +21,7 @@
 import http from 'node:http';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { acquireSyncLock } from './sync-lock.js';
+import { campaignsStalestFirst } from './van/campaigns.js';
 
 type Db = LibSQLDatabase<Record<string, unknown>>;
 
@@ -79,7 +80,9 @@ export type Caller = (
 export interface Job {
 	name: string;
 	schedule: readonly Slots[];
-	run: (slot: Date, call: Caller) => Promise<void>;
+	/** `db` is for a job that has to decide what to call — the VAN sync reads
+	 *  which campaigns are enabled. The work itself stays in the endpoint. */
+	run: (slot: Date, call: Caller, db: Db) => Promise<void>;
 }
 
 /** Mirrors van-catalog-sync.yml: every 30 minutes by day, hourly overnight. No
@@ -90,8 +93,27 @@ const vanSync: Job = {
 		{ hours: hoursFrom(11, 23), minutes: [7, 37] },
 		{ hours: hoursFrom(0, 10), minutes: [7] },
 	],
-	run: async (_slot, call) => {
-		await call('/api/internal/van-sync', {}, 5 * MINUTE);
+	// One call per enabled campaign, stalest first, each with the endpoint's
+	// full five minutes: one request cannot sync an arbitrary number of
+	// catalogs, and each campaign has its own lock, so they never contend. One
+	// failing does not stop the rest. With none enabled the endpoint is still
+	// called once, because it also runs the ledger housekeeping — expiring
+	// claims and the six-hour warnings — which must not depend on VAN at all.
+	run: async (_slot, call, db) => {
+		const campaigns = await campaignsStalestFirst(db);
+		if (campaigns.length === 0) {
+			await call('/api/internal/van-sync', {}, 5 * MINUTE);
+			return;
+		}
+		const failures: string[] = [];
+		for (const campaign of campaigns) {
+			try {
+				await call('/api/internal/van-sync', { campaign: String(campaign.id) }, 5 * MINUTE);
+			} catch (err) {
+				failures.push(`campaign ${campaign.id}: ${err instanceof Error ? err.message : err}`);
+			}
+		}
+		if (failures.length > 0) throw new Error(failures.join('; '));
 	},
 };
 
@@ -231,7 +253,7 @@ export function createScheduler(options: SchedulerOptions) {
 		}
 		const started = Date.now();
 		try {
-			await job.run(slot, call);
+			await job.run(slot, call, db);
 			console.log(`${LOG} ${label}: done in ${Math.round((Date.now() - started) / 1000)}s`);
 		} catch (err) {
 			console.error(`${LOG} ${label}: failed:`, err instanceof Error ? err.message : err);

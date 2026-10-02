@@ -131,9 +131,9 @@ async function turf(
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, printed_list_number, route_size, door_count, first_seen_at, last_seen_at)
-		      VALUES (?, 1, 1, 71, 'Wayne County', ?, ?, ?, 120, 50, 'x', 'x')`,
+		      VALUES (?1, ?1, 1, 1, 71, 'Wayne County', ?, ?, ?, 120, 50, 'x', 'x')`,
 		args: [
 			over.turfId ?? 100,
 			over.regionName ?? 'R10C_Wayne_TaylorCity004_9.11',

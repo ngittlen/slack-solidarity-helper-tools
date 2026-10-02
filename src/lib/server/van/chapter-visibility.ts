@@ -34,23 +34,28 @@ type Db = ReturnType<typeof drizzle>;
  */
 export function visibleToChapter(chapterId: number | null): SQL | undefined {
 	if (chapterId === null) return undefined;
-	return sql`${vanTurfs.folderId} in (
-		select ${vanChapterFolders.folderId} from ${vanChapterFolders}
+	// The (campaign, folder) pair: folder ids are VAN's, unique only within one
+	// committee, so a chapter mapped to campaign A's folder 7 must not see
+	// campaign B's folder 7.
+	return sql`(${vanTurfs.campaignId}, ${vanTurfs.folderId}) in (
+		select ${vanChapterFolders.campaignId}, ${vanChapterFolders.folderId} from ${vanChapterFolders}
 		where ${vanChapterFolders.chapterId} = ${chapterId}
 	)`;
 }
 
 /**
- * The folders `chapterId` sees turf from — what visibleToChapter matches on.
+ * The folders `chapterId` sees turf from — what visibleToChapter matches on —
+ * as `"<campaign>:<folder>"` keys, since a folder id alone is ambiguous across
+ * campaigns.
  *
  * For the chapter rate limiter, which charges only for folders a user has not
  * already seen: two chapters sharing a folder show the same turf, and opening
  * the second should not cost a slot.
  */
-export async function foldersForChapter(db: Db, chapterId: number): Promise<number[]> {
+export async function foldersForChapter(db: Db, chapterId: number): Promise<string[]> {
 	const rows = await db
-		.select({ folderId: vanChapterFolders.folderId })
+		.select({ campaignId: vanChapterFolders.campaignId, folderId: vanChapterFolders.folderId })
 		.from(vanChapterFolders)
 		.where(eq(vanChapterFolders.chapterId, chapterId));
-	return rows.map((r) => r.folderId);
+	return rows.map((r) => `${r.campaignId}:${r.folderId}`);
 }

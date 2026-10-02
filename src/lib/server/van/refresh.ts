@@ -15,6 +15,11 @@
 //
 // Story 4.1 is explicit about the trap: do not re-read counts in the same
 // request. Nothing here does.
+//
+// Everything is per campaign. Folder and region ids are VAN's, unique only
+// within one committee, and a refresh has to be sent with the key of the
+// campaign that owns the region — so every read and write here is scoped to
+// one campaign and the sweep is handed that campaign's client.
 
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
@@ -26,6 +31,7 @@ import {
 	type RefreshSweepPlan,
 	type RegionRefreshState,
 } from '../../van/refresh-policy.js';
+import { regionRefreshKey } from '../../van/turf-view.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -68,14 +74,17 @@ export interface RefreshSweepOptions {
  * stops being swept — which is right, because a folder-wide refresh would
  * resurrect nothing and the region may not exist in VAN any more either.
  */
-export async function loadRegionStates(db: Db): Promise<RegionRefreshState[]> {
+export async function loadRegionStates(db: Db, campaignId: number): Promise<RegionRefreshState[]> {
 	const regions = await db
 		.selectDistinct({ folderId: vanTurfs.folderId, mapRegionId: vanTurfs.mapRegionId })
 		.from(vanTurfs)
-		.where(isNull(vanTurfs.retiredAt));
+		.where(and(eq(vanTurfs.campaignId, campaignId), isNull(vanTurfs.retiredAt)));
 	if (regions.length === 0) return [];
 
-	const bookkeeping = await db.select().from(vanRegionRefreshes);
+	const bookkeeping = await db
+		.select()
+		.from(vanRegionRefreshes)
+		.where(eq(vanRegionRefreshes.campaignId, campaignId));
 	const byKey = new Map(bookkeeping.map((r) => [`${r.folderId}:${r.mapRegionId}`, r]));
 
 	// One grouped count rather than a query per region: a chapter can run to
@@ -84,7 +93,13 @@ export async function loadRegionStates(db: Db): Promise<RegionRefreshState[]> {
 		.select({ mapRegionId: vanTurfs.mapRegionId, claims: sql<number>`count(*)` })
 		.from(vanTurfCheckouts)
 		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
-		.where(and(isNull(vanTurfCheckouts.releasedAt), isNull(vanTurfCheckouts.completedAt)))
+		.where(
+			and(
+				eq(vanTurfs.campaignId, campaignId),
+				isNull(vanTurfCheckouts.releasedAt),
+				isNull(vanTurfCheckouts.completedAt),
+			),
+		)
 		.groupBy(vanTurfs.mapRegionId);
 	const claimsByRegion = new Map(claimCounts.map((r) => [r.mapRegionId, Number(r.claims)]));
 
@@ -115,15 +130,19 @@ export async function loadRegionStates(db: Db): Promise<RegionRefreshState[]> {
  */
 export async function requestRegionRefresh(
 	db: Db,
-	input: { folderId: number; mapRegionId: number; now: Date },
+	input: { campaignId: number; folderId: number; mapRegionId: number; now: Date },
 ): Promise<void> {
-	const { folderId, mapRegionId, now } = input;
+	const { campaignId, folderId, mapRegionId, now } = input;
 	try {
 		await db
 			.insert(vanRegionRefreshes)
-			.values({ folderId, mapRegionId, requestedAt: now.toISOString() })
+			.values({ campaignId, folderId, mapRegionId, requestedAt: now.toISOString() })
 			.onConflictDoUpdate({
-				target: [vanRegionRefreshes.folderId, vanRegionRefreshes.mapRegionId],
+				target: [
+					vanRegionRefreshes.campaignId,
+					vanRegionRefreshes.folderId,
+					vanRegionRefreshes.mapRegionId,
+				],
 				// Only the want is set. Deliberately NOT clearing lastRequestAt or
 				// inFlightSince: a second completion in the same hour is the same
 				// want, and resetting the throttle would let a busy Saturday morning
@@ -138,14 +157,19 @@ export async function requestRegionRefresh(
 	}
 }
 
-/** Regions with a refresh in flight. The turf page marks their turf as
- *  updating — a soft per-turf state, never a page-wide block (Story 4.5.4). */
-export async function refreshingRegionIds(db: Db): Promise<Set<number>> {
+/** Regions with a refresh in flight, as `regionRefreshKey`s — every
+ *  campaign's, since one turf page can show several campaigns' turf. The turf
+ *  page marks their turf as updating — a soft per-turf state, never a
+ *  page-wide block (Story 4.5.4). */
+export async function refreshingRegionIds(db: Db): Promise<Set<string>> {
 	const rows = await db
-		.select({ mapRegionId: vanRegionRefreshes.mapRegionId })
+		.select({
+			campaignId: vanRegionRefreshes.campaignId,
+			mapRegionId: vanRegionRefreshes.mapRegionId,
+		})
 		.from(vanRegionRefreshes)
 		.where(isNotNull(vanRegionRefreshes.inFlightSince));
-	return new Set(rows.map((r) => r.mapRegionId));
+	return new Set(rows.map((r) => regionRefreshKey(r.campaignId, r.mapRegionId)));
 }
 
 /**
@@ -167,6 +191,7 @@ export async function refreshingRegionIds(db: Db): Promise<Set<number>> {
  */
 export async function settleRefreshes(
 	db: Db,
+	campaignId: number,
 	observed: ReadonlyArray<{ folderId: number; mapRegionId: number; dateRefreshed: string | null }>,
 ): Promise<number> {
 	if (observed.length === 0) return 0;
@@ -174,7 +199,12 @@ export async function settleRefreshes(
 	const rows = await db
 		.select()
 		.from(vanRegionRefreshes)
-		.where(isNotNull(vanRegionRefreshes.inFlightSince));
+		.where(
+			and(
+				eq(vanRegionRefreshes.campaignId, campaignId),
+				isNotNull(vanRegionRefreshes.inFlightSince),
+			),
+		);
 	if (rows.length === 0) return 0;
 	const inFlight = new Map(rows.map((r) => [`${r.folderId}:${r.mapRegionId}`, r]));
 
@@ -197,6 +227,7 @@ export async function settleRefreshes(
 			.set({ inFlightSince: null })
 			.where(
 				and(
+					eq(vanRegionRefreshes.campaignId, campaignId),
 					eq(vanRegionRefreshes.folderId, region.folderId),
 					eq(vanRegionRefreshes.mapRegionId, region.mapRegionId),
 				),
@@ -214,6 +245,7 @@ export async function settleRefreshes(
 /** Stamp a request against every region a call covered. */
 async function stampRequested(
 	db: Db,
+	campaignId: number,
 	regions: ReadonlyArray<{ folderId: number; mapRegionId: number }>,
 	kind: 'nightly' | 'completion',
 	now: Date,
@@ -251,9 +283,18 @@ async function stampRequested(
 
 		await db
 			.insert(vanRegionRefreshes)
-			.values({ folderId: region.folderId, mapRegionId: region.mapRegionId, ...base })
+			.values({
+				campaignId,
+				folderId: region.folderId,
+				mapRegionId: region.mapRegionId,
+				...base,
+			})
 			.onConflictDoUpdate({
-				target: [vanRegionRefreshes.folderId, vanRegionRefreshes.mapRegionId],
+				target: [
+					vanRegionRefreshes.campaignId,
+					vanRegionRefreshes.folderId,
+					vanRegionRefreshes.mapRegionId,
+				],
 				set,
 			});
 	}
@@ -278,13 +319,14 @@ function regionsInFolder(
 export async function runRefreshSweep(
 	db: Db,
 	client: VanClient,
+	campaignId: number,
 	options: RefreshSweepOptions = {},
 ): Promise<RefreshSweepResult> {
 	const now = options.now ?? new Date();
 	const deadline = Date.now() + (options.timeBudgetMs ?? 30_000);
 	const warnings: string[] = [];
 
-	const regions = await loadRegionStates(db);
+	const regions = await loadRegionStates(db, campaignId);
 	const plan = planRefreshSweep(regions, {
 		now,
 		nightly: options.nightly,
@@ -298,6 +340,7 @@ export async function runRefreshSweep(
 			.set({ inFlightSince: null })
 			.where(
 				and(
+					eq(vanRegionRefreshes.campaignId, campaignId),
 					eq(vanRegionRefreshes.folderId, region.folderId),
 					eq(vanRegionRefreshes.mapRegionId, region.mapRegionId),
 				),
@@ -319,13 +362,13 @@ export async function runRefreshSweep(
 		if (Date.now() + MIN_SWEEP_BUDGET_MS > deadline) break;
 		try {
 			await client.refreshMapRegion(region.folderId, region.mapRegionId);
-			await stampRequested(db, [region], 'completion', now, null);
+			await stampRequested(db, campaignId, [region], 'completion', now, null);
 			regionsRefreshed += 1;
 			console.log(`${LOG} refresh requested: region=${region.mapRegionId} (completion)`);
 		} catch (err) {
 			failed += 1;
 			const detail = errMessage(err);
-			await stampRequested(db, [region], 'completion', now, detail);
+			await stampRequested(db, campaignId, [region], 'completion', now, detail);
 			warnings.push(`Refresh of region ${region.mapRegionId} failed: ${detail}`);
 			console.error(`${LOG} refresh of region ${region.mapRegionId} failed:`, detail);
 		}
@@ -338,13 +381,13 @@ export async function runRefreshSweep(
 			// No region id: the folder-wide form re-cuts every region in it, which
 			// is one call instead of one per region (Story 4.4).
 			await client.refreshMapRegion(folderId);
-			await stampRequested(db, covered, 'nightly', now, null);
+			await stampRequested(db, campaignId, covered, 'nightly', now, null);
 			nightlyFolders.push(folderId);
 			console.log(`${LOG} nightly refresh requested: folder=${folderId} regions=${covered.length}`);
 		} catch (err) {
 			failed += 1;
 			const detail = errMessage(err);
-			await stampRequested(db, covered, 'nightly', now, detail);
+			await stampRequested(db, campaignId, covered, 'nightly', now, detail);
 			warnings.push(`Nightly refresh of folder ${folderId} failed: ${detail}`);
 			console.error(`${LOG} nightly refresh of folder ${folderId} failed:`, detail);
 		}

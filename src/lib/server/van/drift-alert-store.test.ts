@@ -36,6 +36,7 @@ async function turf(
 ): Promise<void> {
 	const row: Record<string, string | number | null> = {
 		turf_id: turfId,
+		van_map_route_id: turfId,
 		map_region_id: 1,
 		folder_id: 1,
 		chapter_id: 71,
@@ -110,9 +111,9 @@ async function stampsInDb(): Promise<
  *  half of the comparison legible. Without it every test would be a no-op. */
 async function vanSideVisible(ok = true): Promise<void> {
 	await client.execute(
-		`INSERT INTO van_sync_state (id, last_sync_at, minivan_exports_ok)
+		`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok)
 		 VALUES (1, '${iso(NOW.getTime())}', ${ok ? 1 : 0})
-		 ON CONFLICT(id) DO UPDATE SET minivan_exports_ok = ${ok ? 1 : 0}`,
+		 ON CONFLICT(campaign_id) DO UPDATE SET minivan_exports_ok = ${ok ? 1 : 0}`,
 	);
 }
 
