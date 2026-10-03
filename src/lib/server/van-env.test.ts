@@ -4,10 +4,7 @@ import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import { eq } from 'drizzle-orm';
 import {
-	vanClient,
 	vanClientFor,
-	isVanConfigured,
-	vanExportJobTypeId,
 	vanExportJobTypeIdFor,
 	ensureCampaignRows,
 	enabledVanCampaigns,
@@ -63,7 +60,13 @@ beforeEach(() => {
 	mockEnv.campaigns = {};
 });
 
-describe('vanClient', () => {
+// The primary campaign through the legacy VAN_APP_NAME/VAN_API_KEY/
+// VAN_DATABASE_MODE vars: an install that never adopted campaign secrets.
+const primary = () => vanClientFor({ credentialKey: 'primary' });
+const primaryJobType = () =>
+	vanExportJobTypeIdFor({ credentialKey: 'primary', exportJobTypeId: null });
+
+describe('vanClientFor, primary on the legacy vars', () => {
 	beforeEach(() => {
 		mockEnv.VAN_APP_NAME = 'campaign-app';
 		mockEnv.VAN_API_KEY = 'key-guid';
@@ -72,14 +75,13 @@ describe('vanClient', () => {
 	});
 
 	it('builds a client when fully configured', () => {
-		const result = vanClient();
+		const result = primary();
 		expect(result.ok).toBe(true);
-		expect(isVanConfigured()).toBe(true);
 	});
 
 	it('accepts My Campaign mode', () => {
 		mockEnv.VAN_DATABASE_MODE = '1';
-		expect(vanClient().ok).toBe(true);
+		expect(primary().ok).toBe(true);
 	});
 
 	it.each([
@@ -87,10 +89,9 @@ describe('vanClient', () => {
 		['VAN_API_KEY', 'VAN_API_KEY' as const],
 	])('reports %s missing rather than throwing', (_label, key) => {
 		mockEnv[key] = '';
-		const result = vanClient();
+		const result = primary();
 		expect(result.ok).toBe(false);
 		expect(result.ok === false && result.error).toContain('VAN_APP_NAME/VAN_API_KEY');
-		expect(isVanConfigured()).toBe(false);
 	});
 
 	// The wrong database mode authenticates successfully and returns a
@@ -99,26 +100,26 @@ describe('vanClient', () => {
 	// error rather than an assumption.
 	it.each(['', '2', 'My Voters', ' '])('rejects VAN_DATABASE_MODE %j', (mode) => {
 		mockEnv.VAN_DATABASE_MODE = mode;
-		const result = vanClient();
+		const result = primary();
 		expect(result.ok).toBe(false);
 		expect(result.ok === false && result.error).toContain('VAN_DATABASE_MODE');
 	});
 });
 
-describe('vanExportJobTypeId', () => {
+describe('VAN_EXPORT_JOB_TYPE_ID as the primary campaign fallback', () => {
 	it('returns the configured id', () => {
 		mockEnv.VAN_EXPORT_JOB_TYPE_ID = 8;
-		expect(vanExportJobTypeId()).toBe(8);
+		expect(primaryJobType()).toBe(8);
 	});
 
 	it('returns null when unset, so the catalog sync still runs', () => {
 		mockEnv.VAN_EXPORT_JOB_TYPE_ID = 0;
-		expect(vanExportJobTypeId()).toBeNull();
+		expect(primaryJobType()).toBeNull();
 	});
 
 	it('returns null for an unparseable value', () => {
 		mockEnv.VAN_EXPORT_JOB_TYPE_ID = NaN;
-		expect(vanExportJobTypeId()).toBeNull();
+		expect(primaryJobType()).toBeNull();
 	});
 });
 
@@ -130,7 +131,7 @@ describe('vanClientFor', () => {
 
 	it('names the missing secret', () => {
 		const result = vanClientFor({ credentialKey: 'other' });
-		expect(result).toEqual({ ok: false, error: 'VAN_CAMPAIGN_OTHER is not set' });
+		expect(result).toEqual({ ok: false, missing: true, error: 'VAN_CAMPAIGN_OTHER is not set' });
 	});
 
 	it('mentions the legacy vars when primary has no credentials at all', () => {
@@ -151,13 +152,13 @@ describe('vanClientFor', () => {
 
 	it("does not let one campaign's broken secret affect another", () => {
 		mockEnv.campaigns = { VAN_CAMPAIGN_OTHER: 'not json' };
-		expect(vanClient().ok).toBe(true);
+		expect(primary().ok).toBe(true);
 	});
 
 	it('lets VAN_CAMPAIGN_PRIMARY replace the legacy vars', () => {
 		mockEnv.VAN_API_KEY = '';
 		mockEnv.campaigns = { VAN_CAMPAIGN_PRIMARY: campaignSecret() };
-		expect(vanClient().ok).toBe(true);
+		expect(primary().ok).toBe(true);
 	});
 });
 

@@ -58,9 +58,11 @@ export const CHAPTER_LOG_THRESHOLD = 4;
 export interface ChapterVisit {
 	chapterId: number;
 	at: number;
-	/** The VAN folders this chapter showed. Null when the caller did not say,
-	 *  which makes the visit its own turf: it covers nothing else. */
-	folderIds: number[] | null;
+	/** The VAN folders this chapter showed, as `"<campaign>:<folder>"` keys
+	 *  (foldersForChapter) — a folder id alone is ambiguous across campaigns.
+	 *  Null when the caller did not say, which makes the visit its own turf: it
+	 *  covers nothing else. */
+	folderIds: string[] | null;
 	/** Whether this visit spent a slot. False when every folder it showed had
 	 *  already been seen through another chapter in the window. */
 	charged: boolean;
@@ -114,8 +116,10 @@ export interface ChapterViewOptions {
 	 *  that forgets to pass it throttles too much rather than too little.
 	 *
 	 *  An empty list is free: a chapter with no folders mapped shows no turf
-	 *  (chapter-visibility.ts), so opening it reveals nothing. */
-	folderIds?: number[];
+	 *  (chapter-visibility.ts), so opening it reveals nothing.
+	 *
+	 *  Campaign-qualified keys, as foldersForChapter returns them. */
+	folderIds?: string[];
 }
 
 export function recordChapterView(

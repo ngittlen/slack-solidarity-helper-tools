@@ -23,9 +23,9 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 	await client.execute(
 		`INSERT INTO van_turfs
-		   (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		   (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		    name, door_count, first_seen_at, last_seen_at)
-		 VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 5, 'x', 'x')`,
+		 VALUES (100, 100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 5, 'x', 'x')`,
 	);
 	await client.execute(
 		`INSERT INTO van_turf_checkouts

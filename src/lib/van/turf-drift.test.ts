@@ -19,6 +19,7 @@ function turf(over: Partial<DriftTurfRow> = {}): DriftTurfRow {
 		regionName: 'Ann Arbor',
 		chapterId: 71,
 		chapterName: 'Washtenaw County',
+		campaignId: 1,
 		doorCount: 250,
 		printedListNumber: '35536745-88712',
 		vanDistributedTo: null,

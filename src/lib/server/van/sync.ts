@@ -117,7 +117,13 @@ function candidateListNumbers(folders: CatalogFolder[], printedLists: VanPrinted
 }
 
 /**
- * Pull the turf catalog for every chapter that has a folder mapping.
+ * Pull one campaign's turf catalog: every folder its chapters are mapped to,
+ * read with that campaign's key.
+ *
+ * Everything read and written is scoped to `campaignId`. Another campaign's
+ * turf is neither matched nor retired here — the folder ids in `mappings` are
+ * this campaign's, and VAN's ids mean nothing outside the committee that
+ * issued them.
  *
  * Optional-tier endpoints degrade instead of failing: a demo or sandbox key
  * without Tier 3 gets no /minivanExports and no /printedLists backfill, but
@@ -127,6 +133,7 @@ function candidateListNumbers(folders: CatalogFolder[], printedLists: VanPrinted
 export async function runCatalogSync(
 	db: Db,
 	client: VanClient,
+	campaignId: number,
 	mappings: ChapterFolders[],
 	options: CatalogSyncOptions = {},
 ): Promise<CatalogSyncResult> {
@@ -149,7 +156,7 @@ export async function runCatalogSync(
 			regionsRead: [],
 			degraded,
 			warnings: [
-				'No chapters are mapped to VAN folders — add them under Settings → Chapter → VAN folders.',
+				'No chapters are mapped to VAN folders — add them on the campaign’s page under Settings → VAN campaigns.',
 			],
 		};
 	}
@@ -249,7 +256,7 @@ export async function runCatalogSync(
 	let minivanExportsOk = false;
 	if (!options.dryRun) {
 		try {
-			const pulled = await pullMinivanExports(db, client, { now });
+			const pulled = await pullMinivanExports(db, client, { campaignId, now });
 			minivanExportsOk = pulled.complete;
 			if (!pulled.complete) {
 				// Logged rather than reported as `degraded`: that list goes to the
@@ -265,14 +272,24 @@ export async function runCatalogSync(
 			);
 		}
 	}
-	const minivanExports = await loadMinivanExports(db, candidateListNumbers(folders, printedLists));
+	const minivanExports = await loadMinivanExports(
+		db,
+		campaignId,
+		candidateListNumbers(folders, printedLists),
+	);
 	// Our own claims, so an export made while one of our volunteers held the
 	// turf reads as them loading it rather than as the turf being handed out
 	// elsewhere (catalog.ts, outsideAssignment).
-	const claims = await loadClaimsForExports(db, now);
+	const claims = await loadClaimsForExports(db, campaignId, now);
 
-	const existing = await db.select().from(vanTurfs);
+	const existing = await db.select().from(vanTurfs).where(eq(vanTurfs.campaignId, campaignId));
+	// Every campaign's ids, so a new turf never takes an id another one holds.
+	const takenTurfIds = new Set(
+		(await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs)).map((r) => r.turfId),
+	);
 	const plan = planCatalogSync({
+		campaignId,
+		takenTurfIds,
 		folders,
 		printedLists,
 		existing,
@@ -328,8 +345,16 @@ export async function runCatalogSync(
 	// see some turfs' new door counts beside others' old ones, which the UI
 	// already labels with the timestamp those counts came from.
 	for (const rows of chunked(plan.upserts, WRITE_BATCH_SIZE)) {
+		// Matched on VAN's id within the campaign, never on turfId: that is the
+		// route's identity, and a colliding turf's turfId is not VAN's. Two
+		// campaigns' syncs planning the same free id at the same instant fail one
+		// batch on the primary key; that sync errors, and its next run, seeing
+		// the id taken, plans another.
 		const statements = rows.map((row) =>
-			db.insert(vanTurfs).values(row).onConflictDoUpdate({ target: vanTurfs.turfId, set: row }),
+			db
+				.insert(vanTurfs)
+				.values(row)
+				.onConflictDoUpdate({ target: [vanTurfs.campaignId, vanTurfs.vanMapRouteId], set: row }),
 		);
 		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
@@ -492,7 +517,21 @@ export async function runCatalogSync(
 	// built (the wrong export type) would fail the same way every run.
 	// Batched for the same reason as the upserts above: one queue row per turf
 	// is another round trip per turf, on the same hot path.
-	for (const items of chunked(plan.geometryQueue, WRITE_BATCH_SIZE)) {
+	// The plan names turf by VAN id; the upserts above have written each
+	// one's turfId.
+	const turfIdByRoute = new Map(
+		(
+			await db
+				.select({ turfId: vanTurfs.turfId, vanMapRouteId: vanTurfs.vanMapRouteId })
+				.from(vanTurfs)
+				.where(eq(vanTurfs.campaignId, campaignId))
+		).map((r) => [r.vanMapRouteId, r.turfId]),
+	);
+	const queueItems = plan.geometryQueue.flatMap((item) => {
+		const turfId = turfIdByRoute.get(item.vanMapRouteId);
+		return turfId === undefined ? [] : [{ ...item, turfId }];
+	});
+	for (const items of chunked(queueItems, WRITE_BATCH_SIZE)) {
 		const statements = items.map((item) =>
 			db
 				.insert(vanGeometryQueue)
@@ -533,12 +572,15 @@ export async function runCatalogSync(
 	// Written last, and only on a real run: a dry run reports what WOULD happen,
 	// so recording it as what the catalog now reflects would make the drift
 	// report trust a comparison that never took place.
+	//
+	// A completed sync also clears this campaign's recorded failure, so the
+	// next one is announced afresh rather than taken for the old one.
 	await db
 		.insert(vanSyncState)
-		.values({ id: 1, lastSyncAt: now.toISOString(), minivanExportsOk })
+		.values({ campaignId, lastSyncAt: now.toISOString(), minivanExportsOk })
 		.onConflictDoUpdate({
-			target: vanSyncState.id,
-			set: { lastSyncAt: now.toISOString(), minivanExportsOk },
+			target: vanSyncState.campaignId,
+			set: { lastSyncAt: now.toISOString(), minivanExportsOk, lastError: null, alertedError: null },
 		});
 
 	return {

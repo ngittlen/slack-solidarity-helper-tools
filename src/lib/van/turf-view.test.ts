@@ -5,6 +5,7 @@ import {
 	mappableTurfs,
 	doorsLeft,
 	vanAssignmentBlocks,
+	regionRefreshKey,
 	type TurfRowInput,
 } from './turf-view.js';
 import type { ClaimSnapshot } from './checkout.js';
@@ -23,6 +24,7 @@ const HULL = JSON.stringify([
 function row(over: Partial<TurfRowInput> = {}): TurfRowInput {
 	return {
 		turfId: 100,
+		campaignId: 1,
 		mapRegionId: 10,
 		chapterId: 71,
 		name: 'Turf 01',
@@ -220,7 +222,7 @@ describe('toTurfView — freshness and claimability', () => {
 
 	it('marks turf whose region VAN is re-cutting, without making it unclaimable', () => {
 		const view = toTurfView(row(), [], VOLUNTEER, NOW, {
-			refreshingRegions: new Set([10]),
+			refreshingRegions: new Set([regionRefreshKey(1, 10)]),
 		});
 		expect(view.updating).toBe(true);
 		// Story 4.5: an "updating" turf is still turf you can take. Blocking
@@ -232,7 +234,16 @@ describe('toTurfView — freshness and claimability', () => {
 
 	it('omits the updating flag entirely for every other region', () => {
 		const view = toTurfView(row(), [], VOLUNTEER, NOW, {
-			refreshingRegions: new Set([999]),
+			refreshingRegions: new Set([regionRefreshKey(1, 999)]),
+		});
+		expect('updating' in view).toBe(false);
+	});
+
+	// Region ids are VAN's, unique only within one committee: another
+	// campaign's region 10 being re-cut says nothing about this one.
+	it("does not mark turf updating for another campaign's region with the same id", () => {
+		const view = toTurfView(row(), [], VOLUNTEER, NOW, {
+			refreshingRegions: new Set([regionRefreshKey(2, 10)]),
 		});
 		expect('updating' in view).toBe(false);
 	});

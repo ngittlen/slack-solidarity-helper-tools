@@ -46,9 +46,9 @@ async function turf(
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, map_region_id, folder_id, chapter_id, name, saved_list_id, door_count,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, name, saved_list_id, door_count,
 		         first_seen_at, last_seen_at, cut_at, retired_at)
-		      VALUES (?, 1, 1, 1, 'Turf', ?, 99, ?, ?, ?, ?)`,
+		      VALUES (?1, ?1, 1, 1, 1, 'Turf', ?, 99, ?, ?, ?, ?)`,
 		args: [
 			turfId,
 			over.savedListId ?? 900,
@@ -69,7 +69,7 @@ function roster(people: Record<string, string>) {
 }
 
 async function contact(vanId: string, at: string) {
-	await upsertContacts(db, new Map([[vanId, { personHash: hasher.person(vanId), at }]]));
+	await upsertContacts(db, 1, new Map([[vanId, { personHash: hasher.person(vanId), at }]]));
 }
 
 async function counts(turfId: number) {
@@ -102,7 +102,7 @@ describe('recomputeUncontacted', () => {
 	});
 
 	it('counts every door when nobody has been contacted', async () => {
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		expect(await counts(1)).toMatchObject({
 			uncontacted_doors: 2,
 			uncontacted_doors_at: NOW.toISOString(),
@@ -112,13 +112,13 @@ describe('recomputeUncontacted', () => {
 	// Any resident answering (or not) is a knock on that door.
 	it('takes a door off when any one resident was contacted since the cut', async () => {
 		await contact('b', '2026-09-20T15:00:00.000Z');
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		expect((await counts(1)).uncontacted_doors).toBe(1);
 	});
 
 	it('ignores contacts from before the cut', async () => {
 		await contact('b', '2026-09-10T15:00:00.000Z');
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		expect((await counts(1)).uncontacted_doors).toBe(2);
 	});
 
@@ -126,23 +126,23 @@ describe('recomputeUncontacted', () => {
 		await client.execute('UPDATE van_turfs SET cut_at = NULL');
 		// After CUT but before first_seen_at (09-15): does not count.
 		await contact('c', '2026-09-14T20:00:00.000Z');
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		expect((await counts(1)).uncontacted_doors).toBe(2);
 	});
 
 	// A count from the previous cut is worse than none: the UI falls back to
 	// VAN's doorCount.
 	it('clears the count when the roster is from an older saved list', async () => {
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		await client.execute('UPDATE van_turfs SET saved_list_id = 901');
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		expect(await counts(1)).toMatchObject({ uncontacted_doors: null, uncontacted_doors_at: null });
 	});
 
 	it('touches only the turfs asked for', async () => {
 		await turf(2);
 		await replaceRoster(db, 2, 900, roster({ d: '9 Elm St' }));
-		await recomputeUncontacted(db, { now: NOW, turfIds: [2] });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW, turfIds: [2] });
 		expect((await counts(1)).uncontacted_doors).toBeNull();
 		expect((await counts(2)).uncontacted_doors).toBe(1);
 	});
@@ -274,6 +274,7 @@ describe('runContactSync', () => {
 		);
 
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -296,11 +297,23 @@ describe('runContactSync', () => {
 
 	it('picks up from the cursor next time rather than re-reading', async () => {
 		const { van, fetchFn } = fakeVan(() => []);
-		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 		van.created.length = 0;
 
 		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
-		await runContactSync(db, van.client, { hasher, now: later, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: later,
+			fetchFn,
+			sleep: noSleep,
+		});
 
 		expect(van.created).toEqual([
 			expect.objectContaining({
@@ -322,6 +335,7 @@ describe('runContactSync', () => {
 				: [],
 		);
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -335,11 +349,17 @@ describe('runContactSync', () => {
 	// roster arrived after the window was read.
 	it('keeps contacts for people on no roster yet', async () => {
 		const { van, fetchFn } = fakeVan(() => [contactRow('999', 2, '9/27/2026 1:00:00 PM')]);
-		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 
 		await turf(2, { cutAt: '2026-09-27T00:00:00.000Z' });
 		await replaceRoster(db, 2, 900, roster({ '999': '9 Elm St' }));
-		await recomputeUncontacted(db, { now: NOW, turfIds: [2] });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW, turfIds: [2] });
 
 		expect((await counts(2)).uncontacted_doors).toBe(0);
 	});
@@ -347,6 +367,7 @@ describe('runContactSync', () => {
 	it('leaves a slow job to be polled next run, without advancing', async () => {
 		const { van, fetchFn } = fakeVan(() => [], { status: () => 'Pending' });
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -372,6 +393,7 @@ describe('runContactSync', () => {
 			status: () => (pending ? 'Pending' : 'Complete'),
 		});
 		await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -381,6 +403,7 @@ describe('runContactSync', () => {
 		pending = false;
 
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -396,6 +419,7 @@ describe('runContactSync', () => {
 	it('drops a failed job, records why, and still recomputes', async () => {
 		const { van, fetchFn } = fakeVan(() => [], { status: () => 'Error' });
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -413,6 +437,7 @@ describe('runContactSync', () => {
 		await contact('old', '2026-09-01T00:00:00.000Z');
 		const { van, fetchFn } = fakeVan(() => []);
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -425,7 +450,12 @@ describe('runContactSync', () => {
 		// Retired longer ago than a retired roster is kept.
 		await client.execute(`UPDATE van_turfs SET retired_at = '2026-09-26T00:00:00.000Z'`);
 		const { van, fetchFn } = fakeVan(() => []);
-		const result = await runContactSync(db, van.client, { hasher, now: NOW, fetchFn });
+		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+		});
 		expect(van.created).toHaveLength(0);
 		expect(result.windowsApplied).toBe(0);
 	});
@@ -439,7 +469,13 @@ describe('runContactSync', () => {
 	it('never starts more than 30 days back', async () => {
 		await turf(2, { cutAt: '2026-06-01T00:00:00.000Z' });
 		const { van, fetchFn } = fakeVan(() => []);
-		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 
 		const floor = new Date(NOW.getTime() - MAX_BACKFILL_MS).toISOString();
 		expect(van.created[0]!.dateChangedFrom).toBe(overlapped(floor));
@@ -449,12 +485,24 @@ describe('runContactSync', () => {
 	// A newly mapped folder brings turf cut before anything read so far.
 	it('rewinds for a turf cut before the pull began', async () => {
 		const { van, fetchFn } = fakeVan(() => []);
-		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 		await turf(2, { cutAt: '2026-09-20T00:00:00.000Z' });
 		van.created.length = 0;
 
 		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
-		await runContactSync(db, van.client, { hasher, now: later, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: later,
+			fetchFn,
+			sleep: noSleep,
+		});
 
 		expect(van.created[0]!.dateChangedFrom).toBe(overlapped('2026-09-20T00:00:00.000Z'));
 		expect((await state()).covered_from).toBe('2026-09-20T00:00:00.000Z');
@@ -470,6 +518,7 @@ describe('runContactSync', () => {
 				: [],
 		);
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -489,7 +538,13 @@ describe('runContactSync', () => {
 				throw new Error('403');
 			},
 		} as VanClient;
-		const result = await runContactSync(db, client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		const result = await runContactSync(db, client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 		expect(result.contactsRead).toBe(1);
 	});
 
@@ -498,6 +553,7 @@ describe('runContactSync', () => {
 	it('drops a job whose download is dead and submits the window again', async () => {
 		const { van, fetchFn } = fakeVan(() => [], { download: (id) => (id === 1 ? 403 : 200) });
 		const first = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -507,6 +563,7 @@ describe('runContactSync', () => {
 		expect((await state()).export_job_id).toBeNull();
 
 		const second = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -519,7 +576,8 @@ describe('runContactSync', () => {
 
 	it('retries a transient download failure on the same job, then gives up on it', async () => {
 		const { van, fetchFn } = fakeVan(() => [], { download: (id) => (id === 1 ? 500 : 200) });
-		const run = () => runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		const run = () =>
+			runContactSync(db, van.client, { campaignId: 1, hasher, now: NOW, fetchFn, sleep: noSleep });
 
 		await run();
 		expect(await state()).toMatchObject({ export_job_id: 1, export_job_failures: 1 });
@@ -540,10 +598,11 @@ describe('runContactSync', () => {
 			status: (id) => (id === 1 && stuck ? 'Pending' : 'Complete'),
 		});
 		const opts = { hasher, fetchFn, sleep: noSleep, timeBudgetMs: 10 };
-		await runContactSync(db, van.client, { ...opts, now: NOW });
+		await runContactSync(db, van.client, { campaignId: 1, ...opts, now: NOW });
 
 		// Not yet stale: still waited on.
 		const soon = await runContactSync(db, van.client, {
+			campaignId: 1,
 			...opts,
 			now: new Date(NOW.getTime() + 60 * 60 * 1000),
 		});
@@ -551,6 +610,7 @@ describe('runContactSync', () => {
 		expect((await state()).export_job_id).toBe(1);
 
 		const late = await runContactSync(db, van.client, {
+			campaignId: 1,
 			...opts,
 			now: new Date(NOW.getTime() + JOB_STALE_MS + 60 * 1000),
 		});
@@ -564,7 +624,7 @@ describe('clearUncontacted', () => {
 	it('forgets every count', async () => {
 		await turf(1);
 		await replaceRoster(db, 1, 900, roster({ a: '1 Main St' }));
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		expect((await counts(1)).uncontacted_doors).toBe(1);
 
 		await clearUncontacted(db);
@@ -610,23 +670,23 @@ describe('stampWalkPercents', () => {
 		await contact('a', '2026-09-28T11:00:00.000Z');
 		await contact('b', '2026-09-28T11:30:00.000Z');
 		await contact('c', '2026-09-28T11:45:00.000Z');
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 
-		expect(await stampWalkPercents(db, { now: NOW })).toBe(1);
+		expect(await stampWalkPercents(db, { campaignId: 1, now: NOW })).toBe(1);
 		expect(await percent(1)).toBe(75);
 	});
 
 	it('leaves completions older than a day as they were', async () => {
 		await completion(1, '2026-09-26T12:00:00.000Z', 40);
-		await recomputeUncontacted(db, { now: NOW });
-		await stampWalkPercents(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		await stampWalkPercents(db, { campaignId: 1, now: NOW });
 		expect(await percent(1)).toBe(40);
 	});
 
 	it('leaves a turf with no count alone rather than zeroing it', async () => {
 		await completion(1, '2026-09-28T12:00:00.000Z', 55);
 		// No recompute: uncontacted_doors is still null.
-		await stampWalkPercents(db, { now: NOW });
+		await stampWalkPercents(db, { campaignId: 1, now: NOW });
 		expect(await percent(1)).toBe(55);
 	});
 
@@ -636,35 +696,35 @@ describe('stampWalkPercents', () => {
 		await completion(1, '2026-09-28T12:00:00.000Z');
 		await client.execute(`UPDATE van_turfs SET retired_at = '2026-09-28T13:00:00.000Z'`);
 		await contact('a', '2026-09-28T11:00:00.000Z');
-		await recomputeUncontacted(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 
-		await stampWalkPercents(db, { now: NOW });
+		await stampWalkPercents(db, { campaignId: 1, now: NOW });
 		expect(await percent(1)).toBe(25);
 	});
 
 	it('never overwrites a % with NULL once the roster is gone', async () => {
 		await completion(1, '2026-09-28T12:00:00.000Z');
 		await contact('a', '2026-09-28T11:00:00.000Z');
-		await recomputeUncontacted(db, { now: NOW });
-		await stampWalkPercents(db, { now: NOW });
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		await stampWalkPercents(db, { campaignId: 1, now: NOW });
 		await client.execute('DELETE FROM van_turf_roster');
 
-		await stampWalkPercents(db, { now: NOW });
+		await stampWalkPercents(db, { campaignId: 1, now: NOW });
 		expect(await percent(1)).toBe(25);
 	});
 
 	it('writes only percentages that changed', async () => {
 		await completion(1, '2026-09-28T12:00:00.000Z');
-		await recomputeUncontacted(db, { now: NOW });
-		expect(await stampWalkPercents(db, { now: NOW })).toBe(1);
-		expect(await stampWalkPercents(db, { now: NOW })).toBe(0);
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect(await stampWalkPercents(db, { campaignId: 1, now: NOW })).toBe(1);
+		expect(await stampWalkPercents(db, { campaignId: 1, now: NOW })).toBe(0);
 	});
 
 	it('scopes to the turfs asked for', async () => {
 		await completion(1, '2026-09-28T12:00:00.000Z');
-		await recomputeUncontacted(db, { now: NOW });
-		expect(await stampWalkPercents(db, { now: NOW, turfIds: [2] })).toBe(0);
-		expect(await stampWalkPercents(db, { now: NOW, turfIds: [1] })).toBe(1);
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect(await stampWalkPercents(db, { campaignId: 1, now: NOW, turfIds: [2] })).toBe(0);
+		expect(await stampWalkPercents(db, { campaignId: 1, now: NOW, turfIds: [1] })).toBe(1);
 		expect(await percent(1)).toBe(0);
 	});
 });
@@ -708,7 +768,7 @@ describe('stampDoorsKnocked', () => {
 		// Before the claim (by more than the lead): someone else's knock.
 		await contact('d', '2026-09-28T10:00:00.000Z');
 
-		expect(await stampDoorsKnocked(db, { now: NOW })).toBe(1);
+		expect(await stampDoorsKnocked(db, { campaignId: 1, now: NOW })).toBe(1);
 		expect(await knocked(1)).toBe(2);
 	});
 
@@ -716,7 +776,7 @@ describe('stampDoorsKnocked', () => {
 		await completion(1);
 		await contact('a', '2026-09-28T11:45:00.000Z');
 		await contact('c', '2026-09-28T15:40:00.000Z');
-		await stampDoorsKnocked(db, { now: NOW });
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
 		expect(await knocked(1)).toBe(2);
 	});
 
@@ -725,17 +785,17 @@ describe('stampDoorsKnocked', () => {
 	it('never lowers a count once stamped', async () => {
 		await completion(1);
 		await contact('c', '2026-09-28T14:00:00.000Z');
-		await stampDoorsKnocked(db, { now: NOW });
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
 		expect(await knocked(1)).toBe(1);
 
 		await contact('c', '2026-09-28T17:30:00.000Z');
-		await stampDoorsKnocked(db, { now: NOW });
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
 		expect(await knocked(1)).toBe(1);
 	});
 
 	it('records zero, not null, for a rostered turf with no contacts', async () => {
 		await completion(1);
-		await stampDoorsKnocked(db, { now: NOW });
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
 		expect(await knocked(1)).toBe(0);
 	});
 
@@ -748,7 +808,7 @@ describe('stampDoorsKnocked', () => {
 			args: [CLAIMED, COMPLETED, COMPLETED],
 		});
 		await completion(3, '2026-09-25T12:00:00.000Z', '2026-09-25T15:00:00.000Z');
-		await stampDoorsKnocked(db, { now: NOW });
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
 		expect(await knocked(2)).toBeNull();
 		expect(await knocked(3)).toBeNull();
 	});
@@ -780,6 +840,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 	it('recomputes every turf the first scheduled run, then only turfs it pulled people for', async () => {
 		const quiet = fakeVan(() => []);
 		await runContactSync(db, quiet.van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn: quiet.fetchFn,
@@ -795,6 +856,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
 		const busy = fakeVan(() => [contactRow('111', 2, '9/28/2026 2:10:00 PM')]);
 		const result = await runContactSync(db, busy.van.client, {
+			campaignId: 1,
 			hasher,
 			now: later,
 			fetchFn: busy.fetchFn,
@@ -807,20 +869,39 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 
 	it('does the full recompute again once the feature has been switched off and on', async () => {
 		const { van, fetchFn } = fakeVan(() => []);
-		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 		await clearUncontacted(db);
 		expect((await state()).full_recompute_at).toBeNull();
 		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
-		await runContactSync(db, van.client, { hasher, now: later, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: later,
+			fetchFn,
+			sleep: noSleep,
+		});
 		expect((await counts(2)).uncontacted_doors).toBe(1);
 	});
 
 	it('recomputes the nudged turf and any it pulled people for, never the rest', async () => {
 		const { van, fetchFn } = fakeVan(() => []);
-		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 		await client.execute('UPDATE van_turfs SET uncontacted_doors = 42');
 		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: later,
 			fetchFn,
@@ -837,6 +918,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 		await completion();
 		const { van, fetchFn } = fakeVan(() => []);
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -853,7 +935,13 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 		const { van, fetchFn } = fakeVan((w) =>
 			w.to === NOW.toISOString() ? [contactRow('111', 2, '9/28/2026 9:00:00 AM')] : [],
 		);
-		await runContactSync(db, van.client, { hasher, now: NOW, fetchFn, sleep: noSleep });
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 		expect(await knocked()).toBe(1);
 		expect((await state()).counted_through).toBe(NOW.toISOString());
 	});
@@ -862,6 +950,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 		await completion();
 		const { van, fetchFn } = fakeVan(() => [], { status: () => 'Pending' });
 		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
 			hasher,
 			now: NOW,
 			fetchFn,
@@ -882,6 +971,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
 		try {
 			const result = await runContactSync(db, client2, {
+				campaignId: 1,
 				hasher,
 				now: NOW,
 				fetchFn,

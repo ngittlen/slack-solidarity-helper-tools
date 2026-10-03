@@ -14,6 +14,24 @@ vi.mock('$lib/server/settings.js', () => ({
 	loadVanSheetTargets: mockLoad,
 }));
 vi.mock('$lib/server/google-env.js', () => ({ sheetsClient: mockSheetsClient }));
+// Campaign 2 exists; any other positive id does not. The validation itself is
+// campaignFromRequest's, exercised for real.
+vi.mock('$lib/server/van/campaigns.js', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/van/campaigns.js')>();
+	return {
+		campaignFromRequest: (_db: unknown, raw: unknown) =>
+			real.campaignFromRequest(
+				{
+					select: () => ({
+						from: () => ({
+							where: async () => (raw === 2 ? [{ id: 2, credentialKey: 'other' }] : []),
+						}),
+					}),
+				} as never,
+				raw,
+			),
+	};
+});
 
 const authed = {
 	locals: { session: { slackUserId: 'U_ADMIN', slackUserName: 'Alice', isAdmin: true } },
@@ -30,6 +48,7 @@ function makeEvent(session: typeof authed | typeof unauthed | typeof nonAdmin, b
 const SHEET_ID = '1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';
 
 const save = (over: Record<string, unknown> = {}) => ({
+	campaignId: 2,
 	action: 'save',
 	prefix: 'R10C',
 	spreadsheetId: SHEET_ID,
@@ -71,7 +90,7 @@ describe('the spreadsheet name', () => {
 		expect(mockDescribe).toHaveBeenCalledWith(expect.objectContaining({ spreadsheetId: SHEET_ID }));
 		expect(mockSave).toHaveBeenCalledWith(
 			{},
-			{ prefix: 'R10C', label: 'R10C_Downriver CR', spreadsheetId: SHEET_ID },
+			{ campaignId: 2, prefix: 'R10C', label: 'R10C_Downriver CR', spreadsheetId: SHEET_ID },
 			{ id: 'U_ADMIN', name: 'Alice' },
 		);
 	});
@@ -168,18 +187,42 @@ describe('remove', () => {
 			{ prefix: 'R09A', prefixKey: 'r09a', label: 'x', spreadsheetId: 'y' },
 		]);
 
-		const res = await POST(makeEvent(authed, { action: 'remove', prefixKey: 'r10c' }) as never);
+		const res = await POST(
+			makeEvent(authed, { campaignId: 2, action: 'remove', prefixKey: 'r10c' }) as never,
+		);
 
 		expect(res.status).toBe(200);
-		expect(mockDelete).toHaveBeenCalledWith({}, 'r10c', { id: 'U_ADMIN', name: 'Alice' });
+		expect(mockDelete).toHaveBeenCalledWith({}, 2, 'r10c', { id: 'U_ADMIN', name: 'Alice' });
+		expect(mockLoad).toHaveBeenCalledWith({}, 2);
 		expect((await res.json()).targets).toHaveLength(1);
 		// No Google round trip to delete a rule.
 		expect(mockDescribe).not.toHaveBeenCalled();
 	});
 
 	it('refuses a remove with no key', async () => {
-		const res = await POST(makeEvent(authed, { action: 'remove' }) as never);
+		const res = await POST(makeEvent(authed, { campaignId: 2, action: 'remove' }) as never);
 		expect(res.status).toBe(400);
 		expect(mockDelete).not.toHaveBeenCalled();
+	});
+});
+
+// Each campaign has its own rules, so every request names one.
+describe('campaign', () => {
+	it('refuses a request that names no campaign', async () => {
+		const res = await POST(makeEvent(authed, save({ campaignId: undefined })) as never);
+		expect(res.status).toBe(400);
+		expect(mockSave).not.toHaveBeenCalled();
+	});
+
+	it('refuses a campaign that does not exist', async () => {
+		const res = await POST(makeEvent(authed, save({ campaignId: 99 })) as never);
+		expect(res.status).toBe(404);
+		expect(mockSave).not.toHaveBeenCalled();
+	});
+
+	it('saves the rule for the campaign named, and returns only its rules', async () => {
+		await POST(makeEvent(authed, save()) as never);
+		expect(mockSave.mock.calls[0]![1].campaignId).toBe(2);
+		expect(mockLoad).toHaveBeenCalledWith({}, 2);
 	});
 });

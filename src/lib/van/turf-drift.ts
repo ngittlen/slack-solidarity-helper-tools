@@ -42,6 +42,8 @@ export interface DriftTurfRow {
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	printedListNumber: string | null;
 	/** Canvassers VAN reports for this turf via /minivanExports, or null when
@@ -73,6 +75,8 @@ export interface DriftItem {
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	/** Who holds it in our ledger. */
 	heldBy: string;
@@ -184,6 +188,7 @@ export function driftReport(
 				regionName: turf.regionName,
 				chapterId: turf.chapterId,
 				chapterName: turf.chapterName,
+				campaignId: turf.campaignId,
 				doorCount: turf.doorCount,
 				heldBy: claim.slackUserName,
 				hasListNumber: turf.printedListNumber !== null,

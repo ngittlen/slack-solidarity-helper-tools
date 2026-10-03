@@ -3,17 +3,16 @@ import type { PageServerLoad } from './$types';
 
 import { errMessage } from '$lib/err-message.js';
 import { db } from '$lib/server/db.js';
-import { sheetsServiceAccountEmail } from '$lib/server/google-env.js';
-import type { SheetTarget } from '$lib/van/sheet-routing.js';
+import { credentialStatus, ensureCampaignRows } from '$lib/server/van-env.js';
+import { campaignName } from '$lib/server/van/campaigns.js';
+import { loadCampaignSummaries } from '$lib/server/van/campaign-status-store.js';
+import { campaignListRow, type CampaignListRow } from '$lib/van/campaign-list.js';
 import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import {
 	loadSettings,
-	loadVanChapterFolders,
 	loadVanBlockedUsers,
-	loadVanSheetTargets,
 	type Settings,
-	type VanChapterFolderEntry,
 	type VanBlockedUserEntry,
 } from '$lib/server/settings.js';
 import { loadThemeTokensJson } from '$lib/server/theme.js';
@@ -49,16 +48,10 @@ export interface SettingsPageData {
 	 *  their chip so they can't attempt to remove themselves. */
 	selfSlackUserId: string;
 	settings: Settings;
-	/** Chapter → VAN folder mapping. Empty until an admin fills it in, which is
-	 *  also what makes the turf catalog sync a no-op. */
-	vanChapterFolderMappings: VanChapterFolderEntry[];
+	/** Every VAN campaign, each linking to its own settings page — where its
+	 *  folders, spreadsheets and switches are edited. */
+	vanCampaigns: CampaignListRow[];
 	vanBlockedUsers: VanBlockedUserEntry[];
-	/** Region prefix → campaign spreadsheet, longest prefix first. Empty until
-	 *  an admin fills it in, which is also what keeps the Packet Tracker sync off. */
-	vanSheetTargets: SheetTarget[];
-	/** The address every campaign spreadsheet must be shared with; null when no
-	 *  Google credential is configured. */
-	sheetsServiceAccountEmail: string | null;
 	/** Stored theme overrides as JSON; '{}' when untouched. */
 	themeTokens: string;
 	slackChannels: AutocompleteResult<ChannelEntry> | null;
@@ -72,9 +65,8 @@ export interface SettingsPageData {
 		solidarityChapters?: string;
 		customProperties?: string;
 		userLists?: string;
-		vanChapterFolders?: string;
+		vanCampaigns?: string;
 		vanBlocklist?: string;
-		vanSheetTargets?: string;
 	};
 	oldestFetchedAt: number | null;
 	/** Today's real ticker standings, so the speed slider previews the board
@@ -198,38 +190,55 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// page-fatal — an empty mapping just means no turf is published yet, and a
 	// theme read failure means the editor opens on the brand defaults, which is
 	// also what the site is rendering.
-	const [vanChapterFoldersResult, vanBlockedUsersResult, vanSheetTargetsResult, themeTokensResult] =
-		await Promise.allSettled([
-			loadVanChapterFolders(db),
-			loadVanBlockedUsers(db),
-			loadVanSheetTargets(db),
-			loadThemeTokensJson(db),
-		]);
-	const vanChapterFolderMappings =
-		vanChapterFoldersResult.status === 'fulfilled' ? vanChapterFoldersResult.value : [];
+	// A campaign secret set since the last sync gets its (disabled) row now, so
+	// it shows up the moment an admin looks rather than after the next sync
+	// tick — or never, locally, where no scheduler runs. The same bookkeeping
+	// the sync does: idempotent, and no VAN call.
+	try {
+		await ensureCampaignRows(db);
+	} catch (err) {
+		console.error('[settings] campaign discovery failed:', errMessage(err));
+	}
+	const [vanCampaignsResult, vanBlockedUsersResult, themeTokensResult] = await Promise.allSettled([
+		loadCampaignSummaries(db),
+		loadVanBlockedUsers(db),
+		loadThemeTokensJson(db),
+	]);
+	// Credentials are described, never shown: credentialStatus carries no key.
+	const vanCampaigns =
+		vanCampaignsResult.status === 'fulfilled'
+			? vanCampaignsResult.value.map(({ campaign, liveTurfs, lastSyncAt, lastError }) => {
+					const credentials = credentialStatus(campaign);
+					return campaignListRow({
+						id: campaign.id,
+						name: campaignName(campaign),
+						enabled: campaign.enabled,
+						disabledAt: campaign.disabledAt,
+						credentialState: credentials.state,
+						credentialError: credentials.error,
+						secretName: credentials.secretName,
+						lastSyncAt,
+						lastError,
+						liveTurfs,
+					});
+				})
+			: [];
 	const vanBlockedUsers =
 		vanBlockedUsersResult.status === 'fulfilled' ? vanBlockedUsersResult.value : [];
-	const vanSheetTargets =
-		vanSheetTargetsResult.status === 'fulfilled' ? vanSheetTargetsResult.value : [];
 	const themeTokens = themeTokensResult.status === 'fulfilled' ? themeTokensResult.value : '{}';
-	if (vanChapterFoldersResult.status === 'rejected') {
-		errors.vanChapterFolders = 'Failed to load chapter → VAN folder mapping.';
+	if (vanCampaignsResult.status === 'rejected') {
+		errors.vanCampaigns = 'Failed to load the VAN campaigns.';
 	}
 	if (vanBlockedUsersResult.status === 'rejected') {
 		errors.vanBlocklist = 'Failed to load the turf-checkout block list.';
-	}
-	if (vanSheetTargetsResult.status === 'rejected') {
-		errors.vanSheetTargets = 'Failed to load the checkout spreadsheet rules.';
 	}
 
 	return {
 		pageTitle: 'Settings' as const,
 		selfSlackUserId: locals.session.slackUserId,
 		settings,
-		vanChapterFolderMappings,
+		vanCampaigns,
 		vanBlockedUsers,
-		vanSheetTargets,
-		sheetsServiceAccountEmail: sheetsServiceAccountEmail(),
 		themeTokens,
 		leaderboard,
 		slackChannels,

@@ -11,7 +11,6 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 
 import { normaliseSheetKey, orderSheetTargets, type SheetTarget } from '../van/sheet-routing.js';
-import { DEFAULT_SHEET_TAB_NAME } from '../van/packet-tracker.js';
 
 import {
 	chapterChannelMap,
@@ -170,13 +169,6 @@ export interface Settings {
 	/** Hours a turf handed out in VAN stays out of the pool. Resolved and
 	 *  clamped like the claim TTL. */
 	vanAssignmentTtlHours: number;
-	/** Whether the sync may ask VAN to re-cut map regions. Off unless an admin
-	 *  turns it on — see the note on app_config.vanRegionRefreshEnabled. */
-	vanRegionRefreshEnabled: boolean;
-	/** The Packet Tracker tab, in every one of the
-	 *  campaign's spreadsheets. Resolved, so callers never re-decide what a
-	 *  NULL means. */
-	vanSheetTabName: string;
 	/** Where the signed-out /turfs page's "Join our chat" button goes. DB-only;
 	 *  '' means "no button". */
 	publicJoinUrl: string;
@@ -211,9 +203,6 @@ export type AppConfigPatch = Partial<{
 	vanTurfClaimTtlHours: number;
 	vanTurfMaxConcurrentClaims: number;
 	vanAssignmentTtlHours: number;
-	vanRegionRefreshEnabled: boolean;
-	/** Which tab is the campaign's Packet Tracker. '' restores the default. */
-	vanSheetTabName: string;
 	/** Theme overrides, serialised. One JSON column rather than ~60 colour
 	 *  columns — see the comment on app_config.themeTokens in schema.ts.
 	 *  Validated by themeTokensField before it ever reaches here. */
@@ -364,11 +353,6 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		vanTurfClaimTtlHours: claimOptions.ttlHours,
 		vanTurfMaxConcurrentClaims: claimOptions.maxConcurrentClaims,
 		vanAssignmentTtlHours: claimOptions.vanAssignmentTtlHours,
-		// Strictly true: NULL, and anything a hand edit left behind, is off.
-		vanRegionRefreshEnabled: cfg?.vanRegionRefreshEnabled === true,
-		// NULL and '' both mean the built-in name. Resolved here so the drain
-		// and the settings page cannot disagree about which tab is "the" tab.
-		vanSheetTabName: cfg?.vanSheetTabName?.trim() || DEFAULT_SHEET_TAB_NAME,
 		publicJoinUrl: cfg?.publicJoinUrl?.trim() ?? '',
 	};
 }
@@ -820,8 +804,6 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'vanTurfClaimTtlHours',
 	'vanTurfMaxConcurrentClaims',
 	'vanAssignmentTtlHours',
-	'vanRegionRefreshEnabled',
-	'vanSheetTabName',
 	'themeTokens',
 	'publicJoinUrl',
 ]);
@@ -974,11 +956,18 @@ export interface VanBlockedUserEntry {
 	lastEditedAt: string;
 }
 
-/** Chapter → VAN folder mapping, grouped by chapter and sorted by name so
- *  /settings renders stably. This is an INPUT to the catalog sync: a chapter
- *  absent here has no turf, and the sync is a no-op until an admin fills it in. */
-export async function loadVanChapterFolders(db: Database): Promise<VanChapterFolderEntry[]> {
-	const rows = await db.select().from(vanChapterFolders);
+/** One campaign's chapter → VAN folder mapping, grouped by chapter and sorted
+ *  by name so /settings renders stably. This is an INPUT to that campaign's
+ *  catalog sync: a chapter absent here has no turf from it, and the sync is a
+ *  no-op until an admin fills it in. */
+export async function loadVanChapterFolders(
+	db: Database,
+	campaignId: number,
+): Promise<VanChapterFolderEntry[]> {
+	const rows = await db
+		.select()
+		.from(vanChapterFolders)
+		.where(eq(vanChapterFolders.campaignId, campaignId));
 	const byChapter = new Map<number, VanChapterFolderEntry>();
 	for (const row of rows) {
 		const existing = byChapter.get(row.chapterId);
@@ -1029,16 +1018,32 @@ export async function loadVanBlockedUsers(db: Database): Promise<VanBlockedUserE
  */
 export async function saveVanChapterFolders(
 	db: Database,
-	entry: { chapterId: number; chapterName: string; folderIds: readonly number[] },
+	entry: {
+		campaignId: number;
+		chapterId: number;
+		chapterName: string;
+		folderIds: readonly number[];
+	},
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
-	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, entry.chapterId));
+	// Scoped to the campaign as well as the chapter: the same chapter can have
+	// folders in several campaigns, and saving one campaign's list must not
+	// delete the others.
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(
+				eq(vanChapterFolders.campaignId, entry.campaignId),
+				eq(vanChapterFolders.chapterId, entry.chapterId),
+			),
+		);
 
 	const unique = [...new Set(entry.folderIds)];
 	if (unique.length > 0) {
 		await db.insert(vanChapterFolders).values(
 			unique.map((folderId) => ({
+				campaignId: entry.campaignId,
 				chapterId: entry.chapterId,
 				folderId,
 				chapterName: entry.chapterName,
@@ -1066,13 +1071,22 @@ export async function saveVanChapterFolders(
 export async function saveVanFolderChapters(
 	db: Database,
 	entry: {
+		campaignId: number;
 		folderId: number;
 		chapters: ReadonlyArray<{ chapterId: number; chapterName: string }>;
 	},
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
-	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.folderId, entry.folderId));
+	// A folder id names a folder only within its campaign.
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(
+				eq(vanChapterFolders.campaignId, entry.campaignId),
+				eq(vanChapterFolders.folderId, entry.folderId),
+			),
+		);
 
 	// First spelling of a chapter id wins, so a duplicated pick cannot violate
 	// the (chapter_id, folder_id) primary key.
@@ -1080,6 +1094,7 @@ export async function saveVanFolderChapters(
 	if (unique.size > 0) {
 		await db.insert(vanChapterFolders).values(
 			[...unique].map(([chapterId, chapterName]) => ({
+				campaignId: entry.campaignId,
 				chapterId,
 				folderId: entry.folderId,
 				chapterName,
@@ -1096,10 +1111,15 @@ export async function saveVanFolderChapters(
 
 export async function deleteVanChapterFolders(
 	db: Database,
+	campaignId: number,
 	chapterId: number,
 	editor: Editor,
 ): Promise<void> {
-	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, chapterId));
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(eq(vanChapterFolders.campaignId, campaignId), eq(vanChapterFolders.chapterId, chapterId)),
+		);
 	console.log(
 		`[van] deleted van_chapter_folders chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
 	);
@@ -1116,8 +1136,14 @@ export async function deleteVanChapterFolders(
  * sort, and an unordered list silently returns a shorter match over a longer
  * one, which is a checkout row in the wrong campaign's spreadsheet.
  */
-export async function loadVanSheetTargets(db: Database): Promise<SheetTarget[]> {
-	const rows = await db.select().from(vanSheetTargets);
+export async function loadVanSheetTargets(
+	db: Database,
+	campaignId: number,
+): Promise<SheetTarget[]> {
+	const rows = await db
+		.select()
+		.from(vanSheetTargets)
+		.where(eq(vanSheetTargets.campaignId, campaignId));
 	return orderSheetTargets(
 		rows.map((row) => ({
 			prefix: row.prefix,
@@ -1144,12 +1170,13 @@ export async function loadVanSheetTargets(db: Database): Promise<SheetTarget[]> 
  */
 export async function saveVanSheetTarget(
 	db: Database,
-	entry: { prefix: string; label: string; spreadsheetId: string },
+	entry: { campaignId: number; prefix: string; label: string; spreadsheetId: string },
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
 	const prefixKey = normaliseSheetKey(entry.prefix);
 	const row = {
+		campaignId: entry.campaignId,
 		prefixKey,
 		prefix: entry.prefix.trim(),
 		label: entry.label.trim(),
@@ -1162,7 +1189,7 @@ export async function saveVanSheetTarget(
 		.insert(vanSheetTargets)
 		.values(row)
 		.onConflictDoUpdate({
-			target: vanSheetTargets.prefixKey,
+			target: [vanSheetTargets.campaignId, vanSheetTargets.prefixKey],
 			set: {
 				prefix: row.prefix,
 				label: row.label,
@@ -1172,8 +1199,9 @@ export async function saveVanSheetTarget(
 				lastEditedAt: row.lastEditedAt,
 			},
 		});
-	// Keep every rule for this spreadsheet naming it the same way. Also what
-	// backfills a label that fell back to the bare id because Google was
+	// Keep every rule for this spreadsheet naming it the same way — in every
+	// campaign, since a spreadsheet is one document whoever routes to it. Also
+	// what backfills a label that fell back to the bare id because Google was
 	// unreachable the first time: re-saving any rule for that sheet fixes them
 	// all at once.
 	await db
@@ -1184,18 +1212,23 @@ export async function saveVanSheetTarget(
 	// campaign document — logged so a mis-routed row can be traced to the edit
 	// that caused it.
 	console.log(
-		`[van] saved van_sheet_targets prefix=${row.prefix} sheet=${row.spreadsheetId} by ${editor.id} (${editor.name})`,
+		`[van] saved van_sheet_targets campaign=${row.campaignId} prefix=${row.prefix} sheet=${row.spreadsheetId} by ${editor.id} (${editor.name})`,
 	);
 }
 
 export async function deleteVanSheetTarget(
 	db: Database,
+	campaignId: number,
 	prefixKey: string,
 	editor: Editor,
 ): Promise<void> {
-	await db.delete(vanSheetTargets).where(eq(vanSheetTargets.prefixKey, prefixKey));
+	await db
+		.delete(vanSheetTargets)
+		.where(
+			and(eq(vanSheetTargets.campaignId, campaignId), eq(vanSheetTargets.prefixKey, prefixKey)),
+		);
 	console.log(
-		`[van] deleted van_sheet_targets prefix_key=${prefixKey} by ${editor.id} (${editor.name})`,
+		`[van] deleted van_sheet_targets campaign=${campaignId} prefix_key=${prefixKey} by ${editor.id} (${editor.name})`,
 	);
 }
 

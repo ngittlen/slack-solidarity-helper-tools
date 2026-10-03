@@ -135,6 +135,7 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			releasedAt: vanTurfCheckouts.releasedAt,
+			campaignId: vanTurfs.campaignId,
 			mapRegionId: vanTurfs.mapRegionId,
 			chapterId: vanTurfs.chapterId,
 			name: vanTurfs.name,
@@ -155,6 +156,7 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 			slackUserName: row.slackUserName,
 			releasedAt: row.releasedAt,
 			turf: {
+				campaignId: row.campaignId,
 				mapRegionId: row.mapRegionId,
 				chapterId: row.chapterId,
 				name: row.name,
@@ -190,6 +192,7 @@ async function loadReplacements(db: Db, mapRegionIds: number[]): Promise<Replace
 
 	return rows.map((row) => ({
 		turfId: row.turfId,
+		campaignId: row.campaignId,
 		mapRegionId: row.mapRegionId,
 		name: row.name,
 		printedListNumber: row.printedListNumber,

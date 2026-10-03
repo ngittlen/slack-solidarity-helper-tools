@@ -14,17 +14,22 @@ let db: ReturnType<typeof drizzle>;
 let client: Client;
 const AT = '2026-09-20T00:00:00.000Z';
 
-async function turf(turfId: number, folderId: number, chapterId = 71): Promise<void> {
+async function turf(
+	turfId: number,
+	folderId: number,
+	chapterId = 71,
+	campaignId = 1,
+): Promise<void> {
 	await client.execute(
-		`INSERT INTO van_turfs (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
-		 VALUES (${turfId}, 1, ${folderId}, ${chapterId}, 'Owning chapter', 'Region', 'Turf ${turfId}', 100, '${AT}', '${AT}')`,
+		`INSERT INTO van_turfs (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+		 VALUES (${turfId}, ${campaignId}, ${turfId}, 1, ${folderId}, ${chapterId}, 'Owning chapter', 'Region', 'Turf ${turfId}', 100, '${AT}', '${AT}')`,
 	);
 }
 
-async function map(chapterId: number, folderId: number): Promise<void> {
+async function map(chapterId: number, folderId: number, campaignId = 1): Promise<void> {
 	await client.execute(
-		`INSERT INTO van_chapter_folders (chapter_id, folder_id, chapter_name, last_edited_by, last_edited_by_name, last_edited_at)
-		 VALUES (${chapterId}, ${folderId}, 'Chapter ${chapterId}', 'U_ADMIN', 'Alice', '${AT}')`,
+		`INSERT INTO van_chapter_folders (campaign_id, chapter_id, folder_id, chapter_name, last_edited_by, last_edited_by_name, last_edited_at)
+		 VALUES (${campaignId}, ${chapterId}, ${folderId}, 'Chapter ${chapterId}', 'U_ADMIN', 'Alice', '${AT}')`,
 	);
 }
 
@@ -50,6 +55,22 @@ afterEach(() => {
 });
 
 describe('visibleToChapter', () => {
+	// Folder ids are VAN's, unique only within one committee. A chapter mapped
+	// to campaign 1's folder 68295 must not see campaign 2's folder 68295.
+	it("does not show another campaign's folder that happens to share an id", async () => {
+		await client.execute(
+			"INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at) VALUES (2, 'other', 1, 's', 's', 'x')",
+		);
+		await turf(100, 68295);
+		await turf(900, 68295, 71, 2);
+		await map(71, 68295);
+		await map(72, 68295, 2);
+
+		expect(await visible(71)).toEqual([100]);
+		expect(await visible(72)).toEqual([900]);
+		expect(await foldersForChapter(db, 72)).toEqual(['2:68295']);
+	});
+
 	it('shows a shared folder’s turf to every chapter mapped to it', async () => {
 		await turf(100, 68295);
 		await turf(200, 68295);
@@ -111,8 +132,9 @@ describe('foldersForChapter', () => {
 		await map(71, 68299);
 		await map(72, 68295);
 
-		expect((await foldersForChapter(db, 71)).sort((a, b) => a - b)).toEqual([68295, 68299]);
-		expect(await foldersForChapter(db, 72)).toEqual([68295]);
+		// Campaign-qualified: a folder id alone is ambiguous across campaigns.
+		expect((await foldersForChapter(db, 71)).sort()).toEqual(['1:68295', '1:68299']);
+		expect(await foldersForChapter(db, 72)).toEqual(['1:68295']);
 	});
 
 	it('is empty for a chapter with no folders', async () => {

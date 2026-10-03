@@ -34,6 +34,8 @@ export interface ActivityRow {
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	slackUserId: string;
 	slackUserName: string;
@@ -62,6 +64,8 @@ export interface ActivityEvent {
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	slackUserId: string;
 	slackUserName: string;
@@ -170,6 +174,7 @@ export function activityEvents(
 			regionName: row.regionName,
 			chapterId: row.chapterId,
 			chapterName: row.chapterName,
+			campaignId: row.campaignId,
 			doorCount: row.doorCount,
 			slackUserId: row.slackUserId,
 			slackUserName: row.slackUserName,

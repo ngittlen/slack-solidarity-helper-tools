@@ -19,15 +19,20 @@
  * The next catalog sync then finds the store current and switches the drift
  * report on; this script does not touch van_turfs or van_sync_state itself.
  *
+ * One campaign per run: `--campaign <key>` (default `primary`), whose key reads
+ * VAN and under whose id the exports are stored (scripts/campaign-arg.ts).
+ *
  * Required env vars:
- *   VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE,
+ *   VAN_CAMPAIGN_<KEY>, or for `primary` the legacy VAN_APP_NAME, VAN_API_KEY,
+ *   VAN_DATABASE_MODE;
  *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN (unless the URL starts with file:)
  */
 
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
-import { createVanClient, type VanDatabaseMode } from '../src/lib/server/van/client.js';
+import { createVanClient } from '../src/lib/server/van/client.js';
+import { campaignCredential, campaignKeyArg, campaignRow } from './campaign-arg.js';
 import { pullMinivanExports } from '../src/lib/server/van/minivan-export-store.js';
 
 // Per call, not overall: each call resumes from the newest date the last one
@@ -37,36 +42,29 @@ const PAGES_PER_CALL = 200;
 // PAGES_PER_CALL pages). Thirty days has never needed more than three.
 const MAX_CALLS = 20;
 
-const appName = process.env.VAN_APP_NAME ?? '';
-const apiKey = process.env.VAN_API_KEY ?? '';
-const rawMode = (process.env.VAN_DATABASE_MODE ?? '').trim();
-
-if (!appName || !apiKey) {
-	console.error('Missing required env vars: VAN_APP_NAME, VAN_API_KEY');
-	process.exit(1);
-}
-if (rawMode !== '0' && rawMode !== '1') {
-	console.error(`VAN_DATABASE_MODE must be 0 (My Voters) or 1 (My Campaign), got "${rawMode}".`);
-	process.exit(1);
-}
+const CAMPAIGN_KEY = campaignKeyArg();
+const credential = campaignCredential(CAMPAIGN_KEY);
 
 const db = drizzle(createClient(dbConfig));
 const client = createVanClient({
-	appName,
-	apiKey,
-	databaseMode: Number(rawMode) as VanDatabaseMode,
+	appName: credential.appName,
+	apiKey: credential.apiKey,
+	databaseMode: credential.databaseMode,
 });
 
 async function main(): Promise<void> {
 	// Which database is about to be written is the one thing an operator must
 	// not have to guess — same as van-sync-once.ts.
 	console.log(`\nTarget database: ${dbConfig.url}`);
-	console.log(`VAN app: ${appName}, mode ${rawMode}\n`);
+	const campaign = await campaignRow(db, CAMPAIGN_KEY);
+	console.log(`Campaign: ${campaign.label ?? CAMPAIGN_KEY} (id ${campaign.id})`);
+	console.log(`VAN app: ${credential.appName}, mode ${credential.databaseMode}\n`);
 
 	let previousFrom: string | null = null;
 	for (let call = 1; call <= MAX_CALLS; call++) {
 		const started = Date.now();
 		const result = await pullMinivanExports(db, client, {
+			campaignId: campaign.id,
 			now: new Date(),
 			maxPages: PAGES_PER_CALL,
 		});

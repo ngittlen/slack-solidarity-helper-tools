@@ -46,7 +46,13 @@ function recutClaim(over: Partial<RecutClaim> = {}): RecutClaim {
 		slackUserId: 'U1',
 		slackUserName: 'Dana',
 		releasedAt: new Date(NOW.getTime() - 10 * 60_000).toISOString(),
-		turf: { mapRegionId: 508413, chapterId: 7, name: 'Turf 01', regionName: 'Cambridge North' },
+		turf: {
+			campaignId: 1,
+			mapRegionId: 508413,
+			chapterId: 7,
+			name: 'Turf 01',
+			regionName: 'Cambridge North',
+		},
 		...over,
 	};
 }
@@ -54,6 +60,7 @@ function recutClaim(over: Partial<RecutClaim> = {}): RecutClaim {
 function replacement(over: Partial<ReplacementTurf> = {}): ReplacementTurf {
 	return {
 		turfId: 56502,
+		campaignId: 1,
 		mapRegionId: 508413,
 		name: 'Turf 01',
 		printedListNumber: '99999999-11111',
@@ -169,6 +176,15 @@ describe('planReconciliation — re-cut claims', () => {
 });
 
 describe('findReplacement', () => {
+	// Region ids are VAN's and unique only within one campaign. Another
+	// campaign's re-cut of ITS region 508413 is not this turf's replacement,
+	// however well the names match.
+	it("never pairs with another campaign's turf in a region with the same id", () => {
+		expect(findReplacement(recutClaim(), [replacement({ campaignId: 2 })])).toBeNull();
+		// And with the right campaign the same replacement is found.
+		expect(findReplacement(recutClaim(), [replacement({ campaignId: 1 })])?.turfId).toBe(56502);
+	});
+
 	const target = recutClaim();
 
 	it('matches across casing and inner whitespace', () => {

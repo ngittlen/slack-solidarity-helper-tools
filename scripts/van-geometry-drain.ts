@@ -8,7 +8,7 @@
  * export job each — takes about a day of scheduled runs to render as shapes.
  * This finishes it in one sitting.
  *
- * It takes VAN_SYNC_LOCK, the same lock the endpoint takes. That is the whole
+ * It takes the campaign's sync lock, the same lock the endpoint takes. That is the whole
  * safety story: without it a cron run could pick up the same queue rows this is
  * working on and submit a second export job for each. The lock is taken per
  * one-minute slice, not for the whole run: the first roster pass is hours of
@@ -31,8 +31,13 @@
  * Stop it with Ctrl-C: the lock is released, the row being worked stays
  * resumable (it already has its export job id), and nothing is lost.
  *
+ * One campaign per run: `--campaign <key>` (default `primary`) — its key, its
+ * queue, its lock (scripts/campaign-arg.ts). Its export job type is the one on
+ * its van_campaigns row, or for `primary` VAN_EXPORT_JOB_TYPE_ID as a fallback.
+ *
  * Required env vars:
- *   VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE, VAN_EXPORT_JOB_TYPE_ID,
+ *   VAN_CAMPAIGN_<KEY>, or for `primary` the legacy VAN_APP_NAME, VAN_API_KEY,
+ *   VAN_DATABASE_MODE (and VAN_EXPORT_JOB_TYPE_ID if the row has none);
  *   APP_URL, INTERNAL_CRON_SECRET, VAN_ID_HASH_SECRET (optional: rosters),
  *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN (unless the URL starts with file:)
  */
@@ -40,14 +45,20 @@
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
-import { createVanClient, type VanDatabaseMode } from '../src/lib/server/van/client.js';
+import { createVanClient } from '../src/lib/server/van/client.js';
 import { runGeometryQueue } from '../src/lib/server/van/geometry-worker.js';
-import { VAN_SYNC_LOCK } from '../src/lib/server/van/locks.js';
+import { vanContactLock, vanSyncLock } from '../src/lib/server/van/locks.js';
+import { PRIMARY_CAMPAIGN_KEY } from '../src/lib/server/van/campaign-credentials.js';
+import {
+	campaignCredential,
+	campaignExportJobTypeId,
+	campaignKeyArg,
+	campaignRow,
+} from './campaign-arg.js';
 import { acquireSyncLock, releaseSyncLock } from '../src/lib/server/sync-lock.js';
 import { exportCallbackUrl } from '../src/lib/server/van/webhook-token.js';
 import { createPersonHasher } from '../src/lib/server/van/person-hash.js';
 import { rosterProgress, runContactSync } from '../src/lib/server/van/contact-sync.js';
-import { VAN_CONTACT_LOCK } from '../src/lib/server/van/locks.js';
 import { loadGeometryProgress } from '../src/lib/server/van/geometry-progress-store.js';
 import { percentShaped } from '../src/lib/van/geometry-progress.js';
 
@@ -67,10 +78,8 @@ const MAX_ITEMS = args.includes('--max') ? flag('max', 0) || null : null;
  *  going quiet for half an hour. Each slice is one `runGeometryQueue` call. */
 const SLICE_MS = 60 * 1000;
 
-const appName = process.env.VAN_APP_NAME ?? '';
-const apiKey = process.env.VAN_API_KEY ?? '';
-const rawMode = (process.env.VAN_DATABASE_MODE ?? '').trim();
-const exportJobTypeId = Number(process.env.VAN_EXPORT_JOB_TYPE_ID ?? '');
+const CAMPAIGN_KEY = campaignKeyArg(args);
+const credential = campaignCredential(CAMPAIGN_KEY);
 const appUrl = process.env.APP_URL ?? '';
 const cronSecret = process.env.INTERNAL_CRON_SECRET ?? '';
 const hashSecret = process.env.VAN_ID_HASH_SECRET ?? '';
@@ -81,11 +90,6 @@ function fail(message: string): never {
 	process.exit(1);
 }
 
-if (!appName || !apiKey) fail('Missing required env vars: VAN_APP_NAME, VAN_API_KEY');
-if (rawMode !== '0' && rawMode !== '1') fail(`VAN_DATABASE_MODE must be 0 or 1, got "${rawMode}".`);
-if (!Number.isFinite(exportJobTypeId) || exportJobTypeId <= 0) {
-	fail('VAN_EXPORT_JOB_TYPE_ID must be set (5 = VoterCircle on this key).');
-}
 // VAN requires an HTTPS webhook on POST /exportJobs and rejects the request
 // without one, so this is a hard requirement rather than a nicety — even though
 // every job here is polled rather than waited for.
@@ -94,10 +98,13 @@ if (!cronSecret) fail('INTERNAL_CRON_SECRET must be set — it signs the per-tur
 
 const db = drizzle(createClient(dbConfig));
 const client = createVanClient({
-	appName,
-	apiKey,
-	databaseMode: Number(rawMode) as VanDatabaseMode,
+	appName: credential.appName,
+	apiKey: credential.apiKey,
+	databaseMode: credential.databaseMode,
 });
+
+/** Set by main() once the campaign row is read. */
+let campaignId = 0;
 
 /** Lock TTL for one slice, with room for the slice to overrun a little. */
 const LOCK_TTL_MS = 3 * SLICE_MS;
@@ -123,7 +130,7 @@ const totals = {
  * Pull VAN's ContactHistory up to now and recompute every turf's uncontacted
  * doors — what the scheduled sync does ~45 seconds at a time, done here in one
  * sitting so that van:sync followed by van:drain leaves the counts current.
- * Takes the contact pull's own lock, not VAN_SYNC_LOCK, per call.
+ * Takes the contact pull's own lock, not the sync lock, per call.
  */
 async function pullContacts(deadline: number, isStopping: () => boolean): Promise<void> {
 	if (!roster) return;
@@ -133,7 +140,7 @@ async function pullContacts(deadline: number, isStopping: () => boolean): Promis
 	let windows = 0;
 	let contacts = 0;
 	while (!isStopping() && Date.now() < until) {
-		const token = await acquireSyncLock(db, VAN_CONTACT_LOCK, 3 * SLICE_MS);
+		const token = await acquireSyncLock(db, vanContactLock(campaignId), 3 * SLICE_MS);
 		if (!token) {
 			console.log('  … a scheduled sync is pulling contacts; waiting for it');
 			await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
@@ -142,11 +149,12 @@ async function pullContacts(deadline: number, isStopping: () => boolean): Promis
 		let result: Awaited<ReturnType<typeof runContactSync>>;
 		try {
 			result = await runContactSync(db, client, {
+				campaignId,
 				hasher: roster,
 				timeBudgetMs: Math.min(SLICE_MS, until - Date.now()),
 			});
 		} finally {
-			await releaseSyncLock(db, VAN_CONTACT_LOCK, token);
+			await releaseSyncLock(db, vanContactLock(campaignId), token);
 		}
 		windows += result.windowsApplied;
 		contacts += result.contactsRead;
@@ -166,8 +174,22 @@ async function pullContacts(deadline: number, isStopping: () => boolean): Promis
 }
 
 async function main(): Promise<void> {
+	const campaign = await campaignRow(db, CAMPAIGN_KEY);
+	campaignId = campaign.id;
+	// The app's own rule (exportJobTypeIdFor), so the drain and the sync agree.
+	const exportJobTypeId = campaignExportJobTypeId(campaign);
+	if (exportJobTypeId === null) {
+		fail(
+			`No export job type for ${CAMPAIGN_KEY} — set it on the campaign` +
+				(CAMPAIGN_KEY === PRIMARY_CAMPAIGN_KEY ? ' or in VAN_EXPORT_JOB_TYPE_ID' : '') +
+				' (5 = VoterCircle on the primary key).',
+		);
+	}
 	console.log(`\nGeometry drain — ${dbConfig.url}`);
-	console.log(`VAN app: ${appName}, mode ${rawMode}, export job type ${exportJobTypeId}`);
+	console.log(`Campaign: ${campaign.label ?? CAMPAIGN_KEY} (id ${campaign.id})`);
+	console.log(
+		`VAN app: ${credential.appName}, mode ${credential.databaseMode}, export job type ${exportJobTypeId}`,
+	);
 	console.log(roster ? 'Rosters: on' : 'Rosters: off (VAN_ID_HASH_SECRET unset)');
 	console.log(
 		`Budget: ${MINUTES} min · ${CONCURRENCY} at a time${MAX_ITEMS ? ` · max ${MAX_ITEMS} item(s)` : ''}\n`,
@@ -200,7 +222,7 @@ async function main(): Promise<void> {
 		let slice = 0;
 		while (!stopping && Date.now() < deadline) {
 			const remaining = deadline - Date.now();
-			const token = await acquireSyncLock(db, VAN_SYNC_LOCK, LOCK_TTL_MS);
+			const token = await acquireSyncLock(db, vanSyncLock(campaignId), LOCK_TTL_MS);
 			if (!token) {
 				console.log('  … a scheduled sync holds the lock; waiting for it');
 				await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
@@ -209,6 +231,7 @@ async function main(): Promise<void> {
 			let result: Awaited<ReturnType<typeof runGeometryQueue>>;
 			try {
 				result = await runGeometryQueue(db, client, {
+					campaignId,
 					exportJobTypeId,
 					webhookUrlFor: (turfId) => exportCallbackUrl(appUrl, cronSecret, turfId),
 					timeBudgetMs: Math.min(SLICE_MS, remaining),
@@ -219,7 +242,7 @@ async function main(): Promise<void> {
 					// channel does not need a line per dead letter from a backfill.
 				});
 			} finally {
-				await releaseSyncLock(db, VAN_SYNC_LOCK, token);
+				await releaseSyncLock(db, vanSyncLock(campaignId), token);
 			}
 			// Let a scheduled sync in. It polls for the lock while this holds it,
 			// and without a pause the next slice re-takes the lock before the

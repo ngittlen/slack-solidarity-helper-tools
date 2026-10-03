@@ -187,6 +187,35 @@ describe('buildTurfListBlocks', () => {
 		expect(text).toContain('Washtenaw County');
 	});
 
+	// specs/012-multi-van-campaigns: while more than one campaign is enabled.
+	it('names the turf’s campaign when the payload carries a badge for it', () => {
+		const turfs = [view({ campaignId: 2 }), view({ turfId: 101, name: 'Turf 02' })];
+		const body = serialise(
+			buildTurfListBlocks({ ...base, turfs, campaignBadges: { 2: 'El-Sayed' } }).blocks,
+		);
+		expect(body).toContain('El-Sayed · 250 doors');
+		// Only on the row whose campaign shows one.
+		expect(body.match(/El-Sayed/g)).toHaveLength(1);
+	});
+
+	// The holder still has it; the campaign has stopped handing it out. Same
+	// sentence as the web card.
+	it('tells the holder when their turf’s campaign was disabled', () => {
+		const turfs = [
+			view({ status: 'held-by-you', claimable: false, campaignId: 2, campaignDisabled: true }),
+		];
+		const body = serialise(
+			buildTurfListBlocks({ ...base, turfs, campaignBadges: { 2: 'El-Sayed' } }).blocks,
+		);
+		expect(body).toContain('El-Sayed has stopped handing out turf here');
+	});
+
+	it('names no campaign while badges are off', () => {
+		const body = serialise(buildTurfListBlocks({ ...base, turfs: [view()] }).blocks);
+		// The facts line starts with the doors, as it always has.
+		expect(body).toContain('Ann Arbor\\n250 doors');
+	});
+
 	it('shows distance only when the volunteer’s location is known', () => {
 		const without = buildTurfListBlocks({ ...base, turfs: [view()] });
 		expect(serialise(without.blocks)).not.toContain('away');
@@ -391,6 +420,13 @@ describe('buildClaimedBlocks', () => {
 		appUrl: APP_URL,
 	};
 
+	it('says whose list number it is while badges are shown', () => {
+		const named = serialise(buildClaimedBlocks({ ...input, campaignBadge: 'El-Sayed' }).blocks);
+		expect(named).toContain('Your El-Sayed MiniVAN list number');
+		const plain = serialise(buildClaimedBlocks(input).blocks);
+		expect(plain).toContain('Your MiniVAN list number');
+	});
+
 	it('shows the list number and the three steps', () => {
 		const body = serialise(buildClaimedBlocks(input).blocks);
 		expect(body).toContain('35536745-88712');
@@ -492,6 +528,24 @@ describe('buildMineBlocks', () => {
 		turfs,
 		now: new Date('2026-08-23T06:00:00.000Z'),
 		appUrl: APP_URL,
+	});
+
+	it('says whose list number each is while badges are shown', () => {
+		const body = serialise(
+			buildMineBlocks(input([turf({ campaignBadge: 'El-Sayed' }), turf({ turfId: 502 })])).blocks,
+		);
+		expect(body).toContain('El-Sayed MiniVAN list number');
+		expect(body.match(/MiniVAN list number/g)).toHaveLength(2);
+	});
+
+	it('tells the holder when a turf’s campaign was disabled', () => {
+		const body = serialise(
+			buildMineBlocks(
+				input([turf({ campaignBadge: 'El-Sayed', campaignDisabled: true }), turf({ turfId: 502 })]),
+			).blocks,
+		);
+		expect(body.match(/has stopped handing out turf here/g)).toHaveLength(1);
+		expect(body).toContain('El-Sayed has stopped');
 	});
 
 	it('names each turf, its doors and how long is left', () => {

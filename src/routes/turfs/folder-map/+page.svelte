@@ -1,6 +1,7 @@
 <script lang="ts">
 	// Which VAN folder covers which counties — the page for deciding what each
-	// folder should be mapped to under Settings → Chapter → VAN folders.
+	// folder should be mapped to on its campaign's page under Settings → VAN
+	// campaigns.
 	//
 	// Names, not geometry: see the note in +page.server.ts. The caption and the
 	// note below say so on the page too, because a dot on a street map invites
@@ -53,7 +54,17 @@
 
 <main>
 	<header>
-		<h1>VAN folders by county</h1>
+		<h1>VAN folders by county — {data.campaign.name}</h1>
+		{#if data.campaigns.length > 1}
+			<nav class="campaigns" aria-label="Campaign">
+				{#each data.campaigns as c (c.id)}
+					<a
+						href="{resolve('/turfs/folder-map')}?campaign={c.id}"
+						aria-current={c.id === data.campaign.id ? 'page' : undefined}>{c.name}</a
+					>
+				{/each}
+			</nav>
+		{/if}
 		<p class="note">
 			Where each VAN folder's turf is, worked out from the county in each region's name. Every dot
 			sits at a
@@ -71,7 +82,10 @@
 		{#if data.fetchedAt}
 			<p class="note">
 				Read live from VAN, cached for 10 minutes.
-				<a href="{resolve('/turfs/folder-map')}?refresh=1" data-sveltekit-reload>Refresh now</a>
+				<a
+					href="{resolve('/turfs/folder-map')}?campaign={data.campaign.id}&refresh=1"
+					data-sveltekit-reload>Refresh now</a
+				>
 			</p>
 		{/if}
 	</header>
@@ -79,7 +93,26 @@
 	{#if data.error}
 		<p class="error">Could not read folders from VAN: {data.error}</p>
 	{:else if data.folders.length === 0}
-		<p class="note">No folder this key can see holds any turf.</p>
+		{#if data.emptyFolders.length === 0 && data.errors.length === 0}
+			<p class="note">
+				This key can see no folders. Share the campaign's folders with its API user in VAN.
+			</p>
+		{:else if data.emptyFolders.length === 0}
+			<!-- Folders exist, but VAN refused their regions: the errors below say
+			     why, and "share the folders" would send the admin the wrong way. -->
+			<p class="note">
+				VAN would not show the regions in any folder this key can see — see below for why.
+			</p>
+		{:else}
+			<p class="note">
+				This key can see {data.emptyFolders.length}
+				folder{data.emptyFolders.length === 1 ? '' : 's'}, but none has turf cut yet — no map
+				regions in any of them. Map them to chapters now if you like; their turf appears after the
+				next sync once regions are cut in VAN.
+			</p>
+			{@render chapterNotes()}
+			{@render emptyFolderTable(false)}
+		{/if}
 	{:else}
 		<p class="totals">
 			{totals.folders} folder{totals.folders === 1 ? '' : 's'} with turf · {totals.routes.toLocaleString(
@@ -113,12 +146,7 @@
 			{/each}
 		</ul>
 
-		{#if data.chaptersError}
-			<p class="note">Chapter list unavailable: {data.chaptersError}</p>
-		{/if}
-		{#if data.mappingError}
-			<p class="note">Existing mapping could not be read: {data.mappingError}</p>
-		{/if}
+		{@render chapterNotes()}
 
 		<table>
 			<caption>
@@ -154,6 +182,7 @@
 						</td>
 						<td class="chapters-cell">
 							<FolderChapterPicker
+								campaignId={data.campaign.id}
 								folderId={folder.folderId}
 								folderName={folder.name}
 								chapters={data.chapters}
@@ -164,7 +193,54 @@
 				{/each}
 			</tbody>
 		</table>
+
+		{#if data.emptyFolders.length > 0}
+			{@render emptyFolderTable(true)}
+		{/if}
 	{/if}
+
+	{#snippet chapterNotes()}
+		{#if data.chaptersError}
+			<p class="note">Chapter list unavailable: {data.chaptersError}</p>
+		{/if}
+		{#if data.mappingError}
+			<p class="note">Existing mapping could not be read: {data.mappingError}</p>
+		{/if}
+	{/snippet}
+
+	<!-- Folders with no map region cut yet: nothing to put on the map, but
+	     still worth mapping to chapters ahead of the cut. -->
+	{#snippet emptyFolderTable(withHeading: boolean)}
+		{#if withHeading}
+			<h2 class="empty-heading">Folders with no turf cut yet</h2>
+		{/if}
+		<table>
+			<thead>
+				<tr>
+					<th scope="col">Folder</th>
+					<th scope="col">Id</th>
+					<th scope="col">Chapters that see this folder</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each data.emptyFolders as folder (folder.folderId)}
+					<tr>
+						<th scope="row">{folder.name}</th>
+						<td><code>{folder.folderId}</code></td>
+						<td class="chapters-cell">
+							<FolderChapterPicker
+								campaignId={data.campaign.id}
+								folderId={folder.folderId}
+								folderName={folder.name}
+								chapters={data.chapters}
+								selected={mappedChapters.get(folder.folderId) ?? []}
+							/>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	{/snippet}
 
 	{#if data.errors.length > 0}
 		<section class="folder-errors">
@@ -177,6 +253,23 @@
 </main>
 
 <style>
+	.empty-heading {
+		margin: 24px 0 8px;
+		font-size: 1.05rem;
+	}
+
+	.campaigns {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 12px;
+		margin: 4px 0 8px;
+	}
+
+	.campaigns a[aria-current='page'] {
+		font-weight: 600;
+		text-decoration: none;
+	}
+
 	main {
 		max-width: 72rem;
 		margin: 0 auto;

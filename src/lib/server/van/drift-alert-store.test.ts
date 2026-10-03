@@ -36,6 +36,7 @@ async function turf(
 ): Promise<void> {
 	const row: Record<string, string | number | null> = {
 		turf_id: turfId,
+		van_map_route_id: turfId,
 		map_region_id: 1,
 		folder_id: 1,
 		chapter_id: 71,
@@ -110,9 +111,9 @@ async function stampsInDb(): Promise<
  *  half of the comparison legible. Without it every test would be a no-op. */
 async function vanSideVisible(ok = true): Promise<void> {
 	await client.execute(
-		`INSERT INTO van_sync_state (id, last_sync_at, minivan_exports_ok)
+		`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok)
 		 VALUES (1, '${iso(NOW.getTime())}', ${ok ? 1 : 0})
-		 ON CONFLICT(id) DO UPDATE SET minivan_exports_ok = ${ok ? 1 : 0}`,
+		 ON CONFLICT(campaign_id) DO UPDATE SET minivan_exports_ok = ${ok ? 1 : 0}`,
 	);
 }
 
@@ -166,6 +167,35 @@ describe('sendDriftAlerts', () => {
 		expect(mockPostAlert).toHaveBeenCalledTimes(1);
 		expect(mockPostAlert.mock.calls[0]![0]).toBe(CHANNEL);
 		expect(lastText()).toContain('held by Dana');
+	});
+
+	// specs/012-multi-van-campaigns: with two campaigns enabled, each line says
+	// whose VAN to look in; with one, none does.
+	it('names the campaign of each line while more than one is enabled', async () => {
+		await vanSideVisible();
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
+		await client.execute(`UPDATE van_campaigns SET label = 'One Team Michigan' WHERE id = 1`);
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, label, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 'El-Sayed', 1, 's', 's', 'x')`,
+		);
+
+		await run();
+
+		expect(lastText()).toContain('*Turf 100* — One Team Michigan · Ann Arbor');
+	});
+
+	it('names no campaign while only one is enabled', async () => {
+		await vanSideVisible();
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
+
+		await run();
+
+		expect(lastText()).toContain('*Turf 100* — Ann Arbor');
 	});
 
 	it('says nothing when the two sides agree', async () => {

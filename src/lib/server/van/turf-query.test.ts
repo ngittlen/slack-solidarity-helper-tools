@@ -5,13 +5,16 @@ import { latestWalkReports } from './checkout-store.js';
 // Walk reports have their own tests on real SQLite (checkout-store.test.ts);
 // the stubbed db below answers only the select chains this module scripts.
 vi.mock('./checkout-store.js', () => ({ latestWalkReports: vi.fn(async () => new Map()) }));
-vi.mock('./contact-sync.js', () => ({
-	loadContactMarks: vi.fn(async () => ({ cursor: null, countedThrough: null })),
+vi.mock('./contact-sync.js', async (importOriginal) => ({
+	// The real lookup, over no marks: no campaign's pull has run.
+	marksFor: (await importOriginal<typeof import('./contact-sync.js')>()).marksFor,
+	loadContactMarks: vi.fn(async () => new Map()),
 }));
 
 function turfRow(over: Record<string, unknown> = {}) {
 	return {
 		turfId: 100,
+		campaignId: 1,
 		mapRegionId: 10,
 		chapterId: 71,
 		name: 'Turf 01',
@@ -53,7 +56,12 @@ function makeDb(results: unknown[][]) {
 	const db = {
 		select: (...args: unknown[]) => {
 			calls.push(args);
-			return { from: () => ({ where: async () => results[call++] ?? [] }) };
+			// `.from()` awaited directly is the contact-pull marks read: empty,
+			// and not one of the scripted results.
+			return {
+				from: () =>
+					Object.assign(Promise.resolve([]), { where: async () => results[call++] ?? [] }),
+			};
 		},
 	} as never;
 	return { db, calls, queryCount: () => call };
@@ -224,6 +232,7 @@ describe('loadChapterTurfs', () => {
 				start: 0,
 				nextOffset: 0,
 				unavailable: 0,
+				campaignBadges: null,
 			});
 			expect(queryCount()).toBe(0);
 		});
@@ -248,9 +257,23 @@ describe('loadChapterTurfs', () => {
 	});
 
 	it('marks turf in a region VAN is re-cutting as updating', async () => {
-		const { db } = makeDb([[turfRow({ mapRegionId: 10 })], [], [{ mapRegionId: 10 }]]);
+		const { db } = makeDb([
+			[turfRow({ mapRegionId: 10 })],
+			[],
+			[{ campaignId: 1, mapRegionId: 10 }],
+		]);
 		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
 		expect(turfs[0]!.updating).toBe(true);
+	});
+
+	it("does not mark turf updating for another campaign's region with the same id", async () => {
+		const { db } = makeDb([
+			[turfRow({ mapRegionId: 10 })],
+			[],
+			[{ campaignId: 2, mapRegionId: 10 }],
+		]);
+		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
+		expect('updating' in turfs[0]!).toBe(false);
 	});
 
 	describe('claimableOnly', () => {

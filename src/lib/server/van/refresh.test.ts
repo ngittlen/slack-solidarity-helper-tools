@@ -120,7 +120,7 @@ describe('loadRegionStates', () => {
 			}),
 		);
 
-		const states = await loadRegionStates(db);
+		const states = await loadRegionStates(db, 1);
 		expect(states).toEqual([
 			{
 				folderId: 1,
@@ -143,7 +143,7 @@ describe('loadRegionStates', () => {
 
 	it('reads nothing else when no region has live turf', async () => {
 		const { db } = makeDb([[]]);
-		expect(await loadRegionStates(db)).toEqual([]);
+		expect(await loadRegionStates(db, 1)).toEqual([]);
 	});
 });
 
@@ -165,7 +165,7 @@ describe('runRefreshSweep — on demand', () => {
 			}),
 		);
 
-		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), { now: NOW });
+		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), 1, { now: NOW });
 
 		expect(refreshMapRegion).toHaveBeenCalledWith(1152, 10);
 		expect(result.regionsRefreshed).toBe(1);
@@ -201,7 +201,7 @@ describe('runRefreshSweep — on demand', () => {
 			}),
 		);
 
-		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), { now: NOW });
+		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), 1, { now: NOW });
 
 		expect(result.failed).toBe(1);
 		expect(result.warnings[0]).toContain('FORBIDDEN');
@@ -236,7 +236,7 @@ describe('runRefreshSweep — on demand', () => {
 			}),
 		);
 
-		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), { now: NOW });
+		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), 1, { now: NOW });
 		expect(refreshMapRegion).not.toHaveBeenCalled();
 		expect(result.regionsDeferred).toBe(1);
 	});
@@ -254,7 +254,7 @@ describe('runRefreshSweep — nightly', () => {
 			}),
 		);
 
-		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), { now: NIGHT });
+		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), 1, { now: NIGHT });
 
 		// No region id: the folder-wide form.
 		expect(refreshMapRegion).toHaveBeenCalledTimes(1);
@@ -266,7 +266,7 @@ describe('runRefreshSweep — nightly', () => {
 	it('stays out of the way during the day', async () => {
 		const refreshMapRegion = vi.fn(async () => undefined);
 		const { db } = makeDb(regionReads({ regions: [{ folderId: 1152, mapRegionId: 10 }] }));
-		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), { now: NOW });
+		const result = await runRefreshSweep(db, makeClient({ refreshMapRegion }), 1, { now: NOW });
 		expect(refreshMapRegion).not.toHaveBeenCalled();
 		expect(result.nightlyFolders).toEqual([]);
 	});
@@ -287,7 +287,7 @@ describe('runRefreshSweep — nightly', () => {
 			}),
 		);
 
-		const result = await runRefreshSweep(db, makeClient(), { now: NOW });
+		const result = await runRefreshSweep(db, makeClient(), 1, { now: NOW });
 		expect(result.staleCleared).toBe(1);
 		expect(updates).toEqual([{ inFlightSince: null }]);
 	});
@@ -302,7 +302,7 @@ describe('settleRefreshes', () => {
 
 	it('closes a refresh out once VAN reports a newer dateRefreshed', async () => {
 		const { db, updates } = makeDb([[inFlightRow]]);
-		const settled = await settleRefreshes(db, [
+		const settled = await settleRefreshes(db, 1, [
 			{ folderId: 1152, mapRegionId: 10, dateRefreshed: '2026-09-12T12:30:00.000Z' },
 		]);
 		expect(settled).toBe(1);
@@ -311,7 +311,7 @@ describe('settleRefreshes', () => {
 
 	it('keeps waiting when the region reports the timestamp it already had', async () => {
 		const { db, updates } = makeDb([[inFlightRow]]);
-		const settled = await settleRefreshes(db, [
+		const settled = await settleRefreshes(db, 1, [
 			{ folderId: 1152, mapRegionId: 10, dateRefreshed: '2026-09-12T11:00:00.000Z' },
 		]);
 		expect(settled).toBe(0);
@@ -323,24 +323,24 @@ describe('settleRefreshes', () => {
 		// clears the flag; nothing here should guess.
 		const { db, updates } = makeDb([[inFlightRow]]);
 		expect(
-			await settleRefreshes(db, [{ folderId: 1152, mapRegionId: 10, dateRefreshed: null }]),
+			await settleRefreshes(db, 1, [{ folderId: 1152, mapRegionId: 10, dateRefreshed: null }]),
 		).toBe(0);
 		expect(updates).toEqual([]);
 	});
 
 	it('does nothing when the catalog read nothing', async () => {
 		const { db } = makeDb([]);
-		expect(await settleRefreshes(db, [])).toBe(0);
+		expect(await settleRefreshes(db, 1, [])).toBe(0);
 	});
 });
 
 describe('requestRegionRefresh', () => {
 	it('records the want and touches nothing else', async () => {
 		const { db, upserts } = makeDb();
-		await requestRegionRefresh(db, { folderId: 1152, mapRegionId: 10, now: NOW });
+		await requestRegionRefresh(db, { campaignId: 1, folderId: 1152, mapRegionId: 10, now: NOW });
 		expect(upserts).toEqual([
 			{
-				values: { folderId: 1152, mapRegionId: 10, requestedAt: NOW.toISOString() },
+				values: { campaignId: 1, folderId: 1152, mapRegionId: 10, requestedAt: NOW.toISOString() },
 				// Not the throttle, not the in-flight flag: a second completion in
 				// the same hour is the same want.
 				set: { requestedAt: NOW.toISOString() },
@@ -359,15 +359,22 @@ describe('requestRegionRefresh', () => {
 			}),
 		} as never;
 		await expect(
-			requestRegionRefresh(db, { folderId: 1152, mapRegionId: 10, now: NOW }),
+			requestRegionRefresh(db, { campaignId: 1, folderId: 1152, mapRegionId: 10, now: NOW }),
 		).resolves.toBeUndefined();
 	});
 });
 
 describe('refreshingRegionIds', () => {
 	it('is the set the turf page marks as updating', async () => {
-		const { db } = makeDb([[{ mapRegionId: 10 }, { mapRegionId: 12 }]]);
-		expect(await refreshingRegionIds(db)).toEqual(new Set([10, 12]));
+		const { db } = makeDb([
+			[
+				{ campaignId: 1, mapRegionId: 10 },
+				{ campaignId: 1, mapRegionId: 12 },
+				// Another campaign's region 10 is a different region.
+				{ campaignId: 2, mapRegionId: 10 },
+			],
+		]);
+		expect(await refreshingRegionIds(db)).toEqual(new Set(['1:10', '1:12', '2:10']));
 	});
 });
 
@@ -383,9 +390,9 @@ describe('runRefreshSweep — a want recorded mid-sweep survives', () => {
 		await migrate(db, { migrationsFolder: 'drizzle' });
 		await client.execute({
 			sql: `INSERT INTO van_turfs
-			        (turf_id, map_region_id, folder_id, chapter_id, chapter_name,
+			        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
 			         region_name, name, door_count, first_seen_at, last_seen_at)
-			      VALUES (100, 10, 1152, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?)`,
+			      VALUES (100, 100, 10, 1152, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?)`,
 			args: [NOW.toISOString(), NOW.toISOString()],
 		});
 	});
@@ -403,10 +410,11 @@ describe('runRefreshSweep — a want recorded mid-sweep survives', () => {
 	}
 
 	const sweep = () =>
-		runRefreshSweep(db, makeClient({ refreshMapRegion: async () => undefined }), { now: NOW });
+		runRefreshSweep(db, makeClient({ refreshMapRegion: async () => undefined }), 1, { now: NOW });
 
 	it('clears a want the sweep actually saw', async () => {
 		await requestRegionRefresh(db, {
+			campaignId: 1,
 			folderId: 1152,
 			mapRegionId: 10,
 			now: new Date(NOW.getTime() - 10 * 60 * 1000),
@@ -420,6 +428,7 @@ describe('runRefreshSweep — a want recorded mid-sweep survives', () => {
 
 	it('keeps a want recorded after the sweep started', async () => {
 		await requestRegionRefresh(db, {
+			campaignId: 1,
 			folderId: 1152,
 			mapRegionId: 10,
 			now: new Date(NOW.getTime() - 10 * 60 * 1000),
@@ -428,6 +437,7 @@ describe('runRefreshSweep — a want recorded mid-sweep survives', () => {
 		// this would lose the refresh entirely: lastRequestAt is now fresh, so the
 		// hourly throttle blocks the retry and those doors stay in the count.
 		await requestRegionRefresh(db, {
+			campaignId: 1,
 			folderId: 1152,
 			mapRegionId: 10,
 			now: new Date(NOW.getTime() + 5 * 60 * 1000),

@@ -393,6 +393,34 @@
       "when": 1790908158182,
       "tag": "0055_rename_turf_id",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1790909720175,
+      "tag": "0056_multi_campaign_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1790916325408,
+      "tag": "0057_campaign_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1790987209114,
+      "tag": "0058_campaign_badge",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1791006457714,
+      "tag": "0059_drop_unscoped_locks",
+      "breakpoints": true
     }
   ]
 }

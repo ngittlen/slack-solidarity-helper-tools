@@ -47,7 +47,8 @@ function stubQueries(turfRows: unknown[], claimRows: unknown[] = []) {
 	const results = [turfRows, claimRows];
 	let call = 0;
 	mockSelect.mockImplementation(() => ({
-		from: () => ({ where: async () => results[call++] ?? [] }),
+		// Awaited without `.where()` it is the contact-pull marks read: empty.
+		from: () => Object.assign(Promise.resolve([]), { where: async () => results[call++] ?? [] }),
 	}));
 }
 

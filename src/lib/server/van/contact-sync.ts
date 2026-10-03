@@ -147,14 +147,15 @@ export async function replaceRoster(
 /** Record contacts, keeping the later date where one is already stored. */
 export async function upsertContacts(
 	db: Db,
+	campaignId: number,
 	contacts: ReadonlyMap<string, { personHash: Buffer; at: string }>,
 ): Promise<void> {
 	for (const batch of chunked([...contacts.values()], CONTACT_BATCH)) {
 		await db
 			.insert(vanPersonContacts)
-			.values(batch.map((c) => ({ personHash: c.personHash, lastInPersonAt: c.at })))
+			.values(batch.map((c) => ({ campaignId, personHash: c.personHash, lastInPersonAt: c.at })))
 			.onConflictDoUpdate({
-				target: vanPersonContacts.personHash,
+				target: [vanPersonContacts.campaignId, vanPersonContacts.personHash],
 				set: {
 					lastInPersonAt: sql`max(${vanPersonContacts.lastInPersonAt}, excluded.last_in_person_at)`,
 				},
@@ -174,11 +175,11 @@ function countedTurfs(now: Date) {
  * the earliest cut among counted turfs, but never more than MAX_BACKFILL_MS
  * ago. Null when there is no turf to count for.
  */
-export async function pullFloor(db: Db, now: Date): Promise<string | null> {
+export async function pullFloor(db: Db, campaignId: number, now: Date): Promise<string | null> {
 	const [row] = await db
 		.select({ at: sql<string | null>`min(coalesce(${vanTurfs.cutAt}, ${vanTurfs.firstSeenAt}))` })
 		.from(vanTurfs)
-		.where(countedTurfs(now));
+		.where(and(eq(vanTurfs.campaignId, campaignId), countedTurfs(now)));
 	if (!row?.at) return null;
 	const limit = new Date(now.getTime() - MAX_BACKFILL_MS).toISOString();
 	return row.at > limit ? row.at : limit;
@@ -199,7 +200,7 @@ export async function clearUncontacted(db: Db): Promise<void> {
 	await db
 		.update(vanContactSyncState)
 		.set({ fullRecomputeAt: null })
-		.where(and(eq(vanContactSyncState.id, 1), isNotNull(vanContactSyncState.fullRecomputeAt)));
+		.where(isNotNull(vanContactSyncState.fullRecomputeAt));
 }
 
 /**
@@ -208,29 +209,51 @@ export async function clearUncontacted(db: Db): Promise<void> {
  * of the last scheduled run that caught up (`countedThrough`, before which a
  * completion's doors are in the count). Nulls when the pull has never run.
  */
-export async function loadContactMarks(
-	db: Db,
-): Promise<{ cursor: string | null; countedThrough: string | null }> {
-	const [row] = await db
+export interface ContactMarks {
+	cursor: string | null;
+	countedThrough: string | null;
+}
+
+/** Every campaign's marks, by campaign id. Each campaign pulls its own
+ *  ContactHistory, so a turf's count is as of ITS campaign's cursor. */
+export async function loadContactMarks(db: Db): Promise<ReadonlyMap<number, ContactMarks>> {
+	const rows = await db
 		.select({
+			campaignId: vanContactSyncState.campaignId,
 			cursor: vanContactSyncState.cursor,
 			countedThrough: vanContactSyncState.countedThrough,
 		})
-		.from(vanContactSyncState)
-		.where(eq(vanContactSyncState.id, 1));
-	return { cursor: row?.cursor ?? null, countedThrough: row?.countedThrough ?? null };
+		.from(vanContactSyncState);
+	return new Map(
+		rows.map((r) => [r.campaignId, { cursor: r.cursor, countedThrough: r.countedThrough }]),
+	);
+}
+
+/** One campaign's marks; nulls for a campaign whose pull has never run. */
+export function marksFor(
+	marks: ReadonlyMap<number, ContactMarks>,
+	campaignId: number,
+): ContactMarks {
+	return marks.get(campaignId) ?? { cursor: null, countedThrough: null };
 }
 
 /** Turfs with a roster row for any of these people — the only counts a pull of
  *  their contacts can move. Retired rosters included; recomputing one is
  *  harmless and its completion may still need its % walked. */
-async function turfsWithPeople(db: Db, personHashes: readonly Buffer[]): Promise<number[]> {
+async function turfsWithPeople(
+	db: Db,
+	campaignId: number,
+	personHashes: readonly Buffer[],
+): Promise<number[]> {
 	const ids = new Set<number>();
 	for (const batch of chunked(personHashes, TOUCHED_BATCH)) {
+		// This campaign's turf only: the same person can be on another
+		// campaign's roster, and that count is moved by that campaign's pull.
 		const rows = await db
 			.selectDistinct({ id: vanTurfRoster.turfId })
 			.from(vanTurfRoster)
-			.where(inArray(vanTurfRoster.personHash, batch));
+			.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfRoster.turfId))
+			.where(and(eq(vanTurfs.campaignId, campaignId), inArray(vanTurfRoster.personHash, batch)));
 		for (const row of rows) ids.add(row.id);
 	}
 	return [...ids];
@@ -248,13 +271,16 @@ async function turfsWithPeople(db: Db, personHashes: readonly Buffer[]): Promise
  */
 export async function recomputeUncontacted(
 	db: Db,
-	options: { now: Date; turfIds?: readonly number[] },
+	options: { now: Date; campaignId: number; turfIds?: readonly number[] },
 ): Promise<number> {
 	const ids =
 		options.turfIds ??
-		(await db.select({ id: vanTurfs.turfId }).from(vanTurfs).where(countedTurfs(options.now))).map(
-			(r) => r.id,
-		);
+		(
+			await db
+				.select({ id: vanTurfs.turfId })
+				.from(vanTurfs)
+				.where(and(eq(vanTurfs.campaignId, options.campaignId), countedTurfs(options.now)))
+		).map((r) => r.id);
 	const nowIso = options.now.toISOString();
 	let updated = 0;
 	for (const batch of chunked(ids, RECOMPUTE_BATCH)) {
@@ -266,7 +292,8 @@ export async function recomputeUncontacted(
 						WHEN c.last_in_person_at >= coalesce(van_turfs.cut_at, van_turfs.first_seen_at)
 						THEN r.door_hash END)
 					FROM van_turf_roster r
-					LEFT JOIN van_person_contacts c ON c.person_hash = r.person_hash
+					LEFT JOIN van_person_contacts c
+						ON c.campaign_id = van_turfs.campaign_id AND c.person_hash = r.person_hash
 					WHERE r.turf_id = van_turfs.turf_id
 				) ELSE NULL END,
 				uncontacted_doors_at = CASE WHEN ${current} THEN ${nowIso} ELSE NULL END
@@ -305,7 +332,7 @@ export const RETIRED_ROSTER_KEEP_MS = WALK_PERCENT_WINDOW_MS;
  */
 export async function stampWalkPercents(
 	db: Db,
-	options: { now: Date; turfIds?: readonly number[] },
+	options: { now: Date; campaignId: number; turfIds?: readonly number[] },
 ): Promise<number> {
 	const since = new Date(options.now.getTime() - WALK_PERCENT_WINDOW_MS).toISOString();
 	const scope =
@@ -335,9 +362,20 @@ export async function stampWalkPercents(
 					AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.turf_id = t.turf_id)
 			)
 			AND reported_percent IS NOT ${derived}
+			AND ${campaignScope(options.campaignId)}
 			${scope}
 	`);
 	return Number(result.rowsAffected ?? 0);
+}
+
+/** Checkouts on this campaign's turf. A run stamps only its own campaign's
+ *  completions: another campaign's are counted against that campaign's
+ *  contacts, and only once that campaign's pull has caught up. */
+function campaignScope(campaignId: number) {
+	return sql`EXISTS (
+		SELECT 1 FROM van_turfs ct
+		WHERE ct.turf_id = van_turf_checkouts.turf_id AND ct.campaign_id = ${campaignId}
+	)`;
 }
 
 /** Contacts this long before a claim still count as its volunteer's: they
@@ -365,7 +403,7 @@ const KNOCK_TRAIL_MS = 60 * 60 * 1000;
  */
 export async function stampDoorsKnocked(
 	db: Db,
-	options: { now: Date; turfIds?: readonly number[] },
+	options: { now: Date; campaignId: number; turfIds?: readonly number[] },
 ): Promise<number> {
 	const since = new Date(options.now.getTime() - WALK_PERCENT_WINDOW_MS).toISOString();
 	const scope =
@@ -384,7 +422,8 @@ export async function stampDoorsKnocked(
 	const knocked = sql`(
 		SELECT count(DISTINCT r.door_hash)
 		FROM van_turf_roster r
-		JOIN van_person_contacts c ON c.person_hash = r.person_hash
+		JOIN van_person_contacts c
+			ON c.campaign_id = ${options.campaignId} AND c.person_hash = r.person_hash
 		WHERE r.turf_id = van_turf_checkouts.turf_id
 			AND c.last_in_person_at >= ${shifted(sql`van_turf_checkouts.claimed_at`, -KNOCK_LEAD_MS)}
 			AND c.last_in_person_at <= ${shifted(sql`van_turf_checkouts.completed_at`, KNOCK_TRAIL_MS)}
@@ -395,6 +434,7 @@ export async function stampDoorsKnocked(
 			AND completed_at < ${options.now.toISOString()}
 			AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.turf_id = van_turf_checkouts.turf_id)
 			AND (doors_knocked IS NULL OR doors_knocked < ${knocked})
+			AND ${campaignScope(options.campaignId)}
 			${scope}
 	`);
 	return Number(result.rowsAffected ?? 0);
@@ -404,6 +444,9 @@ export async function stampDoorsKnocked(
 // Pull
 
 export interface ContactSyncOptions {
+	/** The campaign whose ContactHistory this run reads, with that campaign's
+	 *  client. Its state row, contacts and turf are the only ones touched. */
+	campaignId: number;
 	hasher: PersonHasher;
 	now?: Date;
 	timeBudgetMs?: number;
@@ -565,8 +608,12 @@ export async function runContactSync(
 		error: null,
 	};
 
-	await db.insert(vanContactSyncState).values({ id: 1 }).onConflictDoNothing();
-	const [state] = await db.select().from(vanContactSyncState).where(eq(vanContactSyncState.id, 1));
+	const { campaignId } = options;
+	await db.insert(vanContactSyncState).values({ campaignId }).onConflictDoNothing();
+	const [state] = await db
+		.select()
+		.from(vanContactSyncState)
+		.where(eq(vanContactSyncState.campaignId, campaignId));
 	let cursor = state?.cursor ?? null;
 	// A state row from before `coveredFrom` existed: all that is known is that
 	// the pull reached the cursor, so treat that as where it began.
@@ -583,7 +630,7 @@ export async function runContactSync(
 		db
 			.update(vanContactSyncState)
 			.set({ lastRunAt: now.toISOString(), ...patch })
-			.where(eq(vanContactSyncState.id, 1));
+			.where(eq(vanContactSyncState.campaignId, campaignId));
 
 	/** Abandon the current job; the next loop submits its window afresh. */
 	const dropJob = async (message: string) => {
@@ -602,7 +649,7 @@ export async function runContactSync(
 	};
 
 	try {
-		const floor = await pullFloor(db, now);
+		const floor = await pullFloor(db, campaignId, now);
 		// Only between jobs: a job in flight finishes its window first.
 		if (floor !== null && jobId === null) {
 			if (cursor === null || coveredFrom === null || floor < coveredFrom) {
@@ -727,7 +774,7 @@ export async function runContactSync(
 					}
 					break;
 				}
-				await upsertContacts(db, contacts);
+				await upsertContacts(db, campaignId, contacts);
 				for (const [key, c] of contacts) touched.set(key, c.personHash);
 				result.contactsRead += read;
 				cursor = windowTo!;
@@ -751,7 +798,12 @@ export async function runContactSync(
 		if (floor) {
 			const pruned = await db
 				.delete(vanPersonContacts)
-				.where(lt(vanPersonContacts.lastInPersonAt, floor))
+				.where(
+					and(
+						eq(vanPersonContacts.campaignId, campaignId),
+						lt(vanPersonContacts.lastInPersonAt, floor),
+					),
+				)
 				.returning({ at: vanPersonContacts.lastInPersonAt });
 			result.contactsPruned = pruned.length;
 		}
@@ -767,13 +819,18 @@ export async function runContactSync(
 		: [
 				...new Set([
 					...(options.recomputeTurfIds ?? []),
-					...(await turfsWithPeople(db, [...touched.values()])),
+					...(await turfsWithPeople(db, campaignId, [...touched.values()])),
 				]),
 			];
-	result.turfsRecomputed = await recomputeUncontacted(db, { now, turfIds: recomputeIds });
+	result.turfsRecomputed = await recomputeUncontacted(db, {
+		now,
+		campaignId,
+		turfIds: recomputeIds,
+	});
 	if (full) await saveState({ fullRecomputeAt: now.toISOString() });
 	result.percentsStamped = await stampWalkPercents(db, {
 		now,
+		campaignId,
 		turfIds: options.recomputeTurfIds,
 	});
 
@@ -785,7 +842,7 @@ export async function runContactSync(
 		cursor !== null &&
 		now.getTime() - Date.parse(cursor) < MIN_WINDOW_MS;
 	if (scheduled && caughtUp) {
-		result.doorsKnockedStamped = await stampDoorsKnocked(db, { now });
+		result.doorsKnockedStamped = await stampDoorsKnocked(db, { now, campaignId });
 		await saveState({ countedThrough: now.toISOString() });
 	}
 	return result;

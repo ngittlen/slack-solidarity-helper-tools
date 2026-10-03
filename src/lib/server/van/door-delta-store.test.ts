@@ -37,9 +37,9 @@ beforeEach(async () => {
 async function turf(over: { doorCount?: number; lastRefreshedAt?: string | null } = {}) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, door_count, last_refreshed_at, first_seen_at, last_seen_at)
-		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', ?, ?, ?, ?)`,
+		      VALUES (100, 100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', ?, ?, ?, ?)`,
 		args: [
 			over.doorCount ?? 190,
 			over.lastRefreshedAt === undefined ? '2026-09-12T14:00:00.000Z' : over.lastRefreshedAt,
@@ -98,9 +98,9 @@ async function route(r: {
 }) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, door_count, last_refreshed_at, first_seen_at, last_seen_at, retired_at)
-		      VALUES (?, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, ?, ?, ?, ?)`,
+		      VALUES (?1, ?1, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, ?, ?, ?, ?)`,
 		args: [
 			r.turfId,
 			r.name ?? 'Turf 01',

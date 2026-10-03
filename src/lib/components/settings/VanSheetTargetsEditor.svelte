@@ -29,6 +29,9 @@
 	}
 
 	interface Props {
+		/** The campaign being edited. Folder ids and sheet rules are each
+		 *  campaign's own. */
+		campaignId: number;
 		/** From loadVanSheetTargets — already longest-prefix-first. */
 		targets: TargetEntry[];
 		/** The address every spreadsheet has to be shared with. Null when the
@@ -36,7 +39,7 @@
 		serviceAccountEmail: string | null;
 	}
 
-	let { targets, serviceAccountEmail }: Props = $props();
+	let { campaignId, targets, serviceAccountEmail }: Props = $props();
 
 	let rows = $state<TargetEntry[]>(targets.map((t) => ({ ...t })));
 	let status = $state<AutosaveStatus>('idle');
@@ -63,7 +66,8 @@
 			const res = await fetch('/api/settings/van-sheet-targets', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body),
+				// Every save is for one campaign: its folders, or its spreadsheet rules.
+				body: JSON.stringify({ ...(body as object), campaignId }),
 			});
 			const parsed = (await res.json().catch(() => null)) as {
 				error?: string;

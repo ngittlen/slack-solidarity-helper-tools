@@ -18,6 +18,7 @@
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
 		"db:seed": "node bin/seed-dev-db.js",
+		"db:replica": "tsx --env-file-if-exists=.env.local scripts/db-replica.ts",
 		"van:check": "tsx --env-file=.env.local scripts/van-check.ts",
 		"van:regions": "tsx --env-file=.env.local scripts/van-regions.ts",
 		"van:sync": "tsx --env-file=.env.local scripts/van-sync-once.ts",

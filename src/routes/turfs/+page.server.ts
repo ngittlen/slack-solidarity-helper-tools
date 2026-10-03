@@ -30,7 +30,7 @@ import {
 } from '$lib/server/van/rate-limit-store.js';
 import { loadChapterTurfs } from '$lib/server/van/turf-query.js';
 import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
-import type { TurfView } from '$lib/van/turf-view.js';
+import type { CampaignBadges, TurfView } from '$lib/van/turf-view.js';
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
 import type { LatLng } from '$lib/van/geometry.js';
 
@@ -134,6 +134,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			chapter: null,
 			turfs: [] as TurfView[],
 			total: 0,
+			campaignBadges: null as CampaignBadges | null,
 			location: null as LatLng | null,
 			zip: null as string | null,
 			tiles,
@@ -163,6 +164,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		chapter: null,
 		turfs: [] as TurfView[],
 		total: 0,
+		campaignBadges: null as CampaignBadges | null,
 		location: null as LatLng | null,
 		zip: null as string | null,
 		tiles,
@@ -234,7 +236,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// says: it carries their MiniVAN list number, and a volunteer who claimed
 	// turf on the far side of the chapter would otherwise open the page to no
 	// card at all. Both are loadChapterTurfs' `includeHeldByViewer`.
-	const { turfs, total } = await loadChapterTurfs(db, {
+	const { turfs, total, campaignBadges } = await loadChapterTurfs(db, {
 		chapterId: chapter.chapterId,
 		viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
 		location,
@@ -261,6 +263,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// describing whichever viewport answered last, so the two numbers
 		// stopped referring to the same set. A total never moves.
 		total,
+		// Badge text per campaign, for TurfView.campaignId — null while only one
+		// campaign is enabled. Signed-in only: the teaser branch never has it.
+		campaignBadges,
 		location,
 		zip: location ? zip : null,
 		tiles,

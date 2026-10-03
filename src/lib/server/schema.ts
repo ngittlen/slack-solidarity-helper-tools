@@ -345,26 +345,6 @@ export const appConfig = sqliteTable(
 		// in turf-view.ts). Same NULL-means-default and clamp-on-read as the two
 		// above.
 		vanAssignmentTtlHours: integer('van_assignment_ttl_hours'),
-		// Whether the sync may ask VAN to re-cut map regions. NULL means OFF, and it
-		// should stay off. A re-cut retires every route in the region and returns
-		// new ones with new ids and new saved lists — and it DELETES the region's
-		// printed lists. Verified live 2026-09-24 on R06F_Washtenaw_SalineCity02
-		// (folder 68298): all 18 routes came back with no printed list, and the old
-		// numbers 404 on /printedLists/{number}. They came back only when an
-		// organizer printed the lists again in VAN, which this app cannot do. So a
-		// refresh turns claimable turf into unclaimable turf until someone prints,
-		// kills any list number already handed out, and a nightly sweep would do
-		// that to every mapped folder every night, including shared folders other
-		// organizers cut.
-		vanRegionRefreshEnabled: integer('van_region_refresh_enabled', { mode: 'boolean' }),
-		// The campaign's Packet Tracker tab, in every one of its spreadsheets. One
-		// name for all of them — the campaign uses the same tab everywhere, and a
-		// per-sheet name would be a dozen more chances to typo. The app never
-		// creates it. NULL or '' means DEFAULT_SHEET_TAB_NAME in
-		// $lib/van/packet-tracker.ts.
-		//
-		// Which spreadsheet a row goes to is van_sheet_targets, not this.
-		vanSheetTabName: text('van_sheet_tab_name'),
 		// Theme overrides as JSON: {"color-bg":{"light":"#fbf0e4"}}. One column
 		// rather than ~60, because adding a field to this table is a nine-step
 		// checklist across six files and a palette would be unmaintainable that
@@ -773,26 +753,68 @@ export type NewSlackUserTokenRow = typeof slackUserTokens.$inferInsert;
 // label until an admin gives it one. Rows for
 // new secrets are created disabled (`ensureCampaignRows` in van-env.ts), so
 // setting a secret on its own never starts a sync.
-export const vanCampaigns = sqliteTable('van_campaigns', {
-	id: integer('id').primaryKey({ autoIncrement: true }),
-	credentialKey: text('credential_key').notNull().unique(),
-	/** Shown to signed-in volunteers on turf and in alerts. Blank until an admin
-	 *  names the campaign in /settings — the migration and discovery never pick
-	 *  one, so no organisation's name is baked into the schema. Unique among
-	 *  campaigns that have one (SQLite lets any number of rows be NULL). */
-	label: text('label').unique(),
-	enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
-	/** The coordinates export that feeds hull geometry. Per campaign because
-	 *  EveryAction issues export job types per key. Null means no geometry —
-	 *  turf draws as pins — except for 'primary', which falls back to
-	 *  VAN_EXPORT_JOB_TYPE_ID (vanExportJobTypeIdFor in van-env.ts). */
-	exportJobTypeId: integer('export_job_type_id'),
-	disabledAt: text('disabled_at'),
-	disabledByName: text('disabled_by_name'),
-	lastEditedBy: text('last_edited_by').notNull(),
-	lastEditedByName: text('last_edited_by_name').notNull(),
-	lastEditedAt: text('last_edited_at').notNull(),
-});
+/** The campaign the app has always served: van_campaigns row 1, seeded by the
+ *  migration that created the table. The default where a page or script names
+ *  no campaign. */
+export const PRIMARY_CAMPAIGN_ID = 1;
+
+export const vanCampaigns = sqliteTable(
+	'van_campaigns',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		credentialKey: text('credential_key').notNull().unique(),
+		/** Shown to signed-in volunteers on turf and in alerts. Blank until an admin
+		 *  names the campaign in /settings — the migration and discovery never pick
+		 *  one, so no organisation's name is baked into the schema. Unique among
+		 *  campaigns that have one, ignoring case (SQLite lets any number of rows be
+		 *  NULL): two campaigns told apart only by capitals would read as one on a
+		 *  turf badge. */
+		label: text('label'),
+		/** The short text on this campaign's turf badge, shown to volunteers on
+		 *  the map, their turf card and in Slack while more than one campaign is
+		 *  enabled, and always on a disabled campaign's turf still being walked
+		 *  (badgeShown in van/campaigns.ts). Null or '' falls back to the label, then the credential key
+		 *  (campaignBadge in van/campaigns.ts). Not unique: it is a hint beside
+		 *  the turf name, not an identifier. */
+		badgeLabel: text('badge_label'),
+		enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+		/** The coordinates export that feeds hull geometry. Per campaign because
+		 *  EveryAction issues export job types per key. Null means no geometry —
+		 *  turf draws as pins — except for 'primary', which falls back to
+		 *  VAN_EXPORT_JOB_TYPE_ID (vanExportJobTypeIdFor in van-env.ts). */
+		exportJobTypeId: integer('export_job_type_id'),
+		/** Whether the sync may ask VAN to re-cut this campaign's map regions. Off
+		 *  by default, and it should stay off unless the campaign has agreed. A
+		 *  re-cut retires every route in the region and returns new ones with new
+		 *  ids and new saved lists — and it DELETES the region's printed lists.
+		 *  Verified live 2026-09-24 on R06F_Washtenaw_SalineCity02 (folder 68298):
+		 *  all 18 routes came back with no printed list, and the old numbers 404 on
+		 *  /printedLists/{number}. They came back only when an organizer printed the
+		 *  lists again in VAN, which this app cannot do. So a refresh turns
+		 *  claimable turf into unclaimable turf until someone prints, kills any list
+		 *  number already handed out, and a nightly sweep would do that to every
+		 *  mapped folder every night, including shared folders other organizers cut.
+		 *  Moved here from app_config, where it was one switch for everyone. */
+		refreshEnabled: integer('refresh_enabled', { mode: 'boolean' }).notNull().default(false),
+		/** Whether this campaign's checkouts are written to its Packet Tracker
+		 *  spreadsheets (van_sheet_targets rows for this campaign). Off by default:
+		 *  most campaigns keep no such sheet. A disabled campaign with this on is
+		 *  still written to, so its live claims' endings are recorded. */
+		sheetsEnabled: integer('sheets_enabled', { mode: 'boolean' }).notNull().default(false),
+		/** The Packet Tracker tab in every one of this campaign's spreadsheets. One
+		 *  name for all of them — a campaign uses the same tab everywhere, and a
+		 *  per-sheet name would be a dozen more chances to typo. The app never
+		 *  creates it. Null or '' means DEFAULT_SHEET_TAB_NAME in
+		 *  $lib/van/packet-tracker.ts. Moved here from app_config. */
+		sheetTabName: text('sheet_tab_name'),
+		disabledAt: text('disabled_at'),
+		disabledByName: text('disabled_by_name'),
+		lastEditedBy: text('last_edited_by').notNull(),
+		lastEditedByName: text('last_edited_by_name').notNull(),
+		lastEditedAt: text('last_edited_at').notNull(),
+	},
+	(table) => [uniqueIndex('van_campaigns_label_unique').on(sql`lower(${table.label})`)],
+);
 
 // Which VAN folders belong to which Solidarity chapter. Mirrors
 // chapter_channel_map deliberately: same composite-key shape, same audit
@@ -804,6 +826,10 @@ export const vanCampaigns = sqliteTable('van_campaigns', {
 export const vanChapterFolders = sqliteTable(
 	'van_chapter_folders',
 	{
+		/** Which van_campaigns row the folder belongs to. Folder ids are VAN's
+		 *  and only unique within one committee, so the campaign is part of the
+		 *  key. */
+		campaignId: integer('campaign_id').notNull().default(1),
 		chapterId: integer('chapter_id').notNull(),
 		folderId: integer('folder_id').notNull(),
 		// Denormalised so /settings and the turf page can name a chapter without
@@ -813,7 +839,7 @@ export const vanChapterFolders = sqliteTable(
 		lastEditedByName: text('last_edited_by_name').notNull(),
 		lastEditedAt: text('last_edited_at').notNull(),
 	},
-	(table) => [primaryKey({ columns: [table.chapterId, table.folderId] })],
+	(table) => [primaryKey({ columns: [table.campaignId, table.chapterId, table.folderId] })],
 );
 
 // Which of the campaign's spreadsheets a turf's checkout rows belong in.
@@ -829,27 +855,38 @@ export const vanChapterFolders = sqliteTable(
 //
 // So this is a rule list, matched by longest normalised prefix — `R10C_Wayne_Taylor`
 // beats a bare `R10C` catch-all. `prefix_key` is the normalisation (lowercase
-// alphanumerics, see van/region-name.ts) and is the primary key, so two rules
-// cannot disagree about the same ground: the settings route refuses the second.
+// alphanumerics, see van/region-name.ts) and, with the campaign, the primary
+// key, so two of one campaign's rules cannot disagree about the same ground:
+// the settings route refuses the second.
 //
-// An INPUT, like van_chapter_folders above. No rows means the sheet log is off,
-// which is what the spec asks for — an unconfigured feature does nothing and
-// raises no alerts.
-export const vanSheetTargets = sqliteTable('van_sheet_targets', {
-	prefixKey: text('prefix_key').primaryKey(),
-	/** The rule as the admin typed it, for display. `prefix_key` is what
-	 *  matches. */
-	prefix: text('prefix').notNull(),
-	/** What the spreadsheet is called, so an alert can name it without a Google
-	 *  round-trip. */
-	label: text('label').notNull(),
-	/** From the spreadsheet's URL. Several rules may point at one spreadsheet —
-	 *  the two R10C rules do. */
-	spreadsheetId: text('spreadsheet_id').notNull(),
-	lastEditedBy: text('last_edited_by').notNull(),
-	lastEditedByName: text('last_edited_by_name').notNull(),
-	lastEditedAt: text('last_edited_at').notNull(),
-});
+// Per campaign (specs/012-multi-van-campaigns): each campaign that keeps a
+// Packet Tracker has its own rules, matched only against its own turf.
+//
+// An INPUT, like van_chapter_folders above. No rows means the sheet log is off
+// for that campaign, which is what the spec asks for — an unconfigured feature
+// does nothing and raises no alerts.
+export const vanSheetTargets = sqliteTable(
+	'van_sheet_targets',
+	{
+		/** The campaign whose turf this rule routes. Each campaign has its own
+		 *  rules; another campaign's region names never match them. */
+		campaignId: integer('campaign_id').notNull().default(1),
+		prefixKey: text('prefix_key').notNull(),
+		/** The rule as the admin typed it, for display. `prefix_key` is what
+		 *  matches. */
+		prefix: text('prefix').notNull(),
+		/** What the spreadsheet is called, so an alert can name it without a Google
+		 *  round-trip. */
+		label: text('label').notNull(),
+		/** From the spreadsheet's URL. Several rules may point at one spreadsheet —
+		 *  the two R10C rules do. */
+		spreadsheetId: text('spreadsheet_id').notNull(),
+		lastEditedBy: text('last_edited_by').notNull(),
+		lastEditedByName: text('last_edited_by_name').notNull(),
+		lastEditedAt: text('last_edited_at').notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.campaignId, table.prefixKey] })],
+);
 
 // Whether each spreadsheet is currently writable, and what the operator has
 // already been told about it.
@@ -878,8 +915,13 @@ export const vanSheetHealth = sqliteTable('van_sheet_health', {
 // One row per VAN Map Route.
 //
 // `turfId` is this app's id for the turf: what checkouts, rosters, the geometry
-// queue, Slack buttons and webhook URLs point at. Today it is the route's VAN
-// `mapRouteId`, copied as is.
+// queue, Slack buttons and webhook URLs point at. VAN's own id for the route is
+// `vanMapRouteId`, unique only within its campaign — two campaigns' committees
+// can hand out the same route id. A new turf takes its VAN id as its `turfId`
+// whenever no other turf already has that id, so the two normally match; only a
+// genuine collision gets a different one (see planCatalogSync). Anything read
+// from VAN is matched on (campaignId, vanMapRouteId); everything inside the app
+// on turfId.
 //
 // VAN's `mapRouteId` is NOT stable across a refresh —
 // this comment used to claim it was, and the plan's Story 4.6 was written to
@@ -895,6 +937,10 @@ export const vanTurfs = sqliteTable(
 	'van_turfs',
 	{
 		turfId: integer('turf_id').primaryKey(),
+		/** The van_campaigns row whose key this turf was read with. */
+		campaignId: integer('campaign_id').notNull().default(1),
+		/** VAN's `mapRouteId`. Unique per campaign, not globally. */
+		vanMapRouteId: integer('van_map_route_id').notNull(),
 		mapRegionId: integer('map_region_id').notNull(),
 		folderId: integer('folder_id').notNull(),
 		// Resolved through van_chapter_folders at sync time so reads don't join.
@@ -996,6 +1042,8 @@ export const vanTurfs = sqliteTable(
 	(table) => [
 		index('van_turfs_chapter').on(table.chapterId),
 		index('van_turfs_region').on(table.mapRegionId),
+		uniqueIndex('van_turfs_campaign_route').on(table.campaignId, table.vanMapRouteId),
+		index('van_turfs_campaign_folder').on(table.campaignId, table.folderId),
 	],
 );
 
@@ -1183,46 +1231,50 @@ export const vanTurfRoster = sqliteTable(
 // only people already on a roster: rosters arrive turf by turf over hours, and
 // filtering on them would silently drop contacts made before a turf's roster
 // landed. Pruned below the oldest live turf's cut date. Same hashing as above.
-export const vanPersonContacts = sqliteTable('van_person_contacts', {
-	personHash: blob('person_hash', { mode: 'buffer' }).primaryKey(),
-	lastInPersonAt: text('last_in_person_at').notNull(),
-});
+export const vanPersonContacts = sqliteTable(
+	'van_person_contacts',
+	{
+		/** Contacts are per campaign: one committee's key cannot see another's
+		 *  ContactHistory, and a turf counts only its own campaign's doors. */
+		campaignId: integer('campaign_id').notNull().default(1),
+		personHash: blob('person_hash', { mode: 'buffer' }).notNull(),
+		lastInPersonAt: text('last_in_person_at').notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.campaignId, table.personHash] })],
+);
 
-// Singleton progress record for the ContactHistory pull. The pull walks forward
+// Progress record for each campaign's ContactHistory pull. The pull walks forward
 // one window at a time; `cursor` is the end of the last window fully applied,
 // and a window's export job id is stored before it is waited on so a slow job
 // is resumed by polling on the next run rather than submitted twice.
-export const vanContactSyncState = sqliteTable(
-	'van_contact_sync_state',
-	{
-		id: integer('id').primaryKey(),
-		cursor: text('cursor'),
-		/** Where the pull began: [coveredFrom, cursor] has been read. A live turf
-		 *  cut before this (a newly mapped folder) rewinds the cursor to it. */
-		coveredFrom: text('covered_from'),
-		exportJobId: integer('export_job_id'),
-		/** When the current job was submitted, so one VAN never finishes is
-		 *  eventually abandoned rather than polled forever. */
-		exportJobCreatedAt: text('export_job_created_at'),
-		/** Failed attempts to read the current job's files. At the cap the job
-		 *  is dropped and its window submitted afresh. */
-		exportJobFailures: integer('export_job_failures').notNull().default(0),
-		windowFrom: text('window_from'),
-		windowTo: text('window_to'),
-		lastRunAt: text('last_run_at'),
-		lastError: text('last_error'),
-		/** Start of the last scheduled run that read ContactHistory all the way
-		 *  up to its own start. A completion at or after this has not been
-		 *  counted yet: its turf stays unclaimable and its doors knocked unset
-		 *  until a scheduled run gets past it. Nudges never set it. */
-		countedThrough: text('counted_through'),
-		/** When every counted turf was last recomputed. Null means the next
-		 *  scheduled run does all of them; after that, only turfs with a person
-		 *  in the contacts just pulled. Cleared when the feature is switched off. */
-		fullRecomputeAt: text('full_recompute_at'),
-	},
-	(table) => [check('van_contact_sync_state_singleton', sql`${table.id} = 1`)],
-);
+export const vanContactSyncState = sqliteTable('van_contact_sync_state', {
+	/** One row per campaign: each pulls its own ContactHistory. */
+	campaignId: integer('campaign_id').primaryKey(),
+	cursor: text('cursor'),
+	/** Where the pull began: [coveredFrom, cursor] has been read. A live turf
+	 *  cut before this (a newly mapped folder) rewinds the cursor to it. */
+	coveredFrom: text('covered_from'),
+	exportJobId: integer('export_job_id'),
+	/** When the current job was submitted, so one VAN never finishes is
+	 *  eventually abandoned rather than polled forever. */
+	exportJobCreatedAt: text('export_job_created_at'),
+	/** Failed attempts to read the current job's files. At the cap the job
+	 *  is dropped and its window submitted afresh. */
+	exportJobFailures: integer('export_job_failures').notNull().default(0),
+	windowFrom: text('window_from'),
+	windowTo: text('window_to'),
+	lastRunAt: text('last_run_at'),
+	lastError: text('last_error'),
+	/** Start of the last scheduled run that read ContactHistory all the way
+	 *  up to its own start. A completion at or after this has not been
+	 *  counted yet: its turf stays unclaimable and its doors knocked unset
+	 *  until a scheduled run gets past it. Nudges never set it. */
+	countedThrough: text('counted_through'),
+	/** When every counted turf was last recomputed. Null means the next
+	 *  scheduled run does all of them; after that, only turfs with a person
+	 *  in the contacts just pulled. Cleared when the feature is switched off. */
+	fullRecomputeAt: text('full_recompute_at'),
+});
 
 // One row per Map Region we have ever asked VAN to re-cut.
 //
@@ -1240,6 +1292,7 @@ export const vanContactSyncState = sqliteTable(
 export const vanRegionRefreshes = sqliteTable(
 	'van_region_refreshes',
 	{
+		campaignId: integer('campaign_id').notNull().default(1),
 		folderId: integer('folder_id').notNull(),
 		mapRegionId: integer('map_region_id').notNull(),
 		/** An on-demand refresh is wanted and has not been sent yet. Set when a
@@ -1265,7 +1318,7 @@ export const vanRegionRefreshes = sqliteTable(
 		lastError: text('last_error'),
 		lastErrorAt: text('last_error_at'),
 	},
-	(table) => [primaryKey({ columns: [table.folderId, table.mapRegionId] })],
+	(table) => [primaryKey({ columns: [table.campaignId, table.folderId, table.mapRegionId] })],
 );
 
 // MiniVAN exports, as read from VAN and kept so that each sync only asks for
@@ -1285,7 +1338,9 @@ export const vanRegionRefreshes = sqliteTable(
 export const vanMinivanExports = sqliteTable(
 	'van_minivan_exports',
 	{
-		minivanExportId: integer('minivan_export_id').primaryKey(),
+		/** Each campaign's key reads its own committee's exports. */
+		campaignId: integer('campaign_id').notNull().default(1),
+		minivanExportId: integer('minivan_export_id').notNull(),
 		/** VAN's export name, normally `"List 58817996-30305"`. */
 		name: text('name'),
 		/** The printed list number parsed from `name`, which is what a turf is
@@ -1301,8 +1356,9 @@ export const vanMinivanExports = sqliteTable(
 		fetchedAt: text('fetched_at').notNull(),
 	},
 	(table) => [
-		index('van_minivan_exports_list_number').on(table.listNumber),
-		index('van_minivan_exports_date_created').on(table.dateCreated),
+		primaryKey({ columns: [table.campaignId, table.minivanExportId] }),
+		index('van_minivan_exports_list_number').on(table.campaignId, table.listNumber),
+		index('van_minivan_exports_date_created').on(table.campaignId, table.dateCreated),
 	],
 );
 
@@ -1316,20 +1372,26 @@ export const vanMinivanExports = sqliteTable(
 // opposite things. The drift report (Story 8.2) is the one reader that cannot
 // live with that ambiguity, so the sync records the answer here.
 //
-// Singleton, in the shape of door_knock_refresh.
-export const vanSyncState = sqliteTable(
-	'van_sync_state',
-	{
-		id: integer('id').primaryKey(),
-		/** ISO timestamp of the last non-dry-run catalog sync. */
-		lastSyncAt: text('last_sync_at').notNull(),
-		/** Whether the stored exports were complete and current on that run:
-		 *  /minivanExports answered AND the store has caught up to today. NULL
-		 *  only before the first sync has ever completed. */
-		minivanExportsOk: integer('minivan_exports_ok', { mode: 'boolean' }),
-	},
-	(table) => [check('van_sync_state_singleton', sql`${table.id} = 1`)],
-);
+// One row per campaign: each reads its own MiniVAN exports with its own key.
+export const vanSyncState = sqliteTable('van_sync_state', {
+	/** One row per campaign. */
+	campaignId: integer('campaign_id').primaryKey(),
+	/** ISO timestamp of the last non-dry-run catalog sync. */
+	/** Null for a campaign whose catalog sync has never completed — a row can
+	 *  exist before then to record why it is failing (`lastError`). */
+	lastSyncAt: text('last_sync_at'),
+	/** Whether the stored exports were complete and current on that run:
+	 *  /minivanExports answered AND the store has caught up to today. NULL
+	 *  only before the first sync has ever completed. */
+	minivanExportsOk: integer('minivan_exports_ok', { mode: 'boolean' }),
+	/** The last catalog sync failure for this campaign — missing
+	 *  credentials, a rejected key — or null after a success. */
+	lastError: text('last_error'),
+	/** The `lastError` already posted to Slack, so a campaign that stays
+	 *  broken is announced once rather than every half hour. Cleared by a
+	 *  success, so a recurrence is announced again. */
+	alertedError: text('alerted_error'),
+});
 
 // zip -> lat/lng cache for the "no geolocation" fallback. Deliberately shaped
 // like mobilize_geocoded_zips, including the never-throw contract of the

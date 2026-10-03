@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
+import { campaignFromRequest } from '$lib/server/van/campaigns.js';
 import {
 	saveVanChapterFolders,
 	saveVanFolderChapters,
@@ -8,7 +9,10 @@ import {
 	type Editor,
 } from '$lib/server/settings.js';
 
-// Chapter → VAN folder mapping writes.
+// Chapter → VAN folder mapping writes, for one campaign (`campaignId`,
+// required). Folder ids are VAN's and only unique within a committee, and every
+// write is scoped to the campaign, so another campaign's mapping for the same
+// chapter or folder id is left alone.
 //
 // One chapter per request, folder list submitted whole. This mapping is an
 // INPUT to the catalog sync rather than something it discovers: a chapter with
@@ -29,6 +33,7 @@ import {
 // has. The write is scoped to the one folder, so the two directions cannot
 // clobber each other.
 interface ChapterFoldersBody {
+	campaignId?: unknown;
 	action?: unknown;
 	chapterId?: unknown;
 	chapterName?: unknown;
@@ -60,6 +65,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (action !== 'save' && action !== 'remove' && action !== 'save-folder') {
 		return json({ error: 'action must be "save", "remove" or "save-folder"' }, { status: 400 });
 	}
+	const named = await campaignFromRequest(db, body.campaignId);
+	if (!named.ok) return json({ error: named.error }, { status: named.status });
+	const campaignId = named.campaign.id;
 
 	const editor: Editor = {
 		id: locals.session.slackUserId,
@@ -106,7 +114,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			entries.push({ chapterId: chapter.chapterId, chapterName: chapter.chapterName.trim() });
 		}
 
-		await saveVanFolderChapters(db, { folderId, chapters: entries }, editor);
+		await saveVanFolderChapters(db, { campaignId, folderId, chapters: entries }, editor);
 		return json({ ok: true });
 	}
 
@@ -115,7 +123,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	if (action === 'remove') {
-		await deleteVanChapterFolders(db, chapterId, editor);
+		await deleteVanChapterFolders(db, campaignId, chapterId, editor);
 		return json({ ok: true });
 	}
 
@@ -139,7 +147,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	await saveVanChapterFolders(
 		db,
-		{ chapterId, chapterName: chapterName.trim(), folderIds: folderIds as number[] },
+		{
+			campaignId,
+			chapterId,
+			chapterName: chapterName.trim(),
+			folderIds: folderIds as number[],
+		},
 		editor,
 	);
 	return json({ ok: true });

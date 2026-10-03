@@ -20,11 +20,19 @@ export interface CatalogFolder {
 }
 
 export interface CatalogInput {
+	/** The van_campaigns row every folder here was read with. */
+	campaignId: number;
 	folders: CatalogFolder[];
 	/** Cross-check and backfill for route-level printed lists. */
 	printedLists: VanPrintedList[];
-	/** Every van_turfs row currently in the DB, including retired ones. */
+	/** This campaign's van_turfs rows, including retired ones. Another
+	 *  campaign's rows must not be here: retirement is decided against this
+	 *  list, and VAN's route ids only mean something within one campaign. */
 	existing: VanTurfRow[];
+	/** Every turfId in use, across ALL campaigns. A new turf takes its VAN
+	 *  route id as its turfId unless that id is already taken; then it gets
+	 *  one above every id in use and every VAN id in this sync. */
+	takenTurfIds?: ReadonlySet<number>;
 	/** Optional — Tier 3, and a key without it should still sync a catalog. */
 	minivanExports?: VanMinivanExport[];
 	/** This app's own claims, recent enough to overlap the stored exports. An
@@ -59,8 +67,11 @@ export interface CatalogPlan {
 	unretirements: number[];
 	/** Turfs needing an export: no hull, one the route outgrew, or (with
 	 *  `roster` on) no roster for the current saved list. `roster` marks the
-	 *  last case, which is what lets the sync re-arm a finished queue row. */
-	geometryQueue: Array<{ turfId: number; savedListId: number; roster: boolean }>;
+	 *  last case, which is what lets the sync re-arm a finished queue row.
+	 *
+	 *  Keyed by VAN's route id, which is what the queue is planned from; the
+	 *  sync resolves each to its turf after writing the upserts. */
+	geometryQueue: Array<{ vanMapRouteId: number; savedListId: number; roster: boolean }>;
 	/** Claims whose list was just seen loaded in MiniVAN, to stamp
 	 *  `loadedInMinivanAt` on. Only claims not already stamped. */
 	claimsLoaded: Array<{ checkoutId: number; loadedAt: string }>;
@@ -338,7 +349,25 @@ function sampleNames(names: readonly string[]): string {
  * at would release live checkouts under volunteers standing on the doorstep.
  */
 export function planCatalogSync(input: CatalogInput): CatalogPlan {
-	const { folders, printedLists, existing, now } = input;
+	const { campaignId, folders, printedLists, existing, now } = input;
+	const takenTurfIds = input.takenTurfIds ?? new Set<number>();
+	// Where ids for colliding new turf start: above every id in use AND every
+	// VAN id this sync could hand out as a turf id. VAN issues route ids in
+	// sequence, so "one past the highest in use" — what the database would
+	// pick — is very likely the next new route's own VAN id, and the two would
+	// collide inside one batch. That batch rolls back and the next run plans
+	// the same ids, so the campaign would never sync again.
+	let nextFreeTurfId = 1;
+	for (const id of takenTurfIds) nextFreeTurfId = Math.max(nextFreeTurfId, id + 1);
+	for (const folder of folders) {
+		for (const region of folder.regions) {
+			for (const route of region.mapRoutes ?? []) {
+				if (typeof route.mapRouteId === 'number') {
+					nextFreeTurfId = Math.max(nextFreeTurfId, route.mapRouteId + 1);
+				}
+			}
+		}
+	}
 	const nowIso = iso(now);
 	const warnings: string[] = [];
 	const listIndex = printedListIndex(printedLists);
@@ -351,7 +380,10 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 		claimsByRoute.set(claim.turfId, list);
 	}
 	const claimsLoaded: CatalogPlan['claimsLoaded'] = [];
-	const existingById = new Map(existing.map((row) => [row.turfId, row]));
+	// By VAN's id, which is what the region response carries. Rows from
+	// another campaign never get here, so a route id another committee also
+	// uses cannot match the wrong turf.
+	const existingByRoute = new Map(existing.map((row) => [row.vanMapRouteId, row]));
 
 	const upserts: NewVanTurfRow[] = [];
 	const missingListNumbers: string[] = [];
@@ -383,7 +415,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 			for (const route of region.mapRoutes ?? []) {
 				if (typeof route.mapRouteId !== 'number') continue;
 				seen.add(route.mapRouteId);
-				const prior = existingById.get(route.mapRouteId);
+				const prior = existingByRoute.get(route.mapRouteId);
 
 				// The Map Region response is authoritative for the list number;
 				// /printedLists only fills a gap, and only when the name points
@@ -419,7 +451,15 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 
 				// Joined on the list number, which is what the export names.
 				const routeExports = printedListNumber ? (exportIndex.get(printedListNumber) ?? []) : [];
-				const routeClaims = claimsByRoute.get(route.mapRouteId) ?? [];
+				// The turf keeps the id it has. A new one takes VAN's route id,
+				// which keeps ids in logs matching VAN, unless another campaign's
+				// turf already has that id — then it gets the next free one.
+				const turfId =
+					prior?.turfId ??
+					(takenTurfIds.has(route.mapRouteId) ? nextFreeTurfId++ : route.mapRouteId);
+
+				// Claims are on turfIds. A newly numbered turf has none yet.
+				const routeClaims = claimsByRoute.get(turfId) ?? [];
 				const assignment = outsideAssignment(routeExports, routeClaims, prior);
 				// Our own volunteer loading the list: the first export inside
 				// each claim that has not been stamped yet.
@@ -435,7 +475,9 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				}
 
 				const row: NewVanTurfRow = {
-					turfId: route.mapRouteId,
+					turfId,
+					campaignId,
+					vanMapRouteId: route.mapRouteId,
 					mapRegionId: region.mapRegionId,
 					folderId: folder.folderId,
 					chapterId: folder.chapterId,
@@ -478,7 +520,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				};
 				upserts.push(row);
 
-				if (prior?.retiredAt) unretirements.push(route.mapRouteId);
+				if (prior?.retiredAt) unretirements.push(prior.turfId);
 
 				const wantsGeometry = needsGeometry({
 					hullJson: row.hullJson ?? null,
@@ -488,7 +530,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				const wantsRoster = input.roster === true && prior?.rosterSavedListId !== route.savedListId;
 				if (route.savedListId && (wantsGeometry || wantsRoster)) {
 					geometryQueue.push({
-						turfId: route.mapRouteId,
+						vanMapRouteId: route.mapRouteId,
 						savedListId: route.savedListId,
 						roster: wantsRoster,
 					});
@@ -526,7 +568,8 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 
 	const retirements = existing
 		.filter(
-			(row) => row.retiredAt === null && syncedFolderIds.has(row.folderId) && !seen.has(row.turfId),
+			(row) =>
+				row.retiredAt === null && syncedFolderIds.has(row.folderId) && !seen.has(row.vanMapRouteId),
 		)
 		.map((row) => row.turfId);
 

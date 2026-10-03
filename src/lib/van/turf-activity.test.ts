@@ -24,6 +24,7 @@ function row(over: Partial<ActivityRow> = {}): ActivityRow {
 		regionName: 'Ann Arbor',
 		chapterId: 71,
 		chapterName: 'Washtenaw County',
+		campaignId: 1,
 		doorCount: 250,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',

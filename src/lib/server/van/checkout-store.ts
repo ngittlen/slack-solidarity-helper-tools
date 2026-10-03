@@ -16,10 +16,10 @@
 
 import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
-import { loadContactMarks } from './contact-sync.js';
+import { loadContactMarks, marksFor } from './contact-sync.js';
 import { sheetBlocksClaim, turfSnapshot } from '../../van/turf-view.js';
 import {
 	canClaim,
@@ -60,15 +60,19 @@ export async function latestWalkReports(
 ): Promise<Map<number, WalkReport>> {
 	const reports = new Map<number, WalkReport>();
 	if (turfIds.length === 0) return reports;
-	const { countedThrough } = await loadContactMarks(db);
+	// Per campaign: each pulls its own ContactHistory, so whether a completion
+	// is in the count depends on how far its OWN campaign has read.
+	const marks = await loadContactMarks(db);
 	for (const batch of chunked([...new Set(turfIds)])) {
 		const rows = await db
 			.select({
 				turfId: vanTurfCheckouts.turfId,
+				campaignId: vanTurfs.campaignId,
 				percent: vanTurfCheckouts.reportedPercent,
 				at: vanTurfCheckouts.completedAt,
 			})
 			.from(vanTurfCheckouts)
+			.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
 			.where(
 				and(
 					inArray(vanTurfCheckouts.turfId, batch),
@@ -82,6 +86,7 @@ export async function latestWalkReports(
 		for (const row of rows) {
 			// Newest first, so the first row per route is the one that counts.
 			if (!reports.has(row.turfId) && row.at !== null) {
+				const { countedThrough } = marksFor(marks, row.campaignId);
 				reports.set(row.turfId, {
 					percent: row.percent,
 					at: row.at,
@@ -152,8 +157,23 @@ export async function claimTurf(
 ): Promise<ClaimResult> {
 	const { turfId, slackUserId, slackUserName, now } = input;
 
-	const [row] = await db.select().from(vanTurfs).where(eq(vanTurfs.turfId, turfId));
-	if (!row) return { ok: false, status: 404, message: 'That turf no longer exists.' };
+	const [found] = await db
+		.select({ turf: vanTurfs, campaignEnabled: vanCampaigns.enabled })
+		.from(vanTurfs)
+		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
+		.where(eq(vanTurfs.turfId, turfId));
+	if (!found) return { ok: false, status: 404, message: 'That turf no longer exists.' };
+	// A disabled campaign's turf is hidden from every list, so this is a page
+	// left open from before it was disabled. Its claims in progress carry on;
+	// new ones are refused.
+	if (!found.campaignEnabled) {
+		return {
+			ok: false,
+			status: 409,
+			message: 'That turf is no longer being handed out. Refresh the page for current turf.',
+		};
+	}
+	const row = found.turf;
 
 	// The same snapshot the page judged claimability from, so the server never
 	// refuses a turf the page offered (or hands out one it showed as done).
@@ -364,12 +384,20 @@ export async function endClaim(
 	// helper never throws, so a completion that is already written cannot fail
 	// on its bookkeeping.
 	if (kind === 'complete') {
+		// Recorded for every campaign. Whether a campaign's wants are ever SENT
+		// is the sweep's call (van-sync), so a campaign that must not be re-cut
+		// only ever accumulates wants nobody acts on.
 		const [turf] = await db
-			.select({ folderId: vanTurfs.folderId, mapRegionId: vanTurfs.mapRegionId })
+			.select({
+				campaignId: vanTurfs.campaignId,
+				folderId: vanTurfs.folderId,
+				mapRegionId: vanTurfs.mapRegionId,
+			})
 			.from(vanTurfs)
 			.where(eq(vanTurfs.turfId, turfId));
 		if (turf) {
 			await requestRegionRefresh(db, {
+				campaignId: turf.campaignId,
 				folderId: turf.folderId,
 				mapRegionId: turf.mapRegionId,
 				now,

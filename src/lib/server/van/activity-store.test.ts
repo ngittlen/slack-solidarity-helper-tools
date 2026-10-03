@@ -32,12 +32,12 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 
 	await client.execute({
-		sql: `INSERT INTO van_turfs (turf_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
-		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?),
-		             (200, 1, 2, 72, 'Wayne County', 'Detroit East', 'Turf 02', 180, ?, ?),
-		             (300, 1, 1, 71, 'Washtenaw County', 'Ypsilanti', 'Retired turf', 90, ?, ?),
-		             (400, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 04', 200, ?, ?),
-		             (500, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 05', 210, ?, ?)`,
+		sql: `INSERT INTO van_turfs (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+		      VALUES (100, 100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?),
+		             (200, 200, 1, 2, 72, 'Wayne County', 'Detroit East', 'Turf 02', 180, ?, ?),
+		             (300, 300, 1, 1, 71, 'Washtenaw County', 'Ypsilanti', 'Retired turf', 90, ?, ?),
+		             (400, 400, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 04', 200, ?, ?),
+		             (500, 500, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 05', 210, ?, ?)`,
 		args: Array.from({ length: 10 }, () => NOW.toISOString()),
 	});
 	// Chapter 71 sees folder 1, chapter 72 sees folder 2 — visibility comes from
@@ -323,5 +323,29 @@ describe('hasAnyTurf', () => {
 	it('is false on an empty catalog', async () => {
 		await db.run(`DELETE FROM van_turfs` as never);
 		expect(await hasAnyTurf(db)).toBe(false);
+	});
+});
+
+// The activity page's campaign picker (specs/012-multi-van-campaigns).
+describe('one campaign', () => {
+	beforeEach(async () => {
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 1, 's', 's', 'x')`,
+		);
+		await client.execute('UPDATE van_turfs SET campaign_id = 2 WHERE turf_id = 400');
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 400 });
+	});
+
+	it('scopes the rows and the counts to it, and says which campaign each row is', async () => {
+		const query = { chapterId: null, campaignId: 2, range: WEEK };
+		const rows = await loadActivityRows(db, query);
+		expect(rows.map((r) => [r.turfId, r.campaignId])).toEqual([[400, 2]]);
+		expect((await loadActivityCounts(db, query)).claimed).toBe(1);
+	});
+
+	it('reads every campaign when none is picked', async () => {
+		expect((await loadActivityCounts(db, allChapters)).claimed).toBe(2);
 	});
 });

@@ -24,7 +24,7 @@
 // is picked up by the next run and POLLED rather than re-submitted, so a
 // killed worker costs one HTTP GET, not a duplicate export job.
 
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanGeometryQueue, vanTurfs } from '../schema.js';
@@ -79,6 +79,10 @@ const MAX_POLLS = 5;
 const MIN_DOWNLOAD_MS = 5_000;
 
 export interface GeometryWorkerOptions {
+	/** The campaign whose queue this run drains, with that campaign's client.
+	 *  Export jobs are created and read with a campaign's own key, so a run
+	 *  never touches another campaign's turf. */
+	campaignId: number;
 	/** VAN's per-developer export job type id — 5 (VoterCircle) on this key.
 	 *  Type 4 has no coordinate columns and produces a loud extract failure. */
 	exportJobTypeId: number;
@@ -225,11 +229,17 @@ export async function runGeometryQueue(
 			attempts: vanGeometryQueue.attempts,
 		})
 		.from(vanGeometryQueue)
+		.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanGeometryQueue.turfId))
 		// `running` is included whether or not it has a job id: with one it is
 		// resumable by polling, without one it is a crash between the status
 		// write and the POST and is indistinguishable from pending. The ORDER BY
 		// below is what separates the two, not the filter.
-		.where(inArray(vanGeometryQueue.status, ['pending', 'running']))
+		.where(
+			and(
+				eq(vanTurfs.campaignId, options.campaignId),
+				inArray(vanGeometryQueue.status, ['pending', 'running']),
+			),
+		)
 		.orderBy(
 			// Resumable (has a job id) before fresh, then fewest attempts first
 			// so a poison row cannot monopolise every run.
@@ -399,7 +409,11 @@ export async function runGeometryQueue(
 			// mismatch and queues again.
 			if (extract.roster) {
 				await replaceRoster(db, item.turfId, item.savedListId, extract.roster);
-				await recomputeUncontacted(db, { now: new Date(), turfIds: [item.turfId] });
+				await recomputeUncontacted(db, {
+					now: new Date(),
+					campaignId: options.campaignId,
+					turfIds: [item.turfId],
+				});
 				result.rostersStored++;
 			}
 

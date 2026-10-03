@@ -3,10 +3,11 @@
  * Read-only — this script never writes to VAN or to the database.
  *
  * This exists because region names are the input to the checkout log's routing
- * rules (Settings → Checkout spreadsheets), and nothing else prints them all:
- * `van:check` is a probe rather than an inventory — it stops at the first
- * folder holding turf, `--folder` narrows it to one, and the region lines are
- * suppressed entirely unless VAN_DATABASE_MODE pins a single mode.
+ * rules (each campaign's page under Settings → VAN campaigns), and nothing else
+ * prints them all: `van:check` is a probe rather than an inventory — it stops
+ * at the first folder holding turf, `--folder` narrows it to one, and the
+ * region lines are suppressed entirely unless VAN_DATABASE_MODE pins a single
+ * mode.
  * `van:sync --dry-run` reports counts, not names. So writing a prefix rule
  * meant reading names out of VAN's own UI a folder at a time.
  *
@@ -20,37 +21,27 @@
  *   npm run van:regions               # grouped by folder
  *   npm run van:regions -- --flat     # one name per line, sorted, deduped
  *   npm run van:regions -- --prefixes # the distinct leading codes, with counts
+ *   npm run van:regions -- --campaign other   # another campaign's key
  *
- * Required env vars:
- *   VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE (0 = My Voters, 1 = My Campaign)
+ * Credentials, as the app reads them (scripts/campaign-arg.ts): the campaign's
+ * VAN_CAMPAIGN_<KEY> secret, or for `primary` (the default) the legacy
+ * VAN_APP_NAME, VAN_API_KEY and VAN_DATABASE_MODE. No database needed — region
+ * names are each campaign's own, and its routing rules match only its own.
  */
 
-import { createVanClient, VanError, type VanDatabaseMode } from '../src/lib/server/van/client.js';
+import { createVanClient, VanError } from '../src/lib/server/van/client.js';
+import { campaignCredential, campaignKeyArg } from './campaign-arg.js';
 
 const args = process.argv.slice(2);
 const FLAT = args.includes('--flat');
 const PREFIXES = args.includes('--prefixes');
 
-const appName = process.env['VAN_APP_NAME'] ?? '';
-const apiKey = process.env['VAN_API_KEY'] ?? '';
-const rawMode = (process.env['VAN_DATABASE_MODE'] ?? '').trim();
-
-if (!appName || !apiKey) {
-	console.error('Missing required env vars: VAN_APP_NAME, VAN_API_KEY');
-	process.exit(1);
-}
-if (rawMode !== '0' && rawMode !== '1') {
-	console.error(
-		`VAN_DATABASE_MODE must be 0 (My Voters) or 1 (My Campaign), got "${rawMode}".\n` +
-			'Run `npm run van:check -- --both` to find out which one holds your turf.',
-	);
-	process.exit(1);
-}
-
+const CAMPAIGN_KEY = campaignKeyArg();
+const credential = campaignCredential(CAMPAIGN_KEY);
 const client = createVanClient({
-	appName,
-	apiKey,
-	databaseMode: Number(rawMode) as VanDatabaseMode,
+	appName: credential.appName,
+	apiKey: credential.apiKey,
+	databaseMode: credential.databaseMode,
 });
 
 /** The leading code a region is cut under — `R04C_Livingston_…` → `R04C`.
@@ -63,7 +54,10 @@ function leadingCode(name: string): string | null {
 }
 
 async function main(): Promise<void> {
-	console.log(`\nVAN regions — app "${appName}", mode ${rawMode}\n`);
+	console.log(
+		`\nVAN regions — campaign ${CAMPAIGN_KEY}, app "${credential.appName}", ` +
+			`mode ${credential.databaseMode}\n`,
+	);
 
 	const folders = await client.folders();
 	if (folders.length === 0) {
@@ -134,7 +128,7 @@ async function main(): Promise<void> {
 
 	console.log(
 		`${unique.length} distinct region name(s) across ${folders.length} folder(s).\n` +
-			'Write rules covering these under Settings → Checkout spreadsheets,\n' +
+			"Write rules covering these on the campaign's page under Settings → VAN campaigns,\n" +
 			'then check them at /turfs/sheet-map.\n',
 	);
 }

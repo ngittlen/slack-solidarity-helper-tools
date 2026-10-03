@@ -45,7 +45,7 @@
 	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
 	import { focusZoom, isBoxVisible } from '$lib/van/map-focus.js';
 	import { untrack } from 'svelte';
-	import type { MappableTurf } from '$lib/van/turf-view.js';
+	import type { CampaignBadges, MappableTurf } from '$lib/van/turf-view.js';
 
 	interface Props {
 		/** Only turf with geometry — filter with `mappableTurfs()`. Turf without
@@ -67,6 +67,9 @@
 		 *  can fetch turf outside the rows it was given. Debounced by the
 		 *  caller — a drag emits one of these, not sixty. */
 		onviewport?: (bounds: BoundingBox) => void;
+		/** Campaign id → badge, for turf carrying `campaignId`. Spoken with each
+		 *  shape's label, as the list row beside the map shows it. */
+		campaignBadges?: CampaignBadges;
 	}
 
 	let {
@@ -76,6 +79,7 @@
 		onselect,
 		tiles = { urlTemplate: TILE_URL_TEMPLATE, attribution: TILE_ATTRIBUTION },
 		onviewport,
+		campaignBadges = {},
 	}: Props = $props();
 
 	/** Fallback viewport, used for SSR and for the first frame before the
@@ -688,7 +692,9 @@
 				? `, ${turf.doorsRemaining} doors remaining, ${shadeLabel(turfShade(status, turf.doorsRemaining))}`
 				: '';
 		const noList = turf.noListNumber ? ', no list number yet' : '';
-		return `${turf.name}, ${statusLabel(status)}${noList}${doors}`;
+		const badge = turf.campaignId === undefined ? undefined : campaignBadges[turf.campaignId];
+		const campaign = badge ? `, ${badge}` : '';
+		return `${turf.name}${campaign}, ${statusLabel(status)}${noList}${doors}`;
 	}
 </script>
 

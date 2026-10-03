@@ -160,6 +160,14 @@ main {
 	margin-bottom: var(--space-4);
 }
 
+.code-card-title {
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+	min-width: 0;
+}
+
 .code-card h2 {
 	margin: 0;
 	font-family: var(--font-display);
@@ -886,6 +894,24 @@ main {
 	background: color-mix(in srgb, var(--color-warning) 30%, transparent);
 	border: 1px solid var(--color-warning);
 	color: var(--color-text);
+}
+
+/* Which campaign's VAN the turf is from (specs/012-multi-van-campaigns),
+   shown while more than one campaign is enabled and on a disabled campaign's
+   turf (badgeShown in van/campaigns.ts). An outline and no fill:
+   it names a source, not a state, so it must not join the tinted status chips.
+   Capped in width so a long campaign name cannot push the status chip off the
+   row; the full text is in the settings page that set it. */
+.badge-campaign {
+	border: 1px solid var(--color-border);
+	color: var(--color-text-muted);
+	/* A name, not a status word: shown as the admin typed it, matching the
+	   "El-Sayed list number" line on the card and the Slack messages. */
+	text-transform: none;
+	letter-spacing: normal;
+	max-width: 12em;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* Amber text, no rule and no fill: it is a caveat inside an open row, not a

@@ -19,6 +19,7 @@ function createdExpiringIn(days: number): string {
 function turf(over: Partial<ListExpiryTurf> = {}): ListExpiryTurf {
 	return {
 		turfId: 1,
+		campaignId: 1,
 		name: 'Brighton Turf 01',
 		regionName: 'R04C_Livingston_BrightonCity003',
 		chapterName: 'Livingston County',

@@ -4,9 +4,12 @@ import { db } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { acquireSyncLock, releaseSyncLock } from '$lib/server/sync-lock.js';
 import { alertFor } from '$lib/server/slack.js';
-import { vanClient, vanExportJobTypeId, vanPersonHasher } from '$lib/server/van-env.js';
+import { vanClientFor, vanExportJobTypeIdFor, vanPersonHasher } from '$lib/server/van-env.js';
+import { vanCampaigns, vanTurfs } from '$lib/server/schema.js';
+import { eq } from 'drizzle-orm';
 import { runGeometryQueue } from '$lib/server/van/geometry-worker.js';
-import { VAN_SYNC_LOCK } from '$lib/server/van/locks.js';
+import { vanSyncLock } from '$lib/server/van/locks.js';
+import { campaignName, severalCampaignsEnabled } from '$lib/server/van/campaigns.js';
 import { exportCallbackUrl, verifyWebhookToken } from '$lib/server/van/webhook-token.js';
 import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 
@@ -34,7 +37,7 @@ import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 // webhook-token.ts.
 
 // Short: this is a wake-up, not a batch window. A drain that needs longer is
-// the cron's job. The TTL is per acquisition, so taking VAN_SYNC_LOCK for a
+// the cron's job. The TTL is per acquisition, so taking the campaign's sync lock for a
 // minute here does not extend the catalog sync's own ten.
 const LOCK_TTL_MS = 2 * 60 * 1000;
 const BUDGET_MS = 60 * 1000;
@@ -44,9 +47,10 @@ export const POST: RequestHandler = async ({ url, request }) => {
 		console.error('[van] INTERNAL_CRON_SECRET is not set');
 		return json({ error: 'Server misconfigured' }, { status: 500 });
 	}
-	// The turf whose export job carried this URL. Only used to check the token —
-	// the drain that follows covers the whole queue, so a valid token for turf A
-	// arriving while turf B is what finished is still a correct wake-up.
+	// The turf whose export job carried this URL. Used to check the token and to
+	// find its campaign — the drain that follows covers that campaign's whole
+	// queue, so a valid token for turf A arriving while turf B is what finished
+	// is still a correct wake-up.
 	const turfId = Number(url.searchParams.get('turf'));
 	const signature = url.searchParams.get('token') ?? '';
 	if (!verifyWebhookToken(INTERNAL_CRON_SECRET, turfId, signature)) {
@@ -62,8 +66,21 @@ export const POST: RequestHandler = async ({ url, request }) => {
 		// VAN has posted an empty body before; that is still a valid wake-up.
 	}
 
-	const exportJobTypeId = vanExportJobTypeId();
-	const configured = vanClient();
+	// The job was submitted with the turf's campaign's key, so only that key
+	// can read it back. A turf that has since gone has nothing to wake.
+	const [campaign] = await db
+		.select({ campaign: vanCampaigns })
+		.from(vanTurfs)
+		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
+		.where(eq(vanTurfs.turfId, turfId));
+	if (!campaign) return json({ skipped: 'unknown turf' });
+	// A disabled campaign makes no VAN calls (specs/012-multi-van-campaigns):
+	// a job submitted just before it was switched off still calls back, and a
+	// drain here would submit new export jobs for its whole queue. 200, so VAN
+	// does not retry.
+	if (!campaign.campaign.enabled) return json({ skipped: 'campaign is disabled' });
+	const exportJobTypeId = vanExportJobTypeIdFor(campaign.campaign);
+	const configured = vanClientFor(campaign.campaign);
 	if (exportJobTypeId === null || !configured.ok) {
 		// 200, not an error: VAN retries non-2xx, and retrying will not make the
 		// server configured. The next cron run reports the misconfiguration.
@@ -71,7 +88,8 @@ export const POST: RequestHandler = async ({ url, request }) => {
 		return json({ skipped: 'geometry not configured' });
 	}
 
-	const token = await acquireSyncLock(db, VAN_SYNC_LOCK, LOCK_TTL_MS);
+	const lock = vanSyncLock(campaign.campaign.id);
+	const token = await acquireSyncLock(db, lock, LOCK_TTL_MS);
 	if (!token) {
 		// A drain is already running and will collect this job on its own pass.
 		return json({ skipped: 'a geometry drain is already in progress' });
@@ -80,10 +98,18 @@ export const POST: RequestHandler = async ({ url, request }) => {
 	try {
 		const { slackTurfChannelId } = await loadSettings(db);
 		const result = await runGeometryQueue(db, configured.client, {
+			campaignId: campaign.campaign.id,
 			exportJobTypeId,
 			webhookUrlFor: (id) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, id),
 			timeBudgetMs: BUDGET_MS,
-			alert: alertFor('[van]', slackTurfChannelId),
+			// Named as the sync names it once there are several campaigns, so a
+			// dead-letter alert says whose export job type or key to look at.
+			alert: alertFor(
+				(await severalCampaignsEnabled(db))
+					? `[van · ${campaignName(campaign.campaign)}]`
+					: '[van]',
+				slackTurfChannelId,
+			),
 			roster: vanPersonHasher(),
 		});
 		console.log(`[van] export callback (job ${String(exportJobId)}):`, {
@@ -100,6 +126,6 @@ export const POST: RequestHandler = async ({ url, request }) => {
 		// pick the queue up regardless.
 		return json({ error: message });
 	} finally {
-		await releaseSyncLock(db, VAN_SYNC_LOCK, token);
+		await releaseSyncLock(db, lock, token);
 	}
 };

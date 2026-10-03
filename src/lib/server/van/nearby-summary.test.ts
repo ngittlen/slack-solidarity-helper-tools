@@ -35,6 +35,7 @@ async function turf(
 	over: {
 		doors?: number;
 		retired?: boolean;
+		campaignId?: number;
 		vanAssignedAt?: string | null;
 		vanDistributedTo?: string | null;
 		sheetAssignedTo?: string | null;
@@ -43,10 +44,11 @@ async function turf(
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, map_region_id, folder_id, chapter_id, name, door_count,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, name, door_count,
 		         printed_list_number, van_distributed_to, sheet_assigned_to,
-		         centroid_lat, centroid_lng, retired_at, van_assigned_at, first_seen_at, last_seen_at)
-		      VALUES (?, 1, 1, 71, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		         centroid_lat, centroid_lng, retired_at, van_assigned_at, first_seen_at, last_seen_at,
+		         campaign_id)
+		      VALUES (?1, ?1, 1, 1, 71, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		args: [
 			id,
 			`Turf ${id}`,
@@ -60,6 +62,7 @@ async function turf(
 			over.vanAssignedAt ?? null,
 			iso(-24 * HOUR * 30),
 			iso(0),
+			over.campaignId ?? 1,
 		],
 	});
 }
@@ -141,6 +144,49 @@ describe('loadNearbySummary', () => {
 		const summary = await loadNearbySummary(db, HERE, NOW);
 		expect(summary.doors).toEqual({ kind: 'none' });
 		expect(summary.cells).toEqual([]);
+	});
+
+	// A disabled campaign's turf is not handed out (specs/012-multi-van-campaigns).
+	describe('a disabled campaign', () => {
+		beforeEach(async () => {
+			await client.execute(
+				`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+				 VALUES (2, 'partner', 0, 's', 's', 'x')`,
+			);
+		});
+
+		it('adds no doors and draws no grid', async () => {
+			await turf(1, HERE, { doors: 250, campaignId: 2 });
+			const summary = await loadNearbySummary(db, HERE, NOW);
+			expect(summary.doors).toEqual({ kind: 'none' });
+			expect(summary.cells).toEqual([]);
+		});
+
+		it('still counts someone walking its turf as out canvassing', async () => {
+			await turf(1, HERE, { doors: 250, campaignId: 2 });
+			await claim(1, 'U_STILL_OUT');
+			const summary = await loadNearbySummary(db, HERE, NOW);
+			expect(summary.canvassers).toBe(level('A couple'));
+			expect(summary.doors).toEqual({ kind: 'none' });
+		});
+
+		// R13: the teaser's lookup is open to anyone, so it carries no campaign.
+		it('says nothing about which campaign the turf is from', async () => {
+			await client.execute(
+				`UPDATE van_campaigns SET label = 'Secret Partner', badge_label = 'SP', enabled = 1 WHERE id = 2`,
+			);
+			await client.execute(`UPDATE van_campaigns SET label = 'One Team Michigan' WHERE id = 1`);
+			await turf(1, HERE, { doors: 250, campaignId: 2 });
+			await turf(2, NEAR, { doors: 250 });
+			const json = JSON.stringify(await loadNearbySummary(db, HERE, NOW));
+			expect(json).not.toMatch(/campaign|Secret Partner|"SP"|One Team/i);
+		});
+
+		it('is left out of the map centre', async () => {
+			await turf(1, { lat: 42.21, lng: -83.71 });
+			await turf(2, { lat: 10, lng: 10 }, { campaignId: 2 });
+			expect(await loadTurfCentre(db)).toEqual({ lat: 42.2, lng: -83.7 });
+		});
 	});
 
 	it('draws the grid past the ring, but not past its own radius', async () => {

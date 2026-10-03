@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { load } from './+page.server.js';
+import { campaignFilter } from '$lib/server/van/campaigns.js';
 
 const mockSettings = vi.hoisted(() => vi.fn());
 const mockHoldings = vi.hoisted(() => vi.fn());
@@ -9,9 +10,17 @@ const mockDriftClaims = vi.hoisted(() => vi.fn());
 const mockDriftVisibility = vi.hoisted(() => vi.fn());
 
 const mockGeometryProgress = vi.hoisted(() => vi.fn());
+const mockRefreshSwitches = vi.hoisted(() =>
+	vi.fn(async () => ({ on: [] as string[], off: ['One Team Michigan'] })),
+);
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
+vi.mock('$lib/server/van/campaigns.js', () => ({
+	campaignRefreshSwitches: mockRefreshSwitches,
+	// One campaign: no picker, no badges.
+	campaignFilter: vi.fn(async () => ({ campaigns: [], campaign: null, badges: {} })),
+}));
 vi.mock('$lib/server/van/drift-store.js', () => ({
 	loadDriftTurfs: mockDriftTurfs,
 	loadDriftClaims: mockDriftClaims,
@@ -132,12 +141,18 @@ describe('/turfs/organizer filters', () => {
 	it('defaults to every chapter', async () => {
 		const data = await run(event(ADMIN));
 		expect(data.chapter).toBeNull();
-		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), { chapterId: null });
+		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: null,
+			campaignId: null,
+		});
 	});
 
 	it('scopes both queries to a chosen chapter', async () => {
 		await run(event(ADMIN, 'chapter=71'));
-		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), { chapterId: 71 });
+		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: 71,
+			campaignId: null,
+		});
 		expect(mockCompletions).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ chapterId: 71 }),
@@ -150,7 +165,36 @@ describe('/turfs/organizer filters', () => {
 	])('falls back to every chapter for %s', async (_label, query) => {
 		const data = await run(event(ADMIN, query));
 		expect(data.chapter).toBeNull();
-		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), { chapterId: null });
+		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: null,
+			campaignId: null,
+		});
+	});
+
+	// specs/012-multi-van-campaigns: the picker's choice reaches every query,
+	// and the page gets the list and the badges to render.
+	it('scopes the queries to a picked campaign', async () => {
+		vi.mocked(campaignFilter).mockResolvedValueOnce({
+			campaigns: [
+				{ id: 1, name: 'One Team Michigan' },
+				{ id: 2, name: 'Partner' },
+			],
+			campaign: { id: 2, name: 'Partner' },
+			badges: { 1: 'OTM', 2: 'Partner' },
+		});
+		const data = await run(event(ADMIN, 'campaign=2'));
+		expect(vi.mocked(campaignFilter)).toHaveBeenCalledWith(expect.anything(), '2');
+		expect(data.campaign).toEqual({ id: 2, name: 'Partner' });
+		expect(data.campaigns).toHaveLength(2);
+		expect(data.campaignBadges).toEqual({ 1: 'OTM', 2: 'Partner' });
+		for (const mock of [mockHoldings, mockCompletions, mockDriftTurfs, mockDriftClaims]) {
+			expect(mock).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ campaignId: 2 }),
+			);
+		}
+		// The drift report's "can we see VAN's side" is about the same campaign.
+		expect(mockDriftVisibility).toHaveBeenCalledWith(expect.anything(), 2);
 	});
 
 	it('sorts the chapter picker by name', async () => {
@@ -261,12 +305,12 @@ describe('/turfs/organizer missed-sync pane', () => {
 	});
 
 	// The empty state says what the check is waiting on, and that depends on
-	// whether the sync asks VAN for re-cuts or an organizer has to.
-	it('passes on whether region re-cuts are switched on', async () => {
-		mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS, vanRegionRefreshEnabled: true });
-		expect((await run(event(ADMIN))).regionRefreshEnabled).toBe(true);
-		mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS, vanRegionRefreshEnabled: false });
-		expect((await run(event(ADMIN))).regionRefreshEnabled).toBe(false);
+	// whether the sync asks VAN for re-cuts or an organizer has to — which is
+	// each campaign's own switch, so the page gets them by name.
+	it('passes on which campaigns have region re-cuts switched on', async () => {
+		const switches = { on: ['One Team Michigan'], off: ['Partner'] };
+		mockRefreshSwitches.mockResolvedValue(switches);
+		expect((await run(event(ADMIN))).regionRefresh).toEqual(switches);
 	});
 
 	it('flags only a measured zero', async () => {
@@ -411,8 +455,14 @@ describe('/turfs/organizer drift pane', () => {
 
 	it('scopes the drift queries to the chosen chapter', async () => {
 		await run(event(ADMIN, 'chapter=71'));
-		expect(mockDriftTurfs).toHaveBeenCalledWith(expect.anything(), { chapterId: 71 });
-		expect(mockDriftClaims).toHaveBeenCalledWith(expect.anything(), { chapterId: 71 });
+		expect(mockDriftTurfs).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: 71,
+			campaignId: null,
+		});
+		expect(mockDriftClaims).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: 71,
+			campaignId: null,
+		});
 	});
 
 	// Same instant as the holdings board, or a claim expiring between the two

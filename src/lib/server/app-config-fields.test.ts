@@ -7,7 +7,12 @@ const mockGetSlackChannels = vi.hoisted(() => vi.fn());
 vi.mock('./settings-validation.js', () => ({ validateSlackChannel: mockValidateSlackChannel }));
 vi.mock('./autocomplete-sources.js', () => ({ getSlackChannels: mockGetSlackChannels }));
 
-import { APP_CONFIG_FIELDS, APP_CONFIG_FIELD_KEYS } from './app-config-fields.js';
+import {
+	APP_CONFIG_FIELDS,
+	APP_CONFIG_FIELD_KEYS,
+	checkBoolean,
+	checkSheetTabName,
+} from './app-config-fields.js';
 import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '../ticker-speed.js';
 
 const ctx = { slack: {} as WebClient };
@@ -43,8 +48,6 @@ describe('the table', () => {
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
 				'vanAssignmentTtlHours',
-				'vanRegionRefreshEnabled',
-				'vanSheetTabName',
 				'doorTickerColumnsPerSecond',
 				'siteName',
 				'countdownLabel',
@@ -55,7 +58,7 @@ describe('the table', () => {
 				'publicJoinUrl',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(22);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(20);
 	});
 });
 
@@ -186,12 +189,25 @@ describe('numeric fields', () => {
 		});
 	});
 
-	it('takes the region refresh switch only as a real boolean', async () => {
-		expect(await run('vanRegionRefreshEnabled', true)).toEqual({ ok: true, value: true });
-		expect(await run('vanRegionRefreshEnabled', false)).toEqual({ ok: true, value: false });
+	// The per-campaign switches (refresh, sheets, enabled) — moved off app_config
+	// onto each campaign, validated by the same rule.
+	it('takes a switch only as a real boolean', () => {
+		expect(checkBoolean('refreshEnabled', true)).toEqual({ ok: true, value: true });
+		expect(checkBoolean('refreshEnabled', false)).toEqual({ ok: true, value: false });
 		// "false" is truthy — accepting strings would let it switch the sweep ON.
 		for (const value of ['false', 'true', 1, 0, null, undefined]) {
-			expect(await run('vanRegionRefreshEnabled', value)).toMatchObject({ ok: false });
+			expect(checkBoolean('refreshEnabled', value)).toMatchObject({ ok: false });
+		}
+	});
+
+	it('takes a Packet Tracker tab name Google allows, and empty for the default', () => {
+		expect(checkSheetTabName('sheetTabName', '  Packet Tracker ')).toEqual({
+			ok: true,
+			value: 'Packet Tracker',
+		});
+		expect(checkSheetTabName('sheetTabName', '')).toEqual({ ok: true, value: '' });
+		for (const value of ["Bob's tab", 'a/b', 'a:b', 'x'.repeat(101), 7]) {
+			expect(checkSheetTabName('sheetTabName', value)).toMatchObject({ ok: false });
 		}
 	});
 

@@ -22,13 +22,20 @@ const mockRunPacketTracker = vi.hoisted(() => vi.fn());
 const mockRunContactStage = vi.hoisted(() => vi.fn());
 const mockHasher = vi.hoisted(() => vi.fn());
 const mockEnsureCampaignRows = vi.hoisted(() => vi.fn());
+const mockCampaigns = vi.hoisted(() => vi.fn());
+const mockLoadCampaign = vi.hoisted(() => vi.fn());
+const mockSeveral = vi.hoisted(() => vi.fn());
+const mockRecordFailure = vi.hoisted(() => vi.fn());
+const mockMarkAnnounced = vi.hoisted(() => vi.fn());
+const mockPostAlert = vi.hoisted(() => vi.fn());
+const mockLoadVanChapterFolders = vi.hoisted(() =>
+	vi.fn(async () => [{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] }]),
+);
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
-// On in most tests so the sweep's own behaviour is exercised; the default-off
-// case has its own test below.
-const mockSettings = vi.hoisted(() => ({ vanRegionRefreshEnabled: true }));
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/slack.js', () => ({
+	postAlert: mockPostAlert,
 	slack: { chat: { postMessage: mockPostMessage } },
 	alertFor: mockAlertFor,
 }));
@@ -37,12 +44,9 @@ vi.mock('$lib/server/settings.js', () => ({
 		slackTrackingChannelId: 'C_TRACK',
 		slackTurfChannelId: 'C_TURF',
 		vanTurfClaimTtlHours: 48,
-		vanRegionRefreshEnabled: mockSettings.vanRegionRefreshEnabled,
 		vanSheetTabName: 'Packet Tracker',
 	}),
-	loadVanChapterFolders: async () => [
-		{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] },
-	],
+	loadVanChapterFolders: mockLoadVanChapterFolders,
 }));
 vi.mock('$lib/server/sync-lock.js', () => ({
 	acquireSyncLock: mockAcquire,
@@ -50,10 +54,24 @@ vi.mock('$lib/server/sync-lock.js', () => ({
 }));
 vi.mock('$lib/server/van-env.js', () => ({
 	ensureCampaignRows: mockEnsureCampaignRows,
-	vanClient: mockVanClient,
-	vanExportJobTypeId: mockExportJobTypeId,
+	vanClientFor: mockVanClient,
+	vanExportJobTypeIdFor: mockExportJobTypeId,
 	vanPersonHasher: mockHasher,
 }));
+vi.mock('$lib/server/van/campaigns.js', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/van/campaigns.js')>();
+	return {
+		// The pure rules are the real ones: which campaign may be re-cut is
+		// exactly what these tests are about.
+		campaignName: real.campaignName,
+		regionRefreshAllowed: real.regionRefreshAllowed,
+		campaignsStalestFirst: mockCampaigns,
+		loadCampaign: mockLoadCampaign,
+		severalCampaignsEnabled: mockSeveral,
+		recordSyncFailure: mockRecordFailure,
+		markFailureAnnounced: mockMarkAnnounced,
+	};
+});
 vi.mock('$lib/server/van/contact-live.js', () => ({ runContactStage: mockRunContactStage }));
 vi.mock('$lib/server/van/geometry-worker.js', () => ({
 	runGeometryQueue: mockRunGeometryQueue,
@@ -145,8 +163,48 @@ const sheetLogResult = {
 	warnings: [] as string[],
 };
 
-const event = (key = 'cron-secret') =>
-	({ url: new URL(`https://app.example/api/internal/van-sync?key=${key}`) }) as never;
+const event = (key = 'cron-secret', extra = '') =>
+	({ url: new URL(`https://app.example/api/internal/van-sync?key=${key}${extra}`) }) as never;
+
+/** The campaign the app has always served — the only one enabled unless a
+ *  test says otherwise. */
+const PRIMARY = {
+	id: 1,
+	credentialKey: 'primary',
+	label: null,
+	enabled: true,
+	exportJobTypeId: null,
+	// On in most tests so the sweep's own behaviour is exercised; the off case
+	// has its own test below.
+	refreshEnabled: true,
+	sheetsEnabled: true,
+	sheetTabName: null,
+	disabledAt: null,
+	disabledByName: null,
+	lastEditedBy: 'migration',
+	lastEditedByName: 'migration',
+	lastEditedAt: '2026-09-30T00:00:00.000Z',
+};
+
+/** The per-campaign half of a response: everything but the ledger counts. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- response bodies are read loosely, as `res.json()` always was here
+async function campaignOf(res: Response): Promise<Record<string, any>> {
+	return (await res.json()).campaigns[0];
+}
+
+/** The cross-campaign half: reconciliation, alerts, the Packet Tracker — run
+ *  once per request, after the campaigns (runSharedStages). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- as campaignOf
+async function sharedOf(res: Response): Promise<Record<string, any>> {
+	return (await res.json()).shared;
+}
+
+/** A campaign's catalog lock is held elsewhere; the ledger's is free. */
+function campaignLockHeld(): void {
+	mockAcquire.mockImplementation(async (_db: unknown, name: string) =>
+		name === 'van-ledger' ? 'ledger-token' : null,
+	);
+}
 
 describe('POST /api/internal/van-sync', () => {
 	beforeEach(() => {
@@ -172,6 +230,11 @@ describe('POST /api/internal/van-sync', () => {
 		mockHasher.mockReturnValue(null);
 		mockRunContactStage.mockResolvedValue(null);
 		mockEnsureCampaignRows.mockResolvedValue([]);
+		mockCampaigns.mockResolvedValue([PRIMARY]);
+		mockLoadCampaign.mockResolvedValue(PRIMARY);
+		mockSeveral.mockResolvedValue(false);
+		mockRecordFailure.mockResolvedValue(true);
+		mockPostAlert.mockResolvedValue(true);
 	});
 
 	it('returns 401 for a wrong key', async () => {
@@ -210,11 +273,37 @@ describe('POST /api/internal/van-sync', () => {
 		// Same housekeeping fields as the success path, so a monitor parsing this
 		// does not have to cope with keys that appear and disappear.
 		expect(await res.json()).toEqual({
-			error: 'VAN_API_KEY is not set',
 			claimsExpired: 2,
 			expiryWarningsSent: 3,
 			expiryWarningsFailed: 1,
+			campaigns: [{ campaignId: 1, error: 'VAN_API_KEY is not set' }],
+			shared: expect.any(Object),
 		});
+	});
+
+	// An install that never set VAN up has always run quietly with a 500. A
+	// campaign with NO secret is that case: recorded, not announced.
+	it('records but does not announce a campaign with no secret at all', async () => {
+		mockVanClient.mockReturnValue({ ok: false, missing: true, error: 'VAN_API_KEY is not set' });
+		await POST(event());
+		expect(mockRecordFailure).toHaveBeenCalledWith({}, 1, 'VAN_API_KEY is not set');
+		expect(mockPostAlert).not.toHaveBeenCalled();
+	});
+
+	// A malformed secret will be malformed next run too: a person has to fix it.
+	it('announces a malformed secret once, and stamps it as announced', async () => {
+		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_CAMPAIGN_PRIMARY is not valid JSON' });
+		await POST(event());
+		expect(mockPostAlert).toHaveBeenCalledOnce();
+		expect(mockPostAlert.mock.calls[0]![1]).toContain('VAN_CAMPAIGN_PRIMARY is not valid JSON');
+		expect(mockMarkAnnounced).toHaveBeenCalledWith({}, 1, 'VAN_CAMPAIGN_PRIMARY is not valid JSON');
+	});
+
+	it('does not announce a failure that was already announced', async () => {
+		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_CAMPAIGN_PRIMARY is not valid JSON' });
+		mockRecordFailure.mockResolvedValue(false);
+		await POST(event());
+		expect(mockPostAlert).not.toHaveBeenCalled();
 	});
 
 	// Ledger housekeeping does not need VAN, and a key rotated badly on a Friday
@@ -230,7 +319,7 @@ describe('POST /api/internal/van-sync', () => {
 	it('releases the lock even when VAN is not configured', async () => {
 		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
 		await POST(event());
-		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync:1', 'lock-token');
 	});
 
 	// Sweep first, then warn: nobody should be told that turf which lapsed
@@ -260,37 +349,45 @@ describe('POST /api/internal/van-sync', () => {
 		const res = await POST(event());
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({
-			...result,
-			geometry: geometryResult,
 			claimsExpired: 0,
 			expiryWarningsSent: 0,
 			expiryWarningsFailed: 0,
-			drift: driftResult,
-			listExpiry: { announced: 0, failed: false, skipped: 'nothing-new' },
-			refreshesSettled: 0,
-			reconciled: reconcileResult,
-			doorDeltas: doorDeltaResult,
-			doorsWarning: null,
-			refresh: refreshResult,
-			sheetLog: sheetLogResult,
-			contacts: { disabled: true },
+			campaigns: [
+				{
+					campaignId: 1,
+					...result,
+					geometry: geometryResult,
+					refreshesSettled: 0,
+					refresh: refreshResult,
+					contacts: { disabled: true },
+				},
+			],
+			shared: {
+				reconciled: reconcileResult,
+				doorDeltas: doorDeltaResult,
+				doorsWarning: null,
+				drift: driftResult,
+				listExpiry: { announced: 0, failed: false, skipped: 'nothing-new' },
+				sheetLog: sheetLogResult,
+			},
 		});
 		expect(mockRunCatalogSync).toHaveBeenCalledWith(
 			{},
 			{},
+			1,
 			[{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] }],
 			// The catalog is capped below the workflow's `curl --max-time 300`
 			// so geometry has room to run inside the same request.
 			{ timeBudgetMs: 3 * 60 * 1000, roster: false },
 		);
-		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync:1', 'lock-token');
 	});
 
 	// The catalog writes `van_distributed_to`, which is VAN's half of the drift
 	// comparison. Alerting first would announce drift computed against the
 	// previous run's view of VAN — precisely the window an organizer's bulk export
 	// lands in.
-	it("alerts on drift only after the catalog has refreshed VAN's half", async () => {
+	it("alerts on drift only after the catalog has refreshed VAN's half, and after geometry", async () => {
 		const order: string[] = [];
 		mockRunCatalogSync.mockImplementation(async () => {
 			order.push('catalog');
@@ -305,16 +402,16 @@ describe('POST /api/internal/van-sync', () => {
 			return geometryResult;
 		});
 		await POST(event());
-		// Before geometry too: geometry is the half the time budget cuts short, and
-		// an unannounced collision costs more than a missing hull.
-		expect(order).toEqual(['catalog', 'drift', 'geometry']);
+		// The shared stages follow every campaign's catalog and geometry; the
+		// last campaign's geometry leaves them time (SHARED_RESERVE_MS).
+		expect(order).toEqual(['catalog', 'geometry', 'drift']);
 	});
 
 	it('confirms in-flight refreshes against the regions the catalog just read', async () => {
 		// The catalog read is the only place VAN's dateRefreshed appears, so the
 		// confirmation rides on it rather than costing a second call.
 		await POST(event());
-		expect(mockSettle).toHaveBeenCalledWith({}, result.regionsRead);
+		expect(mockSettle).toHaveBeenCalledWith({}, 1, result.regionsRead);
 	});
 
 	it('reconciles claims after the catalog and before the drift report', async () => {
@@ -344,11 +441,11 @@ describe('POST /api/internal/van-sync', () => {
 			return refreshResult;
 		});
 		await POST(event());
-		// Reconciliation repairs claims a re-cut just released, and the delta
-		// check must not measure those as completions; drift reads the ledger, so
-		// it has to see both. The sweep goes last because its effect lands on a
-		// future tick.
-		expect(order).toEqual(['catalog', 'settle', 'reconcile', 'deltas', 'drift', 'refresh']);
+		// The campaign's own stages first (catalog, confirming earlier re-cuts,
+		// asking for new ones), then the shared ones: reconciliation repairs claims
+		// a re-cut just released, the delta check must not measure those as
+		// completions, and drift reads the ledger, so it has to see both.
+		expect(order).toEqual(['catalog', 'settle', 'refresh', 'reconcile', 'deltas', 'drift']);
 	});
 
 	it('warns about expiring list numbers after the catalog, in the turf channel', async () => {
@@ -363,7 +460,7 @@ describe('POST /api/internal/van-sync', () => {
 			order.push('list-expiry');
 			return { announced: 2, failed: false };
 		});
-		const body = await (await POST(event())).json();
+		const body = await sharedOf(await POST(event()));
 		expect(order).toEqual(['catalog', 'list-expiry']);
 		expect(mockListExpiry).toHaveBeenCalledWith(
 			{},
@@ -379,7 +476,7 @@ describe('POST /api/internal/van-sync', () => {
 			doorsCleared: 212,
 			dmFailed: 0,
 		});
-		const body = await (await POST(event())).json();
+		const body = await sharedOf(await POST(event()));
 		expect(body).toMatchObject({ doorDeltas: { measured: 4, unsynced: 1, doorsCleared: 212 } });
 	});
 
@@ -393,7 +490,7 @@ describe('POST /api/internal/van-sync', () => {
 
 	it('bounds the refresh sweep so it cannot eat the request', async () => {
 		await POST(event());
-		const { timeBudgetMs } = mockRefreshSweep.mock.calls[0]![2];
+		const { timeBudgetMs } = mockRefreshSweep.mock.calls[0]![3];
 		expect(timeBudgetMs).toBeGreaterThan(0);
 		expect(timeBudgetMs).toBeLessThanOrEqual(30 * 1000);
 	});
@@ -417,16 +514,12 @@ describe('POST /api/internal/van-sync', () => {
 		// A re-cut replaces every route in the region, and the replacements may
 		// have no printed list — so with the switch off (the default) the sweep
 		// must not run at all, not merely send fewer requests.
-		mockSettings.vanRegionRefreshEnabled = false;
-		try {
-			const body = await (await POST(event())).json();
-			expect(mockRefreshSweep).not.toHaveBeenCalled();
-			expect(body.refresh).toEqual({ disabled: true });
-			// Confirming earlier refreshes makes no VAN call, so it still runs.
-			expect(mockSettle).toHaveBeenCalled();
-		} finally {
-			mockSettings.vanRegionRefreshEnabled = true;
-		}
+		mockCampaigns.mockResolvedValue([{ ...PRIMARY, refreshEnabled: false }]);
+		const body = await campaignOf(await POST(event()));
+		expect(mockRefreshSweep).not.toHaveBeenCalled();
+		expect(body.refresh).toEqual({ disabled: true });
+		// Confirming earlier refreshes makes no VAN call, so it still runs.
+		expect(mockSettle).toHaveBeenCalled();
 	});
 
 	it('posts refresh warnings to the turf channel with the rest', async () => {
@@ -444,10 +537,8 @@ describe('POST /api/internal/van-sync', () => {
 		mockReconcile.mockResolvedValue({ ...reconcileResult, listNumbersChanged: 2, walkedOut: 1 });
 		mockRefreshSweep.mockResolvedValue({ ...refreshResult, regionsRefreshed: 3 });
 		const body = await (await POST(event())).json();
-		expect(body).toMatchObject({
-			reconciled: { listNumbersChanged: 2, walkedOut: 1 },
-			refresh: { regionsRefreshed: 3 },
-		});
+		expect(body.shared).toMatchObject({ reconciled: { listNumbersChanged: 2, walkedOut: 1 } });
+		expect(body.campaigns[0]).toMatchObject({ refresh: { regionsRefreshed: 3 } });
 	});
 
 	it('posts drift to the turf channel, against the housekeeping clock', async () => {
@@ -462,17 +553,41 @@ describe('POST /api/internal/van-sync', () => {
 		);
 	});
 
-	it('does not alert on drift when VAN is not configured', async () => {
-		// Without a catalog run, `van_distributed_to` is whatever the last
-		// successful sync left, and a stale comparison is worse than none.
+	// The shared stages need no VAN key: claims still need reconciling and the
+	// Packet Tracker still needs writing when a key is broken. Drift guards
+	// itself — it leaves out any campaign whose last sync failed, whose
+	// `van_distributed_to` is stale (drift-store.ts).
+	it('runs the shared stages even when the catalog could not', async () => {
 		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
 		await POST(event());
+		expect(mockReconcile).toHaveBeenCalledOnce();
+		expect(mockRunPacketTracker).toHaveBeenCalledOnce();
+		expect(mockDrift).toHaveBeenCalledOnce();
+	});
+
+	// The scheduler's earlier calls of a tick: the last one runs them.
+	it('leaves the shared stages out with shared=0', async () => {
+		const body = await (await POST(event('cron-secret', '&shared=0'))).json();
+		expect(mockReconcile).not.toHaveBeenCalled();
 		expect(mockDrift).not.toHaveBeenCalled();
+		expect(mockRunPacketTracker).not.toHaveBeenCalled();
+		expect(body.shared).toBeUndefined();
+		expect(body.campaigns[0].turfsUpserted).toBe(3);
+	});
+
+	it('skips the shared stages when another request holds the ledger lock', async () => {
+		let ledgerTaken = 0;
+		mockAcquire.mockImplementation(async (_db: unknown, name: string) =>
+			name === 'van-ledger' ? (ledgerTaken++ === 0 ? 'ledger-token' : null) : 'lock-token',
+		);
+		const body = await (await POST(event())).json();
+		expect(mockReconcile).not.toHaveBeenCalled();
+		expect(body.shared).toEqual({ skipped: 'another request is running them' });
 	});
 
 	it('reports what the drift alert did', async () => {
 		mockDrift.mockResolvedValue({ announced: 3, cleared: 1, failed: false });
-		const body = await (await POST(event())).json();
+		const body = await sharedOf(await POST(event()));
 		expect(body).toMatchObject({ drift: { announced: 3, cleared: 1, failed: false } });
 	});
 
@@ -488,12 +603,15 @@ describe('POST /api/internal/van-sync', () => {
 		}
 
 		it('skips without error once the wait runs out', async () => {
-			mockAcquire.mockResolvedValue(null);
+			campaignLockHeld();
 			const res = await postWaiting();
 			expect(res.status).toBe(200);
-			expect((await res.json()).skipped).toBeTruthy();
+			expect((await campaignOf(res)).skipped).toBeTruthy();
 			expect(mockRunCatalogSync).not.toHaveBeenCalled();
-			expect(mockRelease).not.toHaveBeenCalled();
+			// Nothing to release for the campaign; the ledger lock was taken
+			// and released as normal.
+			expect(mockRelease).not.toHaveBeenCalledWith({}, 'van-catalog-sync:1', expect.anything());
+			expect(mockRelease).toHaveBeenCalledWith({}, 'van-ledger', 'ledger-token');
 		});
 
 		// A command-line drain lets go between slices; the sync gets in then
@@ -506,14 +624,14 @@ describe('POST /api/internal/van-sync', () => {
 			const res = await postWaiting();
 			expect(res.status).toBe(200);
 			expect(mockRunCatalogSync).toHaveBeenCalledOnce();
-			expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+			expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync:1', 'lock-token');
 		});
 
 		// The counts have their own lock; a drain must not freeze them.
 		it('still pulls contacts when it has to skip', async () => {
-			mockAcquire.mockResolvedValue(null);
+			campaignLockHeld();
 			mockRunContactStage.mockResolvedValue({ windowsApplied: 1 });
-			const body = await (await postWaiting()).json();
+			const body = await campaignOf(await postWaiting());
 			expect(mockRunContactStage).toHaveBeenCalledOnce();
 			expect(body.contacts).toMatchObject({ windowsApplied: 1 });
 		});
@@ -557,8 +675,10 @@ describe('POST /api/internal/van-sync', () => {
 		mockRunCatalogSync.mockRejectedValue(new Error('VAN /folders returned 500'));
 		const res = await POST(event());
 		expect(res.status).toBe(500);
-		expect(await res.json()).toEqual({ error: 'VAN /folders returned 500' });
-		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+		expect((await res.json()).campaigns).toEqual([
+			{ campaignId: 1, error: 'VAN /folders returned 500' },
+		]);
+		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync:1', 'lock-token');
 	});
 
 	describe('uncontacted doors', () => {
@@ -566,7 +686,7 @@ describe('POST /api/internal/van-sync', () => {
 			mockHasher.mockReturnValue({ person: () => Buffer.alloc(16), door: () => Buffer.alloc(16) });
 			await POST(event());
 
-			expect(mockRunCatalogSync.mock.calls[0]![3]).toMatchObject({ roster: true });
+			expect(mockRunCatalogSync.mock.calls[0]![4]).toMatchObject({ roster: true });
 			expect(mockRunGeometryQueue.mock.calls[0]![2].roster).not.toBeNull();
 		});
 
@@ -574,7 +694,9 @@ describe('POST /api/internal/van-sync', () => {
 			await POST(event());
 
 			expect(mockRunContactStage).toHaveBeenCalledOnce();
-			const [, options] = mockRunContactStage.mock.calls[0]!;
+			const [, campaign, options] = mockRunContactStage.mock.calls[0]!;
+			// The whole campaign, not a nudge's handful of turf.
+			expect(campaign).toBe(PRIMARY);
 			expect(options.turfIds).toBeUndefined();
 			const stage = mockRunContactStage.mock.invocationCallOrder[0]!;
 			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(stage);
@@ -582,10 +704,12 @@ describe('POST /api/internal/van-sync', () => {
 		});
 
 		it('reports what it did, or that it is off', async () => {
-			expect((await (await POST(event())).json()).contacts).toEqual({ disabled: true });
+			expect((await campaignOf(await POST(event()))).contacts).toEqual({ disabled: true });
 
 			mockRunContactStage.mockResolvedValue({ windowsApplied: 2, turfsRecomputed: 9 });
-			expect((await (await POST(event())).json()).contacts).toMatchObject({ windowsApplied: 2 });
+			expect((await campaignOf(await POST(event()))).contacts).toMatchObject({
+				windowsApplied: 2,
+			});
 		});
 
 		// The counts are an overlay on doorCount; the catalog is already written.
@@ -620,7 +744,7 @@ describe('POST /api/internal/van-sync', () => {
 		it('reports what it wrote', async () => {
 			mockRunPacketTracker.mockResolvedValue({ ...sheetLogResult, filled: 4 });
 			const res = await POST(event());
-			expect((await res.json()).sheetLog.filled).toBe(4);
+			expect((await sharedOf(res)).sheetLog.filled).toBe(4);
 		});
 
 		// Most deployments of this tool have no campaign spreadsheet. An
@@ -629,7 +753,7 @@ describe('POST /api/internal/van-sync', () => {
 			mockRunPacketTracker.mockResolvedValue(null);
 			const res = await POST(event());
 
-			expect((await res.json()).sheetLog).toEqual({ disabled: true });
+			expect((await sharedOf(res)).sheetLog).toEqual({ disabled: true });
 		});
 
 		it('posts its advisory warnings with the sync notices', async () => {
@@ -660,14 +784,25 @@ describe('POST /api/internal/van-sync', () => {
 			const res = await POST(event());
 
 			expect(res.status).toBe(200);
-			expect((await res.json()).turfsUpserted).toBe(3);
+			expect((await campaignOf(res)).turfsUpserted).toBe(3);
 		});
 	});
 
 	describe('geometry', () => {
+		// The shared stages follow the last campaign's geometry, so it leaves
+		// them their slice — but only on the request that runs them.
+		it('leaves time for the shared stages only when this request runs them', async () => {
+			await POST(event());
+			const withShared = mockRunGeometryQueue.mock.calls[0]![2].timeBudgetMs;
+			mockRunGeometryQueue.mockClear();
+			await POST(event('cron-secret', '&shared=0'));
+			const without = mockRunGeometryQueue.mock.calls[0]![2].timeBudgetMs;
+			expect(without - withShared).toBeGreaterThanOrEqual(40 * 1000);
+		});
+
 		it('drains the queue after the catalog and reports what it did', async () => {
 			const res = await POST(event());
-			const body = await res.json();
+			const body = await campaignOf(res);
 
 			expect(mockRunGeometryQueue).toHaveBeenCalledOnce();
 			expect(body.geometry.hullsStored).toBe(3);
@@ -711,7 +846,7 @@ describe('POST /api/internal/van-sync', () => {
 		it('skips geometry, but still syncs the catalog, with no export job type set', async () => {
 			mockExportJobTypeId.mockReturnValue(null);
 			const res = await POST(event());
-			const body = await res.json();
+			const body = await campaignOf(res);
 
 			expect(mockRunGeometryQueue).not.toHaveBeenCalled();
 			// Null rather than zeros, so "not configured" stays distinguishable
@@ -726,7 +861,7 @@ describe('POST /api/internal/van-sync', () => {
 		it('still returns the catalog result when the geometry queue throws', async () => {
 			mockRunGeometryQueue.mockRejectedValue(new Error('VAN is down'));
 			const res = await POST(event());
-			const body = await res.json();
+			const body = await campaignOf(res);
 
 			expect(res.status).toBe(200);
 			expect(body.turfsUpserted).toBe(3);
@@ -765,6 +900,125 @@ describe('POST /api/internal/van-sync', () => {
 			// A budget stamped after the sweep would still be the full 4m30s.
 			// Stamped before it, the sweep has already come out of it.
 			expect(timeBudgetMs).toBeLessThanOrEqual(4 * 60 * 1000 + 30 * 1000 - SWEEP_MS / 2);
+		});
+	});
+
+	// specs/012-multi-van-campaigns: each campaign is synced with its own key,
+	// under its own lock, and one failing never stops another.
+	describe('several campaigns', () => {
+		const OTHER = {
+			...PRIMARY,
+			id: 2,
+			credentialKey: 'other',
+			label: 'El-Sayed',
+			refreshEnabled: false,
+			sheetsEnabled: false,
+		};
+
+		beforeEach(() => {
+			mockCampaigns.mockResolvedValue([OTHER, PRIMARY]);
+			mockSeveral.mockResolvedValue(true);
+			mockLoadCampaign.mockImplementation(async (_db: unknown, id: number) =>
+				id === 2 ? OTHER : id === 1 ? PRIMARY : null,
+			);
+		});
+
+		it('syncs every enabled campaign in the order given, each with its own key and lock', async () => {
+			const res = await POST(event());
+			expect(res.status).toBe(200);
+			expect(mockVanClient.mock.calls.map((c) => c[0])).toEqual([OTHER, PRIMARY]);
+			expect(mockRunCatalogSync.mock.calls.map((c) => c[2])).toEqual([2, 1]);
+			// The ledger lock twice: the housekeeping first, the shared stages last.
+			expect(mockAcquire.mock.calls.map((c) => c[1])).toEqual([
+				'van-ledger',
+				'van-catalog-sync:2',
+				'van-catalog-sync:1',
+				'van-ledger',
+			]);
+			const body = await res.json();
+			expect(body.campaigns.map((c: { campaignId: number }) => c.campaignId)).toEqual([2, 1]);
+		});
+
+		// Run per campaign, they did the same work once per campaign: every
+		// spreadsheet read twice inside a minute against Google's quota, and the
+		// doors warning posted under each campaign's name.
+		it('runs the shared stages once, after every campaign', async () => {
+			await POST(event());
+			expect(mockRunPacketTracker).toHaveBeenCalledOnce();
+			expect(mockReconcile).toHaveBeenCalledOnce();
+			expect(mockDoorsHealth).toHaveBeenCalledOnce();
+			const lastCatalog = Math.max(...mockRunCatalogSync.mock.invocationCallOrder);
+			expect(mockReconcile.mock.invocationCallOrder[0]).toBeGreaterThan(lastCatalog);
+		});
+
+		it('syncs only the campaign named, after the ledger housekeeping', async () => {
+			await POST(event('cron-secret', '&campaign=2'));
+			expect(mockSweep).toHaveBeenCalledOnce();
+			expect(mockRunCatalogSync).toHaveBeenCalledOnce();
+			expect(mockRunCatalogSync.mock.calls[0]![2]).toBe(2);
+			expect(mockLoadVanChapterFolders).toHaveBeenCalledWith({}, 2);
+		});
+
+		it('keeps going past a campaign that fails, and reports the failure', async () => {
+			mockVanClient.mockImplementation((c: { id: number }) =>
+				c.id === 2
+					? { ok: false, error: 'VAN_CAMPAIGN_OTHER is not set', missing: true }
+					: { ok: true, client: {} },
+			);
+			const res = await POST(event());
+			expect(res.status).toBe(500);
+			expect(mockRunCatalogSync).toHaveBeenCalledOnce();
+			expect(mockRunCatalogSync.mock.calls[0]![2]).toBe(1);
+			const body = await res.json();
+			expect(body.campaigns[0]).toEqual({ campaignId: 2, error: 'VAN_CAMPAIGN_OTHER is not set' });
+			expect(body.campaigns[1].turfsUpserted).toBe(3);
+		});
+
+		// A partner campaign that has not agreed to re-cuts must never get one,
+		// whatever the primary campaign's switch says. Off is the default.
+		it('never sends a region refresh for a campaign whose own switch is off', async () => {
+			await POST(event('cron-secret', '&campaign=2'));
+			expect(mockRefreshSweep).not.toHaveBeenCalled();
+			expect((await campaignOf(await POST(event('cron-secret', '&campaign=2')))).refresh).toEqual({
+				disabled: true,
+			});
+		});
+
+		// The switch is the campaign's own: a partner that has agreed gets re-cuts
+		// with its own key, primary or not.
+		it('sends region refreshes for any campaign whose switch is on', async () => {
+			mockLoadCampaign.mockResolvedValue({ ...OTHER, refreshEnabled: true });
+			await POST(event('cron-secret', '&campaign=2'));
+			expect(mockRefreshSweep).toHaveBeenCalledOnce();
+			expect(mockRefreshSweep.mock.calls[0]![2]).toBe(2);
+		});
+
+		it('names the campaign in its notices, so the channel can tell them apart', async () => {
+			mockRunCatalogSync.mockResolvedValue({ ...result, warnings: ['2 turf(s) have no number'] });
+			await POST(event('cron-secret', '&campaign=2'));
+			expect(mockPostMessage.mock.calls[0]![0].text).toContain('[van · El-Sayed]');
+		});
+
+		it('names an unnamed campaign by its key', async () => {
+			mockLoadCampaign.mockResolvedValue({ ...OTHER, label: null });
+			mockRunCatalogSync.mockResolvedValue({ ...result, warnings: ['2 turf(s) have no number'] });
+			await POST(event('cron-secret', '&campaign=2'));
+			expect(mockPostMessage.mock.calls[0]![0].text).toContain('[van · other]');
+		});
+
+		it('skips a disabled campaign but still does the housekeeping', async () => {
+			mockLoadCampaign.mockResolvedValue({ ...OTHER, enabled: false });
+			const res = await POST(event('cron-secret', '&campaign=2'));
+			expect(res.status).toBe(200);
+			expect((await res.json()).skipped).toBe('campaign is disabled');
+			expect(mockSweep).toHaveBeenCalledOnce();
+			expect(mockRunCatalogSync).not.toHaveBeenCalled();
+		});
+
+		it('answers 404 for a campaign that does not exist, and 400 for nonsense', async () => {
+			expect((await POST(event('cron-secret', '&campaign=99'))).status).toBe(404);
+			expect((await POST(event('cron-secret', '&campaign=abc'))).status).toBe(400);
+			expect((await POST(event('cron-secret', '&campaign=0'))).status).toBe(400);
 		});
 	});
 });

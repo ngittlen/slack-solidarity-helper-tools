@@ -19,9 +19,14 @@
 //     of its life; short enough to keep a statewide campaign's ~1,000 exports
 //     a day to tens of thousands of rows.
 
-import { eq, gte, inArray, lt, max } from 'drizzle-orm';
+import { and, eq, gte, inArray, lt, max } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanMinivanExports, vanTurfCheckouts, type NewVanMinivanExportRow } from '../schema.js';
+import {
+	vanMinivanExports,
+	vanTurfCheckouts,
+	vanTurfs,
+	type NewVanMinivanExportRow,
+} from '../schema.js';
 import { listNumberFromExportName, type CatalogClaim } from './catalog.js';
 import type { VanClient } from './client.js';
 import { chunked } from './sql-chunk.js';
@@ -84,12 +89,15 @@ export interface ExportPullResult {
 export async function pullMinivanExports(
 	db: Db,
 	client: VanClient,
-	options: { now: Date; maxPages?: number },
+	options: { campaignId: number; now: Date; maxPages?: number },
 ): Promise<ExportPullResult> {
-	const { now } = options;
+	const { campaignId, now } = options;
+	// Each campaign's key reads its own committee's exports, so each has its
+	// own cursor: one campaign's newest export says nothing about another's.
 	const [row] = await db
 		.select({ newest: max(vanMinivanExports.dateCreated) })
-		.from(vanMinivanExports);
+		.from(vanMinivanExports)
+		.where(eq(vanMinivanExports.campaignId, campaignId));
 	const from = exportCursor(row?.newest ?? null, now);
 
 	const { items, complete } = await client.minivanExportsSince(
@@ -101,6 +109,7 @@ export async function pullMinivanExports(
 	const rows: NewVanMinivanExportRow[] = items
 		.filter((item) => typeof item.minivanExportId === 'number')
 		.map((item) => ({
+			campaignId,
 			minivanExportId: item.minivanExportId,
 			name: item.name ?? null,
 			listNumber: listNumberFromExportName(item.name),
@@ -117,7 +126,10 @@ export async function pullMinivanExports(
 			db
 				.insert(vanMinivanExports)
 				.values(r)
-				.onConflictDoUpdate({ target: vanMinivanExports.minivanExportId, set: r }),
+				.onConflictDoUpdate({
+					target: [vanMinivanExports.campaignId, vanMinivanExports.minivanExportId],
+					set: r,
+				}),
 		);
 		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
@@ -125,7 +137,10 @@ export async function pullMinivanExports(
 	await db
 		.delete(vanMinivanExports)
 		.where(
-			lt(vanMinivanExports.dateCreated, dateOnly(now.getTime() - EXPORT_RETENTION_DAYS * DAY_MS)),
+			and(
+				eq(vanMinivanExports.campaignId, campaignId),
+				lt(vanMinivanExports.dateCreated, dateOnly(now.getTime() - EXPORT_RETENTION_DAYS * DAY_MS)),
+			),
 		);
 
 	return { from, fetched: items.length, complete };
@@ -144,6 +159,7 @@ export async function pullMinivanExports(
  */
 export async function loadMinivanExports(
 	db: Db,
+	campaignId: number,
 	listNumbers: readonly string[],
 ): Promise<VanMinivanExport[]> {
 	const unique = [...new Set(listNumbers.map((n) => n.trim()).filter(Boolean))];
@@ -153,7 +169,14 @@ export async function loadMinivanExports(
 			...(await db
 				.select()
 				.from(vanMinivanExports)
-				.where(inArray(vanMinivanExports.listNumber, batch))),
+				// A list number is only meaningful within the committee that
+				// issued it, so another campaign's export never matches.
+				.where(
+					and(
+						eq(vanMinivanExports.campaignId, campaignId),
+						inArray(vanMinivanExports.listNumber, batch),
+					),
+				)),
 		);
 	}
 	rows.sort(
@@ -190,7 +213,11 @@ function parseCanvassers(json: string): VanMinivanExport['canvassers'] {
  * completed or released claim still explains an export made while it ran.
  * Older claims cannot overlap any export the store still holds.
  */
-export async function loadClaimsForExports(db: Db, now: Date): Promise<CatalogClaim[]> {
+export async function loadClaimsForExports(
+	db: Db,
+	campaignId: number,
+	now: Date,
+): Promise<CatalogClaim[]> {
 	const rows = await db
 		.select({
 			id: vanTurfCheckouts.id,
@@ -202,10 +229,14 @@ export async function loadClaimsForExports(db: Db, now: Date): Promise<CatalogCl
 			loadedInMinivanAt: vanTurfCheckouts.loadedInMinivanAt,
 		})
 		.from(vanTurfCheckouts)
+		.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
 		.where(
-			gte(
-				vanTurfCheckouts.claimedAt,
-				new Date(now.getTime() - EXPORT_RETENTION_DAYS * DAY_MS).toISOString(),
+			and(
+				eq(vanTurfs.campaignId, campaignId),
+				gte(
+					vanTurfCheckouts.claimedAt,
+					new Date(now.getTime() - EXPORT_RETENTION_DAYS * DAY_MS).toISOString(),
+				),
 			),
 		);
 	return rows.map((r) => ({

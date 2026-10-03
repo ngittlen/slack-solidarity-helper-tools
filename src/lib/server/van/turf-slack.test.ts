@@ -35,6 +35,11 @@ vi.mock('$lib/server/van/checkout-store.js', () => ({
 	endClaim: mockEndClaim,
 }));
 vi.mock('$lib/server/van/holdings-store.js', () => ({ loadHoldingsFor: mockLoadHoldingsFor }));
+// One campaign, enabled: no badges. The rule itself (badgeShown) is the real one.
+vi.mock('$lib/server/van/campaigns.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('./campaigns.js')>()),
+	loadTurfCampaigns: vi.fn(async () => ({ badges: {}, showBadges: false, disabled: new Set() })),
+}));
 vi.mock('$lib/server/van/turf-profile.js', () => ({ profileRegionFor: mockProfileRegion }));
 vi.mock('$lib/server/van/chapter-visibility.js', () => ({
 	foldersForChapter: mockFoldersForChapter,
@@ -50,6 +55,7 @@ const {
 } = await import('./turf-slack.js');
 const { chapterVisits, turfRequests } = await import('./rate-limit-store.js');
 const { MAX_REQUESTS } = await import('../../van/request-budget.js');
+const { loadTurfCampaigns } = await import('./campaigns.js');
 const { MAX_CHAPTER_SWITCHES } = await import('../../van/chapter-rate-limit.js');
 
 const CHANNEL_MAP = [
@@ -422,6 +428,23 @@ describe('claimFromSlack', () => {
 		});
 	});
 
+	// specs/012-multi-van-campaigns: a list number only loads from the
+	// campaign whose VAN cut it, so the message names it while there are two.
+	it('says whose list number it is when the turf carries a badge', async () => {
+		mockLoadChapterTurfs.mockResolvedValue({
+			turfs: [turfView({ status: 'held-by-you', claimable: false, campaignId: 2 })],
+			total: 1,
+			omitted: 0,
+			campaignBadges: { 2: 'El-Sayed' },
+		});
+		const msg = await claimFromSlack(makeDb(), {
+			slackUserId: freshUser(),
+			chapterId: 71,
+			turfId: 100,
+		});
+		expect(body(msg)).toContain('Your El-Sayed MiniVAN list number');
+	});
+
 	it('issues the list number to the claimant', async () => {
 		const msg = await claimFromSlack(makeDb(), {
 			slackUserId: freshUser(),
@@ -671,6 +694,31 @@ describe('/turfs-mine actions', () => {
 		});
 		expect(mockEndClaim).not.toHaveBeenCalled();
 		expect(msg.text).toContain('a lot of requests');
+	});
+
+	it('says whose list number each held turf is while badges are shown', async () => {
+		vi.mocked(loadTurfCampaigns).mockResolvedValueOnce({
+			badges: { 1: 'OTM', 2: 'El-Sayed' },
+			showBadges: true,
+			disabled: new Set(),
+		});
+		mockLoadHoldingsFor.mockResolvedValue([
+			{
+				turfId: 200,
+				claimedAt: '2026-01-01T00:00:00.000Z',
+				expiresAt: '2099-01-01T00:00:00.000Z',
+				releasedAt: null,
+				completedAt: null,
+				turfName: 'Turf 02',
+				regionName: 'R10C_Wayne',
+				chapterId: 71,
+				campaignId: 2,
+				doorCount: 80,
+				issuedListNumber: '1-1',
+			},
+		]);
+		const msg = await myTurfMessage(makeDb(), { slackUserId: freshUser() });
+		expect(body(msg)).toContain('El-Sayed MiniVAN list number');
 	});
 
 	it('spends exactly one request slot per press, redraw included', async () => {

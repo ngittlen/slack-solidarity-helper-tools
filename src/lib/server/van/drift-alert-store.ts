@@ -15,20 +15,26 @@
 // Never throws. The sync's rows are already written by the time this runs, and a
 // Slack outage must not turn a good sync into a failed workflow run.
 
-import { inArray, isNotNull } from 'drizzle-orm';
+import { and, inArray, isNotNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { postAlert } from '../slack.js';
 import { errMessage } from '../../err-message.js';
 import { driftReport, type DriftKind } from '../../van/turf-drift.js';
+import { badgeShown, loadTurfCampaigns, type CampaignBadges } from './campaigns.js';
 import {
 	newDriftAlerts,
 	renderDriftAlert,
 	staleDriftStamps,
 	type AlertableDrift,
 } from '../../van/drift-alert.js';
-import { loadDriftClaims, loadDriftTurfs, loadDriftVisibility } from './drift-store.js';
+import {
+	exportsVisibleFilter,
+	loadDriftClaims,
+	loadDriftTurfs,
+	loadDriftVisibility,
+} from './drift-store.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -80,7 +86,10 @@ async function loadStamps(db: Db): Promise<Stamps> {
 	const rows = await db
 		.select({ turfId: vanTurfs.turfId, kind: vanTurfs.driftAlertedKind })
 		.from(vanTurfs)
-		.where(isNotNull(vanTurfs.driftAlertedKind));
+		// Only the campaigns the report can see. A stamp on another campaign's
+		// turf is absent from the report because we could not look, not because
+		// the drift ended, so it must not be swept as stale.
+		.where(and(isNotNull(vanTurfs.driftAlertedKind), exportsVisibleFilter()));
 	const kinds = new Map<number, DriftKind>();
 	for (const row of rows) {
 		if (isDriftKind(row.kind)) kinds.set(row.turfId, row.kind);
@@ -197,7 +206,20 @@ export async function sendDriftAlerts(
 	}
 
 	const fresh = newDriftAlerts(items);
-	const text = renderDriftAlert(fresh, appUrl);
+	// Named by campaign under the same rule as the turf and the organizer page.
+	let badges: CampaignBadges = {};
+	if (fresh.length > 0) {
+		try {
+			const campaigns = await loadTurfCampaigns(db);
+			badges = Object.fromEntries(
+				Object.entries(campaigns.badges).filter(([id]) => badgeShown(campaigns, Number(id))),
+			);
+		} catch (err) {
+			// The alert matters more than its labels.
+			console.error(`${LOG} could not read campaign badges:`, errMessage(err));
+		}
+	}
+	const text = renderDriftAlert(fresh, appUrl, { badges });
 	if (text === null) {
 		if (cleared > 0) console.log(`${LOG} drift alerts: cleared=${cleared}`);
 		// Say WHICH kind of quiet this is. "Nothing new" means the two sides

@@ -5,12 +5,38 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // `vi.mock('./env.js', …)` pattern from `src/lib/server/settings.test.ts`.
 vi.mock('$lib/server/settings.js', () => ({
 	loadSettings: vi.fn(),
-	loadVanChapterFolders: vi.fn(),
 	loadVanBlockedUsers: vi.fn(),
-	loadVanSheetTargets: vi.fn(),
 }));
 
-vi.mock('$lib/server/google-env.js', () => ({ sheetsServiceAccountEmail: () => null }));
+// The campaign list: one campaign, never synced, credentials not set.
+vi.mock('$lib/server/van/campaign-status-store.js', () => ({
+	loadCampaignSummaries: vi.fn(async () => [
+		{
+			campaign: {
+				id: 1,
+				credentialKey: 'primary',
+				label: 'One Team Michigan',
+				enabled: true,
+				disabledAt: null,
+			},
+			liveTurfs: 0,
+			lastSyncAt: null,
+			lastError: null,
+		},
+	]),
+}));
+const mockEnsureCampaignRows = vi.hoisted(() => vi.fn(async () => [] as string[]));
+vi.mock('$lib/server/van-env.js', () => ({
+	ensureCampaignRows: mockEnsureCampaignRows,
+	credentialStatus: () => ({
+		secretName: 'VAN_CAMPAIGN_PRIMARY',
+		state: 'missing',
+		error: null,
+		appName: null,
+		databaseMode: null,
+		source: null,
+	}),
+}));
 
 vi.mock('$lib/server/autocomplete-sources.js', () => ({
 	getSlackChannels: vi.fn(),
@@ -25,12 +51,7 @@ vi.mock('$lib/server/slack.js', () => ({ slack: {} }));
 vi.mock('$lib/server/env.js', () => ({ SOLIDARITY_API_TOKEN: 'test-token' }));
 
 import { load, type SettingsPageData } from './+page.server.js';
-import {
-	loadSettings,
-	loadVanChapterFolders,
-	loadVanBlockedUsers,
-	loadVanSheetTargets,
-} from '$lib/server/settings.js';
+import { loadSettings, loadVanBlockedUsers } from '$lib/server/settings.js';
 import {
 	getSlackChannels,
 	getSlackUsers,
@@ -101,13 +122,7 @@ function makeEvent(overrides: {
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.mocked(loadSettings).mockResolvedValue(settingsFixture);
-	// VAN settings load alongside the rest. Empty is the normal pre-launch
-	// state — no chapter mapped yet means no turf published.
-	vi.mocked(loadVanChapterFolders).mockResolvedValue([]);
 	vi.mocked(loadVanBlockedUsers).mockResolvedValue([]);
-	// Empty is the normal pre-launch state here too — no rules means the
-	// checkout sheet log is off.
-	vi.mocked(loadVanSheetTargets).mockResolvedValue([]);
 	vi.mocked(getSlackChannels).mockResolvedValue({
 		items: [{ id: 'C1', name: 'general', isPrivate: false }],
 		stale: false,
@@ -270,5 +285,38 @@ describe('US2: ?refresh=lists honoring', () => {
 		expect(getSolidarityChapters).toHaveBeenCalledWith(expect.anything(), { force: false });
 		expect(getSolidarityCustomProperties).toHaveBeenCalledWith(expect.anything(), { force: false });
 		expect(getSolidarityUserLists).toHaveBeenCalledWith(expect.anything(), { force: false });
+	});
+});
+
+describe('VAN campaigns', () => {
+	it('lists each campaign by name with what its state is, never its credentials', async () => {
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(data.vanCampaigns).toEqual([
+			{
+				id: 1,
+				name: 'One Team Michigan',
+				chip: 'enabled',
+				health: 'no-credentials',
+				detail: 'VAN_CAMPAIGN_PRIMARY is not set',
+				lastSyncAt: null,
+				liveTurfs: 0,
+			},
+		]);
+	});
+});
+
+// specs/012-multi-van-campaigns: a secret set since the last sync shows up the
+// moment an admin looks — and locally, where no scheduler runs, at all.
+describe('campaign discovery', () => {
+	it('adds rows for new campaign secrets before listing them', async () => {
+		await loadData(makeEvent({ isAdmin: true }));
+		expect(mockEnsureCampaignRows).toHaveBeenCalledOnce();
+	});
+
+	it('still renders the page when discovery fails', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockEnsureCampaignRows.mockRejectedValueOnce(new Error('db locked'));
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(data.vanCampaigns).toHaveLength(1);
 	});
 });

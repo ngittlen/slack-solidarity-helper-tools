@@ -312,6 +312,7 @@ APP_URL=https://your-app.fly.dev
 SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
 SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
 GOOGLE_SHEETS_SERVICE_ACCOUNT='{"client_email":"…@….iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\n…"}'
+VAN_CAMPAIGN_PRIMARY='{"appName":"…","apiKey":"…","databaseMode":0}'  # one VAN_CAMPAIGN_<KEY> per VAN campaign
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
 
@@ -320,6 +321,8 @@ PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 `REPORT_EXCLUDED_CHAPTER_IDS` is a comma-separated list of solidarity.tech chapter IDs to omit from the dashboard charts AND the weekly growth report — useful for test chapters or internal-only ones. Leave empty (or unset) to include everything.
 
 `GOOGLE_SHEETS_SERVICE_ACCOUNT` is the whole downloaded service-account JSON key, on one line, and is optional — without it the Packet Tracker sync does nothing and says nothing. It is a credential, so it is a deployment secret rather than a `/settings` field; _which_ spreadsheets it writes to is a setting, because that changes without a deploy. Literal `\n` escapes inside `private_key` are handled, since that is what survives a trip through a shell. See [the Packet Tracker](#the-packet-tracker-in-the-campaigns-spreadsheets) for the rest of the setup.
+
+`VAN_CAMPAIGN_<KEY>` holds one VAN campaign's credentials; set one per campaign whose turf the app serves. The legacy `VAN_APP_NAME` / `VAN_API_KEY` / `VAN_DATABASE_MODE` still work in place of `VAN_CAMPAIGN_PRIMARY`. See [Setting up a VAN campaign](#setting-up-a-van-campaign) for the format, the naming rule and the rest of the setup.
 
 `INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 
@@ -420,6 +423,27 @@ It populates `solidarity_daily_snapshots`, `slack_joins`, `door_knock_daily`, `d
 | Door-knock regions that aren't counties                                   | Door-knock chapter names come from the canvassing tool, not the chapter list                                                                            |
 
 If you need a table the seeder doesn't cover, add it there rather than copying rows out of production — several tables (`member_notes`, `member_account_links`, `slack_user_tokens`, `sessions`) hold credentials or moderation records about named members and should not leave the production database.
+
+#### A copy of production
+
+When synthetic data is not enough — rehearsing a migration, or chasing a bug that only real turf shows — `npm run db:replica` copies a slice of the production database into a local file (`scripts/db-replica.ts`):
+
+```bash
+# REPLICA_SOURCE_URL / REPLICA_SOURCE_AUTH_TOKEN: the PRODUCTION database
+# (falls back to TURSO_DATABASE_URL / TURSO_AUTH_TOKEN)
+npm run db:replica -- --list-chapters               # chapters with mapped folders, and their turf
+npm run db:replica -- --chapters 71,72              # → local-replica.db
+npm run db:replica -- --chapters 71 --out other.db --force
+
+TURSO_DATABASE_URL=file:local-replica.db npm run db:migrate   # apply what a deploy would
+TURSO_DATABASE_URL=file:local-replica.db npm run dev
+```
+
+- **What it copies:** the schema as production has it, with its migration history, so `db:migrate` against the copy runs exactly the pending migrations a deploy would. Turf for the named chapters and only the rows hanging off it (checkouts, rosters, geometry jobs, contact marks, MiniVAN exports). Every other table whole.
+- **What it leaves out:** sessions, stored Slack tokens and sync locks — sign in locally for a session of your own.
+- **Unlike `db:seed`, this is real data:** volunteer names, Slack IDs and notes come with it. The file is gitignored (`*.db`); keep it on your machine.
+- **Production is only read.** Every statement is checked to be a `SELECT` or a `PRAGMA table_info` before it is sent, and the source is opened as a plain client, never as an embedded replica (which would forward writes back). A local-file source is refused, and an existing copy is only replaced with `--force`.
+- **A failed run leaves nothing behind.** The copy is built as `<out>.partial` and renamed into place only when every table has copied; reads are paged and retried, and a failure names the table and the underlying cause.
 
 ## Reports
 
@@ -714,7 +738,7 @@ Scheduler-only — run by [the app's scheduler](#5-configure-environment-variabl
 
 **The overnight runs exist for the expiry warnings, not the catalog.** A warning only reaches a volunteer if a run happens inside the six hours before their claim lapses, so no two runs may sit more than six hours apart — the schedule previously stopped at 03:07 and resumed at 11:07 UTC, and every claim expiring in the two hours from 09:08 was swept without its holder ever being told. Hourly overnight leaves five hours of slack, so several missed runs still warn in time. Trimming those ticks as idle would silently reopen the hole.
 
-For each chapter mapped under **Settings → Chapter → VAN folders**, it reads `GET /folders/{id}/mapRegions`, matches each Map Route to its MiniVAN printed-list number, and upserts a row per route. Runs take a `sync_locks` lock and are idempotent — an overlapping or delayed run is a no-op, so a skipped cron is harmless.
+For each chapter mapped to a folder on a campaign's page (**Settings → VAN campaigns**), it reads `GET /folders/{id}/mapRegions`, matches each Map Route to its MiniVAN printed-list number, and upserts a row per route. Runs take a `sync_locks` lock and are idempotent — an overlapping or delayed run is a no-op, so a skipped cron is harmless.
 
 Whatever time is left in the request budget after the catalog then goes to draining `van_geometry_queue` — one VAN export job per turf, reduced to a hull (`src/lib/server/van/geometry-worker.ts`). `POST /api/internal/van-export-callback` is the same drain, woken by VAN when a job finishes; it takes the **same** lock under the same name, because the queue has no per-row claim and two drainers racing would submit duplicate export jobs for the same turf.
 
@@ -755,7 +779,7 @@ After every catalog read, each live claim is compared against what VAN now says 
 
 **Nothing this app builds writes canvass results.** MiniVAN sends them to VAN natively when the volunteer taps Sync, so our job is verification, not transport — and the verification is one subtraction.
 
-A claim records VAN's door count when it is taken (`van_turf_checkouts.claim_door_count`). Completing the turf asks for a refresh of its region — sent only when **Re-cut regions in VAN** is on; otherwise the check waits for an organizer to re-cut the region by hand. Once a re-cut lands after the completion, the check runs: `claim_door_count` minus the current count, written to `confirmed_door_delta`.
+A claim records VAN's door count when it is taken (`van_turf_checkouts.claim_door_count`). Completing the turf asks for a refresh of its region — sent only when **Re-cut regions in VAN** is on for that turf's campaign (each campaign's page under Settings → VAN campaigns; off by default); otherwise the check waits for an organizer to re-cut the region by hand. Once a re-cut lands after the completion, the check runs: `claim_door_count` minus the current count, written to `confirmed_door_delta`.
 
 **The current count is usually on a different route.** A re-cut retires the walked route rather than updating it (see _Route ids do not survive a refresh_ above), so the retired row's count is frozen at its pre-cut value. The check pairs it to its replacement exactly as the reconciliation does — same region, same name, exactly one match — and takes the count from there. The evidence that the re-cut came after the completion is the replacement's `dateRefreshed`, or failing that the moment the catalog first saw it. No unique replacement means no measurement: a renamed or split turf is left NULL rather than guessed at.
 
@@ -787,46 +811,72 @@ A volunteer whose whole TTL is shorter than six hours is warned immediately. Tha
 
 **Missing tiers degrade rather than fail.** `/printedLists` (Tier 2) and `/minivanExports` + `/savedLists` (Tier 3) are each optional: without them the catalog still lands, with no list-number backfill and no flagging of turf an organizer distributed by hand. This is what makes a sandbox or demo key useful before the EveryAction security review clears. Anything skipped is reported in `degraded` and posted to the tracking channel.
 
-#### Setting up a VAN key
+#### Setting up a VAN campaign
 
-1. Put the credentials in Fly secrets (or `.env.local` for dev):
+The app can serve turf from several VAN campaigns at once — each its own EveryAction committee, with its own API key — on one map, in one turf channel, under one set of claim rules. Each campaign is configured on its own page under **Settings → VAN campaigns** (admins only). Only its credentials live outside the app.
 
-   ```
-   VAN_APP_NAME=…      # the Application Name EveryAction issued — this is the Basic auth username
-   VAN_API_KEY=…
-   VAN_DATABASE_MODE=0 # 0 = My Voters, 1 = My Campaign
-   ```
-
-   There is deliberately no default for `VAN_DATABASE_MODE`. The wrong mode authenticates successfully and returns a different, mostly empty database — a failure that reads as "the campaign has no turf" rather than as a misconfiguration.
-
-2. Verify the key and see what it can reach:
+1. **Credentials: one Fly secret per campaign** (or a line in `.env.local` for dev), named `VAN_CAMPAIGN_<KEY>` and holding a JSON object:
 
    ```bash
-   npm run van:check              # probes each tier, lists folders and export job types
-   npm run van:check -- --folder 1152   # dump one folder's regions and routes
+   fly secrets set VAN_CAMPAIGN_ABDUL='{"appName":"…","apiKey":"…","databaseMode":0}'
    ```
 
-   This is read-only. It never writes to VAN or to the database.
+   - `appName` is the Application Name EveryAction issued with the key — the Basic auth username.
+   - `databaseMode` is `0` (My Voters) or `1` (My Campaign). There is deliberately no default: the wrong mode authenticates successfully and returns a different, mostly empty database — a failure that reads as "the campaign has no turf" rather than as a misconfiguration.
+   - `<KEY>` is 1–40 uppercase letters, digits or underscores, and **it is the campaign's permanent id**: its turf, folder mapping and settings hang off the key (lowercased — `VAN_CAMPAIGN_ABDUL` is campaign `abdul`). Renaming the secret does not rename the campaign; it makes a new, empty one and leaves the old one showing "credentials missing".
+   - A malformed secret breaks only that campaign. Its settings page and the `/settings` list name the problem; every other campaign keeps syncing.
+   - The key is never stored in the database or shown in the app. Settings pages describe it (app name, mode, which secret) without it.
 
-3. Map folders to chapters. Either **Settings → Chapter → VAN folders** (chapter-first), or **`/turfs/folder-map`** (folder-first, beside a map of where each folder's turf is). A folder may be mapped to several chapters, and its turf is then visible to all of them.
+   **The original campaign** is `primary`, campaign 1. It reads `VAN_CAMPAIGN_PRIMARY` when that is set, and otherwise the legacy single-campaign vars, which keep working unchanged:
 
-   That map places each region from its name (`R04C_Livingston_BrightonCity003` → Livingston County) against the Census county list, so it needs no geometry and no particular state. It works out which state(s) the names are in; set `CAMPAIGN_STATES=MI` (comma-separated USPS codes) to pin that instead — worth doing where county names are ambiguous, since 31 states have a Washington County.
+   ```
+   VAN_APP_NAME=…
+   VAN_API_KEY=…
+   VAN_DATABASE_MODE=0
+   ```
 
-4. Trigger a sync: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET"`.
+   To move it onto a secret, set `VAN_CAMPAIGN_PRIMARY`, confirm a sync, then unset the three legacy vars — while both are set the secret wins and the app logs a warning.
 
-5. Watch the turf shapes fill in. The catalog lands immediately, but every turf needs its own VAN export job before it can be drawn as a shape rather than a pin, and the scheduled sync only has a few minutes per run for that:
+2. **Vet the key before it goes to Fly.** With the secret in your local shell or `.env.local`:
+
+   ```bash
+   npm run van:check -- --campaign abdul             # probes each tier, lists folders and export job types
+   npm run van:check -- --campaign abdul --folder 1152   # dump one folder's regions and routes
+   ```
+
+   Read-only, and it needs no database — so it can check a brand-new secret. `databaseMode` may be left out of the secret here; the script works out which database holds the turf. With no `--campaign` it checks `primary`.
+
+3. **Let the app see it.** `fly secrets set` restarts the app; the campaign appears under **Settings → VAN campaigns** as _New: not enabled_ the next time that page loads (or at the next scheduled sync, whichever comes first). Nothing syncs until it is enabled.
+
+4. **Set it up on its page**, `/settings/van/<id>`:
+   - **Name** (what organizers and alerts call it) and **Turf badge** (the short text volunteers see beside its turf, while more than one campaign is enabled).
+   - **Test connection** — lists the folders the key can see, with their ids, and its export job types.
+   - **Export job type** — pick **VoterCircle**, the type with coordinate columns. EveryAction issues these ids per developer, so pick from the list rather than hardcoding one. Without it the campaign's turf draws as pins. (`primary` falls back to the legacy `VAN_EXPORT_JOB_TYPE_ID`.)
+   - **Chapter → VAN folders** — or **`/turfs/folder-map?campaign=<id>`** (folder-first, beside a map of where each folder's turf is). Folder ids are each campaign's own. A folder may be mapped to several chapters, and its turf is then visible to all of them.
+
+     That map places each region from its name (`R04C_Livingston_BrightonCity003` → Livingston County) against the Census county list, so it needs no geometry and no particular state. It works out which state(s) the names are in; set `CAMPAIGN_STATES=MI` (comma-separated USPS codes) to pin that instead — worth doing where county names are ambiguous, since 31 states have a Washington County.
+
+   - **Re-cut regions in VAN** — off by default; only for a campaign that has agreed to it (see below).
+   - **Google Sheets Packet Tracker** — off by default; on only for a campaign that keeps one (see _The Packet Tracker_).
+
+5. **Enable it.** The app checks the key works and at least one folder is mapped, and refuses with the reason otherwise. **Disable** is on the same page, behind a confirmation: syncing stops and its unclaimed turf leaves the map and `/turfs` at once; claims in progress run to their end. It can be enabled again; nothing is deleted.
+
+6. Trigger a sync rather than wait for the schedule: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET&campaign=<id>"` (without `campaign`, every enabled campaign, stalest first). Either way it also runs the stages shared by every campaign — reconciliation, the drift and list-expiry alerts, the Packet Tracker — after the catalogs; `&shared=0` leaves them out, which is how the scheduler runs them once a tick rather than once per campaign.
+
+7. Watch the turf shapes fill in. The catalog lands immediately, but every turf needs its own VAN export job before it can be drawn as a shape rather than a pin, and the scheduled sync only has a few minutes per run for that:
 
    ```bash
    npm run van:geometry                  # how far the queue has got, and what is stuck
    npm run van:drain                     # drain it now: 30 minutes, 2 turfs at a time
    npm run van:drain -- --minutes 60 --concurrency 4
+   npm run van:drain -- --campaign abdul  # every VAN script takes --campaign; primary by default
    ```
 
    `van:geometry` is read-only. `van:drain` runs the same worker the sync endpoint runs, with the time a Fly request cannot give it, and takes the **same** `sync_locks` lock — so it refuses to start while a scheduled sync is mid-run rather than submitting a second export job per turf. Ctrl-C releases the lock and leaves every row resumable. `/turfs/organizer` shows the same progress in a line while any of it is outstanding.
 
 `CAMPAIGN_TIME_ZONE` sets the clock everything campaign-facing is bucketed and rendered in — the canvassing board's day buckets, the doors projection's knocking hours, the activity history's timestamps, and the overnight window the turf refresh sweep runs in. It takes an IANA name (`America/Chicago`), defaults to `America/Detroit`, and falls back to that default with a `[campaign-time]` warning if the runtime does not recognise the value. It is one clock for the whole campaign, not per chapter.
 
-Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` prints — pick the type that can export `VAddressLatitude` / `VAddressLongitude`. EveryAction issues these ids per developer, so the `101` in VAN's docs is an example and hardcoding it produces a 400. The catalog sync runs fine without it; only hull geometry is blocked.
+The export job type is set per campaign (step 4) — pick the type that can export `VAddressLatitude` / `VAddressLongitude`. EveryAction issues these ids per developer, so the `101` in VAN's docs is an example and hardcoding it produces a 400. The catalog sync runs fine without one; only hull geometry is blocked, and that campaign's turf draws as pins.
 
 #### The Packet Tracker in the campaign's spreadsheets
 
@@ -864,7 +914,7 @@ Packet Name, Voters, Doors, List Number and the campaign's formula columns (`shi
 
 **Switching it on** fills in every turf that is out right now and every turf already marked walked. Checkouts that were claimed and handed back before switch-on are skipped — the migration marks them as owing nothing.
 
-**Which spreadsheet a row goes to** is decided from the turf's VAN region name, because that name is the only geography the catalog has. Neither half of that name is enough alone, verified against the live key (273 regions across 19 folders): a code spans several counties — `R01A` covers Alger, Dickinson, Houghton, Marquette and Menominee — and a county spans several codes, with Wayne appearing under `R09A`, `R10A`, `R10B`, `R10C`, `R10E`, `R10F`, `R10G` and `R10H`. So **Settings → Checkout spreadsheets** takes a list of name prefixes and the longest match wins:
+**Which spreadsheet a row goes to** is decided from the turf's VAN region name, because that name is the only geography the catalog has. Neither half of that name is enough alone, verified against the live key (273 regions across 19 folders): a code spans several counties — `R01A` covers Alger, Dickinson, Houghton, Marquette and Menominee — and a county spans several codes, with Wayne appearing under `R09A`, `R10A`, `R10B`, `R10C`, `R10E`, `R10F`, `R10G` and `R10H`. So each campaign keeps a list of name prefixes on its page under **Settings → VAN campaigns**, and the longest match wins. A campaign's rules only ever route its own checkouts:
 
 ```
 R01A_Alger              → R01A_Alger CR
@@ -873,7 +923,7 @@ R10C                    → R10C_Downriver CR      ← a whole code, one sheet
 R10C_Wayne_Woodhaven    → R10C_Woodhaven CR      ← one city carved out of it
 ```
 
-`npm run van:regions` lists every region name the key can see, `-- --prefixes` groups them by leading code, and `-- --flat` prints one per line. Read-only, and it works before the first catalog sync.
+`npm run van:regions` lists every region name the key can see, `-- --prefixes` groups them by leading code, and `-- --flat` prints one per line; `-- --campaign <key>` reads another campaign's. Read-only, and it works before the first catalog sync.
 
 Separators and case are ignored, so a dotted `R08A.Macomb.WarrenCity` matches an underscored rule. **A region matching no rule has its checkouts held, not dropped** — they flow in as soon as a rule covers them, and the count and the unmatched region names ride out in the turf channel's alert. `/turfs/sheet-map` (admin) shows where every region routes, which regions route nowhere, and which rules match nothing; twelve overlapping prefixes over a few hundred region names is not something anyone can verify by reading the settings table, and a row in the wrong campaign's spreadsheet looks exactly like a correct one.
 
@@ -881,15 +931,15 @@ Separators and case are ignored, so a dotted `R08A.Macomb.WarrenCity` matches an
 
 1. Create a Google service account, download its JSON key, and put the whole thing in `GOOGLE_SHEETS_SERVICE_ACCOUNT` (a Fly secret — it is a credential, so unlike the spreadsheets it is not a setting).
 2. Share **every** spreadsheet with the service account's `…iam.gserviceaccount.com` address as an Editor. The settings page prints the address once the secret is set.
-3. Add the routing rules under **Settings → Checkout spreadsheets** — a region-name prefix and the spreadsheet's URL, two fields. The sheet's own name is read from Google on save and stored beside the id, so it can never drift from the sheet it names; when the credential or the share is not in place yet the id stands in, and re-saving any rule for that sheet backfills the real name. Rules can be written before the credential exists.
-4. Run `npm run sheets:check` — read-only. It mints a token and reports, per spreadsheet, whether it is reachable and whether its Packet Tracker tab has every column. An unshared sheet answers 403, which is by far the most common way a dozen-spreadsheet setup ends up half-done.
-5. Open `/turfs/sheet-map` and confirm nothing is unrouted.
+3. On the campaign's page under **Settings → VAN campaigns**, switch **Google Sheets Packet Tracker** on (it is off for every campaign but the first) and add the routing rules — a region-name prefix and the spreadsheet's URL, two fields. The sheet's own name is read from Google on save and stored beside the id, so it can never drift from the sheet it names; when the credential or the share is not in place yet the id stands in, and re-saving any rule for that sheet backfills the real name. Rules can be written before the credential exists.
+4. Run `npm run sheets:check` (`-- --campaign <key>` for a campaign other than the first) — read-only. It mints a token and reports, per spreadsheet, whether it is reachable and whether its Packet Tracker tab has every column. An unshared sheet answers 403, which is by far the most common way a dozen-spreadsheet setup ends up half-done.
+5. Open `/turfs/sheet-map?campaign=<id>` and confirm nothing is unrouted.
 
-The app works in **one tab** in each spreadsheet — `Packet Tracker` unless changed at Settings → App config. It is the campaign's tab and the app never creates it. It never reads or touches any other tab.
+The app works in **one tab** in each spreadsheet — `Packet Tracker` unless changed on the campaign's page. It is the campaign's tab and the app never creates it. It never reads or touches any other tab.
 
 The service account needs to be an Editor on each spreadsheet, but **not** on the campaign's protected ranges: the app never writes a protected column.
 
-With no credential, or with no rules, the feature does nothing and says nothing: an integration nobody set up should be silent rather than reassuring. When writes do start failing, the turf channel gets **one** alert per problem, naming the spreadsheet, the error and how many checkouts are waiting — and it announces again once the problem clears and comes back, which is what stops a channel that repeats itself from being muted.
+With no credential, with Sheets off for a campaign, or with no rules, the feature does nothing for it and says nothing — a campaign with Sheets off never waits on Google, not even on a claim: an integration nobody set up should be silent rather than reassuring. When writes do start failing, the turf channel gets **one** alert per problem, naming the spreadsheet, the error and how many checkouts are waiting — and it announces again once the problem clears and comes back, which is what stops a channel that repeats itself from being muted.
 
 A re-cut turf is worth knowing about: when VAN replaces a route under a live claim, the reconciliation moves the volunteer onto the replacement, which has a new list number — so it fills in whichever packet the campaign lists under that number, and the old packet's entry is cleared or kept as `Incomplete` depending on whether its list had been loaded.
 
