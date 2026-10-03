@@ -93,6 +93,16 @@
 			{#if data.errors.solidarityChapters}
 				<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
 			{/if}
+			{#if data.renamedChapters.length > 0}
+				<!-- Stored names that had drifted from Solidarity's, fixed by this
+				     load: they label chapters on /turfs, the dashboard and reports. -->
+				<p class="renamed-chapters" role="status">
+					Updated {data.renamedChapters.length === 1 ? 'a chapter name' : 'chapter names'} to match Solidarity:
+					{#each data.renamedChapters as rename, i (rename.chapterId)}{i > 0
+							? ', '
+							: ''}“{rename.from}” → “{rename.to}”{/each}.
+				</p>
+			{/if}
 			{#if data.slackChannels && data.solidarityChapters}
 				<ChapterChannelEditor
 					chapters={data.solidarityChapters.items}
@@ -290,6 +300,12 @@
 </div>
 
 <style>
+	.renamed-chapters {
+		margin: 0 0 12px;
+		font-size: 0.9em;
+		color: var(--color-text-muted);
+	}
+
 	.settings-header {
 		display: flex;
 		align-items: center;

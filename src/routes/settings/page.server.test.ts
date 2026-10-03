@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('$lib/server/settings.js', () => ({
 	loadSettings: vi.fn(),
 	loadVanBlockedUsers: vi.fn(),
+	refreshChapterNames: vi.fn(async () => []),
 }));
 
 // The campaign list: one campaign, never synced, credentials not set.
@@ -51,7 +52,7 @@ vi.mock('$lib/server/slack.js', () => ({ slack: {} }));
 vi.mock('$lib/server/env.js', () => ({ SOLIDARITY_API_TOKEN: 'test-token' }));
 
 import { load, type SettingsPageData } from './+page.server.js';
-import { loadSettings, loadVanBlockedUsers } from '$lib/server/settings.js';
+import { loadSettings, loadVanBlockedUsers, refreshChapterNames } from '$lib/server/settings.js';
 import {
 	getSlackChannels,
 	getSlackUsers,
@@ -319,5 +320,38 @@ describe('campaign discovery', () => {
 		mockEnsureCampaignRows.mockRejectedValueOnce(new Error('db locked'));
 		const data = await loadData(makeEvent({ isAdmin: true }));
 		expect(data.vanCampaigns).toHaveLength(1);
+	});
+});
+
+// Stored chapter names drift when Solidarity renames a chapter, and /turfs
+// lists chapters by the stored name; this page has the live list, so it fixes them.
+describe('chapter names', () => {
+	it('brings stored names up to date from the live list, and shows what changed', async () => {
+		vi.mocked(loadSettings).mockResolvedValue({
+			...settingsFixture,
+			chapterChannelMap: [{ chapterId: 1, channelId: 'C1', name: 'New York' }],
+		});
+		vi.mocked(refreshChapterNames).mockResolvedValueOnce([
+			{ chapterId: 1, from: 'New York', to: 'NYC' },
+		]);
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(refreshChapterNames).toHaveBeenCalledWith(expect.anything(), [{ id: 1, name: 'NYC' }]);
+		expect(data.renamedChapters).toEqual([{ chapterId: 1, from: 'New York', to: 'NYC' }]);
+		// The rest of this load uses the new name, not the one it just replaced.
+		expect(data.settings.chapterChannelMap).toEqual([
+			{ chapterId: 1, channelId: 'C1', name: 'NYC' },
+		]);
+	});
+
+	it('does not try without the live list, and survives a failed refresh', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.mocked(refreshChapterNames).mockRejectedValueOnce(new Error('database is locked'));
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(data.renamedChapters).toEqual([]);
+
+		vi.mocked(refreshChapterNames).mockClear();
+		vi.mocked(getSolidarityChapters).mockRejectedValueOnce(new Error('Solidarity is down'));
+		await loadData(makeEvent({ isAdmin: true }));
+		expect(refreshChapterNames).not.toHaveBeenCalled();
 	});
 });
