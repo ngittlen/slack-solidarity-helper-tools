@@ -11,6 +11,7 @@
 // Pure — no DB, no Slack, no clock of its own. list-expiry-alert-store.ts does
 // the rows and the posting.
 
+import type { CampaignBadges } from './turf-view.js';
 import { campaignDayLabel, campaignWallClockToUtc } from '../campaign-time.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -27,6 +28,8 @@ export const LIST_EXPIRY_ALERT_MAX_ROWS = 15;
 /** One live turf, as this module needs to see it. */
 export interface ListExpiryTurf {
 	turfId: number;
+	/** The turf's VAN campaign — for the badge on its line. */
+	campaignId: number;
 	name: string;
 	regionName: string;
 	chapterName: string;
@@ -39,6 +42,7 @@ export interface ListExpiryTurf {
 
 export interface ListExpiryAlert {
 	turfId: number;
+	campaignId: number;
 	turfName: string;
 	regionName: string;
 	chapterName: string;
@@ -100,6 +104,7 @@ export function listExpiryAlerts(
 		if (msLeft > warningDays * DAY_MS) continue;
 		alerts.push({
 			turfId: turf.turfId,
+			campaignId: turf.campaignId,
 			turfName: turf.name,
 			regionName: turf.regionName,
 			chapterName: turf.chapterName,
@@ -120,8 +125,12 @@ function whenLabel(alert: ListExpiryAlert, now: Date): string {
 	return `expires ${day} (${alert.daysLeft} day${alert.daysLeft === 1 ? '' : 's'})`;
 }
 
-function renderRow(alert: ListExpiryAlert, now: Date): string {
-	const where = alert.regionName || alert.chapterName;
+/** One row. The campaign leads `where` while it shows a badge: an organizer
+ *  reprints a list in that campaign's VAN, so they have to know whose it is. */
+function renderRow(alert: ListExpiryAlert, now: Date, badges: CampaignBadges): string {
+	const place = alert.regionName || alert.chapterName;
+	const badge = badges[alert.campaignId];
+	const where = badge ? `${badge} · ${place}` : place;
 	const held = alert.held ? ' · :bust_in_silhouette: someone holds it' : '';
 	return `• *${alert.turfName}* — ${where} · ${whenLabel(alert, now)}${held}`;
 }
@@ -137,8 +146,14 @@ export function renderListExpiryAlert(
 	alerts: readonly ListExpiryAlert[],
 	now: Date,
 	appUrl: string,
-	maxRows: number = LIST_EXPIRY_ALERT_MAX_ROWS,
+	options: {
+		maxRows?: number;
+		/** Campaign id → badge, for the campaigns whose turf shows one
+		 *  (badgeShown). Empty while there is one campaign: no badge. */
+		badges?: CampaignBadges;
+	} = {},
 ): string | null {
+	const { maxRows = LIST_EXPIRY_ALERT_MAX_ROWS, badges = {} } = options;
 	if (alerts.length === 0) return null;
 	const n = alerts.length;
 	const lines = [
@@ -149,7 +164,7 @@ export function renderListExpiryAlert(
 			'sync picks up the new number and DMs it to anyone holding the turf._',
 		'',
 	];
-	for (const alert of alerts.slice(0, maxRows)) lines.push(renderRow(alert, now));
+	for (const alert of alerts.slice(0, maxRows)) lines.push(renderRow(alert, now, badges));
 	if (n > maxRows) lines.push(`• _… +${n - maxRows} more_`);
 	lines.push('', `<${appUrl}/turfs/organizer|Open the organizer view>`);
 	return lines.join('\n');

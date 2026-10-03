@@ -124,7 +124,9 @@ describe('the van-sync job', () => {
 			},
 		]);
 
-	it('calls the endpoint once per enabled campaign, stalest first', async () => {
+	// The cross-campaign stages (reconciliation, alerts, the Packet Tracker) run
+	// once a tick, on the last call, after every catalog has landed.
+	it('calls the endpoint once per enabled campaign, stalest first, shared stages last', async () => {
 		await client.execute(
 			"INSERT INTO van_sync_state (campaign_id, last_sync_at) VALUES (1, '2026-09-25T10:00:00.000Z')",
 		);
@@ -133,8 +135,8 @@ describe('the van-sync job', () => {
 		const { calls, call } = recorder();
 		await job('van-sync').run(at('11:07'), call, db);
 		expect(calls.map((c) => c.params)).toEqual([
-			{ campaign: '3' },
-			{ campaign: '2' },
+			{ campaign: '3', shared: '0' },
+			{ campaign: '2', shared: '0' },
 			{ campaign: '1' },
 		]);
 	});

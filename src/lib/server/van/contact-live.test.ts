@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { drizzle } from 'drizzle-orm/libsql';
+import { drizzle } from 'drizzle-orm/libsql';
+import { createClient } from '@libsql/client';
+import { migrate } from 'drizzle-orm/libsql/migrator';
 
 const {
 	mockHasher,
@@ -114,6 +116,36 @@ describe('nudgeWithRetry', () => {
 });
 
 describe('runContactStage', () => {
+	// A disabled campaign makes no VAN calls (specs/012-multi-van-campaigns):
+	// its claims run to their end, but their counts are not refreshed. On a real
+	// database, because the filter is SQL.
+	it('makes no VAN call for a turf in a disabled campaign', async () => {
+		const client = createClient({ url: ':memory:' });
+		const real = drizzle(client);
+		await migrate(real, { migrationsFolder: 'drizzle' });
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'other', 0, 's', 's', 'x')`,
+		);
+		await client.execute(
+			`INSERT INTO van_turfs (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id,
+			   chapter_id, name, first_seen_at, last_seen_at)
+			 VALUES (42, 2, 42, 1, 1, 71, 'T', 'x', 'x')`,
+		);
+		await nudgeWithRetry(real, 42, { sleep: noSleep });
+		expect(mockClientFor).not.toHaveBeenCalled();
+		expect(mockRunContactSync).not.toHaveBeenCalled();
+
+		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 2');
+		mockWithSyncLock.mockImplementation(async (_db, _name, _ttl, fn: () => Promise<unknown>) => ({
+			skipped: false,
+			result: await fn(),
+		}));
+		await nudgeWithRetry(real, 42, { sleep: noSleep });
+		expect(mockRunContactSync).toHaveBeenCalledOnce();
+		client.close();
+	});
+
 	it("is off for a campaign without a usable key, without touching another's", async () => {
 		mockClientFor.mockReturnValue({ ok: false, error: 'VAN_CAMPAIGN_OTHER is not set' });
 		expect(await runContactStage(db, CAMPAIGN, { timeBudgetMs: 1000 })).toBeNull();

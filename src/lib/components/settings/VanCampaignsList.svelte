@@ -66,8 +66,8 @@
 
 <p class="note">
 	To add a campaign, set its credentials as a Fly secret — <code>{ADD_EXAMPLE}</code>
-	— and it appears here, switched off, after the next sync. The <code>&lt;KEY&gt;</code> is its permanent
-	id: renaming the secret makes a new campaign. See the README for the format.
+	— and it appears here, switched off, the next time this page loads. The <code>&lt;KEY&gt;</code> is
+	its permanent id: renaming the secret makes a new campaign. See the README for the format.
 </p>
 
 <style>

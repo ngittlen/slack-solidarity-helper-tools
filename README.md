@@ -424,6 +424,27 @@ It populates `solidarity_daily_snapshots`, `slack_joins`, `door_knock_daily`, `d
 
 If you need a table the seeder doesn't cover, add it there rather than copying rows out of production — several tables (`member_notes`, `member_account_links`, `slack_user_tokens`, `sessions`) hold credentials or moderation records about named members and should not leave the production database.
 
+#### A copy of production
+
+When synthetic data is not enough — rehearsing a migration, or chasing a bug that only real turf shows — `npm run db:replica` copies a slice of the production database into a local file (`scripts/db-replica.ts`):
+
+```bash
+# REPLICA_SOURCE_URL / REPLICA_SOURCE_AUTH_TOKEN: the PRODUCTION database
+# (falls back to TURSO_DATABASE_URL / TURSO_AUTH_TOKEN)
+npm run db:replica -- --list-chapters               # chapters with mapped folders, and their turf
+npm run db:replica -- --chapters 71,72              # → local-replica.db
+npm run db:replica -- --chapters 71 --out other.db --force
+
+TURSO_DATABASE_URL=file:local-replica.db npm run db:migrate   # apply what a deploy would
+TURSO_DATABASE_URL=file:local-replica.db npm run dev
+```
+
+- **What it copies:** the schema as production has it, with its migration history, so `db:migrate` against the copy runs exactly the pending migrations a deploy would. Turf for the named chapters and only the rows hanging off it (checkouts, rosters, geometry jobs, contact marks, MiniVAN exports). Every other table whole.
+- **What it leaves out:** sessions, stored Slack tokens and sync locks — sign in locally for a session of your own.
+- **Unlike `db:seed`, this is real data:** volunteer names, Slack IDs and notes come with it. The file is gitignored (`*.db`); keep it on your machine.
+- **Production is only read.** Every statement is checked to be a `SELECT` or a `PRAGMA table_info` before it is sent, and the source is opened as a plain client, never as an embedded replica (which would forward writes back). A local-file source is refused, and an existing copy is only replaced with `--force`.
+- **A failed run leaves nothing behind.** The copy is built as `<out>.partial` and renamed into place only when every table has copied; reads are paged and retried, and a failure names the table and the underlying cause.
+
 ## Reports
 
 ### Top RSVPers per chapter
@@ -825,7 +846,7 @@ The app can serve turf from several VAN campaigns at once — each its own Every
 
    Read-only, and it needs no database — so it can check a brand-new secret. `databaseMode` may be left out of the secret here; the script works out which database holds the turf. With no `--campaign` it checks `primary`.
 
-3. **Let the app see it.** `fly secrets set` restarts the app; the next scheduled sync adds the campaign to **Settings → VAN campaigns** as _New: not enabled_. Nothing syncs until it is enabled.
+3. **Let the app see it.** `fly secrets set` restarts the app; the campaign appears under **Settings → VAN campaigns** as _New: not enabled_ the next time that page loads (or at the next scheduled sync, whichever comes first). Nothing syncs until it is enabled.
 
 4. **Set it up on its page**, `/settings/van/<id>`:
    - **Name** (what organizers and alerts call it) and **Turf badge** (the short text volunteers see beside its turf, while more than one campaign is enabled).
@@ -840,7 +861,7 @@ The app can serve turf from several VAN campaigns at once — each its own Every
 
 5. **Enable it.** The app checks the key works and at least one folder is mapped, and refuses with the reason otherwise. **Disable** is on the same page, behind a confirmation: syncing stops and its unclaimed turf leaves the map and `/turfs` at once; claims in progress run to their end. It can be enabled again; nothing is deleted.
 
-6. Trigger a sync rather than wait for the schedule: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET&campaign=<id>"` (without `campaign`, every enabled campaign, stalest first).
+6. Trigger a sync rather than wait for the schedule: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET&campaign=<id>"` (without `campaign`, every enabled campaign, stalest first). Either way it also runs the stages shared by every campaign — reconciliation, the drift and list-expiry alerts, the Packet Tracker — after the catalogs; `&shared=0` leaves them out, which is how the scheduler runs them once a tick rather than once per campaign.
 
 7. Watch the turf shapes fill in. The catalog lands immediately, but every turf needs its own VAN export job before it can be drawn as a shape rather than a pin, and the scheduled sync only has a few minutes per run for that:
 

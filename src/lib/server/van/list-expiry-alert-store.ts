@@ -18,6 +18,7 @@ import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { postAlert } from '../slack.js';
 import { errMessage } from '../../err-message.js';
+import { badgeShown, loadTurfCampaigns, type CampaignBadges } from './campaigns.js';
 import {
 	listExpiryAlerts,
 	renderListExpiryAlert,
@@ -46,11 +47,13 @@ export async function sendListExpiryAlerts(
 	if (!channelId) return { announced: 0, failed: false, skipped: 'no-channel' };
 
 	let alerts: ListExpiryAlert[];
+	let badges: CampaignBadges;
 	try {
-		const [turfs, claims] = await Promise.all([
+		const [turfs, claims, campaigns] = await Promise.all([
 			db
 				.select({
 					turfId: vanTurfs.turfId,
+					campaignId: vanTurfs.campaignId,
 					name: vanTurfs.name,
 					regionName: vanTurfs.regionName,
 					chapterName: vanTurfs.chapterName,
@@ -68,19 +71,29 @@ export async function sendListExpiryAlerts(
 				})
 				.from(vanTurfCheckouts)
 				.where(and(isNull(vanTurfCheckouts.releasedAt), isNull(vanTurfCheckouts.completedAt))),
+			loadTurfCampaigns(db),
 		]);
 		// Open (filtered in SQL) and unexpired — the test isActive() applies,
 		// without loading a full claim snapshot for it.
 		const held = new Set(
 			claims.filter((c) => Date.parse(c.expiresAt) > now.getTime()).map((c) => c.turfId),
 		);
-		alerts = listExpiryAlerts(turfs, held, now);
+		// A disabled campaign's turf is no longer handed out and its VAN data is
+		// frozen, so nobody should be told to reprint its lists — unless
+		// someone is still out with one, whose list number may stop loading.
+		const live = turfs.filter((t) => !campaigns.disabled.has(t.campaignId) || held.has(t.turfId));
+		alerts = listExpiryAlerts(live, held, now);
+		// Named by campaign under the same rule as the turf: an organizer
+		// reprints in that campaign's VAN.
+		badges = Object.fromEntries(
+			Object.entries(campaigns.badges).filter(([id]) => badgeShown(campaigns, Number(id))),
+		);
 	} catch (err) {
 		console.error(`${LOG} could not read list-expiry candidates:`, errMessage(err));
 		return { announced: 0, failed: false };
 	}
 
-	const text = renderListExpiryAlert(alerts, now, appUrl);
+	const text = renderListExpiryAlert(alerts, now, appUrl, { badges });
 	if (text === null) return { announced: 0, failed: false, skipped: 'nothing-new' };
 
 	if (!(await postAlert(channelId, text, LOG))) {

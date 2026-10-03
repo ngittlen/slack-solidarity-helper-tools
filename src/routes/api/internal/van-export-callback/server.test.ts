@@ -12,6 +12,7 @@ const mockAlertFor = vi.hoisted(() => vi.fn(() => async () => undefined));
 const mockAcquire = vi.hoisted(() => vi.fn());
 const mockRelease = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
+const mockSeveral = vi.hoisted(() => vi.fn(async () => false));
 
 vi.mock('$lib/server/db.js', () => ({
 	db: {
@@ -32,6 +33,10 @@ vi.mock('$lib/server/van-env.js', () => ({
 	vanClientFor: mockVanClient,
 	vanExportJobTypeIdFor: mockExportJobTypeId,
 	vanPersonHasher: () => null,
+}));
+vi.mock('$lib/server/van/campaigns.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/van/campaigns.js')>()),
+	severalCampaignsEnabled: mockSeveral,
 }));
 vi.mock('$lib/server/van/geometry-worker.js', () => ({
 	runGeometryQueue: mockRunGeometryQueue,
@@ -71,7 +76,13 @@ function event(query = `turf=100&token=${signWebhookToken('cron-secret', 100)}`)
 }
 
 /** Turf 100 belongs to campaign 2: the job was submitted with its key. */
-const CAMPAIGN = { id: 2, credentialKey: 'other', exportJobTypeId: 5 };
+const CAMPAIGN = {
+	id: 2,
+	credentialKey: 'other',
+	label: 'El-Sayed',
+	enabled: true,
+	exportJobTypeId: 5,
+};
 
 describe('POST /api/internal/van-export-callback', () => {
 	beforeEach(() => {
@@ -139,6 +150,25 @@ describe('POST /api/internal/van-export-callback', () => {
 		expect(mockVanClient).toHaveBeenCalledWith(CAMPAIGN);
 		expect(mockExportJobTypeId).toHaveBeenCalledWith(CAMPAIGN);
 		expect(mockRunGeometryQueue.mock.calls[0]![2]).toMatchObject({ campaignId: 2 });
+	});
+
+	// A disabled campaign makes no VAN calls: a job submitted just before the
+	// switch still calls back, and a drain would submit new jobs for its queue.
+	it('answers 200 and drains nothing for a disabled campaign', async () => {
+		mockTurfCampaign.mockResolvedValue([{ campaign: { ...CAMPAIGN, enabled: false } }]);
+		const res = await POST(event());
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ skipped: 'campaign is disabled' });
+		expect(mockAcquire).not.toHaveBeenCalled();
+		expect(mockRunGeometryQueue).not.toHaveBeenCalled();
+	});
+
+	it('names the campaign in its alerts once several are enabled', async () => {
+		await POST(event());
+		expect(mockAlertFor).toHaveBeenLastCalledWith('[van]', undefined);
+		mockSeveral.mockResolvedValueOnce(true);
+		await POST(event());
+		expect(mockAlertFor).toHaveBeenLastCalledWith('[van · El-Sayed]', undefined);
 	});
 
 	it('answers 200 and does nothing for a turf that no longer exists', async () => {

@@ -9,6 +9,7 @@ import { vanCampaigns, vanTurfs } from '$lib/server/schema.js';
 import { eq } from 'drizzle-orm';
 import { runGeometryQueue } from '$lib/server/van/geometry-worker.js';
 import { vanSyncLock } from '$lib/server/van/locks.js';
+import { campaignName, severalCampaignsEnabled } from '$lib/server/van/campaigns.js';
 import { exportCallbackUrl, verifyWebhookToken } from '$lib/server/van/webhook-token.js';
 import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 
@@ -73,6 +74,11 @@ export const POST: RequestHandler = async ({ url, request }) => {
 		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
 		.where(eq(vanTurfs.turfId, turfId));
 	if (!campaign) return json({ skipped: 'unknown turf' });
+	// A disabled campaign makes no VAN calls (specs/012-multi-van-campaigns):
+	// a job submitted just before it was switched off still calls back, and a
+	// drain here would submit new export jobs for its whole queue. 200, so VAN
+	// does not retry.
+	if (!campaign.campaign.enabled) return json({ skipped: 'campaign is disabled' });
 	const exportJobTypeId = vanExportJobTypeIdFor(campaign.campaign);
 	const configured = vanClientFor(campaign.campaign);
 	if (exportJobTypeId === null || !configured.ok) {
@@ -96,7 +102,14 @@ export const POST: RequestHandler = async ({ url, request }) => {
 			exportJobTypeId,
 			webhookUrlFor: (id) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, id),
 			timeBudgetMs: BUDGET_MS,
-			alert: alertFor('[van]', slackTurfChannelId),
+			// Named as the sync names it once there are several campaigns, so a
+			// dead-letter alert says whose export job type or key to look at.
+			alert: alertFor(
+				(await severalCampaignsEnabled(db))
+					? `[van · ${campaignName(campaign.campaign)}]`
+					: '[van]',
+				slackTurfChannelId,
+			),
 			roster: vanPersonHasher(),
 		});
 		console.log(`[van] export callback (job ${String(exportJobId)}):`, {

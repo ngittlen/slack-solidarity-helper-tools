@@ -205,6 +205,18 @@ describe('per campaign', () => {
 		expect(await loadDriftVisibility(db, 2)).toBe('van-side-unavailable');
 	});
 
+	// Its van_distributed_to is whatever the last good sync left.
+	it('leaves out a campaign whose last sync failed, until one succeeds', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok, last_error)
+			 VALUES (2, '${iso(NOW.getTime())}', 1, 'VAN_CAMPAIGN_OTHER is not valid JSON')`,
+		);
+		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).not.toContain(900);
+		expect(await loadDriftVisibility(db, 2)).toBe('van-side-unavailable');
+		await client.execute('UPDATE van_sync_state SET last_error = NULL WHERE campaign_id = 2');
+		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).toContain(900);
+	});
+
 	it('is unavailable when the only campaign that could read exports is disabled', async () => {
 		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 1');
 		expect(await loadDriftVisibility(db)).toBe('van-side-unavailable');

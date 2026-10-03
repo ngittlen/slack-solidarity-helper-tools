@@ -192,6 +192,13 @@ async function campaignOf(res: Response): Promise<Record<string, any>> {
 	return (await res.json()).campaigns[0];
 }
 
+/** The cross-campaign half: reconciliation, alerts, the Packet Tracker — run
+ *  once per request, after the campaigns (runSharedStages). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- as campaignOf
+async function sharedOf(res: Response): Promise<Record<string, any>> {
+	return (await res.json()).shared;
+}
+
 /** A campaign's catalog lock is held elsewhere; the ledger's is free. */
 function campaignLockHeld(): void {
 	mockAcquire.mockImplementation(async (_db: unknown, name: string) =>
@@ -270,6 +277,7 @@ describe('POST /api/internal/van-sync', () => {
 			expiryWarningsSent: 3,
 			expiryWarningsFailed: 1,
 			campaigns: [{ campaignId: 1, error: 'VAN_API_KEY is not set' }],
+			shared: expect.any(Object),
 		});
 	});
 
@@ -349,17 +357,19 @@ describe('POST /api/internal/van-sync', () => {
 					campaignId: 1,
 					...result,
 					geometry: geometryResult,
-					drift: driftResult,
-					listExpiry: { announced: 0, failed: false, skipped: 'nothing-new' },
 					refreshesSettled: 0,
-					reconciled: reconcileResult,
-					doorDeltas: doorDeltaResult,
-					doorsWarning: null,
 					refresh: refreshResult,
-					sheetLog: sheetLogResult,
 					contacts: { disabled: true },
 				},
 			],
+			shared: {
+				reconciled: reconcileResult,
+				doorDeltas: doorDeltaResult,
+				doorsWarning: null,
+				drift: driftResult,
+				listExpiry: { announced: 0, failed: false, skipped: 'nothing-new' },
+				sheetLog: sheetLogResult,
+			},
 		});
 		expect(mockRunCatalogSync).toHaveBeenCalledWith(
 			{},
@@ -377,7 +387,7 @@ describe('POST /api/internal/van-sync', () => {
 	// comparison. Alerting first would announce drift computed against the
 	// previous run's view of VAN — precisely the window an organizer's bulk export
 	// lands in.
-	it("alerts on drift only after the catalog has refreshed VAN's half", async () => {
+	it("alerts on drift only after the catalog has refreshed VAN's half, and after geometry", async () => {
 		const order: string[] = [];
 		mockRunCatalogSync.mockImplementation(async () => {
 			order.push('catalog');
@@ -392,9 +402,9 @@ describe('POST /api/internal/van-sync', () => {
 			return geometryResult;
 		});
 		await POST(event());
-		// Before geometry too: geometry is the half the time budget cuts short, and
-		// an unannounced collision costs more than a missing hull.
-		expect(order).toEqual(['catalog', 'drift', 'geometry']);
+		// The shared stages follow every campaign's catalog and geometry; the
+		// last campaign's geometry leaves them time (SHARED_RESERVE_MS).
+		expect(order).toEqual(['catalog', 'geometry', 'drift']);
 	});
 
 	it('confirms in-flight refreshes against the regions the catalog just read', async () => {
@@ -431,11 +441,11 @@ describe('POST /api/internal/van-sync', () => {
 			return refreshResult;
 		});
 		await POST(event());
-		// Reconciliation repairs claims a re-cut just released, and the delta
-		// check must not measure those as completions; drift reads the ledger, so
-		// it has to see both. The sweep goes last because its effect lands on a
-		// future tick.
-		expect(order).toEqual(['catalog', 'settle', 'reconcile', 'deltas', 'drift', 'refresh']);
+		// The campaign's own stages first (catalog, confirming earlier re-cuts,
+		// asking for new ones), then the shared ones: reconciliation repairs claims
+		// a re-cut just released, the delta check must not measure those as
+		// completions, and drift reads the ledger, so it has to see both.
+		expect(order).toEqual(['catalog', 'settle', 'refresh', 'reconcile', 'deltas', 'drift']);
 	});
 
 	it('warns about expiring list numbers after the catalog, in the turf channel', async () => {
@@ -450,7 +460,7 @@ describe('POST /api/internal/van-sync', () => {
 			order.push('list-expiry');
 			return { announced: 2, failed: false };
 		});
-		const body = await campaignOf(await POST(event()));
+		const body = await sharedOf(await POST(event()));
 		expect(order).toEqual(['catalog', 'list-expiry']);
 		expect(mockListExpiry).toHaveBeenCalledWith(
 			{},
@@ -466,7 +476,7 @@ describe('POST /api/internal/van-sync', () => {
 			doorsCleared: 212,
 			dmFailed: 0,
 		});
-		const body = await campaignOf(await POST(event()));
+		const body = await sharedOf(await POST(event()));
 		expect(body).toMatchObject({ doorDeltas: { measured: 4, unsynced: 1, doorsCleared: 212 } });
 	});
 
@@ -526,11 +536,9 @@ describe('POST /api/internal/van-sync', () => {
 	it('reports what the reconciliation and the sweep did', async () => {
 		mockReconcile.mockResolvedValue({ ...reconcileResult, listNumbersChanged: 2, walkedOut: 1 });
 		mockRefreshSweep.mockResolvedValue({ ...refreshResult, regionsRefreshed: 3 });
-		const body = await campaignOf(await POST(event()));
-		expect(body).toMatchObject({
-			reconciled: { listNumbersChanged: 2, walkedOut: 1 },
-			refresh: { regionsRefreshed: 3 },
-		});
+		const body = await (await POST(event())).json();
+		expect(body.shared).toMatchObject({ reconciled: { listNumbersChanged: 2, walkedOut: 1 } });
+		expect(body.campaigns[0]).toMatchObject({ refresh: { regionsRefreshed: 3 } });
 	});
 
 	it('posts drift to the turf channel, against the housekeeping clock', async () => {
@@ -545,17 +553,41 @@ describe('POST /api/internal/van-sync', () => {
 		);
 	});
 
-	it('does not alert on drift when VAN is not configured', async () => {
-		// Without a catalog run, `van_distributed_to` is whatever the last
-		// successful sync left, and a stale comparison is worse than none.
+	// The shared stages need no VAN key: claims still need reconciling and the
+	// Packet Tracker still needs writing when a key is broken. Drift guards
+	// itself — it leaves out any campaign whose last sync failed, whose
+	// `van_distributed_to` is stale (drift-store.ts).
+	it('runs the shared stages even when the catalog could not', async () => {
 		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
 		await POST(event());
+		expect(mockReconcile).toHaveBeenCalledOnce();
+		expect(mockRunPacketTracker).toHaveBeenCalledOnce();
+		expect(mockDrift).toHaveBeenCalledOnce();
+	});
+
+	// The scheduler's earlier calls of a tick: the last one runs them.
+	it('leaves the shared stages out with shared=0', async () => {
+		const body = await (await POST(event('cron-secret', '&shared=0'))).json();
+		expect(mockReconcile).not.toHaveBeenCalled();
 		expect(mockDrift).not.toHaveBeenCalled();
+		expect(mockRunPacketTracker).not.toHaveBeenCalled();
+		expect(body.shared).toBeUndefined();
+		expect(body.campaigns[0].turfsUpserted).toBe(3);
+	});
+
+	it('skips the shared stages when another request holds the ledger lock', async () => {
+		let ledgerTaken = 0;
+		mockAcquire.mockImplementation(async (_db: unknown, name: string) =>
+			name === 'van-ledger' ? (ledgerTaken++ === 0 ? 'ledger-token' : null) : 'lock-token',
+		);
+		const body = await (await POST(event())).json();
+		expect(mockReconcile).not.toHaveBeenCalled();
+		expect(body.shared).toEqual({ skipped: 'another request is running them' });
 	});
 
 	it('reports what the drift alert did', async () => {
 		mockDrift.mockResolvedValue({ announced: 3, cleared: 1, failed: false });
-		const body = await campaignOf(await POST(event()));
+		const body = await sharedOf(await POST(event()));
 		expect(body).toMatchObject({ drift: { announced: 3, cleared: 1, failed: false } });
 	});
 
@@ -712,7 +744,7 @@ describe('POST /api/internal/van-sync', () => {
 		it('reports what it wrote', async () => {
 			mockRunPacketTracker.mockResolvedValue({ ...sheetLogResult, filled: 4 });
 			const res = await POST(event());
-			expect((await campaignOf(res)).sheetLog.filled).toBe(4);
+			expect((await sharedOf(res)).sheetLog.filled).toBe(4);
 		});
 
 		// Most deployments of this tool have no campaign spreadsheet. An
@@ -721,7 +753,7 @@ describe('POST /api/internal/van-sync', () => {
 			mockRunPacketTracker.mockResolvedValue(null);
 			const res = await POST(event());
 
-			expect((await campaignOf(res)).sheetLog).toEqual({ disabled: true });
+			expect((await sharedOf(res)).sheetLog).toEqual({ disabled: true });
 		});
 
 		it('posts its advisory warnings with the sync notices', async () => {
@@ -757,6 +789,17 @@ describe('POST /api/internal/van-sync', () => {
 	});
 
 	describe('geometry', () => {
+		// The shared stages follow the last campaign's geometry, so it leaves
+		// them their slice — but only on the request that runs them.
+		it('leaves time for the shared stages only when this request runs them', async () => {
+			await POST(event());
+			const withShared = mockRunGeometryQueue.mock.calls[0]![2].timeBudgetMs;
+			mockRunGeometryQueue.mockClear();
+			await POST(event('cron-secret', '&shared=0'));
+			const without = mockRunGeometryQueue.mock.calls[0]![2].timeBudgetMs;
+			expect(without - withShared).toBeGreaterThanOrEqual(40 * 1000);
+		});
+
 		it('drains the queue after the catalog and reports what it did', async () => {
 			const res = await POST(event());
 			const body = await campaignOf(res);
@@ -885,13 +928,27 @@ describe('POST /api/internal/van-sync', () => {
 			expect(res.status).toBe(200);
 			expect(mockVanClient.mock.calls.map((c) => c[0])).toEqual([OTHER, PRIMARY]);
 			expect(mockRunCatalogSync.mock.calls.map((c) => c[2])).toEqual([2, 1]);
+			// The ledger lock twice: the housekeeping first, the shared stages last.
 			expect(mockAcquire.mock.calls.map((c) => c[1])).toEqual([
 				'van-ledger',
 				'van-catalog-sync:2',
 				'van-catalog-sync:1',
+				'van-ledger',
 			]);
 			const body = await res.json();
 			expect(body.campaigns.map((c: { campaignId: number }) => c.campaignId)).toEqual([2, 1]);
+		});
+
+		// Run per campaign, they did the same work once per campaign: every
+		// spreadsheet read twice inside a minute against Google's quota, and the
+		// doors warning posted under each campaign's name.
+		it('runs the shared stages once, after every campaign', async () => {
+			await POST(event());
+			expect(mockRunPacketTracker).toHaveBeenCalledOnce();
+			expect(mockReconcile).toHaveBeenCalledOnce();
+			expect(mockDoorsHealth).toHaveBeenCalledOnce();
+			const lastCatalog = Math.max(...mockRunCatalogSync.mock.invocationCallOrder);
+			expect(mockReconcile.mock.invocationCallOrder[0]).toBeGreaterThan(lastCatalog);
 		});
 
 		it('syncs only the campaign named, after the ledger housekeeping', async () => {

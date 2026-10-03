@@ -93,9 +93,15 @@
 	{#if data.error}
 		<p class="error">Could not read folders from VAN: {data.error}</p>
 	{:else if data.folders.length === 0}
-		{#if data.emptyFolders.length === 0}
+		{#if data.emptyFolders.length === 0 && data.errors.length === 0}
 			<p class="note">
 				This key can see no folders. Share the campaign's folders with its API user in VAN.
+			</p>
+		{:else if data.emptyFolders.length === 0}
+			<!-- Folders exist, but VAN refused their regions: the errors below say
+			     why, and "share the folders" would send the admin the wrong way. -->
+			<p class="note">
+				VAN would not show the regions in any folder this key can see — see below for why.
 			</p>
 		{:else}
 			<p class="note">

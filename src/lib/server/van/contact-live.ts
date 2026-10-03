@@ -7,7 +7,7 @@
 // Per campaign: each pulls its own ContactHistory with its own key, under its
 // own lock, so one campaign's first backfill cannot freeze another's counts.
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanCampaigns, vanTurfs, type VanCampaignRow } from '../schema.js';
@@ -75,12 +75,16 @@ export async function runContactStage(
 }
 
 /** The campaign a turf belongs to, or null for a turf that is gone. */
+/** The turf's campaign, when it is enabled. A disabled campaign makes no VAN
+ *  calls (specs/012-multi-van-campaigns, R9): its claims run to their end, but
+ *  their counts are not refreshed, as the scheduled sync no longer refreshes
+ *  them either. */
 async function campaignOfTurf(db: Db, turfId: number): Promise<ContactCampaign | null> {
 	const [row] = await db
 		.select({ id: vanCampaigns.id, credentialKey: vanCampaigns.credentialKey })
 		.from(vanTurfs)
 		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
-		.where(eq(vanTurfs.turfId, turfId));
+		.where(and(eq(vanTurfs.turfId, turfId), eq(vanCampaigns.enabled, true)));
 	return row ?? null;
 }
 

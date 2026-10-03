@@ -106,9 +106,18 @@ const vanSync: Job = {
 			return;
 		}
 		const failures: string[] = [];
-		for (const campaign of campaigns) {
+		for (const [i, campaign] of campaigns.entries()) {
+			// The cross-campaign stages — reconciliation, alerts, the Packet
+			// Tracker — run once a tick, on the last call, after every campaign's
+			// catalog has landed. Run on each call, they did the same work once per
+			// campaign (see runSharedStages in the endpoint).
+			const last = i === campaigns.length - 1;
 			try {
-				await call('/api/internal/van-sync', { campaign: String(campaign.id) }, 5 * MINUTE);
+				await call(
+					'/api/internal/van-sync',
+					{ campaign: String(campaign.id), ...(last ? {} : { shared: '0' }) },
+					5 * MINUTE,
+				);
 			} catch (err) {
 				failures.push(`campaign ${campaign.id}: ${err instanceof Error ? err.message : err}`);
 			}

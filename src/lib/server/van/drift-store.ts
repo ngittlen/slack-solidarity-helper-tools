@@ -52,11 +52,16 @@ export function exportsVisibleFilter(): SQL {
  * switched off: a list loaded since then never reaches `van_distributed_to`,
  * and its claims would read as "not loaded in MiniVAN" until they end. It is
  * left out like a campaign whose key cannot read exports at all.
+ *
+ * So is a campaign whose last sync failed — a key rotated badly, say. Its
+ * `van_distributed_to` is whatever the last good sync left, and a stale
+ * comparison is worse than none. A successful sync clears `last_error`.
  */
 function exportsVisibleCampaigns(): SQL {
 	return sql`select ${vanSyncState.campaignId} from ${vanSyncState}
 		join ${vanCampaigns} on ${vanCampaigns.id} = ${vanSyncState.campaignId}
-		where ${vanSyncState.minivanExportsOk} = 1 and ${vanCampaigns.enabled} = 1`;
+		where ${vanSyncState.minivanExportsOk} = 1 and ${vanCampaigns.enabled} = 1
+		and ${vanSyncState.lastError} is null`;
 }
 
 /** Every turf in scope, claimed or not. Retired rows come back and the pure
@@ -142,6 +147,8 @@ export async function loadDriftVisibility(
 			and(
 				eq(vanSyncState.minivanExportsOk, true),
 				eq(vanCampaigns.enabled, true),
+				// As exportsVisibleCampaigns: a failed last sync left stale data.
+				isNull(vanSyncState.lastError),
 				campaignId == null ? undefined : eq(vanSyncState.campaignId, campaignId),
 			),
 		)

@@ -45,14 +45,23 @@ import { secretMatches } from '$lib/server/secret-compare.js';
 // Auth via ?key=<INTERNAL_CRON_SECRET>, same as every other internal
 // endpoint.
 //
-// Two halves with different dependencies: expiring lapsed claims and sending
-// six-hour warnings need only our own ledger, while the catalog half needs a
-// VAN key. The first half therefore runs before any key is checked — see the
-// comment in the handler.
+// Three parts, in order:
+//
+//   1. The ledger housekeeping — expiring lapsed claims, six-hour warnings,
+//      noticing new campaign secrets. Needs no VAN key, so it runs before any
+//      key is checked (runHousekeeping).
+//   2. Each campaign's own sync — catalog, re-cut confirmations and requests,
+//      contact history, geometry — with that campaign's key and lock
+//      (syncCampaign).
+//   3. The shared stages — re-cut reconciliation, door deltas, the doors health
+//      check, the drift and list-expiry alerts, the Packet Tracker. They read
+//      our own tables across every campaign, so they run once, after every
+//      catalog (runSharedStages).
 //
 // There can be several VAN campaigns (specs/012-multi-van-campaigns), each with
 // its own key, folders, lock and state. `?campaign=<id>` syncs that one; the
-// scheduler calls it once per enabled campaign. With no campaign named — the
+// scheduler calls it once per enabled campaign, with `shared=0` on all but the
+// last call of a tick so part 3 runs once a tick. With no campaign named — the
 // GitHub workflow — every enabled campaign is synced, stalest first, for as
 // long as the request budget lasts. One campaign failing never stops another.
 
@@ -91,6 +100,10 @@ const MIN_CONTACT_BUDGET_MS = 10 * 1000;
 // Below this there is no point starting: the reads alone need a few seconds,
 // and anything unwritten is no worse off waiting.
 const MIN_SHEET_BUDGET_MS = 5 * 1000;
+// Kept back from the last campaign's geometry for the shared stages that follow
+// it: the Packet Tracker's slice, plus a little for the ledger-only reads and
+// Slack posts around it.
+const SHARED_RESERVE_MS = SHEET_BUDGET_MS + 15 * 1000;
 // Longer than the sync's own time budget, so a run killed mid-flight by Fly
 // still frees the lock within a cadence rather than blocking until someone
 // notices.
@@ -119,7 +132,7 @@ async function runGeometry(
 	campaign: Campaign,
 	client: VanClient,
 	queued: number,
-	requestDeadline: number,
+	geometryDeadline: number,
 	logPrefix: string,
 ): Promise<Awaited<ReturnType<typeof runGeometryQueue>> | null> {
 	const exportJobTypeId = vanExportJobTypeIdFor(campaign);
@@ -132,7 +145,7 @@ async function runGeometry(
 		}
 		return null;
 	}
-	const timeBudgetMs = requestDeadline - Date.now();
+	const timeBudgetMs = geometryDeadline - Date.now();
 	if (timeBudgetMs < MIN_GEOMETRY_BUDGET_MS) {
 		console.warn(`${logPrefix} skipping geometry this run — the catalog used the request budget`);
 		return null;
@@ -307,6 +320,8 @@ async function syncCampaign(
 	requestDeadline: number,
 	now: Date,
 	named: boolean,
+	/** Time to leave at the end for the shared stages, when this request runs them. */
+	reserveMs: number,
 ): Promise<CampaignOutcome> {
 	// A single-campaign install's messages read exactly as they always have;
 	// with several, each names the campaign it is about.
@@ -372,65 +387,6 @@ async function syncCampaign(
 		// is confirmed here, using the read that already happened.
 		const refreshesSettled = await settleRefreshes(db, campaign.id, result.regionsRead);
 
-		// Reconciliation, before the drift report and before geometry: it is the
-		// half of Story 4.5 that touches volunteers. A re-cut region has just
-		// retired somebody's route and released their claim (the catalog did that
-		// atomically), and this is what pairs the dead route to its replacement,
-		// hands it back, and says so. Drift then reads a settled ledger rather
-		// than one mid-repair.
-		//
-		// This and the stages below it up to the refresh read only our own
-		// tables, across every campaign; their matching is campaign-scoped, and
-		// each is idempotent, so running them after each campaign's catalog
-		// does the same work once and nothing twice.
-		// One read for both: the reconciliation needs the claim TTL and the drift
-		// alert needs the channel, and they run back to back.
-		const { vanTurfClaimTtlHours, slackTurfChannelId: turfChannelId } = await loadSettings(db);
-		const reconciled = await reconcileClaims(db, {
-			now,
-			appUrl: APP_URL,
-			ttlHours: vanTurfClaimTtlHours,
-		});
-
-		// Story 5.6: the sync-back check. After the reconciliation, because that
-		// is what releases claims a re-cut invalidated — verifying those as
-		// completions would measure a delta against turf that no longer exists.
-		const doorDeltas = await stampDoorDeltas(db, { now, appUrl: APP_URL });
-
-		// Story 9.4's health check, and the biggest risk in the canvassing board:
-		// every doors number depends on map regions being cut with a "not yet
-		// contacted" filter, which nothing in this codebase can enforce. A week of
-		// completions that cleared nothing is the only signal we get, and it rides
-		// out with the sync's other notices.
-		let doorsWarning: string | null = null;
-		try {
-			doorsWarning = await doorsHealthWarning(db, now);
-		} catch (err) {
-			console.error(
-				`${logPrefix} doors health check failed:`,
-				err instanceof Error ? err.message : err,
-			);
-		}
-
-		// Story 8.2's report, pushed instead of pulled. After the catalog because
-		// the catalog writes VAN's half of the comparison (`van_distributed_to`),
-		// and before geometry because geometry is the half that gets cut short by
-		// the time budget — an unannounced collision costs more than a missing hull.
-		const drift = await sendDriftAlerts(db, {
-			now,
-			channelId: turfChannelId,
-			appUrl: APP_URL,
-		});
-
-		// MiniVAN list numbers that expire within five days. After the catalog,
-		// which is what records each list's creation date — and it makes no VAN
-		// call, so it runs whatever the time budget says.
-		const listExpiry = await sendListExpiryAlerts(db, {
-			now,
-			channelId: turfChannelId,
-			appUrl: APP_URL,
-		});
-
 		// Ask VAN to re-cut what is due (Story 4.2/4.4). Last of the VAN calls
 		// that matter, because its effect lands on a later tick: the POST returns
 		// straight away and the new counts arrive with a future catalog read.
@@ -469,20 +425,6 @@ async function syncCampaign(
 			}
 		}
 
-		// The campaign's Packet Tracker (specs/011-turf-checkout-sheet).
-		//
-		// After the catalog and the reconciliation, and that ordering matters:
-		// the catalog is what notices a list loaded in MiniVAN (Status Out, Time
-		// Departed), and a re-cut has just released somebody's claim and inserted
-		// a replacement — syncing before that ran would write rows describing a
-		// ledger mid-repair.
-		//
-		// Before geometry because geometry is the piece that routinely gets cut
-		// short, and a campaign staffer watching their sheet notices a missing
-		// row sooner than anyone notices a turf drawn as a pin. It needs no VAN
-		// call, so it is unaffected by a missing or rate-limited key.
-		const sheetLog = await runSheetLog(requestDeadline, turfChannelId);
-
 		// Geometry runs after the catalog because the catalog is what fills the
 		// queue: a turf cut minutes ago gets its shape on this run rather than
 		// the next one. It is also the half that is safe to cut short — an
@@ -492,7 +434,7 @@ async function syncCampaign(
 			campaign,
 			client,
 			result.geometryQueued,
-			requestDeadline,
+			requestDeadline - reserveMs,
 			logPrefix,
 		);
 
@@ -506,13 +448,7 @@ async function syncCampaign(
 			...result.degraded,
 			...result.warnings,
 			...(refresh?.warnings ?? []),
-			...(doorsWarning ? [doorsWarning] : []),
 			...(geometry?.warnings ?? []),
-			// `sheetLog.warnings` is advisory — an unrouted region, a row the
-			// campaign edited. Failures that need an operator are posted by the tracker
-			// itself through postAlert, which is what keeps them to one message
-			// per ongoing problem; including them here would say it twice.
-			...(sheetLog?.warnings ?? []),
 		];
 		if (notices.length > 0) {
 			try {
@@ -535,14 +471,8 @@ async function syncCampaign(
 				campaignId: campaign.id,
 				...result,
 				geometry,
-				drift,
-				listExpiry,
 				refreshesSettled,
-				reconciled,
-				doorDeltas,
-				doorsWarning,
 				refresh: refresh ?? { disabled: true },
-				sheetLog: sheetLog ?? { disabled: true },
 				contacts: contacts ?? { disabled: true },
 			},
 		};
@@ -552,6 +482,120 @@ async function syncCampaign(
 		return { failed: true, body: { campaignId: campaign.id, error: msg } };
 	} finally {
 		await releaseSyncLock(db, lock, token);
+	}
+}
+
+/**
+ * The stages that read our own tables across every campaign: re-cut
+ * reconciliation, door deltas, the doors health check, the drift and
+ * list-expiry alerts, and the Packet Tracker.
+ *
+ * Once per request, after every campaign's catalog — and the scheduler asks
+ * for them only on its last call of a tick (`shared=0` on the others). Run per
+ * campaign, they did the same work once per campaign: the Packet Tracker read
+ * every spreadsheet that many times inside a minute against Google's
+ * 60-a-minute quota, and the doors health warning, which is about all
+ * campaigns, was posted once per campaign under each one's name. After the
+ * catalogs, because each reads what they wrote: a re-cut has just retired
+ * somebody's route and released their claim, and this is what pairs it to its
+ * replacement.
+ *
+ * Under the ledger lock, the same one the housekeeping takes: a second request
+ * finding it held skips — the holder is doing this work.
+ */
+async function runSharedStages(
+	now: Date,
+	requestDeadline: number,
+): Promise<Record<string, unknown>> {
+	const token = await acquireSyncLock(db, VAN_LEDGER_LOCK, LEDGER_LOCK_TTL_MS);
+	if (!token) return { skipped: 'another request is running them' };
+	try {
+		// One read for both: the reconciliation needs the claim TTL and the
+		// alerts need the channel.
+		const { vanTurfClaimTtlHours, slackTurfChannelId } = await loadSettings(db);
+
+		// The half of Story 4.5 that touches volunteers: pairs a re-cut's dead
+		// route to its replacement, hands it back, and says so. Before the drift
+		// report, so drift reads a settled ledger rather than one mid-repair.
+		const reconciled = await reconcileClaims(db, {
+			now,
+			appUrl: APP_URL,
+			ttlHours: vanTurfClaimTtlHours,
+		});
+
+		// Story 5.6: the sync-back check. After the reconciliation, because that
+		// is what releases claims a re-cut invalidated — verifying those as
+		// completions would measure a delta against turf that no longer exists.
+		const doorDeltas = await stampDoorDeltas(db, { now, appUrl: APP_URL });
+
+		// Story 9.4's health check: every doors number depends on map regions
+		// being cut with a "not yet contacted" filter, which nothing here can
+		// enforce, and a week of completions that cleared nothing is the only
+		// signal. Across every campaign, so said once, not under any one's name.
+		let doorsWarning: string | null = null;
+		try {
+			doorsWarning = await doorsHealthWarning(db, now);
+		} catch (err) {
+			console.error('[van] doors health check failed:', err instanceof Error ? err.message : err);
+		}
+
+		// Story 8.2's report, pushed instead of pulled. After the catalogs, which
+		// write VAN's half of the comparison (`van_distributed_to`).
+		const drift = await sendDriftAlerts(db, {
+			now,
+			channelId: slackTurfChannelId,
+			appUrl: APP_URL,
+		});
+
+		// MiniVAN list numbers that expire within five days. After the catalogs,
+		// which record each list's creation date; no VAN call.
+		const listExpiry = await sendListExpiryAlerts(db, {
+			now,
+			channelId: slackTurfChannelId,
+			appUrl: APP_URL,
+		});
+
+		// The Packet Tracker (specs/011-turf-checkout-sheet), last: the catalogs
+		// notice a list loaded in MiniVAN, the reconciliation moves claims onto
+		// re-cut turf, and each campaign's contact stage derives the % walked —
+		// syncing before any of that would write rows describing a ledger
+		// mid-repair. No VAN call, so a missing key does not affect it.
+		const sheetLog = await runSheetLog(requestDeadline, slackTurfChannelId);
+
+		// `sheetLog.warnings` is advisory — an unrouted region, a row the campaign
+		// edited. Failures that need an operator are posted by the tracker itself
+		// through postAlert, one message per ongoing problem.
+		const notices = [...(doorsWarning ? [doorsWarning] : []), ...(sheetLog?.warnings ?? [])];
+		if (notices.length > 0 && slackTurfChannelId) {
+			try {
+				await slack.chat.postMessage({
+					channel: slackTurfChannelId,
+					text: `[van] sync notices:\n${notices.map((n) => `• ${n}`).join('\n')}`,
+				});
+			} catch (err) {
+				console.error(
+					'[van] failed to post sync notices to Slack:',
+					err instanceof Error ? err.message : err,
+				);
+			}
+		}
+
+		return {
+			reconciled,
+			doorDeltas,
+			doorsWarning,
+			drift,
+			listExpiry,
+			sheetLog: sheetLog ?? { disabled: true },
+		};
+	} catch (err) {
+		// Each of these is idempotent and the next run repeats it; a failure here
+		// must not fail campaigns whose catalogs are already written.
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error('[van] shared stages failed:', msg);
+		return { error: msg };
+	} finally {
+		await releaseSyncLock(db, VAN_LEDGER_LOCK, token);
 	}
 }
 
@@ -568,6 +612,11 @@ export const POST: RequestHandler = async ({ url }) => {
 	// took, which is precisely the overrun the budget exists to prevent.
 	const requestDeadline = Date.now() + REQUEST_BUDGET_MS;
 
+	// `shared=0` leaves the cross-campaign stages to another call — the
+	// scheduler's last of the tick (see runSharedStages). Anything else, and
+	// every caller that does not say, runs them.
+	const runShared = url.searchParams.get('shared') !== '0';
+
 	const campaignParam = url.searchParams.get('campaign');
 	const campaignId = campaignParam === null ? null : Number(campaignParam);
 	if (campaignId !== null && (!Number.isInteger(campaignId) || campaignId <= 0)) {
@@ -583,7 +632,13 @@ export const POST: RequestHandler = async ({ url }) => {
 			const campaign = await loadCampaign(db, campaignId);
 			if (!campaign) return json({ error: `No campaign ${campaignId}` }, { status: 404 });
 			if (!campaign.enabled) {
-				return json({ ...housekeeping, campaigns: [], skipped: 'campaign is disabled' });
+				const shared = runShared ? await runSharedStages(now, requestDeadline) : undefined;
+				return json({
+					...housekeeping,
+					campaigns: [],
+					skipped: 'campaign is disabled',
+					...(shared ? { shared } : {}),
+				});
 			}
 			campaigns = [campaign];
 		} else {
@@ -600,11 +655,21 @@ export const POST: RequestHandler = async ({ url }) => {
 				deferred.push(campaign.id);
 				continue;
 			}
-			outcomes.push(await syncCampaign(campaign, requestDeadline, now, named));
+			outcomes.push(
+				await syncCampaign(
+					campaign,
+					requestDeadline,
+					now,
+					named,
+					runShared ? SHARED_RESERVE_MS : 0,
+				),
+			);
 		}
 		if (deferred.length > 0) {
 			console.log(`[van] out of time; campaign(s) ${deferred.join(', ')} left for the next run`);
 		}
+
+		const shared = runShared ? await runSharedStages(now, requestDeadline) : undefined;
 
 		const failed = outcomes.some((o) => o.failed);
 		return json(
@@ -612,6 +677,7 @@ export const POST: RequestHandler = async ({ url }) => {
 				...housekeeping,
 				campaigns: outcomes.map((o) => o.body),
 				...(deferred.length > 0 ? { deferred } : {}),
+				...(shared ? { shared } : {}),
 			},
 			{ status: failed ? 500 : 200 },
 		);

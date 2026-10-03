@@ -130,4 +130,43 @@ describe('sendListExpiryAlerts', () => {
 		await run();
 		expect(mockPostAlert.mock.calls[0]![1]).toContain('someone holds it');
 	});
+
+	// specs/012-multi-van-campaigns: a disabled campaign's turf is no longer
+	// handed out and its data is frozen — unless someone is still out with it.
+	describe('with a second campaign', () => {
+		beforeEach(async () => {
+			await client.execute(`UPDATE van_campaigns SET label = 'One Team Michigan' WHERE id = 1`);
+			await client.execute(
+				`INSERT INTO van_campaigns (id, credential_key, label, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+				 VALUES (2, 'partner', 'El-Sayed', 1, 's', 's', 'x')`,
+			);
+			await turf(100);
+			await turf(200, { campaign_id: '2', van_map_route_id: '100' });
+		});
+
+		it('names the campaign on each line while both are enabled', async () => {
+			await run();
+			const text = mockPostAlert.mock.calls[0]![1] as string;
+			expect(text).toContain('*Turf 100* — One Team Michigan · Brighton');
+			expect(text).toContain('*Turf 200* — El-Sayed · Brighton');
+		});
+
+		it('leaves out a disabled campaign’s turf nobody holds', async () => {
+			await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 2');
+			expect(await run()).toEqual({ announced: 1, failed: false });
+			expect(mockPostAlert.mock.calls[0]![1]).not.toContain('Turf 200');
+		});
+
+		it('still warns about a disabled campaign’s turf someone is out with', async () => {
+			await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 2');
+			await client.execute(
+				`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+				 VALUES (200, 'U_VOL', 'Dana', '${iso(NOW.getTime() - DAY)}', '${iso(NOW.getTime() + DAY)}')`,
+			);
+			await run();
+			const text = mockPostAlert.mock.calls[0]![1] as string;
+			expect(text).toContain('*Turf 200* — El-Sayed · Brighton');
+			expect(text).toContain('someone holds it');
+		});
+	});
 });
