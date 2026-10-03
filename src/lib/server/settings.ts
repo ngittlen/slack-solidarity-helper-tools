@@ -405,6 +405,83 @@ export async function setChannelWelcomeFlag(
 // log line (Constitution Principle V). Errors bubble — the calling HTTP endpoint
 // (NAV-5+) owns failure logging because it has the request context.
 
+/** A stored chapter name brought up to date with Solidarity's. */
+export interface ChapterRename {
+	chapterId: number;
+	/** The stored name it replaced (the first, when rows disagreed). */
+	from: string;
+	to: string;
+}
+
+/**
+ * Bring the chapter names stored beside chapter ids up to date with
+ * Solidarity's live list.
+ *
+ * chapter_channel_map and van_chapter_folders each keep the name a chapter had
+ * when its row was saved, and Solidarity renames chapters: "Berrien for Abdul"
+ * became "Southwest Michigan for Abdul", and /turfs — which lists chapters from
+ * the stored map, not from Solidarity — went on offering the old name while
+ * /settings, which labels from the live list, showed the new one. Called from
+ * the /settings load, which already has the live list in hand.
+ *
+ * Only rows whose name differs are written, so a run with nothing to change is
+ * two reads. A chapter missing from the live list (deleted, or the list came
+ * back partial) is left alone rather than blanked. Not an edit of the mapping,
+ * so the audit columns keep the admin who last changed it; the rename is
+ * logged instead.
+ */
+export async function refreshChapterNames(
+	db: Database,
+	live: ReadonlyArray<{ id: number; name: string }>,
+): Promise<ChapterRename[]> {
+	const liveName = new Map<number, string>();
+	for (const chapter of live) {
+		const name = chapter.name.trim();
+		if (name) liveName.set(chapter.id, name);
+	}
+
+	const [mapRows, folderRows] = await Promise.all([
+		db
+			.select({ chapterId: chapterChannelMap.chapterId, name: chapterChannelMap.name })
+			.from(chapterChannelMap),
+		db
+			.select({ chapterId: vanChapterFolders.chapterId, name: vanChapterFolders.chapterName })
+			.from(vanChapterFolders),
+	]);
+
+	const renames = new Map<number, ChapterRename>();
+	for (const row of [...mapRows, ...folderRows]) {
+		const to = liveName.get(row.chapterId);
+		if (to && row.name !== to && !renames.has(row.chapterId)) {
+			renames.set(row.chapterId, { chapterId: row.chapterId, from: row.name, to });
+		}
+	}
+	if (renames.size === 0) return [];
+
+	const statements = [...renames.values()].flatMap(({ chapterId, to }) => [
+		db
+			.update(chapterChannelMap)
+			.set({ name: to })
+			.where(
+				and(eq(chapterChannelMap.chapterId, chapterId), sql`${chapterChannelMap.name} <> ${to}`),
+			),
+		db
+			.update(vanChapterFolders)
+			.set({ chapterName: to })
+			.where(
+				and(
+					eq(vanChapterFolders.chapterId, chapterId),
+					sql`${vanChapterFolders.chapterName} <> ${to}`,
+				),
+			),
+	]);
+	await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
+	for (const { chapterId, from, to } of renames.values()) {
+		console.log(`[settings] renamed chapter ${chapterId} "${from}" → "${to}" to match Solidarity`);
+	}
+	return [...renames.values()];
+}
+
 /** Upsert one channel across many chapters in a single statement — the
  *  /settings multi-editor's "add a chip while N chapters are selected". */
 export async function saveChapterChannelEntries(

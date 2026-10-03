@@ -11,6 +11,8 @@ import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import {
 	loadSettings,
+	refreshChapterNames,
+	type ChapterRename,
 	loadVanBlockedUsers,
 	type Settings,
 	type VanBlockedUserEntry,
@@ -48,6 +50,9 @@ export interface SettingsPageData {
 	 *  their chip so they can't attempt to remove themselves. */
 	selfSlackUserId: string;
 	settings: Settings;
+	/** Stored chapter names this load brought up to date with Solidarity's —
+	 *  shown once on the page, so a rename is visible rather than silent. */
+	renamedChapters: ChapterRename[];
 	/** Every VAN campaign, each linking to its own settings page — where its
 	 *  folders, spreadsheets and switches are edited. */
 	vanCampaigns: CampaignListRow[];
@@ -153,7 +158,31 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// Leaderboard data for the alpha-slider preview — the dashboard's exact
 	// saved/live computation, minus the top-5 trim. Runs after loadSettings
 	// resolves because it needs the effective exclusions and channel map.
-	const settings = settingsResult.value;
+	let settings = settingsResult.value;
+
+	// Chapter names stored with the channel map and the folder mapping go stale
+	// when Solidarity renames a chapter, and /turfs lists them by the stored
+	// name. This page has the live list, so it brings them up to date — and the
+	// rest of this load uses the new names too. Never page-fatal.
+	let renamedChapters: ChapterRename[] = [];
+	if (solidarityChapters) {
+		try {
+			renamedChapters = await refreshChapterNames(db, solidarityChapters.items);
+		} catch (err) {
+			console.error('[settings] chapter name refresh failed:', errMessage(err));
+		}
+	}
+	if (renamedChapters.length > 0) {
+		const renamed = new Map(renamedChapters.map((r) => [r.chapterId, r.to]));
+		settings = {
+			...settings,
+			chapterChannelMap: settings.chapterChannelMap.map((e) => ({
+				...e,
+				name: renamed.get(e.chapterId) ?? e.name,
+			})),
+		};
+	}
+
 	const leaderboardOpts = {
 		excludedChapterIds: settings.reportExcludedChapterIds,
 		chapterChannelIds: firstChannelByChapter(settings.chapterChannelMap),
@@ -237,6 +266,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		pageTitle: 'Settings' as const,
 		selfSlackUserId: locals.session.slackUserId,
 		settings,
+		renamedChapters,
 		vanCampaigns,
 		vanBlockedUsers,
 		themeTokens,
