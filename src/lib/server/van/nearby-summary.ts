@@ -27,9 +27,10 @@
 // `sheetAssignedTo` is left out: it carries no date and covers packets the
 // campaign marked Complete long ago, so it would count people who are not out.
 
-import { and, avg, between, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, avg, between, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { turfCampaignEnabled } from './campaigns.js';
 import { chunked } from './sql-chunk.js';
 import { canClaim, isActive } from '../../van/checkout.js';
 import { latestWalkReports } from './checkout-store.js';
@@ -81,9 +82,14 @@ export async function loadNearbySummary(
 	const dLat = reach / 69.05;
 	const dLng = reach / (69.17 * Math.max(0.05, Math.cos((point.lat * Math.PI) / 180)));
 
+	// Each turf with whether its campaign is enabled. A disabled campaign's
+	// turf is not handed out, so it adds no doors and is not drawn — the
+	// signed-in map hides it the same way — but anyone still walking it is
+	// still out canvassing, and still counted.
 	const rows = await db
-		.select()
+		.select({ turf: vanTurfs, campaignEnabled: vanCampaigns.enabled })
 		.from(vanTurfs)
+		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
 		.where(
 			and(
 				isNull(vanTurfs.retiredAt),
@@ -95,11 +101,18 @@ export async function loadNearbySummary(
 		);
 
 	const nearbyLimit = NEARBY_RADIUS_MILES * METRES_PER_MILE;
-	const turfs = rows.map((row) => {
-		const centre = { lat: row.centroidLat!, lng: row.centroidLng! };
-		return { ...row, centre, nearby: haversineMeters(point, centre) <= nearbyLimit };
+	const turfs = rows.map(({ turf, campaignEnabled }) => {
+		const centre = { lat: turf.centroidLat!, lng: turf.centroidLng! };
+		return {
+			...turf,
+			campaignEnabled,
+			centre,
+			nearby: haversineMeters(point, centre) <= nearbyLimit,
+		};
 	});
 	const nearby = turfs.filter((t) => t.nearby);
+	const offered = turfs.filter((t) => t.campaignEnabled);
+	const nearbyOffered = nearby.filter((t) => t.campaignEnabled);
 
 	const nearbyIds = nearby.map((t) => t.turfId);
 	const claims: (typeof vanTurfCheckouts.$inferSelect)[] = [];
@@ -110,7 +123,7 @@ export async function loadNearbySummary(
 	}
 	const walkReports = await latestWalkReports(db, nearbyIds);
 
-	const available = nearby.filter(
+	const available = nearbyOffered.filter(
 		(t) =>
 			canClaim(
 				turfSnapshot(t, now, { walkReports, vanAssignmentTtlHours }),
@@ -138,10 +151,10 @@ export async function loadNearbySummary(
 
 	return {
 		centre: coarsePoint(point),
-		doors: doorsHeadline(doors, nearby.length > 0),
+		doors: doorsHeadline(doors, nearbyOffered.length > 0),
 		canvassers: canvasserLevel(people.size),
 		cells: densityGrid(
-			turfs.map((t) => ({ doors: doorsLeft(t), centre: t.centre, hull: parseHull(t.hullJson) })),
+			offered.map((t) => ({ doors: doorsLeft(t), centre: t.centre, hull: parseHull(t.hullJson) })),
 			point,
 		),
 	};
@@ -160,6 +173,7 @@ export async function loadTurfCentre(db: Db): Promise<LatLng | null> {
 		.where(
 			and(
 				isNull(vanTurfs.retiredAt),
+				turfCampaignEnabled(),
 				isNotNull(vanTurfs.centroidLat),
 				isNotNull(vanTurfs.centroidLng),
 			),

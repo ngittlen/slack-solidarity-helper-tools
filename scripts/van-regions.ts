@@ -3,10 +3,11 @@
  * Read-only — this script never writes to VAN or to the database.
  *
  * This exists because region names are the input to the checkout log's routing
- * rules (Settings → Checkout spreadsheets), and nothing else prints them all:
- * `van:check` is a probe rather than an inventory — it stops at the first
- * folder holding turf, `--folder` narrows it to one, and the region lines are
- * suppressed entirely unless VAN_DATABASE_MODE pins a single mode.
+ * rules (each campaign's page under Settings → VAN campaigns), and nothing else
+ * prints them all: `van:check` is a probe rather than an inventory — it stops
+ * at the first folder holding turf, `--folder` narrows it to one, and the
+ * region lines are suppressed entirely unless VAN_DATABASE_MODE pins a single
+ * mode.
  * `van:sync --dry-run` reports counts, not names. So writing a prefix rule
  * meant reading names out of VAN's own UI a folder at a time.
  *
@@ -134,7 +135,7 @@ async function main(): Promise<void> {
 
 	console.log(
 		`${unique.length} distinct region name(s) across ${folders.length} folder(s).\n` +
-			'Write rules covering these under Settings → Checkout spreadsheets,\n' +
+			"Write rules covering these on the campaign's page under Settings → VAN campaigns,\n" +
 			'then check them at /turfs/sheet-map.\n',
 	);
 }

@@ -22,6 +22,7 @@ describe('parseVanCampaigns', () => {
 			appName: 'campaign-app',
 			apiKey: 'key-a',
 			databaseMode: 0,
+			source: 'secret',
 		});
 		expect(credentials.get('mi_2026')?.databaseMode).toBe(1);
 		expect(errors.size).toBe(0);
@@ -110,6 +111,7 @@ describe('parseVanCampaigns', () => {
 				appName: 'legacy-app',
 				apiKey: 'legacy-key',
 				databaseMode: 1,
+				source: 'legacy',
 			});
 			expect(errors.size).toBe(0);
 		});

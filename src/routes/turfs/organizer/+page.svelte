@@ -18,6 +18,10 @@
 	}
 
 	const scope = $derived(data.chapter ? data.chapter.name : 'all chapters');
+
+	/** "A", "A and B", "A, B and C". */
+	const listNames = (names: string[]) =>
+		new Intl.ListFormat('en-US', { style: 'long', type: 'conjunction' }).format(names);
 </script>
 
 <main>
@@ -146,12 +150,17 @@
 				Not checked yet. After a volunteer marks turf done, the next time VAN re-cuts that region
 				the new door count is compared with the count when they claimed it — a count that didn't
 				move usually means MiniVAN was never synced and the results are still on their phone.
-				{#if data.regionRefreshEnabled}
+				{#if data.regionRefresh.off.length === 0}
 					The sync asks VAN to re-cut a region once turf in it is finished, so this normally fills
 					in within a day.
+				{:else if data.regionRefresh.on.length === 0}
+					Automatic re-cuts are off (each campaign's page under Settings → VAN campaigns), so this
+					only happens when an organizer re-cuts a region in VAN by hand.
 				{:else}
-					Automatic re-cuts are off (Settings → Turf checkout), so this only happens when an
-					organizer re-cuts a region in VAN by hand.
+					For {listNames(data.regionRefresh.on)}, the sync asks VAN to re-cut a region once turf in
+					it is finished, so this normally fills in within a day. Automatic re-cuts are off for
+					{listNames(data.regionRefresh.off)} (each campaign's page under Settings → VAN campaigns), so
+					for that turf this only happens when an organizer re-cuts a region in VAN by hand.
 				{/if}
 				Nothing here has been verified either way.
 				{#if data.completionsExamined > 0}

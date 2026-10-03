@@ -152,6 +152,9 @@ const EMPTY_RESULT: TrackerResult = {
 export interface TrackerOptions {
 	now: Date;
 	client: SheetsClient;
+	/** The campaign this run writes for. Only its checkouts and turf are read,
+	 *  and only `targets` — its own rules — route them. */
+	campaignId: number;
 	targets: readonly SheetTarget[];
 	tabName?: string;
 	timeBudgetMs: number;
@@ -171,13 +174,21 @@ type Candidate = PacketCheckout & {
 	rosterSavedListId: number | null;
 };
 
-async function loadCandidates(db: Db, now: Date, turfId?: number): Promise<Candidate[]> {
+async function loadCandidates(
+	db: Db,
+	now: Date,
+	campaignId: number,
+	turfId?: number,
+): Promise<Candidate[]> {
 	const settledBefore = new Date(now.getTime() - SETTLE_MS).toISOString();
-	const pending = or(
-		isNull(vanTurfCheckouts.sheetState),
-		and(isNull(vanTurfCheckouts.releasedAt), isNull(vanTurfCheckouts.completedAt)),
-		gte(vanTurfCheckouts.releasedAt, settledBefore),
-		gte(vanTurfCheckouts.completedAt, settledBefore),
+	const pending = and(
+		eq(vanTurfs.campaignId, campaignId),
+		or(
+			isNull(vanTurfCheckouts.sheetState),
+			and(isNull(vanTurfCheckouts.releasedAt), isNull(vanTurfCheckouts.completedAt)),
+			gte(vanTurfCheckouts.releasedAt, settledBefore),
+			gte(vanTurfCheckouts.completedAt, settledBefore),
+		),
 	);
 	return (
 		db
@@ -280,9 +291,14 @@ async function announceFailures(
 	channelId: string,
 	labelFor: (spreadsheetId: string) => string,
 	waiting: number,
+	spreadsheetIds: ReadonlySet<string>,
 ): Promise<void> {
 	if (!channelId) return;
-	const rows = await db.select().from(vanSheetHealth);
+	// Only the spreadsheets this campaign's rules cover. Another campaign's run
+	// announces its own, by name — this one would only know the bare id.
+	const rows = (await db.select().from(vanSheetHealth)).filter((r) =>
+		spreadsheetIds.has(r.spreadsheetId),
+	);
 	const byError = new Map<string, string[]>();
 	for (const row of rows.filter((r) => r.lastError !== r.alertedError)) {
 		const ids = byError.get(row.lastError);
@@ -570,7 +586,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		sheetAssignedTo: string | null;
 	}>;
 	try {
-		candidates = await loadCandidates(db, now, options.onlyTurfId);
+		candidates = await loadCandidates(db, now, options.campaignId, options.onlyTurfId);
 		ourEntries = await loadOurEntries(db);
 		turfs = await db
 			.select({
@@ -581,9 +597,11 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			})
 			.from(vanTurfs)
 			.where(
-				options.onlyTurfId === undefined
-					? isNull(vanTurfs.retiredAt)
-					: and(isNull(vanTurfs.retiredAt), eq(vanTurfs.turfId, options.onlyTurfId)),
+				and(
+					eq(vanTurfs.campaignId, options.campaignId),
+					isNull(vanTurfs.retiredAt),
+					options.onlyTurfId === undefined ? undefined : eq(vanTurfs.turfId, options.onlyTurfId),
+				),
 			);
 	} catch (err) {
 		console.error(`${LOG} could not read the ledger:`, errText(err));
@@ -743,7 +761,14 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	}
 
 	await safely(
-		() => announceFailures(db, channelId, labelFor, result.failed + result.unrouted),
+		() =>
+			announceFailures(
+				db,
+				channelId,
+				labelFor,
+				result.failed + result.unrouted,
+				new Set(targets.map((t) => t.spreadsheetId)),
+			),
 		'alert',
 	);
 

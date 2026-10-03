@@ -162,6 +162,24 @@ describe('claimTurf', () => {
 		});
 		expect(result).toMatchObject({ ok: true });
 	});
+
+	// The page hides a disabled campaign's turf, but a page loaded before the
+	// switch — or a Slack button — can still ask for it.
+	it('refuses turf in a disabled campaign, and takes it again once re-enabled', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 1');
+		const claim = () =>
+			claimTurf(db, { turfId: 100, slackUserId: 'U_SECOND', slackUserName: 'Sam', now: NOW });
+
+		expect(await claim()).toMatchObject({
+			ok: false,
+			status: 409,
+			message: expect.stringContaining('no longer being handed out'),
+		});
+		expect(await rows()).toHaveLength(0);
+
+		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 1');
+		expect(await claim()).toMatchObject({ ok: true });
+	});
 });
 
 describe('claimTurf — the per-volunteer cap', () => {

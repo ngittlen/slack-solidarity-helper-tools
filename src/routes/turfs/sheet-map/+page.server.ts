@@ -1,14 +1,17 @@
-import { redirect } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { count, isNull } from 'drizzle-orm';
+import { and, count, eq, isNull } from 'drizzle-orm';
 import { db } from '$lib/server/db.js';
-import { vanTurfs } from '$lib/server/schema.js';
+import { PRIMARY_CAMPAIGN_ID, vanCampaigns, vanTurfs } from '$lib/server/schema.js';
+import { campaignName, loadCampaign } from '$lib/server/van/campaigns.js';
 import { loadVanSheetTargets } from '$lib/server/settings.js';
 import { matchSheetTarget, normaliseSheetKey } from '$lib/van/sheet-routing.js';
 
 // Where every region's turf checkouts will be logged — the page for checking
-// that the rules under Settings → Checkout spreadsheets actually cover the
-// state.
+// that one campaign's spreadsheet rules (its page under Settings → VAN
+// campaigns) actually cover the state. `?campaign=<id>` picks the campaign,
+// the primary one by default; only that campaign's rules and turf are shown,
+// because a campaign's rules never route another's checkouts.
 //
 // It exists because those rules are not readable by inspection. A dozen
 // overlapping prefixes matched longest-first across a few hundred region names
@@ -38,12 +41,26 @@ export interface SheetGroup {
 	turfs: number;
 }
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
 	// Same gate as the other organizer pages: a bare 302 for a missing session
 	// and for a signed-in non-admin alike.
 	if (!locals.session?.isAdmin) redirect(302, '/');
 
-	const targets = await loadVanSheetTargets(db);
+	const requested = Number(url.searchParams.get('campaign') ?? PRIMARY_CAMPAIGN_ID);
+	const campaign =
+		Number.isInteger(requested) && requested > 0 ? await loadCampaign(db, requested) : null;
+	if (!campaign) error(404, 'No such campaign');
+
+	// The campaigns that keep a Packet Tracker, for switching between them.
+	const trackerCampaigns = (
+		await db
+			.select()
+			.from(vanCampaigns)
+			.where(eq(vanCampaigns.sheetsEnabled, true))
+			.orderBy(vanCampaigns.id)
+	).map((c) => ({ id: c.id, name: campaignName(c) }));
+
+	const targets = await loadVanSheetTargets(db, campaign.id);
 
 	// Retired turf is excluded: its region may not have been cut for months and
 	// listing it would have an admin writing rules for ground nobody canvasses.
@@ -52,7 +69,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const rows = await db
 		.select({ regionName: vanTurfs.regionName, turfs: count() })
 		.from(vanTurfs)
-		.where(isNull(vanTurfs.retiredAt))
+		.where(and(eq(vanTurfs.campaignId, campaign.id), isNull(vanTurfs.retiredAt)))
 		.groupBy(vanTurfs.regionName);
 
 	const groups = new Map<string, SheetGroup>();
@@ -89,6 +106,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	return {
 		pageTitle: 'Checkout spreadsheets' as const,
+		campaign: {
+			id: campaign.id,
+			name: campaignName(campaign),
+			sheetsEnabled: campaign.sheetsEnabled,
+		},
+		trackerCampaigns,
 		// Most turf first: the spreadsheet a mistake would cost the most is at
 		// the top.
 		groups: [...groups.values()].sort((a, b) => b.turfs - a.turfs),

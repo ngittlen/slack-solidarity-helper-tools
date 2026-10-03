@@ -9,9 +9,13 @@ const mockDriftClaims = vi.hoisted(() => vi.fn());
 const mockDriftVisibility = vi.hoisted(() => vi.fn());
 
 const mockGeometryProgress = vi.hoisted(() => vi.fn());
+const mockRefreshSwitches = vi.hoisted(() =>
+	vi.fn(async () => ({ on: [] as string[], off: ['One Team Michigan'] })),
+);
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
+vi.mock('$lib/server/van/campaigns.js', () => ({ campaignRefreshSwitches: mockRefreshSwitches }));
 vi.mock('$lib/server/van/drift-store.js', () => ({
 	loadDriftTurfs: mockDriftTurfs,
 	loadDriftClaims: mockDriftClaims,
@@ -261,12 +265,12 @@ describe('/turfs/organizer missed-sync pane', () => {
 	});
 
 	// The empty state says what the check is waiting on, and that depends on
-	// whether the sync asks VAN for re-cuts or an organizer has to.
-	it('passes on whether region re-cuts are switched on', async () => {
-		mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS, vanRegionRefreshEnabled: true });
-		expect((await run(event(ADMIN))).regionRefreshEnabled).toBe(true);
-		mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS, vanRegionRefreshEnabled: false });
-		expect((await run(event(ADMIN))).regionRefreshEnabled).toBe(false);
+	// whether the sync asks VAN for re-cuts or an organizer has to — which is
+	// each campaign's own switch, so the page gets them by name.
+	it('passes on which campaigns have region re-cuts switched on', async () => {
+		const switches = { on: ['One Team Michigan'], off: ['Partner'] };
+		mockRefreshSwitches.mockResolvedValue(switches);
+		expect((await run(event(ADMIN))).regionRefresh).toEqual(switches);
 	});
 
 	it('flags only a measured zero', async () => {

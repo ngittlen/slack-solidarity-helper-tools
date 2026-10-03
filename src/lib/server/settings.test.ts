@@ -212,8 +212,6 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			vanTurfMaxConcurrentClaims: 2,
 			vanAssignmentTtlHours: 48,
 			// Off with no row: a re-cut can leave turf unclaimable.
-			vanRegionRefreshEnabled: false,
-			vanSheetTabName: 'Packet Tracker',
 			// DB-only; no row means no "Join our chat" button.
 			publicJoinUrl: '',
 		});
@@ -515,8 +513,6 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
 				'vanAssignmentTtlHours',
-				'vanRegionRefreshEnabled',
-				'vanSheetTabName',
 				'publicJoinUrl',
 			].sort(),
 		);

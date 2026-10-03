@@ -87,7 +87,7 @@ async function main(): Promise<void> {
 	console.log(
 		`Chapter → folder mapping: ${
 			mappings.length === 0
-				? 'NONE — add one under Settings → Chapter → VAN folders'
+				? "NONE — add one on the campaign's page under Settings → VAN campaigns"
 				: mappings.map((m) => `${m.chapterName} → ${m.folderIds.join(', ')}`).join(' · ')
 		}\n`,
 	);

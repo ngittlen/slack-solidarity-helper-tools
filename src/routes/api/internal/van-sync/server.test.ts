@@ -32,9 +32,6 @@ const mockLoadVanChapterFolders = vi.hoisted(() =>
 	vi.fn(async () => [{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] }]),
 );
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
-// On in most tests so the sweep's own behaviour is exercised; the default-off
-// case has its own test below.
-const mockSettings = vi.hoisted(() => ({ vanRegionRefreshEnabled: true }));
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/slack.js', () => ({
@@ -47,7 +44,6 @@ vi.mock('$lib/server/settings.js', () => ({
 		slackTrackingChannelId: 'C_TRACK',
 		slackTurfChannelId: 'C_TURF',
 		vanTurfClaimTtlHours: 48,
-		vanRegionRefreshEnabled: mockSettings.vanRegionRefreshEnabled,
 		vanSheetTabName: 'Packet Tracker',
 	}),
 	loadVanChapterFolders: mockLoadVanChapterFolders,
@@ -178,6 +174,11 @@ const PRIMARY = {
 	label: null,
 	enabled: true,
 	exportJobTypeId: null,
+	// On in most tests so the sweep's own behaviour is exercised; the off case
+	// has its own test below.
+	refreshEnabled: true,
+	sheetsEnabled: true,
+	sheetTabName: null,
 	disabledAt: null,
 	disabledByName: null,
 	lastEditedBy: 'migration',
@@ -503,16 +504,12 @@ describe('POST /api/internal/van-sync', () => {
 		// A re-cut replaces every route in the region, and the replacements may
 		// have no printed list — so with the switch off (the default) the sweep
 		// must not run at all, not merely send fewer requests.
-		mockSettings.vanRegionRefreshEnabled = false;
-		try {
-			const body = await campaignOf(await POST(event()));
-			expect(mockRefreshSweep).not.toHaveBeenCalled();
-			expect(body.refresh).toEqual({ disabled: true });
-			// Confirming earlier refreshes makes no VAN call, so it still runs.
-			expect(mockSettle).toHaveBeenCalled();
-		} finally {
-			mockSettings.vanRegionRefreshEnabled = true;
-		}
+		mockCampaigns.mockResolvedValue([{ ...PRIMARY, refreshEnabled: false }]);
+		const body = await campaignOf(await POST(event()));
+		expect(mockRefreshSweep).not.toHaveBeenCalled();
+		expect(body.refresh).toEqual({ disabled: true });
+		// Confirming earlier refreshes makes no VAN call, so it still runs.
+		expect(mockSettle).toHaveBeenCalled();
 	});
 
 	it('posts refresh warnings to the turf channel with the rest', async () => {
@@ -866,7 +863,14 @@ describe('POST /api/internal/van-sync', () => {
 	// specs/012-multi-van-campaigns: each campaign is synced with its own key,
 	// under its own lock, and one failing never stops another.
 	describe('several campaigns', () => {
-		const OTHER = { ...PRIMARY, id: 2, credentialKey: 'other', label: 'El-Sayed' };
+		const OTHER = {
+			...PRIMARY,
+			id: 2,
+			credentialKey: 'other',
+			label: 'El-Sayed',
+			refreshEnabled: false,
+			sheetsEnabled: false,
+		};
 
 		beforeEach(() => {
 			mockCampaigns.mockResolvedValue([OTHER, PRIMARY]);
@@ -914,14 +918,22 @@ describe('POST /api/internal/van-sync', () => {
 		});
 
 		// A partner campaign that has not agreed to re-cuts must never get one,
-		// whatever the primary campaign's switch says.
-		it('never sends a region refresh for a campaign other than the primary', async () => {
-			mockSettings.vanRegionRefreshEnabled = true;
+		// whatever the primary campaign's switch says. Off is the default.
+		it('never sends a region refresh for a campaign whose own switch is off', async () => {
 			await POST(event('cron-secret', '&campaign=2'));
 			expect(mockRefreshSweep).not.toHaveBeenCalled();
 			expect((await campaignOf(await POST(event('cron-secret', '&campaign=2')))).refresh).toEqual({
 				disabled: true,
 			});
+		});
+
+		// The switch is the campaign's own: a partner that has agreed gets re-cuts
+		// with its own key, primary or not.
+		it('sends region refreshes for any campaign whose switch is on', async () => {
+			mockLoadCampaign.mockResolvedValue({ ...OTHER, refreshEnabled: true });
+			await POST(event('cron-secret', '&campaign=2'));
+			expect(mockRefreshSweep).toHaveBeenCalledOnce();
+			expect(mockRefreshSweep.mock.calls[0]![2]).toBe(2);
 		});
 
 		it('names the campaign in its notices, so the channel can tell them apart', async () => {

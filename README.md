@@ -714,7 +714,7 @@ Scheduler-only — run by [the app's scheduler](#5-configure-environment-variabl
 
 **The overnight runs exist for the expiry warnings, not the catalog.** A warning only reaches a volunteer if a run happens inside the six hours before their claim lapses, so no two runs may sit more than six hours apart — the schedule previously stopped at 03:07 and resumed at 11:07 UTC, and every claim expiring in the two hours from 09:08 was swept without its holder ever being told. Hourly overnight leaves five hours of slack, so several missed runs still warn in time. Trimming those ticks as idle would silently reopen the hole.
 
-For each chapter mapped under **Settings → Chapter → VAN folders**, it reads `GET /folders/{id}/mapRegions`, matches each Map Route to its MiniVAN printed-list number, and upserts a row per route. Runs take a `sync_locks` lock and are idempotent — an overlapping or delayed run is a no-op, so a skipped cron is harmless.
+For each chapter mapped to a folder on a campaign's page (**Settings → VAN campaigns**), it reads `GET /folders/{id}/mapRegions`, matches each Map Route to its MiniVAN printed-list number, and upserts a row per route. Runs take a `sync_locks` lock and are idempotent — an overlapping or delayed run is a no-op, so a skipped cron is harmless.
 
 Whatever time is left in the request budget after the catalog then goes to draining `van_geometry_queue` — one VAN export job per turf, reduced to a hull (`src/lib/server/van/geometry-worker.ts`). `POST /api/internal/van-export-callback` is the same drain, woken by VAN when a job finishes; it takes the **same** lock under the same name, because the queue has no per-row claim and two drainers racing would submit duplicate export jobs for the same turf.
 
@@ -755,7 +755,7 @@ After every catalog read, each live claim is compared against what VAN now says 
 
 **Nothing this app builds writes canvass results.** MiniVAN sends them to VAN natively when the volunteer taps Sync, so our job is verification, not transport — and the verification is one subtraction.
 
-A claim records VAN's door count when it is taken (`van_turf_checkouts.claim_door_count`). Completing the turf asks for a refresh of its region — sent only when **Re-cut regions in VAN** is on; otherwise the check waits for an organizer to re-cut the region by hand. Once a re-cut lands after the completion, the check runs: `claim_door_count` minus the current count, written to `confirmed_door_delta`.
+A claim records VAN's door count when it is taken (`van_turf_checkouts.claim_door_count`). Completing the turf asks for a refresh of its region — sent only when **Re-cut regions in VAN** is on for that turf's campaign (each campaign's page under Settings → VAN campaigns; off by default); otherwise the check waits for an organizer to re-cut the region by hand. Once a re-cut lands after the completion, the check runs: `claim_door_count` minus the current count, written to `confirmed_door_delta`.
 
 **The current count is usually on a different route.** A re-cut retires the walked route rather than updating it (see _Route ids do not survive a refresh_ above), so the retired row's count is frozen at its pre-cut value. The check pairs it to its replacement exactly as the reconciliation does — same region, same name, exactly one match — and takes the count from there. The evidence that the re-cut came after the completion is the replacement's `dateRefreshed`, or failing that the moment the catalog first saw it. No unique replacement means no measurement: a renamed or split turf is left NULL rather than guessed at.
 
@@ -808,7 +808,7 @@ A volunteer whose whole TTL is shorter than six hours is warned immediately. Tha
 
    This is read-only. It never writes to VAN or to the database.
 
-3. Map folders to chapters. Either **Settings → Chapter → VAN folders** (chapter-first), or **`/turfs/folder-map`** (folder-first, beside a map of where each folder's turf is). A folder may be mapped to several chapters, and its turf is then visible to all of them.
+3. Map folders to chapters. Either on the campaign's page under **Settings → VAN campaigns** (chapter-first), or **`/turfs/folder-map?campaign=<id>`** (folder-first, beside a map of where each folder's turf is). Folder ids are each campaign's own. A folder may be mapped to several chapters, and its turf is then visible to all of them.
 
    That map places each region from its name (`R04C_Livingston_BrightonCity003` → Livingston County) against the Census county list, so it needs no geometry and no particular state. It works out which state(s) the names are in; set `CAMPAIGN_STATES=MI` (comma-separated USPS codes) to pin that instead — worth doing where county names are ambiguous, since 31 states have a Washington County.
 
@@ -864,7 +864,7 @@ Packet Name, Voters, Doors, List Number and the campaign's formula columns (`shi
 
 **Switching it on** fills in every turf that is out right now and every turf already marked walked. Checkouts that were claimed and handed back before switch-on are skipped — the migration marks them as owing nothing.
 
-**Which spreadsheet a row goes to** is decided from the turf's VAN region name, because that name is the only geography the catalog has. Neither half of that name is enough alone, verified against the live key (273 regions across 19 folders): a code spans several counties — `R01A` covers Alger, Dickinson, Houghton, Marquette and Menominee — and a county spans several codes, with Wayne appearing under `R09A`, `R10A`, `R10B`, `R10C`, `R10E`, `R10F`, `R10G` and `R10H`. So **Settings → Checkout spreadsheets** takes a list of name prefixes and the longest match wins:
+**Which spreadsheet a row goes to** is decided from the turf's VAN region name, because that name is the only geography the catalog has. Neither half of that name is enough alone, verified against the live key (273 regions across 19 folders): a code spans several counties — `R01A` covers Alger, Dickinson, Houghton, Marquette and Menominee — and a county spans several codes, with Wayne appearing under `R09A`, `R10A`, `R10B`, `R10C`, `R10E`, `R10F`, `R10G` and `R10H`. So each campaign keeps a list of name prefixes on its page under **Settings → VAN campaigns**, and the longest match wins. A campaign's rules only ever route its own checkouts:
 
 ```
 R01A_Alger              → R01A_Alger CR
@@ -881,15 +881,15 @@ Separators and case are ignored, so a dotted `R08A.Macomb.WarrenCity` matches an
 
 1. Create a Google service account, download its JSON key, and put the whole thing in `GOOGLE_SHEETS_SERVICE_ACCOUNT` (a Fly secret — it is a credential, so unlike the spreadsheets it is not a setting).
 2. Share **every** spreadsheet with the service account's `…iam.gserviceaccount.com` address as an Editor. The settings page prints the address once the secret is set.
-3. Add the routing rules under **Settings → Checkout spreadsheets** — a region-name prefix and the spreadsheet's URL, two fields. The sheet's own name is read from Google on save and stored beside the id, so it can never drift from the sheet it names; when the credential or the share is not in place yet the id stands in, and re-saving any rule for that sheet backfills the real name. Rules can be written before the credential exists.
-4. Run `npm run sheets:check` — read-only. It mints a token and reports, per spreadsheet, whether it is reachable and whether its Packet Tracker tab has every column. An unshared sheet answers 403, which is by far the most common way a dozen-spreadsheet setup ends up half-done.
-5. Open `/turfs/sheet-map` and confirm nothing is unrouted.
+3. On the campaign's page under **Settings → VAN campaigns**, switch **Google Sheets Packet Tracker** on (it is off for every campaign but the first) and add the routing rules — a region-name prefix and the spreadsheet's URL, two fields. The sheet's own name is read from Google on save and stored beside the id, so it can never drift from the sheet it names; when the credential or the share is not in place yet the id stands in, and re-saving any rule for that sheet backfills the real name. Rules can be written before the credential exists.
+4. Run `npm run sheets:check` (`-- --campaign <key>` for a campaign other than the first) — read-only. It mints a token and reports, per spreadsheet, whether it is reachable and whether its Packet Tracker tab has every column. An unshared sheet answers 403, which is by far the most common way a dozen-spreadsheet setup ends up half-done.
+5. Open `/turfs/sheet-map?campaign=<id>` and confirm nothing is unrouted.
 
-The app works in **one tab** in each spreadsheet — `Packet Tracker` unless changed at Settings → App config. It is the campaign's tab and the app never creates it. It never reads or touches any other tab.
+The app works in **one tab** in each spreadsheet — `Packet Tracker` unless changed on the campaign's page. It is the campaign's tab and the app never creates it. It never reads or touches any other tab.
 
 The service account needs to be an Editor on each spreadsheet, but **not** on the campaign's protected ranges: the app never writes a protected column.
 
-With no credential, or with no rules, the feature does nothing and says nothing: an integration nobody set up should be silent rather than reassuring. When writes do start failing, the turf channel gets **one** alert per problem, naming the spreadsheet, the error and how many checkouts are waiting — and it announces again once the problem clears and comes back, which is what stops a channel that repeats itself from being muted.
+With no credential, with Sheets off for a campaign, or with no rules, the feature does nothing for it and says nothing — a campaign with Sheets off never waits on Google, not even on a claim: an integration nobody set up should be silent rather than reassuring. When writes do start failing, the turf channel gets **one** alert per problem, naming the spreadsheet, the error and how many checkouts are waiting — and it announces again once the problem clears and comes back, which is what stops a channel that repeats itself from being muted.
 
 A re-cut turf is worth knowing about: when VAN replaces a route under a live claim, the reconciliation moves the volunteer onto the replacement, which has a new list number — so it fills in whichever packet the campaign lists under that number, and the old packet's entry is cleared or kept as `Incomplete` depending on whether its list had been loaded.
 

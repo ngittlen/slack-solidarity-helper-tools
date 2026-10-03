@@ -3,8 +3,8 @@
  * spreadsheet is actually reachable. Read-only — this script never writes a row
  * or creates a tab.
  *
- * Run it after adding the routing rules under Settings → Checkout spreadsheets
- * and after sharing each spreadsheet with the service account. It answers the
+ * Run it after adding a campaign's routing rules (its page under Settings →
+ * VAN campaigns) and after sharing each spreadsheet with the service account. It answers the
  * three questions that block the Packet Tracker sync, in order:
  *   1. Does the service-account key parse and mint a token at all?
  *   2. Is each spreadsheet SHARED with it? An unshared sheet answers 403, and
@@ -17,6 +17,7 @@
  *
  * Usage (from project root):
  *   npm run sheets:check
+ *   npm run sheets:check -- --campaign other    # another campaign's sheets
  *
  * Required env vars:
  *   GOOGLE_SHEETS_SERVICE_ACCOUNT — the whole service-account JSON key
@@ -29,7 +30,9 @@ import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
 import { createSheetsClient, type SheetsResult } from '../src/lib/server/google/sheets.js';
-import { vanSheetTargets, appConfig } from '../src/lib/server/schema.js';
+import { eq } from 'drizzle-orm';
+import { vanCampaigns, vanSheetTargets } from '../src/lib/server/schema.js';
+import { campaignKeyArg } from './campaign-arg.js';
 import { DEFAULT_SHEET_TAB_NAME, findLayout } from '../src/lib/van/packet-tracker.js';
 
 const raw = process.env['GOOGLE_SHEETS_SERVICE_ACCOUNT'] ?? '';
@@ -93,17 +96,34 @@ async function paced<V>(
 async function main(): Promise<void> {
 	console.log(`\nService account: ${clientEmail}`);
 
-	const targets = await db.select().from(vanSheetTargets);
+	// One campaign's sheets: each campaign keeps its own rules and tab.
+	const key = campaignKeyArg();
+	const [campaign] = await db
+		.select()
+		.from(vanCampaigns)
+		.where(eq(vanCampaigns.credentialKey, key));
+	if (!campaign) {
+		console.error(`No van_campaigns row for "${key}".`);
+		process.exit(1);
+	}
+	console.log(`Campaign: ${campaign.label ?? key} (id ${campaign.id})`);
+	if (!campaign.sheetsEnabled) {
+		console.log('Google Sheets is OFF for this campaign — nothing is written until it is on.');
+	}
+
+	const targets = await db
+		.select()
+		.from(vanSheetTargets)
+		.where(eq(vanSheetTargets.campaignId, campaign.id));
 	if (targets.length === 0) {
 		console.log(
-			'\nNo routing rules are configured, so the Packet Tracker sync is off.\n' +
-				'Add them under Settings → Checkout spreadsheets.\n',
+			'\nNo routing rules are configured for this campaign, so its Packet Tracker sync is off.\n' +
+				"Add them on the campaign's page under Settings → VAN campaigns.\n",
 		);
 		return;
 	}
 
-	const [cfg] = await db.select().from(appConfig).limit(1);
-	const tabName = cfg?.vanSheetTabName?.trim() || DEFAULT_SHEET_TAB_NAME;
+	const tabName = campaign.sheetTabName?.trim() || DEFAULT_SHEET_TAB_NAME;
 	console.log(`Tab: ${tabName}`);
 
 	// Several rules routinely point at one spreadsheet — the campaign's two

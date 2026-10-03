@@ -11,6 +11,24 @@ vi.mock('$lib/server/settings', () => ({
 	saveVanFolderChapters: mockSaveFolder,
 	deleteVanChapterFolders: mockDelete,
 }));
+// Campaign 2 exists; any other positive id does not. The validation itself is
+// campaignFromRequest's, exercised for real.
+vi.mock('$lib/server/van/campaigns.js', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/van/campaigns.js')>();
+	return {
+		campaignFromRequest: (_db: unknown, raw: unknown) =>
+			real.campaignFromRequest(
+				{
+					select: () => ({
+						from: () => ({
+							where: async () => (raw === 2 ? [{ id: 2, credentialKey: 'other' }] : []),
+						}),
+					}),
+				} as never,
+				raw,
+			),
+	};
+});
 
 const authed = {
 	locals: { session: { slackUserId: 'U_ADMIN', slackUserName: 'Alice', isAdmin: true } },
@@ -25,6 +43,7 @@ function makeEvent(session: typeof authed | typeof unauthed | typeof nonAdmin, b
 }
 
 const save = (over: Record<string, unknown> = {}) => ({
+	campaignId: 2,
 	action: 'save',
 	chapterId: 71,
 	chapterName: 'Middlesex County',
@@ -57,8 +76,7 @@ describe('POST /api/settings/van-chapter-folders', () => {
 		expect(res.status).toBe(200);
 		expect(mockSave).toHaveBeenCalledWith(
 			{},
-			// The primary campaign's, until the editor can pick one.
-			{ campaignId: 1, chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 1200] },
+			{ campaignId: 2, chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 1200] },
 			{ id: 'U_ADMIN', name: 'Alice' },
 		);
 	});
@@ -71,9 +89,11 @@ describe('POST /api/settings/van-chapter-folders', () => {
 	});
 
 	it('removes a chapter mapping', async () => {
-		const res = await POST(makeEvent(authed, { action: 'remove', chapterId: 71 }) as never);
+		const res = await POST(
+			makeEvent(authed, { campaignId: 2, action: 'remove', chapterId: 71 }) as never,
+		);
 		expect(res.status).toBe(200);
-		expect(mockDelete).toHaveBeenCalledWith({}, 1, 71, { id: 'U_ADMIN', name: 'Alice' });
+		expect(mockDelete).toHaveBeenCalledWith({}, 2, 71, { id: 'U_ADMIN', name: 'Alice' });
 	});
 
 	it('rejects non-integer and non-positive ids', async () => {
@@ -120,6 +140,7 @@ describe('POST /api/settings/van-chapter-folders', () => {
 	// The folder-first direction, used by /turfs/folder-map.
 	describe('save-folder', () => {
 		const saveFolder = (over: Record<string, unknown> = {}) => ({
+			campaignId: 2,
 			action: 'save-folder',
 			folderId: 68299,
 			chapters: [{ chapterId: 71, chapterName: 'Oakland County' }],
@@ -132,7 +153,7 @@ describe('POST /api/settings/van-chapter-folders', () => {
 			expect(mockSaveFolder).toHaveBeenCalledWith(
 				{},
 				{
-					campaignId: 1,
+					campaignId: 2,
 					folderId: 68299,
 					chapters: [{ chapterId: 71, chapterName: 'Oakland County' }],
 				},
@@ -148,7 +169,7 @@ describe('POST /api/settings/van-chapter-folders', () => {
 			expect(res.status).toBe(200);
 			expect(mockSaveFolder).toHaveBeenCalledWith(
 				{},
-				{ campaignId: 1, folderId: 68299, chapters: [] },
+				{ campaignId: 2, folderId: 68299, chapters: [] },
 				{ id: 'U_ADMIN', name: 'Alice' },
 			);
 		});
@@ -200,5 +221,20 @@ describe('POST /api/settings/van-chapter-folders', () => {
 			expect(res.status).toBe(403);
 			expect(mockSaveFolder).not.toHaveBeenCalled();
 		});
+	});
+});
+
+// Folder ids are each campaign's own, so every request names the campaign.
+describe('campaign', () => {
+	it('refuses a request that names no campaign', async () => {
+		const res = await POST(makeEvent(authed, save({ campaignId: undefined })) as never);
+		expect(res.status).toBe(400);
+		expect(mockSave).not.toHaveBeenCalled();
+	});
+
+	it('refuses a campaign that does not exist', async () => {
+		const res = await POST(makeEvent(authed, save({ campaignId: 99 })) as never);
+		expect(res.status).toBe(404);
+		expect(mockSave).not.toHaveBeenCalled();
 	});
 });

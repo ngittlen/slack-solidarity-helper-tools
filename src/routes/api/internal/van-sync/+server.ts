@@ -385,11 +385,7 @@ async function syncCampaign(
 		// does the same work once and nothing twice.
 		// One read for both: the reconciliation needs the claim TTL and the drift
 		// alert needs the channel, and they run back to back.
-		const {
-			vanTurfClaimTtlHours,
-			slackTurfChannelId: turfChannelId,
-			vanRegionRefreshEnabled,
-		} = await loadSettings(db);
+		const { vanTurfClaimTtlHours, slackTurfChannelId: turfChannelId } = await loadSettings(db);
 		const reconciled = await reconcileClaims(db, {
 			now,
 			appUrl: APP_URL,
@@ -439,14 +435,14 @@ async function syncCampaign(
 		// that matter, because its effect lands on a later tick: the POST returns
 		// straight away and the new counts arrive with a future catalog read.
 		//
-		// Only for a campaign that has agreed to it (regionRefreshAllowed): the
-		// primary campaign when an admin has turned it on, and no other campaign
-		// yet. A re-cut replaces every route in the region and deletes its
-		// printed lists (verified 2026-09-24) — the replacements are unclaimable
-		// until someone prints lists in VAN by hand (see
-		// app_config.vanRegionRefreshEnabled). Completed turf still records its
-		// want while this is off; the sweep sends it once the switch is on.
-		const refresh = regionRefreshAllowed(campaign, vanRegionRefreshEnabled)
+		// Only for a campaign that has agreed to it (regionRefreshAllowed): its
+		// own switch, off unless an admin turns it on. A re-cut replaces every
+		// route in the region and deletes its printed lists (verified
+		// 2026-09-24) — the replacements are unclaimable until someone prints
+		// lists in VAN by hand (see van_campaigns.refreshEnabled). Completed turf
+		// still records its want while this is off; the sweep sends it once the
+		// switch is on.
+		const refresh = regionRefreshAllowed(campaign)
 			? await runRefreshSweep(db, client, campaign.id, {
 					now,
 					timeBudgetMs: Math.min(REFRESH_BUDGET_MS, requestDeadline - Date.now()),

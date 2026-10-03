@@ -5,9 +5,9 @@
 // Credentials are not here — van-env.ts resolves a campaign's client from its
 // `VAN_CAMPAIGN_<KEY>` secret. This is only the database side.
 
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { PRIMARY_CAMPAIGN_ID, vanCampaigns, vanSyncState, type VanCampaignRow } from '../schema.js';
+import { vanCampaigns, vanSyncState, vanTurfs, type VanCampaignRow } from '../schema.js';
 
 // The widest handle these need, so the scheduler — which holds its own,
 // loosely typed one — can call them as well as the routes.
@@ -24,16 +24,32 @@ export function campaignName(campaign: Pick<VanCampaignRow, 'label' | 'credentia
  *
  * A re-cut deletes the region's printed lists and replaces every route, so it
  * is the one thing this app does that changes a campaign's own VAN data — and a
- * campaign has to agree to it. The primary campaign keeps the switch it has
- * always had in /settings. Every other campaign is off until it has a switch of
- * its own (spec Phase 5): at least one partner campaign has said no, and a
- * campaign nobody has asked must be treated the same way.
+ * campaign has to agree to it. Each campaign has its own switch on its settings
+ * page, off unless an admin turns it on: at least one partner campaign has said
+ * no, and a campaign nobody has asked must be treated the same way. Strictly
+ * true — anything a hand edit leaves behind is off.
  */
-export function regionRefreshAllowed(
-	campaign: Pick<VanCampaignRow, 'id'>,
-	primaryRefreshEnabled: boolean,
-): boolean {
-	return campaign.id === PRIMARY_CAMPAIGN_ID && primaryRefreshEnabled;
+export function regionRefreshAllowed(campaign: Pick<VanCampaignRow, 'refreshEnabled'>): boolean {
+	return campaign.refreshEnabled === true;
+}
+
+/**
+ * The campaign a settings request names, or why it can't be used: the request
+ * body's `campaignId` must be a positive integer naming a campaign that
+ * exists. For the routes that edit one campaign's folders or sheet rules.
+ */
+export async function campaignFromRequest(
+	db: Db,
+	raw: unknown,
+): Promise<
+	{ ok: true; campaign: VanCampaignRow } | { ok: false; status: 400 | 404; error: string }
+> {
+	if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+		return { ok: false, status: 400, error: 'campaignId must be a positive integer' };
+	}
+	const campaign = await loadCampaign(db, raw);
+	if (!campaign) return { ok: false, status: 404, error: `No campaign ${raw}` };
+	return { ok: true, campaign };
 }
 
 export async function loadCampaign(db: Db, campaignId: number): Promise<VanCampaignRow | null> {
@@ -115,4 +131,27 @@ export async function severalCampaignsEnabled(db: Db): Promise<boolean> {
 		.where(eq(vanCampaigns.enabled, true))
 		.limit(2);
 	return rows.length > 1;
+}
+
+/** The enabled campaigns by whether the sync re-cuts their regions, by name —
+ *  for pages that explain why door counts move (or don't), where one switch
+ *  for everyone would be wrong about half the turf. */
+export async function campaignRefreshSwitches(db: Db): Promise<{ on: string[]; off: string[] }> {
+	const rows = await db
+		.select()
+		.from(vanCampaigns)
+		.where(eq(vanCampaigns.enabled, true))
+		.orderBy(asc(vanCampaigns.id));
+	return {
+		on: rows.filter((c) => regionRefreshAllowed(c)).map(campaignName),
+		off: rows.filter((c) => !regionRefreshAllowed(c)).map(campaignName),
+	};
+}
+
+/** Turf whose campaign is enabled. A disabled campaign's turf is not handed
+ *  out, so every count or list of turf someone could take uses this. */
+export function turfCampaignEnabled(): SQL {
+	return sql`${vanTurfs.campaignId} in (
+		select ${vanCampaigns.id} from ${vanCampaigns} where ${vanCampaigns.enabled} = 1
+	)`;
 }

@@ -12,6 +12,11 @@
 
 	let { data }: { data: PageData } = $props();
 
+	/** This campaign's settings page, where its rules are edited. */
+	const settingsHref = $derived(
+		`${resolve('/settings/van/[campaignId]', { campaignId: String(data.campaign.id) })}#sheets`,
+	);
+
 	const totals = $derived({
 		sheets: data.groups.length,
 		regions: data.groups.reduce((n, g) => n + g.regions.length, 0) + data.unrouted.length,
@@ -27,20 +32,37 @@
 
 <main>
 	<header class="page-header">
-		<h1>Checkout spreadsheets</h1>
+		<h1>Checkout spreadsheets — {data.campaign.name}</h1>
 		<p class="lede">
-			Which of the campaign's spreadsheets each region's turf checkouts are appended to. Routing is
-			decided from the region's name by the rules under
-			<a href="{resolve('/settings')}#van-sheet-targets">Settings → Checkout spreadsheets</a>,
-			longest prefix first.
+			Which of {data.campaign.name}'s spreadsheets each region's turf checkouts are appended to.
+			Routing is decided from the region's name by the rules on
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve()'d route plus a fragment -->
+			<a href={settingsHref}>its campaign settings</a>, longest prefix first.
 		</p>
+		{#if data.trackerCampaigns.length > 1}
+			<nav class="campaigns" aria-label="Campaign">
+				{#each data.trackerCampaigns as c (c.id)}
+					<a
+						href="{resolve('/turfs/sheet-map')}?campaign={c.id}"
+						aria-current={c.id === data.campaign.id ? 'page' : undefined}>{c.name}</a
+					>
+				{/each}
+			</nav>
+		{/if}
+		{#if !data.campaign.sheetsEnabled}
+			<p class="notice">
+				Google Sheets is off for {data.campaign.name}, so none of this is written. Turn it on in its
+				campaign settings.
+			</p>
+		{/if}
 	</header>
 
 	{#if !data.configured}
 		<p class="notice">
 			No rules are configured yet, so the Packet Tracker sync is off. Every region the catalog has
 			synced is listed below — write rules covering them under
-			<a href="{resolve('/settings')}#van-sheet-targets">Settings → Checkout spreadsheets</a>.
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve()'d route plus a fragment -->
+			<a href={settingsHref}>its campaign settings</a>.
 		</p>
 	{:else}
 		<p class="totals">
@@ -140,6 +162,18 @@
 	.note {
 		margin-top: var(--space-5);
 		font-size: 0.9em;
+	}
+
+	.campaigns {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 12px;
+		margin-top: 8px;
+	}
+
+	.campaigns a[aria-current='page'] {
+		font-weight: 600;
+		text-decoration: none;
 	}
 
 	.notice {

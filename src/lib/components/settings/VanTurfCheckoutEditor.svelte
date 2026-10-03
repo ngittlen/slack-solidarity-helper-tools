@@ -33,11 +33,9 @@
 		ttlHours: number;
 		maxConcurrentClaims: number;
 		vanAssignmentTtlHours: number;
-		regionRefreshEnabled: boolean;
 	}
 
-	let { ttlHours, maxConcurrentClaims, vanAssignmentTtlHours, regionRefreshEnabled }: Props =
-		$props();
+	let { ttlHours, maxConcurrentClaims, vanAssignmentTtlHours }: Props = $props();
 
 	async function postAppConfig(patch: Record<string, unknown>): Promise<void> {
 		const res = await fetch('/api/settings/app-config', {
@@ -67,25 +65,10 @@
 		save: (value) => postAppConfig({ vanAssignmentTtlHours: value }),
 	});
 
-	const refreshSave = createFieldAutosave<boolean>({
-		initial: regionRefreshEnabled,
-		parse: (raw) => raw === 'true',
-		save: (value) => postAppConfig({ vanRegionRefreshEnabled: value }),
-	});
-
-	/** The autosave helper reads `event.target.value`, which on a checkbox is
-	 *  the constant "on" — so hand it the checked state as the string it
-	 *  parses instead. */
-	function onRefreshToggle(e: Event): void {
-		const checked = (e.currentTarget as HTMLInputElement).checked;
-		refreshSave.oninput({ target: { value: String(checked) } } as unknown as Event);
-	}
-
 	$effect(() => () => {
 		ttlSave.destroy();
 		capSave.destroy();
 		vanTtlSave.destroy();
-		refreshSave.destroy();
 	});
 
 	/** Hours read as days once they stop being a number of hours anyone counts.
@@ -181,27 +164,6 @@
 	</p>
 </SettingsRow>
 
-<SettingsRow
-	label="Re-cut regions in VAN"
-	status={refreshSave.status}
-	error={refreshSave.error}
-	onRetry={refreshSave.status === 'error' ? refreshSave.retry : undefined}
->
-	<label class="turf-toggle">
-		<input type="checkbox" checked={refreshSave.value} onchange={onRefreshToggle} />
-		<span>Let the sync ask VAN to re-cut map regions</span>
-	</label>
-	<p class="app-config-note">
-		A re-cut is how knocked doors leave the counts: after someone finishes a turf, and overnight for
-		every mapped folder. But <strong>a re-cut deletes the region's printed lists</strong>: VAN
-		replaces every route, the old list numbers stop existing, and the new routes have none until
-		someone prints lists for the region again in VAN — the app can't. Until then that turf can't be
-		claimed, and any list number already handed out for it is gone. It also re-cuts turf other
-		organizers cut, in any shared folder mapped above. Off by default, and best left off: re-cut a
-		region by hand in VAN, then print its lists straight after.
-	</p>
-</SettingsRow>
-
 <style>
 	.turf-number {
 		display: flex;
@@ -222,12 +184,6 @@
 	.turf-number input:focus-visible {
 		outline: 2px solid var(--color-border-focus);
 		outline-offset: 1px;
-	}
-
-	.turf-toggle {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
 	}
 
 	.turf-unit {

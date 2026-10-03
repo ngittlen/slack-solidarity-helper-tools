@@ -24,6 +24,7 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { turfCampaignEnabled } from './campaigns.js';
 import { refreshingRegionIds } from './refresh.js';
 import { latestWalkReports } from './checkout-store.js';
 import { loadContactMarks, marksFor, type ContactMarks } from './contact-sync.js';
@@ -147,6 +148,12 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				myRouteIds.length > 0
 					? or(isNull(vanTurfs.retiredAt), inArray(vanTurfs.turfId, myRouteIds))
 					: isNull(vanTurfs.retiredAt),
+				// A disabled campaign's turf is not handed out. Turf the viewer
+				// already holds there stays visible to them until the claim ends —
+				// disabling stops new claims, not the ones in progress.
+				myRouteIds.length > 0
+					? or(turfCampaignEnabled(), inArray(vanTurfs.turfId, myRouteIds))
+					: turfCampaignEnabled(),
 			),
 		);
 

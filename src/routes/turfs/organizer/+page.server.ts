@@ -26,6 +26,7 @@ import { geometryProgressLabel } from '$lib/van/geometry-progress.js';
 import { driftReport } from '$lib/van/turf-drift.js';
 import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
+import { campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -135,8 +136,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// checked" rather than "all clear".
 		deltaChecked: anyDeltaMeasured(completionRows),
 		// What sets that re-cut off, so the empty state can say what it is
-		// waiting on: the sync asking VAN, or an organizer doing it by hand.
-		regionRefreshEnabled: settings.vanRegionRefreshEnabled,
+		// waiting on: the sync asking VAN, or an organizer doing it by hand. Each
+		// campaign has its own switch, so the page names which is which.
+		regionRefresh: await campaignRefreshSwitches(db),
 		completionsExamined: completionRows.length,
 	};
 };

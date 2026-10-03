@@ -69,6 +69,52 @@ export function vanClientFor(campaign: Pick<VanCampaignRow, 'credentialKey'>): V
 	};
 }
 
+/**
+ * What the settings page may say about a campaign's credentials — and nothing
+ * more. The API key is deliberately not in this shape, so no page or response
+ * built from it can carry the key.
+ */
+export interface CredentialStatus {
+	/** The env var that holds them, e.g. `VAN_CAMPAIGN_OTHER`. */
+	secretName: string;
+	/** `ok`: usable. `missing`: no secret at all. `invalid`: a secret that
+	 *  fails to parse — `error` says how, by name, never by value. */
+	state: 'ok' | 'missing' | 'invalid';
+	error: string | null;
+	appName: string | null;
+	databaseMode: 0 | 1 | null;
+	/** `legacy` when the primary campaign is still on VAN_APP_NAME/VAN_API_KEY. */
+	source: 'secret' | 'legacy' | null;
+}
+
+export function credentialStatus(
+	campaign: Pick<VanCampaignRow, 'credentialKey'>,
+): CredentialStatus {
+	const key = campaign.credentialKey;
+	const { credentials, errors } = vanCampaignCredentials();
+	const secretName = campaignSecretName(key);
+	const credential = credentials.get(key);
+	if (credential) {
+		return {
+			secretName,
+			state: 'ok',
+			error: null,
+			appName: credential.appName,
+			databaseMode: credential.databaseMode,
+			source: credential.source,
+		};
+	}
+	const error = errors.get(key) ?? null;
+	return {
+		secretName,
+		state: error ? 'invalid' : 'missing',
+		error,
+		appName: null,
+		databaseMode: null,
+		source: null,
+	};
+}
+
 /** A campaign's geometry export job type, or null when it has none — which
  *  turns geometry off for that campaign, not the catalog.
  *

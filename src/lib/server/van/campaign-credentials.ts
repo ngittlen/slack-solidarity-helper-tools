@@ -41,6 +41,9 @@ export interface VanCredential {
 	appName: string;
 	apiKey: string;
 	databaseMode: VanDatabaseMode;
+	/** Where it came from: its own `VAN_CAMPAIGN_<KEY>` secret, or — for
+	 *  `primary` only — the legacy VAN_APP_NAME/VAN_API_KEY/VAN_DATABASE_MODE. */
+	source: 'secret' | 'legacy';
 }
 
 export interface VanCampaignCredentials {
@@ -150,7 +153,7 @@ function parseLegacy(
 	}
 	return {
 		ok: true,
-		credential: { key: PRIMARY_CAMPAIGN_KEY, appName, apiKey, databaseMode },
+		credential: { key: PRIMARY_CAMPAIGN_KEY, appName, apiKey, databaseMode, source: 'legacy' },
 	};
 }
 
@@ -191,6 +194,7 @@ export function parseVanCampaigns(
 			apiKey: result.apiKey,
 			// parseCampaignSecret only returns null without modeOptional.
 			databaseMode: result.databaseMode as VanDatabaseMode,
+			source: 'secret',
 		});
 	}
 

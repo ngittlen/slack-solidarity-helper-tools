@@ -171,6 +171,23 @@ describe('per campaign', () => {
 		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).toContain(900);
 		expect((await loadDriftClaims(db, all)).map((c) => c.turfId)).toContain(900);
 	});
+
+	// A disabled campaign is no longer synced, so its last "exports ok" is
+	// stale: a list loaded since would never show, and its claims would all read
+	// as not loaded in MiniVAN.
+	it('leaves out a disabled campaign, whatever its last sync read', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (2, '${iso(NOW.getTime())}', 1)`,
+		);
+		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 2');
+		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).not.toContain(900);
+		expect((await loadDriftClaims(db, all)).map((c) => c.turfId)).not.toContain(900);
+	});
+
+	it('is unavailable when the only campaign that could read exports is disabled', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 1');
+		expect(await loadDriftVisibility(db)).toBe('van-side-unavailable');
+	});
 });
 
 describe('the three reads together', () => {

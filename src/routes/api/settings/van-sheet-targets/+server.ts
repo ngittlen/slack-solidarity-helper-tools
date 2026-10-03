@@ -10,8 +10,11 @@ import {
 import { normaliseSheetKey } from '$lib/van/sheet-routing.js';
 import { sheetsClient } from '$lib/server/google-env.js';
 import { DEFAULT_SHEET_TAB_NAME } from '$lib/van/packet-tracker.js';
+import { campaignFromRequest } from '$lib/server/van/campaigns.js';
 
-// Which spreadsheet each region's turf checkouts are logged to.
+// Which spreadsheet each region's turf checkouts are logged to, for one
+// campaign (`campaignId`, required): each campaign that keeps a Packet Tracker
+// has its own rules, edited from its page under /settings/van.
 //
 // One rule per request, saved whole. Like van_chapter_folders this is an INPUT
 // to the sync rather than something it discovers: with no rules the sheet log
@@ -34,6 +37,7 @@ import { DEFAULT_SHEET_TAB_NAME } from '$lib/van/packet-tracker.js';
 // id stands in, and re-saving any rule for that sheet backfills the real one.
 
 interface SheetTargetBody {
+	campaignId?: unknown;
 	action?: unknown;
 	prefix?: unknown;
 	spreadsheetId?: unknown;
@@ -101,6 +105,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (action !== 'save' && action !== 'remove') {
 		return json({ error: 'action must be "save" or "remove"' }, { status: 400 });
 	}
+	const named = await campaignFromRequest(db, body.campaignId);
+	if (!named.ok) return json({ error: named.error }, { status: named.status });
+	const campaignId = named.campaign.id;
 
 	const editor: Editor = {
 		id: locals.session.slackUserId,
@@ -111,8 +118,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		if (typeof body.prefixKey !== 'string' || body.prefixKey.trim() === '') {
 			return json({ error: 'prefixKey is required' }, { status: 400 });
 		}
-		await deleteVanSheetTarget(db, body.prefixKey.trim(), editor);
-		return json({ ok: true, targets: await loadVanSheetTargets(db) });
+		await deleteVanSheetTarget(db, campaignId, body.prefixKey.trim(), editor);
+		return json({ ok: true, targets: await loadVanSheetTargets(db, campaignId) });
 	}
 
 	const prefix = typeof body.prefix === 'string' ? body.prefix.trim() : '';
@@ -147,8 +154,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	await saveVanSheetTarget(
 		db,
-		{ prefix, label: await resolveLabel(spreadsheetId), spreadsheetId },
+		{ campaignId, prefix, label: await resolveLabel(spreadsheetId), spreadsheetId },
 		editor,
 	);
-	return json({ ok: true, targets: await loadVanSheetTargets(db) });
+	return json({ ok: true, targets: await loadVanSheetTargets(db, campaignId) });
 };

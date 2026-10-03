@@ -1,6 +1,7 @@
 <script lang="ts">
 	// Which VAN folder covers which counties — the page for deciding what each
-	// folder should be mapped to under Settings → Chapter → VAN folders.
+	// folder should be mapped to on its campaign's page under Settings → VAN
+	// campaigns.
 	//
 	// Names, not geometry: see the note in +page.server.ts. The caption and the
 	// note below say so on the page too, because a dot on a street map invites
@@ -53,7 +54,17 @@
 
 <main>
 	<header>
-		<h1>VAN folders by county</h1>
+		<h1>VAN folders by county — {data.campaign.name}</h1>
+		{#if data.campaigns.length > 1}
+			<nav class="campaigns" aria-label="Campaign">
+				{#each data.campaigns as c (c.id)}
+					<a
+						href="{resolve('/turfs/folder-map')}?campaign={c.id}"
+						aria-current={c.id === data.campaign.id ? 'page' : undefined}>{c.name}</a
+					>
+				{/each}
+			</nav>
+		{/if}
 		<p class="note">
 			Where each VAN folder's turf is, worked out from the county in each region's name. Every dot
 			sits at a
@@ -71,7 +82,10 @@
 		{#if data.fetchedAt}
 			<p class="note">
 				Read live from VAN, cached for 10 minutes.
-				<a href="{resolve('/turfs/folder-map')}?refresh=1" data-sveltekit-reload>Refresh now</a>
+				<a
+					href="{resolve('/turfs/folder-map')}?campaign={data.campaign.id}&refresh=1"
+					data-sveltekit-reload>Refresh now</a
+				>
 			</p>
 		{/if}
 	</header>
@@ -154,6 +168,7 @@
 						</td>
 						<td class="chapters-cell">
 							<FolderChapterPicker
+								campaignId={data.campaign.id}
 								folderId={folder.folderId}
 								folderName={folder.name}
 								chapters={data.chapters}
@@ -177,6 +192,18 @@
 </main>
 
 <style>
+	.campaigns {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 12px;
+		margin: 4px 0 8px;
+	}
+
+	.campaigns a[aria-current='page'] {
+		font-weight: 600;
+		text-decoration: none;
+	}
+
 	main {
 		max-width: 72rem;
 		margin: 0 auto;

@@ -345,26 +345,6 @@ export const appConfig = sqliteTable(
 		// in turf-view.ts). Same NULL-means-default and clamp-on-read as the two
 		// above.
 		vanAssignmentTtlHours: integer('van_assignment_ttl_hours'),
-		// Whether the sync may ask VAN to re-cut map regions. NULL means OFF, and it
-		// should stay off. A re-cut retires every route in the region and returns
-		// new ones with new ids and new saved lists — and it DELETES the region's
-		// printed lists. Verified live 2026-09-24 on R06F_Washtenaw_SalineCity02
-		// (folder 68298): all 18 routes came back with no printed list, and the old
-		// numbers 404 on /printedLists/{number}. They came back only when an
-		// organizer printed the lists again in VAN, which this app cannot do. So a
-		// refresh turns claimable turf into unclaimable turf until someone prints,
-		// kills any list number already handed out, and a nightly sweep would do
-		// that to every mapped folder every night, including shared folders other
-		// organizers cut.
-		vanRegionRefreshEnabled: integer('van_region_refresh_enabled', { mode: 'boolean' }),
-		// The campaign's Packet Tracker tab, in every one of its spreadsheets. One
-		// name for all of them — the campaign uses the same tab everywhere, and a
-		// per-sheet name would be a dozen more chances to typo. The app never
-		// creates it. NULL or '' means DEFAULT_SHEET_TAB_NAME in
-		// $lib/van/packet-tracker.ts.
-		//
-		// Which spreadsheet a row goes to is van_sheet_targets, not this.
-		vanSheetTabName: text('van_sheet_tab_name'),
 		// Theme overrides as JSON: {"color-bg":{"light":"#fbf0e4"}}. One column
 		// rather than ~60, because adding a field to this table is a nine-step
 		// checklist across six files and a palette would be unmaintainable that
@@ -774,30 +754,60 @@ export type NewSlackUserTokenRow = typeof slackUserTokens.$inferInsert;
 // new secrets are created disabled (`ensureCampaignRows` in van-env.ts), so
 // setting a secret on its own never starts a sync.
 /** The campaign the app has always served: van_campaigns row 1, seeded by the
- *  migration that created the table. Screens that are not campaign-aware yet
- *  read and write this one. */
+ *  migration that created the table. The default where a page or script names
+ *  no campaign. */
 export const PRIMARY_CAMPAIGN_ID = 1;
 
-export const vanCampaigns = sqliteTable('van_campaigns', {
-	id: integer('id').primaryKey({ autoIncrement: true }),
-	credentialKey: text('credential_key').notNull().unique(),
-	/** Shown to signed-in volunteers on turf and in alerts. Blank until an admin
-	 *  names the campaign in /settings — the migration and discovery never pick
-	 *  one, so no organisation's name is baked into the schema. Unique among
-	 *  campaigns that have one (SQLite lets any number of rows be NULL). */
-	label: text('label').unique(),
-	enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
-	/** The coordinates export that feeds hull geometry. Per campaign because
-	 *  EveryAction issues export job types per key. Null means no geometry —
-	 *  turf draws as pins — except for 'primary', which falls back to
-	 *  VAN_EXPORT_JOB_TYPE_ID (vanExportJobTypeIdFor in van-env.ts). */
-	exportJobTypeId: integer('export_job_type_id'),
-	disabledAt: text('disabled_at'),
-	disabledByName: text('disabled_by_name'),
-	lastEditedBy: text('last_edited_by').notNull(),
-	lastEditedByName: text('last_edited_by_name').notNull(),
-	lastEditedAt: text('last_edited_at').notNull(),
-});
+export const vanCampaigns = sqliteTable(
+	'van_campaigns',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		credentialKey: text('credential_key').notNull().unique(),
+		/** Shown to signed-in volunteers on turf and in alerts. Blank until an admin
+		 *  names the campaign in /settings — the migration and discovery never pick
+		 *  one, so no organisation's name is baked into the schema. Unique among
+		 *  campaigns that have one, ignoring case (SQLite lets any number of rows be
+		 *  NULL): two campaigns told apart only by capitals would read as one on a
+		 *  turf badge. */
+		label: text('label'),
+		enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+		/** The coordinates export that feeds hull geometry. Per campaign because
+		 *  EveryAction issues export job types per key. Null means no geometry —
+		 *  turf draws as pins — except for 'primary', which falls back to
+		 *  VAN_EXPORT_JOB_TYPE_ID (vanExportJobTypeIdFor in van-env.ts). */
+		exportJobTypeId: integer('export_job_type_id'),
+		/** Whether the sync may ask VAN to re-cut this campaign's map regions. Off
+		 *  by default, and it should stay off unless the campaign has agreed. A
+		 *  re-cut retires every route in the region and returns new ones with new
+		 *  ids and new saved lists — and it DELETES the region's printed lists.
+		 *  Verified live 2026-09-24 on R06F_Washtenaw_SalineCity02 (folder 68298):
+		 *  all 18 routes came back with no printed list, and the old numbers 404 on
+		 *  /printedLists/{number}. They came back only when an organizer printed the
+		 *  lists again in VAN, which this app cannot do. So a refresh turns
+		 *  claimable turf into unclaimable turf until someone prints, kills any list
+		 *  number already handed out, and a nightly sweep would do that to every
+		 *  mapped folder every night, including shared folders other organizers cut.
+		 *  Moved here from app_config, where it was one switch for everyone. */
+		refreshEnabled: integer('refresh_enabled', { mode: 'boolean' }).notNull().default(false),
+		/** Whether this campaign's checkouts are written to its Packet Tracker
+		 *  spreadsheets (van_sheet_targets rows for this campaign). Off by default:
+		 *  most campaigns keep no such sheet. A disabled campaign with this on is
+		 *  still written to, so its live claims' endings are recorded. */
+		sheetsEnabled: integer('sheets_enabled', { mode: 'boolean' }).notNull().default(false),
+		/** The Packet Tracker tab in every one of this campaign's spreadsheets. One
+		 *  name for all of them — a campaign uses the same tab everywhere, and a
+		 *  per-sheet name would be a dozen more chances to typo. The app never
+		 *  creates it. Null or '' means DEFAULT_SHEET_TAB_NAME in
+		 *  $lib/van/packet-tracker.ts. Moved here from app_config. */
+		sheetTabName: text('sheet_tab_name'),
+		disabledAt: text('disabled_at'),
+		disabledByName: text('disabled_by_name'),
+		lastEditedBy: text('last_edited_by').notNull(),
+		lastEditedByName: text('last_edited_by_name').notNull(),
+		lastEditedAt: text('last_edited_at').notNull(),
+	},
+	(table) => [uniqueIndex('van_campaigns_label_unique').on(sql`lower(${table.label})`)],
+);
 
 // Which VAN folders belong to which Solidarity chapter. Mirrors
 // chapter_channel_map deliberately: same composite-key shape, same audit
@@ -838,27 +848,38 @@ export const vanChapterFolders = sqliteTable(
 //
 // So this is a rule list, matched by longest normalised prefix — `R10C_Wayne_Taylor`
 // beats a bare `R10C` catch-all. `prefix_key` is the normalisation (lowercase
-// alphanumerics, see van/region-name.ts) and is the primary key, so two rules
-// cannot disagree about the same ground: the settings route refuses the second.
+// alphanumerics, see van/region-name.ts) and, with the campaign, the primary
+// key, so two of one campaign's rules cannot disagree about the same ground:
+// the settings route refuses the second.
 //
-// An INPUT, like van_chapter_folders above. No rows means the sheet log is off,
-// which is what the spec asks for — an unconfigured feature does nothing and
-// raises no alerts.
-export const vanSheetTargets = sqliteTable('van_sheet_targets', {
-	prefixKey: text('prefix_key').primaryKey(),
-	/** The rule as the admin typed it, for display. `prefix_key` is what
-	 *  matches. */
-	prefix: text('prefix').notNull(),
-	/** What the spreadsheet is called, so an alert can name it without a Google
-	 *  round-trip. */
-	label: text('label').notNull(),
-	/** From the spreadsheet's URL. Several rules may point at one spreadsheet —
-	 *  the two R10C rules do. */
-	spreadsheetId: text('spreadsheet_id').notNull(),
-	lastEditedBy: text('last_edited_by').notNull(),
-	lastEditedByName: text('last_edited_by_name').notNull(),
-	lastEditedAt: text('last_edited_at').notNull(),
-});
+// Per campaign (specs/012-multi-van-campaigns): each campaign that keeps a
+// Packet Tracker has its own rules, matched only against its own turf.
+//
+// An INPUT, like van_chapter_folders above. No rows means the sheet log is off
+// for that campaign, which is what the spec asks for — an unconfigured feature
+// does nothing and raises no alerts.
+export const vanSheetTargets = sqliteTable(
+	'van_sheet_targets',
+	{
+		/** The campaign whose turf this rule routes. Each campaign has its own
+		 *  rules; another campaign's region names never match them. */
+		campaignId: integer('campaign_id').notNull().default(1),
+		prefixKey: text('prefix_key').notNull(),
+		/** The rule as the admin typed it, for display. `prefix_key` is what
+		 *  matches. */
+		prefix: text('prefix').notNull(),
+		/** What the spreadsheet is called, so an alert can name it without a Google
+		 *  round-trip. */
+		label: text('label').notNull(),
+		/** From the spreadsheet's URL. Several rules may point at one spreadsheet —
+		 *  the two R10C rules do. */
+		spreadsheetId: text('spreadsheet_id').notNull(),
+		lastEditedBy: text('last_edited_by').notNull(),
+		lastEditedByName: text('last_edited_by_name').notNull(),
+		lastEditedAt: text('last_edited_at').notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.campaignId, table.prefixKey] })],
+);
 
 // Whether each spreadsheet is currently writable, and what the operator has
 // already been told about it.

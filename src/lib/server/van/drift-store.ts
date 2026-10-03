@@ -11,7 +11,7 @@
 
 import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanSyncState, vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { vanCampaigns, vanSyncState, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import type { DriftClaim, DriftTurfRow, DriftVisibility } from '../../van/turf-drift.js';
 import { visibleToChapter } from './chapter-visibility.js';
 
@@ -29,7 +29,8 @@ function chapterFilter(chapterId: number | null): SQL | undefined {
 }
 
 /**
- * Turf whose campaign's last catalog sync could read its MiniVAN exports.
+ * Turf whose campaign is enabled and whose last catalog sync could read its
+ * MiniVAN exports.
  *
  * Drift is judged campaign by campaign: each reads its own committee's exports
  * with its own key, so one campaign whose key lacks /minivanExports (or is
@@ -39,10 +40,20 @@ function chapterFilter(chapterId: number | null): SQL | undefined {
  * drift already announced for it is neither repeated nor cleared.
  */
 export function exportsVisibleFilter(): SQL {
-	return sql`${vanTurfs.campaignId} in (
-		select ${vanSyncState.campaignId} from ${vanSyncState}
-		where ${vanSyncState.minivanExportsOk} = 1
-	)`;
+	return sql`${vanTurfs.campaignId} in (${exportsVisibleCampaigns()})`;
+}
+
+/**
+ * Campaigns whose MiniVAN exports the app can still see. A disabled campaign
+ * is not synced, so its last sync's "exports ok" goes stale the moment it is
+ * switched off: a list loaded since then never reaches `van_distributed_to`,
+ * and its claims would read as "not loaded in MiniVAN" until they end. It is
+ * left out like a campaign whose key cannot read exports at all.
+ */
+function exportsVisibleCampaigns(): SQL {
+	return sql`select ${vanSyncState.campaignId} from ${vanSyncState}
+		join ${vanCampaigns} on ${vanCampaigns.id} = ${vanSyncState.campaignId}
+		where ${vanSyncState.minivanExportsOk} = 1 and ${vanCampaigns.enabled} = 1`;
 }
 
 /** Every turf in scope, claimed or not. Retired rows come back and the pure
@@ -97,8 +108,9 @@ export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<DriftC
 }
 
 /**
- * Whether any campaign's last catalog sync could read `/minivanExports`. The
- * turf and claims above already leave out the campaigns that could not.
+ * Whether any enabled campaign's last catalog sync could read
+ * `/minivanExports`. The turf and claims above already leave out the campaigns
+ * that could not, and the disabled ones.
  *
  * Without this the report cannot tell "VAN reports nothing distributed" from
  * "we never got to ask", because the sync writes NULL into
@@ -113,7 +125,8 @@ export async function loadDriftVisibility(db: Db): Promise<DriftVisibility> {
 	const [row] = await db
 		.select({ minivanExportsOk: vanSyncState.minivanExportsOk })
 		.from(vanSyncState)
-		.where(eq(vanSyncState.minivanExportsOk, true))
+		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanSyncState.campaignId))
+		.where(and(eq(vanSyncState.minivanExportsOk, true), eq(vanCampaigns.enabled, true)))
 		.limit(1);
 	return row?.minivanExportsOk === true ? 'visible' : 'van-side-unavailable';
 }

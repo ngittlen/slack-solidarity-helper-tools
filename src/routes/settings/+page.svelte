@@ -12,8 +12,7 @@
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
 	import ZipExcludedChaptersEditor from '$lib/components/settings/ZipExcludedChaptersEditor.svelte';
 	import VanTurfCheckoutEditor from '$lib/components/settings/VanTurfCheckoutEditor.svelte';
-	import VanChapterFoldersEditor from '$lib/components/settings/VanChapterFoldersEditor.svelte';
-	import VanSheetTargetsEditor from '$lib/components/settings/VanSheetTargetsEditor.svelte';
+	import VanCampaignsList from '$lib/components/settings/VanCampaignsList.svelte';
 	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
 	import ThemeEditor from '$lib/components/settings/ThemeEditor.svelte';
 	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
@@ -225,43 +224,19 @@
 				ttlHours={data.settings.vanTurfClaimTtlHours}
 				maxConcurrentClaims={data.settings.vanTurfMaxConcurrentClaims}
 				vanAssignmentTtlHours={data.settings.vanAssignmentTtlHours}
-				regionRefreshEnabled={data.settings.vanRegionRefreshEnabled}
 			/>
 		</section>
 
 		<section
-			id={SECTION_IDS.vanChapterFolders}
-			data-settings-anchor={SECTION_IDS.vanChapterFolders}
+			id={SECTION_IDS.vanCampaigns}
+			data-settings-anchor={SECTION_IDS.vanCampaigns}
 			tabindex="-1"
 		>
-			<h2>Chapter → VAN folders</h2>
-			{#if data.errors.vanChapterFolders}
-				<p class="error">{data.errors.vanChapterFolders}</p>
+			<h2>VAN campaigns</h2>
+			{#if data.errors.vanCampaigns}
+				<p class="error">{data.errors.vanCampaigns}</p>
 			{/if}
-			{#if data.errors.solidarityChapters}
-				<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
-			{/if}
-			{#if data.solidarityChapters}
-				<VanChapterFoldersEditor
-					chapters={data.solidarityChapters.items}
-					mappings={data.vanChapterFolderMappings}
-				/>
-			{/if}
-		</section>
-
-		<section
-			id={SECTION_IDS.vanSheetTargets}
-			data-settings-anchor={SECTION_IDS.vanSheetTargets}
-			tabindex="-1"
-		>
-			<h2>Checkout spreadsheets</h2>
-			{#if data.errors.vanSheetTargets}
-				<p class="error">{data.errors.vanSheetTargets}</p>
-			{/if}
-			<VanSheetTargetsEditor
-				targets={data.vanSheetTargets}
-				serviceAccountEmail={data.sheetsServiceAccountEmail}
-			/>
+			<VanCampaignsList campaigns={data.vanCampaigns} />
 		</section>
 
 		<section

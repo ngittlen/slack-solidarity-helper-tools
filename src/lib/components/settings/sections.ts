@@ -60,8 +60,7 @@ export const SECTION_IDS = {
 	excludedChapters: 'excluded-chapters',
 	zipExcludedChapters: 'zip-excluded-chapters',
 	vanTurfCheckout: 'van-turf-checkout',
-	vanChapterFolders: 'van-chapter-folders',
-	vanSheetTargets: 'van-sheet-targets',
+	vanCampaigns: 'van-campaigns',
 	vanBlocklist: 'van-blocklist',
 	theme: 'theme',
 } as const;
@@ -95,8 +94,7 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 	{ id: SECTION_IDS.excludedChapters, label: 'Excluded chapters' },
 	{ id: SECTION_IDS.zipExcludedChapters, label: 'Chapters without ZIP codes' },
 	{ id: SECTION_IDS.vanTurfCheckout, label: 'Turf checkout' },
-	{ id: SECTION_IDS.vanChapterFolders, label: 'Chapter \u2192 VAN folders' },
-	{ id: SECTION_IDS.vanSheetTargets, label: 'Checkout spreadsheets' },
+	{ id: SECTION_IDS.vanCampaigns, label: 'VAN campaigns' },
 	{ id: SECTION_IDS.vanBlocklist, label: 'Blocked from turf checkout' },
 	{ id: SECTION_IDS.theme, label: 'Theme' },
 ];

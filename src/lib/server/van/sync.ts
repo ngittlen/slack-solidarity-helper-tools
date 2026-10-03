@@ -156,7 +156,7 @@ export async function runCatalogSync(
 			regionsRead: [],
 			degraded,
 			warnings: [
-				'No chapters are mapped to VAN folders — add them under Settings → Chapter → VAN folders.',
+				'No chapters are mapped to VAN folders — add them on the campaign’s page under Settings → VAN campaigns.',
 			],
 		};
 	}

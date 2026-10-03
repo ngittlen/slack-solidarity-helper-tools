@@ -451,7 +451,7 @@ async function main(): Promise<void> {
 	}
 
 	console.log(
-		'\nNext: map the folder ids above to chapters under Settings → Chapter → VAN folders,\n' +
+		"\nNext: map the folder ids above to chapters on the campaign's page under Settings → VAN campaigns,\n" +
 			'then POST /api/internal/van-sync?key=$INTERNAL_CRON_SECRET to fill van_turfs.\n',
 	);
 }

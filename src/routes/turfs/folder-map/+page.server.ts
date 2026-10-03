@@ -1,9 +1,9 @@
-import { redirect } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
-import { PRIMARY_CAMPAIGN_ID } from '$lib/server/schema.js';
+import { PRIMARY_CAMPAIGN_ID, vanCampaigns, type VanCampaignRow } from '$lib/server/schema.js';
 import { vanClientFor } from '$lib/server/van-env.js';
-import { PRIMARY_CAMPAIGN_KEY } from '$lib/server/van/campaign-credentials.js';
+import { campaignName, loadCampaign } from '$lib/server/van/campaigns.js';
 import { loadVanChapterFolders } from '$lib/server/settings.js';
 import { getSolidarityChapters } from '$lib/server/autocomplete-sources.js';
 import {
@@ -26,7 +26,8 @@ import { boundingBox, padBounds, type BoundingBox, type LatLng } from '$lib/van/
 import type { VanMapRegion } from '$lib/server/van/types.js';
 
 // Which VAN folder covers which part of the state — the page for deciding what
-// a folder should be mapped to under Settings → Chapter → VAN folders.
+// a folder should be mapped to on its campaign's page under Settings → VAN
+// campaigns.
 //
 // It answers that from region NAMES, not geometry. A turf's real shape costs
 // one VAN export job, and a statewide cut is 2,000+ turfs; a county centroid
@@ -74,15 +75,16 @@ interface Snapshot {
 	fallbackBounds: BoundingBox | null;
 }
 
-let cache: Snapshot | null = null;
-let cacheAt = 0;
-/** In-flight fetch, so two admins opening the page do not each spend 19 VAN
- *  round trips building the same snapshot. */
-let inFlight: Promise<Snapshot> | null = null;
+/** Per campaign: each reads its own folders with its own key. */
+const cache = new Map<number, { snapshot: Snapshot; at: number }>();
+/** In-flight fetch per campaign, so two admins opening the page do not each
+ *  spend 19 VAN round trips building the same snapshot. */
+const inFlight = new Map<number, Promise<Snapshot>>();
 
-async function buildSnapshot(): Promise<Snapshot> {
-	// The primary campaign's folders, matching the mapping this page edits.
-	const configured = vanClientFor({ credentialKey: PRIMARY_CAMPAIGN_KEY });
+async function buildSnapshot(campaign: VanCampaignRow): Promise<Snapshot> {
+	// The campaign's own folders, with its own key — the ids in its mapping
+	// mean nothing to another campaign's key.
+	const configured = vanClientFor(campaign);
 	if (!configured.ok) throw new Error(configured.error);
 	const client = configured.client;
 
@@ -163,25 +165,39 @@ async function buildSnapshot(): Promise<Snapshot> {
 	};
 }
 
-async function snapshot(force: boolean): Promise<Snapshot> {
-	if (!force && cache && Date.now() - cacheAt < CACHE_TTL_MS) return cache;
-	if (inFlight) return inFlight;
-	inFlight = buildSnapshot()
+async function snapshot(campaign: VanCampaignRow, force: boolean): Promise<Snapshot> {
+	const cached = cache.get(campaign.id);
+	if (!force && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.snapshot;
+	const pending = inFlight.get(campaign.id);
+	if (pending) return pending;
+	const started = buildSnapshot(campaign)
 		.then((result) => {
-			cache = result;
-			cacheAt = Date.now();
+			cache.set(campaign.id, { snapshot: result, at: Date.now() });
 			return result;
 		})
 		.finally(() => {
-			inFlight = null;
+			inFlight.delete(campaign.id);
 		});
-	return inFlight;
+	inFlight.set(campaign.id, started);
+	return started;
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
 	// Same gate as the other organizer pages: a bare 302 for a missing session
 	// and for a signed-in non-admin alike.
 	if (!locals.session?.isAdmin) redirect(302, '/');
+
+	// `?campaign=<id>`, the primary campaign by default: the page shows and
+	// edits one campaign's folders at a time.
+	const requested = Number(url.searchParams.get('campaign') ?? PRIMARY_CAMPAIGN_ID);
+	const campaign =
+		Number.isInteger(requested) && requested > 0 ? await loadCampaign(db, requested) : null;
+	if (!campaign) error(404, 'No such campaign');
+	const campaigns = (await db.select().from(vanCampaigns).orderBy(vanCampaigns.id)).map((c) => ({
+		id: c.id,
+		name: campaignName(c),
+	}));
+	const campaignInfo = { id: campaign.id, name: campaignName(campaign) };
 
 	// Same basemap the volunteer turf page uses, keyed the same way: the keyless
 	// CARTO endpoint watermarks every tile with "API Key required".
@@ -195,10 +211,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// counties still answer the question the page is for, and the editor says
 	// why it is empty instead of offering an empty dropdown.
 	const [mappingResult, chapterResult, snapshotResult] = await Promise.allSettled([
-		// The primary campaign's: this page reads folders with its key.
-		loadVanChapterFolders(db, PRIMARY_CAMPAIGN_ID),
+		loadVanChapterFolders(db, campaign.id),
 		getSolidarityChapters(SOLIDARITY_API_TOKEN),
-		snapshot(url.searchParams.get('refresh') === '1'),
+		snapshot(campaign, url.searchParams.get('refresh') === '1'),
 	]);
 
 	// folderId → the chapters that see it, which is the direction this page edits.
@@ -227,6 +242,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// The page renders the reason rather than 500ing: "the key cannot read
 		// folders" is exactly the sort of thing someone opens this page to find.
 		return {
+			campaign: campaignInfo,
+			campaigns,
 			folders: [],
 			fetchedAt: null,
 			errors: [],
@@ -248,6 +265,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const { folders, fetchedAt, errors, states, statesInferred, fallbackBounds } =
 		snapshotResult.value;
 	return {
+		campaign: campaignInfo,
+		campaigns,
 		folders,
 		fetchedAt,
 		errors,

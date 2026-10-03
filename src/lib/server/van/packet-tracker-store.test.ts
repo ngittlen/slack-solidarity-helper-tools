@@ -127,20 +127,36 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 const writes = (calls: string[]) => calls.filter((c) => c.startsWith('write'));
 
 async function turf(
-	over: { turfId?: number; regionName?: string; name?: string; list?: string | null } = {},
+	over: {
+		turfId?: number;
+		campaignId?: number;
+		regionName?: string;
+		name?: string;
+		list?: string | null;
+	} = {},
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
-		         name, printed_list_number, route_size, door_count, first_seen_at, last_seen_at)
-		      VALUES (?1, ?1, 1, 1, 71, 'Wayne County', ?, ?, ?, 120, 50, 'x', 'x')`,
+		        (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id, chapter_id,
+		         chapter_name, region_name, name, printed_list_number, route_size, door_count,
+		         first_seen_at, last_seen_at)
+		      VALUES (?1, ?2, ?1, 1, 1, 71, 'Wayne County', ?3, ?4, ?5, 120, 50, 'x', 'x')`,
 		args: [
 			over.turfId ?? 100,
+			over.campaignId ?? 1,
 			over.regionName ?? 'R10C_Wayne_TaylorCity004_9.11',
 			over.name ?? 'Turf 01',
 			over.list === undefined ? LIST : over.list,
 		],
 	});
+}
+
+/** A second campaign, as the sync would have registered it. */
+async function partnerCampaign() {
+	await client.execute(
+		`INSERT INTO van_campaigns (id, credential_key, last_edited_by, last_edited_by_name, last_edited_at)
+		 VALUES (2, 'partner', 'test', 'test', 'x')`,
+	);
 }
 
 async function checkout(
@@ -197,6 +213,7 @@ function run(api: SheetsClient, over: Partial<Parameters<typeof syncPacketTracke
 	return syncPacketTracker(db, {
 		now: NOW,
 		client: api,
+		campaignId: 1,
 		targets: [DOWNRIVER],
 		timeBudgetMs: 30_000,
 		channelId: 'C_TURF',
@@ -730,5 +747,68 @@ describe('backfill and scope', () => {
 
 		expect(fake.entry('sheet-downriver').Canvasser).toBe('');
 		expect(fake.entry('sheet-downriver', '2-2').Canvasser).toBe('Dana');
+	});
+});
+
+// Each campaign has its own spreadsheets and its own rules
+// (specs/012-multi-van-campaigns). Region names are each campaign's own too,
+// so two campaigns can both cut an "R10C_…" region.
+describe('one campaign at a time', () => {
+	const PARTNER = target('R10C', 'Partner R10C', 'sheet-partner');
+
+	beforeEach(async () => {
+		await partnerCampaign();
+		await turf({ turfId: 100 });
+		await turf({ turfId: 200, campaignId: 2, regionName: 'R10C_Wayne_Partner', list: '9-9' });
+		await checkout({ id: 1, turfId: 100 });
+		await checkout({ id: 2, turfId: 200, list: '9-9' });
+	});
+
+	it('never writes another campaign’s checkout, even where its rules would match', async () => {
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST), packet('9-9')) });
+
+		const result = await run(fake.api);
+
+		expect(result.filled).toBe(1);
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('Dana');
+		expect(fake.entry('sheet-downriver', '9-9').Canvasser).toBe('');
+		expect(await stateOf(2)).toBeNull();
+		expect(result.unrouted).toBe(0);
+	});
+
+	it('routes a campaign’s checkouts by its own rules only', async () => {
+		const fake = fakeSheets({
+			'sheet-downriver': tracker(packet(LIST)),
+			'sheet-partner': tracker(packet('9-9')),
+		});
+
+		await run(fake.api, { campaignId: 2, targets: [PARTNER] });
+
+		expect(fake.entry('sheet-partner', '9-9').Canvasser).toBe('Dana');
+		expect(fake.calls.some((c) => c.includes('sheet-downriver'))).toBe(false);
+		expect(await stateOf(1)).toBeNull();
+	});
+
+	it('counts only its own checkouts as unrouted', async () => {
+		const fake = fakeSheets({ 'sheet-western': tracker() });
+
+		const result = await run(fake.api, { campaignId: 2, targets: [WESTERN] });
+
+		expect(result.unrouted).toBe(1);
+		expect(result.unroutedRegions).toEqual(['R10C_Wayne_Partner']);
+	});
+
+	it('records assignments only on its own turf, even for a list number both use', async () => {
+		await client.execute(
+			`UPDATE van_turfs SET printed_list_number = '${LIST}' WHERE turf_id = 200`,
+		);
+		const fake = fakeSheets({
+			'sheet-downriver': tracker(packet(LIST, { Canvasser: 'Organizer Olu', Status: 'Out' })),
+		});
+
+		await run(fake.api);
+
+		expect(await assignedTo(100)).toBe('Organizer Olu');
+		expect(await assignedTo(200)).toBeNull();
 	});
 });

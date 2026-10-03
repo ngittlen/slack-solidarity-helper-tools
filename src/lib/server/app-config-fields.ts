@@ -109,12 +109,11 @@ function numberInRangeField(label: string, min: number, max: number): FieldValid
 }
 
 /** A real boolean. Strict on purpose: `"false"` is truthy, and a switch that a
- *  stringly-typed client turns ON by sending "false" is the worst way to fail. */
-function booleanField(label: string): FieldValidator<boolean> {
-	return (value) => {
-		if (typeof value !== 'boolean') return fail(`${label} must be true or false`);
-		return { ok: true, value };
-	};
+ *  stringly-typed client turns ON by sending "false" is the worst way to fail.
+ *  Exported for the per-campaign switches (/api/settings/van-campaigns). */
+export function checkBoolean(label: string, value: unknown): FieldResult<boolean> {
+	if (typeof value !== 'boolean') return fail(`${label} must be true or false`);
+	return { ok: true, value };
 }
 
 /**
@@ -128,19 +127,20 @@ function booleanField(label: string): FieldValidator<boolean> {
  * accept them in a tab name, so taking one here only moves the failure to the
  * first sync, where nobody is watching.
  */
-function sheetTabNameField(label: string): FieldValidator<string> {
-	return (value) => {
-		if (typeof value !== 'string') return fail(`${label} must be a string`);
-		const trimmed = value.trim();
-		if (trimmed === '') return { ok: true, value: '' };
-		if (trimmed.length > SHEET_TAB_NAME_MAX_LENGTH) {
-			return fail(`${label} must be ${SHEET_TAB_NAME_MAX_LENGTH} characters or fewer`);
-		}
-		if (/['[\]:\\/?*\n\r]/.test(trimmed)) {
-			return fail(`${label} cannot contain ' [ ] : \\ / ? * or a line break`);
-		}
-		return { ok: true, value: trimmed };
-	};
+/** A Packet Tracker tab name; '' means the default. Exported for the
+ *  per-campaign setting (/api/settings/van-campaigns), which is where the tab
+ *  name lives. */
+export function checkSheetTabName(label: string, value: unknown): FieldResult<string> {
+	if (typeof value !== 'string') return fail(`${label} must be a string`);
+	const trimmed = value.trim();
+	if (trimmed === '') return { ok: true, value: '' };
+	if (trimmed.length > SHEET_TAB_NAME_MAX_LENGTH) {
+		return fail(`${label} must be ${SHEET_TAB_NAME_MAX_LENGTH} characters or fewer`);
+	}
+	if (/['[\]:\\/?*\n\r]/.test(trimmed)) {
+		return fail(`${label} cannot contain ' [ ] : \\ / ? * or a line break`);
+	}
+	return { ok: true, value: trimmed };
 }
 
 /**
@@ -331,8 +331,6 @@ export const APP_CONFIG_FIELDS: {
 		MIN_VAN_ASSIGNMENT_TTL_HOURS,
 		MAX_VAN_ASSIGNMENT_TTL_HOURS,
 	),
-	vanRegionRefreshEnabled: booleanField('vanRegionRefreshEnabled'),
-	vanSheetTabName: sheetTabNameField('vanSheetTabName'),
 
 	themeTokens: themeTokensField('themeTokens'),
 

@@ -24,6 +24,9 @@
 	}
 
 	interface Props {
+		/** The campaign the folder belongs to: a folder id only names a folder
+		 *  within one campaign. */
+		campaignId: number;
 		folderId: number;
 		folderName: string;
 		/** Every chapter that can be picked. Empty when the chapter list failed
@@ -34,7 +37,7 @@
 		disabled?: boolean;
 	}
 
-	let { folderId, folderName, chapters, selected, disabled = false }: Props = $props();
+	let { campaignId, folderId, folderName, chapters, selected, disabled = false }: Props = $props();
 
 	let picked = $state<ChapterRef[]>([...selected]);
 	let status = $state<AutosaveStatus>('idle');
@@ -72,7 +75,7 @@
 			const res = await fetch('/api/settings/van-chapter-folders', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action: 'save-folder', folderId, chapters: picked }),
+				body: JSON.stringify({ action: 'save-folder', campaignId, folderId, chapters: picked }),
 			});
 			if (!res.ok) {
 				const parsed = (await res.json().catch(() => null)) as { error?: string } | null;

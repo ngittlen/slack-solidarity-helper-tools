@@ -16,7 +16,7 @@
 
 import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
 import { loadContactMarks, marksFor } from './contact-sync.js';
@@ -157,8 +157,23 @@ export async function claimTurf(
 ): Promise<ClaimResult> {
 	const { turfId, slackUserId, slackUserName, now } = input;
 
-	const [row] = await db.select().from(vanTurfs).where(eq(vanTurfs.turfId, turfId));
-	if (!row) return { ok: false, status: 404, message: 'That turf no longer exists.' };
+	const [found] = await db
+		.select({ turf: vanTurfs, campaignEnabled: vanCampaigns.enabled })
+		.from(vanTurfs)
+		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
+		.where(eq(vanTurfs.turfId, turfId));
+	if (!found) return { ok: false, status: 404, message: 'That turf no longer exists.' };
+	// A disabled campaign's turf is hidden from every list, so this is a page
+	// left open from before it was disabled. Its claims in progress carry on;
+	// new ones are refused.
+	if (!found.campaignEnabled) {
+		return {
+			ok: false,
+			status: 409,
+			message: 'That turf is no longer being handed out. Refresh the page for current turf.',
+		};
+	}
+	const row = found.turf;
 
 	// The same snapshot the page judged claimability from, so the server never
 	// refuses a turf the page offered (or hands out one it showed as done).
