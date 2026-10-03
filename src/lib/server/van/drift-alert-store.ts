@@ -22,6 +22,7 @@ import { chunked } from './sql-chunk.js';
 import { postAlert } from '../slack.js';
 import { errMessage } from '../../err-message.js';
 import { driftReport, type DriftKind } from '../../van/turf-drift.js';
+import { badgeShown, loadTurfCampaigns, type CampaignBadges } from './campaigns.js';
 import {
 	newDriftAlerts,
 	renderDriftAlert,
@@ -205,7 +206,20 @@ export async function sendDriftAlerts(
 	}
 
 	const fresh = newDriftAlerts(items);
-	const text = renderDriftAlert(fresh, appUrl);
+	// Named by campaign under the same rule as the turf and the organizer page.
+	let badges: CampaignBadges = {};
+	if (fresh.length > 0) {
+		try {
+			const campaigns = await loadTurfCampaigns(db);
+			badges = Object.fromEntries(
+				Object.entries(campaigns.badges).filter(([id]) => badgeShown(campaigns, Number(id))),
+			);
+		} catch (err) {
+			// The alert matters more than its labels.
+			console.error(`${LOG} could not read campaign badges:`, errMessage(err));
+		}
+	}
+	const text = renderDriftAlert(fresh, appUrl, { badges });
 	if (text === null) {
 		if (cleared > 0) console.log(`${LOG} drift alerts: cleared=${cleared}`);
 		// Say WHICH kind of quiet this is. "Nothing new" means the two sides

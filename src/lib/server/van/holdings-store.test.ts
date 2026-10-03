@@ -262,3 +262,29 @@ describe('loadHoldingsFor', () => {
 		expect(await loadHoldingsFor(db, 'U_NOBODY')).toEqual([]);
 	});
 });
+
+// The organizer page's campaign picker (specs/012-multi-van-campaigns).
+describe('one campaign', () => {
+	beforeEach(async () => {
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 1, 's', 's', 'x')`,
+		);
+		await client.execute('UPDATE van_turfs SET campaign_id = 2 WHERE turf_id = 200');
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 200, slack_user_id: 'U_TWO' });
+	});
+
+	it('scopes holdings and completions to it, and says which campaign each is', async () => {
+		const held = await loadCurrentHoldings(db, { chapterId: null, campaignId: 2 });
+		expect(held.map((h) => [h.turfId, h.campaignId])).toEqual([[200, 2]]);
+		const done = await loadRecentCompletions(db, { chapterId: null, campaignId: 2 });
+		expect(done.map((c) => [c.turfId, c.campaignId])).toEqual([[200, 2]]);
+	});
+
+	it('reads every campaign when none is picked', async () => {
+		const held = await loadCurrentHoldings(db, allChapters);
+		expect(held.map((h) => h.campaignId).sort()).toEqual([1, 2]);
+	});
+});

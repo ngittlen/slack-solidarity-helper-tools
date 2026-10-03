@@ -17,7 +17,18 @@
 		return hours === 1 ? '1 hour left' : `${hours} hours left`;
 	}
 
-	const scope = $derived(data.chapter ? data.chapter.name : 'all chapters');
+	// Read inside "… in {scope}" sentences: "Washtenaw County", "all chapters",
+	// or with a campaign picked, "all chapters (Partner)".
+	const scope = $derived(
+		(data.chapter?.name ?? 'all chapters') + (data.campaign ? ` (${data.campaign.name})` : ''),
+	);
+
+	/** " · <badge>" after a row's chapter, while its campaign shows a badge
+	 *  (more than one campaign enabled, or this one disabled). */
+	function campaignSuffix(campaignId: number): string {
+		const badge = data.campaignBadges[campaignId];
+		return badge ? ` · ${badge}` : '';
+	}
 
 	/** "A", "A and B", "A, B and C". */
 	const listNames = (names: string[]) =>
@@ -42,6 +53,23 @@
 				{/each}
 			</select>
 		</div>
+		{#if data.campaigns.length > 1}
+			<div class="filter">
+				<label for="campaign">Campaign</label>
+				<select
+					id="campaign"
+					name="campaign"
+					onchange={(e) => e.currentTarget.form?.requestSubmit()}
+				>
+					<option value="" selected={data.campaign === null}>All campaigns</option>
+					{#each data.campaigns as campaign (campaign.id)}
+						<option value={campaign.id} selected={data.campaign?.id === campaign.id}>
+							{campaign.name}
+						</option>
+					{/each}
+				</select>
+			</div>
+		{/if}
 		<button type="submit" class="filter-go">Show</button>
 		<a class="cross-link" href={resolve('/turfs/activity')}>See what already happened →</a>
 	</form>
@@ -112,7 +140,9 @@
 										<span class="turf-sub">{held.regionName}</span>
 									{/if}
 									<span class="turf-sub">
-										{held.doorCount.toLocaleString('en-US')} doors · {held.chapterName}
+										{held.doorCount.toLocaleString('en-US')} doors · {held.chapterName}{campaignSuffix(
+											held.campaignId,
+										)}
 									</span>
 								</td>
 								<td>{held.slackUserName}</td>
@@ -195,7 +225,9 @@
 									{#if suspect.regionName}
 										<span class="turf-sub">{suspect.regionName}</span>
 									{/if}
-									<span class="turf-sub">{suspect.chapterName}</span>
+									<span class="turf-sub"
+										>{suspect.chapterName}{campaignSuffix(suspect.campaignId)}</span
+									>
 								</td>
 								<td>{suspect.slackUserName}</td>
 								<td class="col-num">
@@ -269,7 +301,9 @@
 										<span class="turf-sub">{item.regionName}</span>
 									{/if}
 									<span class="turf-sub">
-										{item.doorCount.toLocaleString('en-US')} doors · {item.chapterName}
+										{item.doorCount.toLocaleString('en-US')} doors · {item.chapterName}{campaignSuffix(
+											item.campaignId,
+										)}
 									</span>
 								</td>
 								<td>

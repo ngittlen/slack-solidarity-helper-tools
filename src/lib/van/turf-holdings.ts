@@ -25,6 +25,8 @@ export interface HoldingRow extends ClaimSnapshot {
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	/** When the T-6h warning DM landed, or null if it has not (yet) been sent. */
 	expiryWarnedAt: string | null;
@@ -46,6 +48,8 @@ export interface Holding {
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	slackUserId: string;
 	slackUserName: string;
@@ -108,6 +112,7 @@ export function currentHoldings(rows: readonly HoldingRow[], now: Date): Holding
 				regionName: row.regionName,
 				chapterId: row.chapterId,
 				chapterName: row.chapterName,
+				campaignId: row.campaignId,
 				doorCount: row.doorCount,
 				slackUserId: row.slackUserId,
 				slackUserName: row.slackUserName,
@@ -166,6 +171,8 @@ export interface CompletionRow {
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	slackUserId: string;
 	slackUserName: string;
 	completedAt: string;

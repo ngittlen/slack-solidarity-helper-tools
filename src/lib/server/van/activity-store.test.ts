@@ -325,3 +325,27 @@ describe('hasAnyTurf', () => {
 		expect(await hasAnyTurf(db)).toBe(false);
 	});
 });
+
+// The activity page's campaign picker (specs/012-multi-van-campaigns).
+describe('one campaign', () => {
+	beforeEach(async () => {
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 1, 's', 's', 'x')`,
+		);
+		await client.execute('UPDATE van_turfs SET campaign_id = 2 WHERE turf_id = 400');
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 400 });
+	});
+
+	it('scopes the rows and the counts to it, and says which campaign each row is', async () => {
+		const query = { chapterId: null, campaignId: 2, range: WEEK };
+		const rows = await loadActivityRows(db, query);
+		expect(rows.map((r) => [r.turfId, r.campaignId])).toEqual([[400, 2]]);
+		expect((await loadActivityCounts(db, query)).claimed).toBe(1);
+	});
+
+	it('reads every campaign when none is picked', async () => {
+		expect((await loadActivityCounts(db, allChapters)).claimed).toBe(2);
+	});
+});

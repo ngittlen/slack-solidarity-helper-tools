@@ -21,6 +21,7 @@
 		campaignId: number;
 		credentialKey: string;
 		label: string;
+		badgeLabel: string;
 		refreshEnabled: boolean;
 		sheetsEnabled: boolean;
 		sheetTabName: string;
@@ -35,6 +36,7 @@
 		campaignId,
 		credentialKey,
 		label,
+		badgeLabel,
 		refreshEnabled,
 		sheetsEnabled,
 		sheetTabName,
@@ -59,6 +61,10 @@
 	const labelSave = createFieldAutosave<string>({
 		initial: untrack(() => label),
 		save: (value) => patch({ label: value }),
+	});
+	const badgeSave = createFieldAutosave<string>({
+		initial: untrack(() => badgeLabel),
+		save: (value) => patch({ badgeLabel: value }),
 	});
 	const tabSave = createFieldAutosave<string>({
 		initial: untrack(() => sheetTabName),
@@ -86,6 +92,7 @@
 
 	$effect(() => () => {
 		labelSave.destroy();
+		badgeSave.destroy();
 		tabSave.destroy();
 		refreshSave.destroy();
 		sheetsSave.destroy();
@@ -108,8 +115,32 @@
 		aria-label="Campaign name"
 	/>
 	<p class="app-config-note">
-		What volunteers see on this campaign's turf and in its Slack messages, and what alerts call it.
-		Left empty, it goes by its key, <code>{credentialKey}</code>.
+		What organizers see on these pages and what the turf channel's alerts call it — and the turf
+		badge, unless that has its own text below. Left empty, it goes by its key,
+		<code>{credentialKey}</code>.
+	</p>
+</SettingsRow>
+
+<SettingsRow
+	label="Turf badge"
+	status={badgeSave.status}
+	error={badgeSave.error}
+	onRetry={badgeSave.status === 'error' ? badgeSave.retry : undefined}
+>
+	<input
+		class="text-input"
+		type="text"
+		maxlength="24"
+		placeholder={labelSave.value || credentialKey}
+		value={badgeSave.value}
+		oninput={badgeSave.oninput}
+		aria-label="Turf badge"
+	/>
+	<p class="app-config-note">
+		The short text beside this campaign's turf on the map, on a volunteer's turf card and in Slack —
+		shown while more than one campaign is enabled, so volunteers know which campaign's VAN a list
+		number is from, and on this campaign's turf still being walked after it is disabled. Left empty,
+		it uses the name above.
 	</p>
 </SettingsRow>
 

@@ -26,7 +26,7 @@ import { geometryProgressLabel } from '$lib/van/geometry-progress.js';
 import { driftReport } from '$lib/van/turf-drift.js';
 import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
-import { campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
+import { campaignFilter, campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -80,7 +80,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// chapter" instead of erroring, because a mistyped URL should show a page.
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
-	const query = { chapterId: chapter?.chapterId ?? null };
+	// The same for the campaign: every one unless a known one is picked.
+	const campaigns = await campaignFilter(db, url.searchParams.get('campaign'));
+	const query = {
+		chapterId: chapter?.chapterId ?? null,
+		campaignId: campaigns.campaign?.id ?? null,
+	};
 
 	// One `now` for both halves, so the board and the summary above it describe
 	// the same instant even if a claim lands between the queries.
@@ -92,7 +97,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
 			loadDriftTurfs(db, query),
 			loadDriftClaims(db, query),
-			loadDriftVisibility(db),
+			loadDriftVisibility(db, query.campaignId),
 			// Campaign-wide rather than per chapter: the queue is drained in one
 			// pass for everyone, so scoping it to the selected chapter would
 			// report a different denominator than the work actually left.
@@ -120,6 +125,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		drift,
 		chapters,
 		chapter,
+		campaigns: campaigns.campaigns,
+		campaign: campaigns.campaign,
+		// Badge text per campaign id, for rows whose campaign shows one.
+		campaignBadges: campaigns.badges,
 		holdings,
 		summary: summarise(holdings),
 		suspects,

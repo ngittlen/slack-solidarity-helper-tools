@@ -20,6 +20,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import type { CompletionRow, HoldingRow } from '../../van/turf-holdings.js';
 import { visibleToChapter } from './chapter-visibility.js';
+import { inCampaign } from './campaigns.js';
 
 /** `doorsLeft` (turf-view.ts) in SQL: the uncontacted count when there is one
  *  built from the turf's current saved list, VAN's doorCount otherwise. */
@@ -38,12 +39,14 @@ export interface HoldingsQuery {
 	/** Null means every chapter. Admin-only page, so unscoped is the intended
 	 *  default rather than a leak. */
 	chapterId: number | null;
+	/** One VAN campaign's turf; null or omitted means every campaign. */
+	campaignId?: number | null;
 }
 
-function chapterFilter(chapterId: number | null): SQL | undefined {
+function scopeFilter(query: HoldingsQuery): SQL | undefined {
 	// The chapter's FOLDERS, not the label on the row: a folder mapped to
 	// several chapters is visible to all of them (chapter-visibility.ts).
-	return visibleToChapter(chapterId);
+	return and(visibleToChapter(query.chapterId), inCampaign(query.campaignId));
 }
 
 /**
@@ -72,6 +75,7 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
+			campaignId: vanTurfs.campaignId,
 			doorCount: doorsLeftColumn,
 			// Not selected, deliberately: printedListNumber is the credential
 			// issued to the holder, and an organizer looking at a board is not the
@@ -83,7 +87,7 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 			and(
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
-				chapterFilter(query.chapterId),
+				scopeFilter(query),
 			),
 		);
 }
@@ -98,6 +102,8 @@ export interface MyHoldingRow {
 	turfName: string;
 	regionName: string;
 	chapterId: number;
+	/** The turf's VAN campaign, for its badge. */
+	campaignId: number;
 	doorCount: number;
 	/** The number this volunteer was issued. */
 	issuedListNumber: string | null;
@@ -132,6 +138,7 @@ export async function loadHoldingsFor(db: Db, slackUserId: string): Promise<MyHo
 			turfName: vanTurfs.name,
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
+			campaignId: vanTurfs.campaignId,
 			doorCount: doorsLeftColumn,
 		})
 		.from(vanTurfCheckouts)
@@ -170,10 +177,11 @@ export async function loadRecentCompletions(
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
+			campaignId: vanTurfs.campaignId,
 		})
 		.from(vanTurfCheckouts)
 		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
-		.where(and(isNotNull(vanTurfCheckouts.completedAt), chapterFilter(query.chapterId)))
+		.where(and(isNotNull(vanTurfCheckouts.completedAt), scopeFilter(query)))
 		.orderBy(desc(vanTurfCheckouts.completedAt))
 		.limit(query.limit ?? COMPLETION_LOOKBACK);
 

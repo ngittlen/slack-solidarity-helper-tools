@@ -26,6 +26,7 @@ import {
 	type ActivityRow,
 } from '../../van/turf-activity.js';
 import { visibleToChapter } from './chapter-visibility.js';
+import { inCampaign } from './campaigns.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -38,6 +39,8 @@ export interface ActivityQuery {
 	/** Null means every chapter. Admin-only page, so an unscoped read is the
 	 *  intended default rather than a leak — see the route's header. */
 	chapterId: number | null;
+	/** One VAN campaign's turf; null or omitted means every campaign. */
+	campaignId?: number | null;
 	range: ActivityRange;
 }
 
@@ -57,8 +60,7 @@ function scopeWhere(query: ActivityQuery): SQL {
 		stampInRange(vanTurfCheckouts.completedAt, query.range),
 	) as SQL;
 
-	const chapter = visibleToChapter(query.chapterId);
-	return (chapter ? and(chapter, touched) : touched) as SQL;
+	return and(visibleToChapter(query.chapterId), inCampaign(query.campaignId), touched) as SQL;
 }
 
 /** `sum(case when … then 1 else 0 end)`, which counts events rather than rows —
@@ -155,6 +157,7 @@ export async function loadActivityRows(
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
+			campaignId: vanTurfs.campaignId,
 			doorCount: vanTurfs.doorCount,
 		})
 		.from(vanTurfCheckouts)

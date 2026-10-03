@@ -232,6 +232,7 @@ describe('loadChapterTurfs', () => {
 				start: 0,
 				nextOffset: 0,
 				unavailable: 0,
+				campaignBadges: null,
 			});
 			expect(queryCount()).toBe(0);
 		});

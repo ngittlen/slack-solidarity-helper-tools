@@ -15,7 +15,12 @@
 	import { rampStyle, turfShade } from '$lib/van/turf-shade.js';
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
-	import { mappableTurfs, type TurfView } from '$lib/van/turf-view.js';
+	import {
+		campaignStoppedNote,
+		mappableTurfs,
+		type CampaignBadges,
+		type TurfView,
+	} from '$lib/van/turf-view.js';
 
 	import type { PageData } from './$types';
 
@@ -68,6 +73,8 @@
 	 *  gave us. Keyed by turfId so a turf that arrives from both sources
 	 *  appears once, with the fresher copy winning. */
 	let paged = $state<Record<number, TurfView>>({});
+	/** Badge text for campaigns that only paged turf brought in. */
+	let pagedBadges = $state<CampaignBadges>({});
 	let loadingMore = $state(false);
 	/** The chapter's total, refreshed by whichever request answered last. It is
 	 *  a total rather than a remainder precisely so panning cannot make it
@@ -101,6 +108,7 @@
 	$effect(() => {
 		void shownChapterId;
 		paged = {};
+		pagedBadges = {};
 		totalNow = null;
 		lastBbox = '';
 	});
@@ -118,6 +126,16 @@
 		for (const turf of data.turfs ?? []) byId[turf.turfId] = turf;
 		return Object.values(byId);
 	});
+
+	/** Campaign id → badge, from the load and from every pan. The load's win,
+	 *  for the same reason its turf rows do. */
+	const badges = $derived<CampaignBadges>({ ...pagedBadges, ...(data.campaignBadges ?? {}) });
+
+	/** The turf's campaign badge, or null when none is shown — one campaign
+	 *  enabled, and the turf's not disabled. See TurfView.campaignId. */
+	function badgeFor(turf: TurfView): string | null {
+		return turf.campaignId === undefined ? null : (badges[turf.campaignId] ?? null);
+	}
 
 	const drawable = $derived(mappableTurfs(turfs));
 	const unmappable = $derived(turfs.length - drawable.length);
@@ -154,7 +172,11 @@
 				lastBbox = '';
 				return;
 			}
-			const body = (await res.json()) as { turfs: TurfView[]; total: number };
+			const body = (await res.json()) as {
+				turfs: TurfView[];
+				total: number;
+				campaignBadges: CampaignBadges | null;
+			};
 			// Only reassign when something genuinely new arrived. A fresh object
 			// every time would re-trigger every downstream derived — including
 			// the map's own framing — for no change in content.
@@ -163,6 +185,12 @@
 				const next = { ...paged };
 				for (const turf of added) next[turf.turfId] = turf;
 				paged = next;
+			}
+			const newBadges = Object.entries(body.campaignBadges ?? {}).filter(
+				([id]) => !(id in pagedBadges),
+			);
+			if (newBadges.length > 0) {
+				pagedBadges = { ...pagedBadges, ...Object.fromEntries(newBadges) };
 			}
 			totalNow = body.total;
 		} catch {
@@ -419,7 +447,14 @@
 			<section class="my-turfs" id="my-turf-{turf.turfId}" aria-label="Your turf" tabindex="-1">
 				<article class="code-card">
 					<header>
-						<h2>{turf.name}</h2>
+						<!-- Grouped so the badge stays beside the name: the header spreads
+						     its children to the edges, which would strand it mid-card. -->
+						<div class="code-card-title">
+							<h2>{turf.name}</h2>
+							{#if badgeFor(turf)}
+								<span class="badge badge-campaign">{badgeFor(turf)}</span>
+							{/if}
+						</div>
 						{#if turf.expiresInHours !== null}
 							<span class="expiry">Yours for {moreHours(turf.expiresInHours)}</span>
 						{/if}
@@ -436,8 +471,18 @@
 						</p>
 					{/if}
 
+					{#if turf.campaignDisabled}
+						<!-- The campaign was switched off while this volunteer held its
+						     turf. Their claim runs to its end; what changed is that
+						     nobody else will be offered it, and they should not be
+						     surprised when it is gone from the map after. -->
+						<p class="sync-warning">{campaignStoppedNote(badgeFor(turf))}</p>
+					{/if}
+
 					{#if listNumberFor(turf)}
-						<p class="code-lede">Open MiniVAN and enter this list number:</p>
+						<p class="code-lede">
+							Open MiniVAN and enter this {badgeFor(turf) ? `${badgeFor(turf)} ` : ''}list number:
+						</p>
 						<div class="code-row">
 							<output class="turf-code">{listNumberFor(turf)}</output>
 							<button
@@ -519,6 +564,7 @@
 						onselect={select}
 						tiles={data.tiles}
 						onviewport={loadViewport}
+						campaignBadges={badges}
 					/>
 					<ul class="legend">
 						<!-- The ramp is only useful if it can be read off, so it is
@@ -678,6 +724,12 @@
 										     row, the space-between would strand it in the middle on
 										     the rows that carry both. -->
 										<span class="card-badges">
+											{#if badgeFor(turf)}
+												<!-- Which campaign's VAN the turf is from, while there is
+												     more than one. Neutral and outlined: it names a source,
+												     not a state, and must not read as another status. -->
+												<span class="badge badge-campaign">{badgeFor(turf)}</span>
+											{/if}
 											{#if turf.updating}
 												<!-- VAN is re-cutting this turf's region, so its door
 											     count is about to move. Deliberately a chip and not

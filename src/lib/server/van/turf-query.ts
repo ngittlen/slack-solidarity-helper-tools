@@ -24,7 +24,13 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
-import { turfCampaignEnabled } from './campaigns.js';
+import {
+	badgeShown,
+	loadTurfCampaigns,
+	turfCampaignEnabled,
+	type CampaignBadges,
+	type TurfCampaigns,
+} from './campaigns.js';
 import { refreshingRegionIds } from './refresh.js';
 import { latestWalkReports } from './checkout-store.js';
 import { loadContactMarks, marksFor, type ContactMarks } from './contact-sync.js';
@@ -106,6 +112,13 @@ export interface TurfQueryResult {
 	nextOffset: number;
 	/** Rows `claimableOnly` left out. Zero when it is off. */
 	unavailable: number;
+	/**
+	 * Badge text for the campaigns behind `turfs`, keyed by `TurfView.campaignId`
+	 * — only those whose badge this page shows (badgeShown: more than one
+	 * campaign enabled, or a disabled campaign's held turf). Null when no turf
+	 * here shows one. Once per payload rather than per row.
+	 */
+	campaignBadges: CampaignBadges | null;
 }
 
 /** The turf a viewer may see in one chapter, ordered, cut, and serialisable. */
@@ -133,7 +146,15 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// everything — `inArray` with an empty list is invalid SQL in some drivers
 	// and "no filter" in others, and neither is what the caller asked for.
 	if (turfIds?.length === 0) {
-		return { turfs: [], total: 0, omitted: 0, start: 0, nextOffset: 0, unavailable: 0 };
+		return {
+			turfs: [],
+			total: 0,
+			omitted: 0,
+			start: 0,
+			nextOffset: 0,
+			unavailable: 0,
+			campaignBadges: null,
+		};
 	}
 
 	const rows = await db
@@ -211,6 +232,16 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// ContactHistory. One small read, skipped for an empty page.
 	const contactMarks =
 		selected.length > 0 ? await loadContactMarks(db) : new Map<number, ContactMarks>();
+	// Badges and disabled campaigns: one read of a table with a row per campaign.
+	const campaigns: TurfCampaigns =
+		selected.length > 0
+			? await loadTurfCampaigns(db)
+			: { badges: {}, showBadges: false, disabled: new Set<number>() };
+	// The campaigns whose badge this page shows, and only those: a payload
+	// names no campaign it shows no badged turf from.
+	const badged = new Set(
+		selected.map((r) => r.campaignId).filter((id) => badgeShown(campaigns, id)),
+	);
 
 	return {
 		// toTurfView is the single gate on what reaches a viewer; see its header.
@@ -221,6 +252,8 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				refreshingRegions,
 				walkReports,
 				contactsThrough: marksFor(contactMarks, row.campaignId).cursor,
+				showCampaign: badged.has(row.campaignId),
+				disabledCampaigns: campaigns.disabled,
 			}),
 		),
 		total: claimableOnly ? candidates.length : rows.length,
@@ -228,6 +261,10 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		start,
 		nextOffset,
 		unavailable: claimableOnly ? boxed.length - candidates.length : 0,
+		campaignBadges:
+			badged.size > 0
+				? Object.fromEntries([...badged].map((id) => [id, campaigns.badges[id] ?? '']))
+				: null,
 	};
 }
 

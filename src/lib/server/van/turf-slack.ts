@@ -38,6 +38,7 @@ import { claimTurf, endClaim } from './checkout-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from './packet-tracker-live.js';
 import { nudgeContactCount } from './contact-live.js';
 import { loadChapterTurfs } from './turf-query.js';
+import { badgeShown, loadTurfCampaigns } from './campaigns.js';
 import { foldersForChapter } from './chapter-visibility.js';
 import { loadHoldingsFor } from './holdings-store.js';
 import { isActive } from '../../van/checkout.js';
@@ -111,19 +112,20 @@ async function buildList(
 	if (!chapter) return buildChapterPickerBlocks(gate.chapters, APP_URL, gate.prompt);
 
 	const offset = ctx.offset ?? 0;
-	const { turfs, total, omitted, start, nextOffset, unavailable } = await loadChapterTurfs(db, {
-		chapterId: chapter.chapterId,
-		viewer,
-		location,
-		limit: SLACK_TURF_LIMIT,
-		offset,
-		includeHeldByViewer: true,
-		// Five rows on a phone: spend them on turf the volunteer can act on.
-		// Taken turf stays on the map, which every reply links to.
-		claimableOnly: true,
-		claimOptions: gate.claimOptions,
-		now: new Date(now),
-	});
+	const { turfs, total, omitted, start, nextOffset, unavailable, campaignBadges } =
+		await loadChapterTurfs(db, {
+			chapterId: chapter.chapterId,
+			viewer,
+			location,
+			limit: SLACK_TURF_LIMIT,
+			offset,
+			includeHeldByViewer: true,
+			// Five rows on a phone: spend them on turf the volunteer can act on.
+			// Taken turf stays on the map, which every reply links to.
+			claimableOnly: true,
+			claimOptions: gate.claimOptions,
+			now: new Date(now),
+		});
 
 	return buildTurfListBlocks({
 		turfs,
@@ -137,6 +139,7 @@ async function buildList(
 		unavailable,
 		appUrl: APP_URL,
 		zip,
+		campaignBadges,
 	});
 }
 
@@ -172,7 +175,7 @@ export async function claimFromSlack(
 	// loadChapterTurfs rather than the raw row because that is the gate on what
 	// a viewer may see, and now that the claim is in the ledger it reports this
 	// turf as held-by-you.
-	const { turfs } = await loadChapterTurfs(db, {
+	const { turfs, campaignBadges } = await loadChapterTurfs(db, {
 		chapterId: gate.chapter.chapterId,
 		viewer: gate.viewer,
 		turfIds: [ctx.turfId],
@@ -192,6 +195,8 @@ export async function claimFromSlack(
 			regionName: claimed?.regionName ?? '',
 			doorsRemaining: claimed?.doorsRemaining ?? 0,
 		},
+		campaignBadge:
+			claimed?.campaignId === undefined ? null : (campaignBadges?.[claimed.campaignId] ?? null),
 		chapter: gate.chapter,
 		printedListNumber: result.printedListNumber,
 		expiresAt: result.expiresAt,
@@ -317,7 +322,10 @@ export async function completeFromSlack(
  *  in the table, and listing it would offer buttons for turf the volunteer no
  *  longer holds. */
 async function mineFor(db: Db, slackUserId: string, now: number) {
-	const rows = await loadHoldingsFor(db, slackUserId);
+	const [rows, campaigns] = await Promise.all([
+		loadHoldingsFor(db, slackUserId),
+		loadTurfCampaigns(db),
+	]);
 	const at = new Date(now);
 	return rows
 		.filter((row) =>
@@ -342,6 +350,12 @@ async function mineFor(db: Db, slackUserId: string, now: number) {
 			expiresAt: row.expiresAt,
 			chapterId: row.chapterId,
 			issuedListNumber: row.issuedListNumber,
+			// Same rule as the turf list: while there is more than one campaign,
+			// and always for a campaign that has been disabled.
+			campaignBadge: badgeShown(campaigns, row.campaignId)
+				? (campaigns.badges[row.campaignId] ?? null)
+				: null,
+			campaignDisabled: campaigns.disabled.has(row.campaignId),
 		}));
 }
 

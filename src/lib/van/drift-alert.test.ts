@@ -19,6 +19,7 @@ function item(over: Partial<AlertableDrift> = {}): AlertableDrift {
 		regionName: 'Ann Arbor',
 		chapterId: 71,
 		chapterName: 'Washtenaw County',
+		campaignId: 1,
 		doorCount: 250,
 		heldBy: 'Dana',
 		hasListNumber: true,
@@ -116,6 +117,16 @@ describe('renderDriftAlert', () => {
 
 	it('formats door counts with separators', () => {
 		expect(renderDriftAlert([item({ doorCount: 1250 })], APP)!).toContain('1,250 doors');
+	});
+
+	// specs/012-multi-van-campaigns: the organizer needs to know whose VAN to
+	// look in, once there is more than one.
+	it('names the campaign of a row whose campaign shows a badge', () => {
+		const text = renderDriftAlert([item({ campaignId: 2 }), item({ turfId: 200 })], APP, {
+			badges: { 2: 'El-Sayed' },
+		})!;
+		expect(text).toContain('— El-Sayed · Ann Arbor ·');
+		expect(text.match(/El-Sayed/g)).toHaveLength(1);
 	});
 
 	it('summarises past the row cap instead of posting hundreds of lines', () => {

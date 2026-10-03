@@ -104,7 +104,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// this endpoint exists to provide.
 	if (!bounds) return json({ error: 'Invalid bbox' }, { status: 400 });
 
-	const { turfs, total } = await loadChapterTurfs(db, {
+	const { turfs, total, campaignBadges } = await loadChapterTurfs(db, {
 		chapterId,
 		viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
 		bounds,
@@ -122,5 +122,5 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// `total` is the chapter's, matching the page load. A per-viewport remainder
 	// would disagree with the figure the page already showed the moment the
 	// volunteer panned.
-	return json({ turfs, total });
+	return json({ turfs, total, campaignBadges });
 };

@@ -44,6 +44,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			id: campaign.id,
 			name,
 			label: campaign.label ?? '',
+			badgeLabel: campaign.badgeLabel ?? '',
 			credentialKey: campaign.credentialKey,
 			enabled: campaign.enabled,
 			chip: campaignChip(campaign),

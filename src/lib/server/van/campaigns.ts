@@ -8,6 +8,7 @@
 import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { vanCampaigns, vanSyncState, vanTurfs, type VanCampaignRow } from '../schema.js';
+import type { CampaignBadges } from '../../van/turf-view.js';
 
 // The widest handle these need, so the scheduler — which holds its own,
 // loosely typed one — can call them as well as the routes.
@@ -17,6 +18,53 @@ type Db = LibSQLDatabase<Record<string, unknown>>;
  *  until an admin names it. */
 export function campaignName(campaign: Pick<VanCampaignRow, 'label' | 'credentialKey'>): string {
 	return campaign.label?.trim() || campaign.credentialKey;
+}
+
+/** What a campaign's turf badge says to volunteers: its badge text, else its
+ *  name (campaignName). */
+export function campaignBadge(
+	campaign: Pick<VanCampaignRow, 'badgeLabel' | 'label' | 'credentialKey'>,
+): string {
+	return campaign.badgeLabel?.trim() || campaignName(campaign);
+}
+
+export type { CampaignBadges };
+
+/** What a list of turf needs to know about the campaigns behind it. */
+export interface TurfCampaigns {
+	/** Every campaign's badge text. */
+	badges: CampaignBadges;
+	/**
+	 * Whether turf shows its campaign's badge: while more than one campaign is
+	 * enabled. With one, a badge on every turf says nothing — the same rule as
+	 * the `[van · <name>]` prefix on Slack notices. Turf from a disabled
+	 * campaign is badged regardless; see `badgeShown`.
+	 */
+	showBadges: boolean;
+	/** Disabled campaigns. Their turf only reaches the volunteer holding it. */
+	disabled: ReadonlySet<number>;
+}
+
+export async function loadTurfCampaigns(db: Db): Promise<TurfCampaigns> {
+	return turfCampaignsFrom(await db.select().from(vanCampaigns));
+}
+
+function turfCampaignsFrom(rows: readonly VanCampaignRow[]): TurfCampaigns {
+	return {
+		badges: Object.fromEntries(rows.map((c) => [c.id, campaignBadge(c)])),
+		showBadges: rows.filter((c) => c.enabled).length > 1,
+		disabled: new Set(rows.filter((c) => !c.enabled).map((c) => c.id)),
+	};
+}
+
+/**
+ * Whether a turf in `campaignId` shows its badge. A disabled campaign's turf
+ * always does: it only reaches the volunteer still holding it, whose card says
+ * that campaign stopped handing turf out — which has to name the campaign
+ * even when, with it off, only one is left enabled.
+ */
+export function badgeShown(campaigns: TurfCampaigns, campaignId: number): boolean {
+	return campaigns.showBadges || campaigns.disabled.has(campaignId);
 }
 
 /**
@@ -154,4 +202,41 @@ export function turfCampaignEnabled(): SQL {
 	return sql`${vanTurfs.campaignId} in (
 		select ${vanCampaigns.id} from ${vanCampaigns} where ${vanCampaigns.enabled} = 1
 	)`;
+}
+
+/** Turf in one campaign, or no filter for null — the organizer pages'
+ *  campaign picker, beside their chapter one. */
+export function inCampaign(campaignId: number | null | undefined): SQL | undefined {
+	return campaignId == null ? undefined : eq(vanTurfs.campaignId, campaignId);
+}
+
+/** The organizer pages' campaign picker and row badges. */
+export interface CampaignFilter {
+	/** Every campaign, to pick from. The picker is shown only when there are
+	 *  two or more. */
+	campaigns: Array<{ id: number; name: string }>;
+	/** The one picked, or null for every campaign. */
+	campaign: { id: number; name: string } | null;
+	/** Badge text by campaign id, for the campaigns whose turf shows one
+	 *  (badgeShown). Empty while there is one campaign and it is enabled. */
+	badges: CampaignBadges;
+}
+
+/**
+ * `?campaign=<id>` for the organizer pages, validated against the campaigns
+ * that exist. An unknown id reads as "every campaign" rather than an error,
+ * the same as their chapter picker: a mistyped URL should still show a page.
+ */
+export async function campaignFilter(db: Db, raw: string | null): Promise<CampaignFilter> {
+	const rows = await db.select().from(vanCampaigns).orderBy(asc(vanCampaigns.id));
+	const campaigns = rows.map((c) => ({ id: c.id, name: campaignName(c) }));
+	const requested = Number(raw);
+	const turfCampaigns = turfCampaignsFrom(rows);
+	return {
+		campaigns,
+		campaign: raw ? (campaigns.find((c) => c.id === requested) ?? null) : null,
+		badges: Object.fromEntries(
+			rows.filter((c) => badgeShown(turfCampaigns, c.id)).map((c) => [c.id, campaignBadge(c)]),
+		),
+	};
 }

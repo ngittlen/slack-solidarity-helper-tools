@@ -181,6 +181,13 @@ describe('/turfs load', () => {
 				['joinUrl', 'mode', 'pageTitle', 'signInHref', 'tiles', 'turfCentre'].sort(),
 			);
 		});
+
+		// R13 (specs/012-multi-van-campaigns): which campaigns cut turf here is
+		// for signed-in volunteers only — no badge, id or name in the teaser.
+		it('names no campaign', async () => {
+			const data = await runPublic(event(null, 'chapter=71'));
+			expect(JSON.stringify(data)).not.toMatch(/campaign/i);
+		});
 	});
 
 	it('returns no turf data before a chapter is picked', async () => {

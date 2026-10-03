@@ -20,9 +20,12 @@ import { errMessage } from '$lib/err-message.js';
 // sync nothing and alert about it every half hour.
 
 const LABEL_MAX_LENGTH = 80;
+/** Short: it sits in a chip beside the turf name on a phone. */
+const BADGE_MAX_LENGTH = 24;
 
 interface CampaignBody {
 	label?: unknown;
+	badgeLabel?: unknown;
 	exportJobTypeId?: unknown;
 	refreshEnabled?: unknown;
 	sheetsEnabled?: unknown;
@@ -72,6 +75,21 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 			if (clash) return labelTaken(clash.label ?? label);
 		}
 		patch.label = label === '' ? null : label;
+	}
+
+	if ('badgeLabel' in body) {
+		if (typeof body.badgeLabel !== 'string') {
+			return json({ error: 'badgeLabel must be a string' }, { status: 400 });
+		}
+		const badge = body.badgeLabel.trim();
+		if (badge.length > BADGE_MAX_LENGTH) {
+			return json(
+				{ error: `badge must be ${BADGE_MAX_LENGTH} characters or fewer` },
+				{ status: 400 },
+			);
+		}
+		// Empty falls back to the name, then the key (campaignBadge).
+		patch.badgeLabel = badge === '' ? null : badge;
 	}
 
 	if ('exportJobTypeId' in body) {

@@ -287,3 +287,33 @@ describe('doorsHealthWarning', () => {
 		expect(await doorsHealthWarning(db, NOW)).toBeNull();
 	});
 });
+
+// R10 (specs/012-multi-van-campaigns): door totals and the leaderboard
+// combine every campaign, disabled ones included — doors knocked for a
+// campaign that has since been switched off were still knocked.
+describe('across campaigns', () => {
+	it('counts every campaign’s completions together, even with the same VAN route id', async () => {
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 0, 's', 's', 'x')`,
+		);
+		await turf({ turfId: 100 });
+		// Turf 200 is VAN route 100 in the partner campaign.
+		await client.execute(
+			`INSERT INTO van_turfs
+			   (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
+			    region_name, name, door_count, first_seen_at, last_seen_at)
+			 VALUES (200, 2, 100, 1, 1, 71, 'Washtenaw County', 'Region', 'Turf', 100, 'x', 'x')`,
+		);
+		await checkout({ turfId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 60 });
+		await checkout({
+			turfId: 200,
+			slackUserId: 'U2',
+			completedAt: '2026-09-09T19:00:00.000Z',
+			doors: 15,
+		});
+
+		expect((await loadClearedRows(db)).map((r) => r.turfId).sort()).toEqual([100, 200]);
+		expect(await loadDoorsDayTotals(db)).toEqual([{ date: '2026-09-09', total: 75 }]);
+	});
+});

@@ -145,6 +145,7 @@
 				campaignId={campaign.id}
 				credentialKey={campaign.credentialKey}
 				label={campaign.label}
+				badgeLabel={campaign.badgeLabel}
 				refreshEnabled={campaign.refreshEnabled}
 				sheetsEnabled={campaign.sheetsEnabled}
 				sheetTabName={campaign.sheetTabName}

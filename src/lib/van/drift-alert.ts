@@ -14,6 +14,7 @@
 // rows and the posting.
 
 import { driftAdvice, driftLabel, type DriftItem, type DriftKind } from './turf-drift.js';
+import type { CampaignBadges } from './turf-view.js';
 
 /**
  * How many rows of one kind to name before summarising the rest.
@@ -76,9 +77,12 @@ export function staleDriftStamps(
 	return stampedRouteIds.filter((id) => !drifting.has(id));
 }
 
-/** One row, as a bullet. */
-function renderRow(item: DriftItem): string {
-	const where = item.regionName ? `${item.regionName}` : item.chapterName;
+/** One row, as a bullet. The campaign leads `where` while it shows a badge:
+ *  the organizer has to know whose VAN to look in. */
+function renderRow(item: DriftItem, badges: CampaignBadges): string {
+	const place = item.regionName ? `${item.regionName}` : item.chapterName;
+	const badge = badges[item.campaignId];
+	const where = badge ? `${badge} · ${place}` : place;
 	const doors = `${item.doorCount.toLocaleString('en-US')} doors`;
 	const who = `held by ${item.heldBy}`;
 	// `canClaim` should have made this impossible, so it is an upstream fault
@@ -100,8 +104,14 @@ function renderRow(item: DriftItem): string {
 export function renderDriftAlert(
 	items: readonly DriftItem[],
 	appUrl: string,
-	maxRows: number = DRIFT_ALERT_MAX_ROWS,
+	options: {
+		maxRows?: number;
+		/** Campaign id → badge, for the campaigns whose turf shows one
+		 *  (badgeShown). Empty while there is one campaign: no badge. */
+		badges?: CampaignBadges;
+	} = {},
 ): string | null {
+	const { maxRows = DRIFT_ALERT_MAX_ROWS, badges = {} } = options;
 	if (items.length === 0) return null;
 
 	const kinds: DriftKind[] = ['claimed-not-in-minivan'];
@@ -117,7 +127,7 @@ export function renderDriftAlert(
 		const group = items.filter((i) => i.kind === kind);
 		if (group.length === 0) continue;
 		lines.push('', `*${driftLabel(kind)}* (${group.length})`, `_${driftAdvice(kind)}_`);
-		for (const item of group.slice(0, maxRows)) lines.push(renderRow(item));
+		for (const item of group.slice(0, maxRows)) lines.push(renderRow(item, badges));
 		if (group.length > maxRows) {
 			lines.push(`• _… +${group.length - maxRows} more_`);
 		}

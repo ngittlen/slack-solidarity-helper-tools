@@ -770,6 +770,13 @@ export const vanCampaigns = sqliteTable(
 		 *  NULL): two campaigns told apart only by capitals would read as one on a
 		 *  turf badge. */
 		label: text('label'),
+		/** The short text on this campaign's turf badge, shown to volunteers on
+		 *  the map, their turf card and in Slack while more than one campaign is
+		 *  enabled, and always on a disabled campaign's turf still being walked
+		 *  (badgeShown in van/campaigns.ts). Null or '' falls back to the label, then the credential key
+		 *  (campaignBadge in van/campaigns.ts). Not unique: it is a hint beside
+		 *  the turf name, not an identifier. */
+		badgeLabel: text('badge_label'),
 		enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
 		/** The coordinates export that feeds hull geometry. Per campaign because
 		 *  EveryAction issues export job types per key. Null means no geometry —

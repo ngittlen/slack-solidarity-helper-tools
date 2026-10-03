@@ -245,6 +245,20 @@ export interface TurfView {
 	 * reported, for the same payload reason as `claimBlockedReason`.
 	 */
 	walkReport?: { percent: number; dayLabel: string };
+	/**
+	 * The turf's VAN campaign, for its badge — looked up in the payload's
+	 * `campaignBadges` rather than repeated as text on every row. Present only
+	 * when the badge is shown: while more than one campaign is enabled, and on
+	 * turf from a disabled campaign. Omitted otherwise, like `updating`.
+	 */
+	campaignId?: number;
+	/**
+	 * True when the turf's campaign has been disabled. Such turf only reaches
+	 * the volunteer still holding it: their claim runs to its end, but the
+	 * campaign is no longer handing turf out, and they should hear that from
+	 * the card. Omitted when it does not apply.
+	 */
+	campaignDisabled?: true;
 }
 
 /** A walk report as the view needs it: the percentage, and when. `percent`
@@ -270,7 +284,26 @@ export type TurfViewOptions = ClaimOptions & {
 	/** How far ContactHistory has been read: the "as of" for any turf showing
 	 *  its uncontacted count. Null or omitted when the pull has never run. */
 	contactsThrough?: string | null;
+	/** Whether this row carries `campaignId` for a badge. See `TurfView.campaignId`. */
+	showCampaign?: boolean;
+	/** Disabled campaigns. See `TurfView.campaignDisabled`. */
+	disabledCampaigns?: ReadonlySet<number>;
 };
+
+/** Campaign id → the badge text volunteers see beside its turf. Sent once per
+ *  payload alongside the turf, which carry only `campaignId`. */
+export type CampaignBadges = Record<number, string>;
+
+/** What the holder of a disabled campaign's turf is told, on their turf card
+ *  and in Slack alike (`TurfView.campaignDisabled`). One sentence for both, so
+ *  the two places a volunteer checks their turf cannot tell them different
+ *  things. */
+export function campaignStoppedNote(badge: string | null): string {
+	return (
+		`${badge ?? 'This campaign'} has stopped handing out turf here. ` +
+		'Your claim still runs until it ends — walk it, or give it back, as usual.'
+	);
+}
 
 /** A map region's identity across campaigns. VAN region ids are unique only
  *  within one committee, so a refresh in flight in one campaign's region 10
@@ -439,5 +472,7 @@ export function toTurfView(
 		...(report && report.percent !== null
 			? { walkReport: { percent: report.percent, dayLabel: campaignDayLabel(report.at) } }
 			: {}),
+		...(options.showCampaign ? { campaignId: row.campaignId } : {}),
+		...(options.disabledCampaigns?.has(row.campaignId) ? { campaignDisabled: true as const } : {}),
 	};
 }

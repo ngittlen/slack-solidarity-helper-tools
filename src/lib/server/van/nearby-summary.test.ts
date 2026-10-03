@@ -170,6 +170,18 @@ describe('loadNearbySummary', () => {
 			expect(summary.doors).toEqual({ kind: 'none' });
 		});
 
+		// R13: the teaser's lookup is open to anyone, so it carries no campaign.
+		it('says nothing about which campaign the turf is from', async () => {
+			await client.execute(
+				`UPDATE van_campaigns SET label = 'Secret Partner', badge_label = 'SP', enabled = 1 WHERE id = 2`,
+			);
+			await client.execute(`UPDATE van_campaigns SET label = 'One Team Michigan' WHERE id = 1`);
+			await turf(1, HERE, { doors: 250, campaignId: 2 });
+			await turf(2, NEAR, { doors: 250 });
+			const json = JSON.stringify(await loadNearbySummary(db, HERE, NOW));
+			expect(json).not.toMatch(/campaign|Secret Partner|"SP"|One Team/i);
+		});
+
 		it('is left out of the map centre', async () => {
 			await turf(1, { lat: 42.21, lng: -83.71 });
 			await turf(2, { lat: 10, lng: 10 }, { campaignId: 2 });

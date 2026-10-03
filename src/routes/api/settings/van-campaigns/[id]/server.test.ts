@@ -145,6 +145,27 @@ describe('the name', () => {
 	});
 });
 
+describe('the turf badge', () => {
+	it('saves it trimmed, and clears it to the name when empty', async () => {
+		await patch({ badgeLabel: ' El-Sayed ' });
+		expect((await row()).badge_label).toBe('El-Sayed');
+		await patch({ badgeLabel: '' });
+		expect((await row()).badge_label).toBeNull();
+	});
+
+	// It is a hint beside the turf name, not an identifier: two campaigns may
+	// share one, unlike the name.
+	it('may match another campaign’s badge', async () => {
+		await client.execute(`UPDATE van_campaigns SET badge_label = 'MI' WHERE id = 1`);
+		expect((await patch({ badgeLabel: 'MI' })).status).toBe(200);
+	});
+
+	it('refuses one too long for a chip on a phone, or not a string', async () => {
+		expect((await patch({ badgeLabel: 'x'.repeat(25) })).status).toBe(400);
+		expect((await patch({ badgeLabel: 7 })).status).toBe(400);
+	});
+});
+
 describe('the switches and fields', () => {
 	it('saves the refresh and sheets switches', async () => {
 		await patch({ refreshEnabled: true });

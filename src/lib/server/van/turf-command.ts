@@ -32,7 +32,7 @@ import { formatDistance, haversineMeters, type LatLng } from '../../van/geometry
 import { escapeMrkdwn } from '../slack-mrkdwn.js';
 import { statusLabel } from '../../van/turf-status.js';
 import { describeAge, oldestRefreshMinutes } from '../../van/turf-freshness.js';
-import type { TurfView } from '../../van/turf-view.js';
+import { campaignStoppedNote, type CampaignBadges, type TurfView } from '../../van/turf-view.js';
 import { normalizeZip } from './zip-centroid.js';
 import { TURFS_PER_PAYLOAD } from '../../van/turf-paging.js';
 
@@ -246,6 +246,9 @@ export interface TurfListInput {
 	/** Echoed into the "open the map" link so the web page opens with the same
 	 *  location the list was sorted by. */
 	zip?: string | null;
+	/** Badge text for `TurfView.campaignId`, from loadChapterTurfs. Null or
+	 *  omitted when no turf on the page shows a badge (see badgeShown). */
+	campaignBadges?: CampaignBadges | null;
 }
 
 /** The command's main reply: the nearest few turfs, each claimable in place. */
@@ -321,7 +324,12 @@ export function buildTurfListBlocks(input: TurfListInput): SlackMessage {
 	];
 
 	for (const turf of turfs) {
-		blocks.push(turfSection(turf, chapter.chapterId, offset, location));
+		const badge =
+			turf.campaignId === undefined ? null : (input.campaignBadges?.[turf.campaignId] ?? null);
+		blocks.push(turfSection(turf, chapter.chapterId, offset, location, badge));
+		// Only ever the viewer's own turf: a disabled campaign's turf reaches
+		// nobody else. Said here as on the web card.
+		if (turf.campaignDisabled) blocks.push(context(escapeMrkdwn(campaignStoppedNote(badge))));
 		if (!turf.claimable && turf.claimBlockedReason) {
 			blocks.push(context(escapeMrkdwn(turf.claimBlockedReason)));
 		}
@@ -360,8 +368,11 @@ function turfSection(
 	chapterId: number,
 	offset: number,
 	location: LatLng | null,
+	badge: string | null,
 ): Block {
-	const facts = [`${turf.doorsRemaining} doors`];
+	// The campaign leads the facts while there is more than one: its list
+	// number only means something in that campaign's VAN.
+	const facts = [...(badge ? [escapeMrkdwn(badge)] : []), `${turf.doorsRemaining} doors`];
 	if (turf.walkReport) {
 		facts.push(`about ${turf.walkReport.percent}% walked (${turf.walkReport.dayLabel})`);
 	}
@@ -434,6 +445,8 @@ function distanceTo(turf: TurfView, location: LatLng | null): number | null {
 
 export interface ClaimedInput {
 	turf: { turfId: number; name: string; regionName: string; doorsRemaining: number };
+	/** The turf's campaign badge, while badges are shown; null otherwise. */
+	campaignBadge?: string | null;
 	chapter: ChapterRef;
 	printedListNumber: string;
 	expiresAt: string;
@@ -452,7 +465,16 @@ export interface ClaimedInput {
  * chat.postMessage into a channel.
  */
 export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
-	const { turf, chapter, printedListNumber, expiresAt, now, appUrl, location = null } = input;
+	const {
+		turf,
+		chapter,
+		printedListNumber,
+		expiresAt,
+		now,
+		appUrl,
+		location = null,
+		campaignBadge = null,
+	} = input;
 	const hours = hoursUntil(expiresAt, now);
 
 	return {
@@ -471,7 +493,10 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 			},
 			{
 				type: 'section',
-				text: mrkdwn(`Your MiniVAN list number:\n\`\`\`${escapeMrkdwn(printedListNumber)}\`\`\``),
+				text: mrkdwn(
+					`Your ${listNumberSource(campaignBadge)}MiniVAN list number:\n` +
+						`\`\`\`${escapeMrkdwn(printedListNumber)}\`\`\``,
+				),
 			},
 			{
 				type: 'section',
@@ -538,6 +563,10 @@ export interface MineTurf {
 	/** Null on a claim made before the column existed. Rendered as a pointer to
 	 *  the turf page rather than as an empty code block. */
 	issuedListNumber: string | null;
+	/** The turf's campaign badge, while badges are shown; null otherwise. */
+	campaignBadge?: string | null;
+	/** The turf's campaign has been disabled since the claim. */
+	campaignDisabled?: boolean;
 }
 
 export interface MineInput {
@@ -596,11 +625,15 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 						: `yours for another ${hours} hour${hours === 1 ? '' : 's'}`),
 			),
 		});
+		if (turf.campaignDisabled) {
+			blocks.push(context(escapeMrkdwn(campaignStoppedNote(turf.campaignBadge ?? null))));
+		}
 		blocks.push({
 			type: 'section',
 			text: mrkdwn(
 				turf.issuedListNumber
-					? `MiniVAN list number:\n\`\`\`${escapeMrkdwn(turf.issuedListNumber)}\`\`\``
+					? `${listNumberSource(turf.campaignBadge ?? null)}MiniVAN list number:\n` +
+							`\`\`\`${escapeMrkdwn(turf.issuedListNumber)}\`\`\``
 					: '_No list number was recorded for this claim — open the turf page for it._',
 			),
 		});
@@ -737,4 +770,10 @@ export function buildChapterPickerBlocks(
  *  rest of the command's voice. */
 export function plainMessage(text: string): SlackMessage {
 	return { text, blocks: [{ type: 'section', text: mrkdwn(text) }] };
+}
+
+/** "El-Sayed " before "MiniVAN list number", while there is more than one
+ *  campaign: a list number only loads from the campaign whose VAN cut it. */
+function listNumberSource(badge: string | null): string {
+	return badge ? `${escapeMrkdwn(badge)} ` : '';
 }

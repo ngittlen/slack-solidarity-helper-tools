@@ -184,6 +184,27 @@ describe('per campaign', () => {
 		expect((await loadDriftClaims(db, all)).map((c) => c.turfId)).not.toContain(900);
 	});
 
+	// The organizer page's campaign picker.
+	it('scopes turf and claims to one campaign when asked', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (2, '${iso(NOW.getTime())}', 1)`,
+		);
+		const turfs = await loadDriftTurfs(db, { chapterId: null, campaignId: 2 });
+		expect(turfs.map((t) => [t.turfId, t.campaignId])).toEqual([[900, 2]]);
+		const claims = await loadDriftClaims(db, { chapterId: null, campaignId: 2 });
+		expect(claims.map((c) => c.turfId)).toEqual([900]);
+	});
+
+	// The organizer page's picker: one campaign's check is about that campaign.
+	it('judges visibility for the picked campaign alone', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (2, '${iso(NOW.getTime())}', 0)`,
+		);
+		expect(await loadDriftVisibility(db)).toBe('visible');
+		expect(await loadDriftVisibility(db, 1)).toBe('visible');
+		expect(await loadDriftVisibility(db, 2)).toBe('van-side-unavailable');
+	});
+
 	it('is unavailable when the only campaign that could read exports is disabled', async () => {
 		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 1');
 		expect(await loadDriftVisibility(db)).toBe('van-side-unavailable');

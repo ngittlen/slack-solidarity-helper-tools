@@ -14,18 +14,21 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanCampaigns, vanSyncState, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import type { DriftClaim, DriftTurfRow, DriftVisibility } from '../../van/turf-drift.js';
 import { visibleToChapter } from './chapter-visibility.js';
+import { inCampaign } from './campaigns.js';
 
 type Db = ReturnType<typeof drizzle>;
 
 export interface DriftQuery {
 	/** Null means every chapter. */
 	chapterId: number | null;
+	/** One VAN campaign's turf; null or omitted means every campaign. */
+	campaignId?: number | null;
 }
 
-function chapterFilter(chapterId: number | null): SQL | undefined {
+function scopeFilter(query: DriftQuery): SQL | undefined {
 	// The chapter's FOLDERS, not the label on the row: a folder mapped to
 	// several chapters is visible to all of them (chapter-visibility.ts).
-	return visibleToChapter(chapterId);
+	return and(visibleToChapter(query.chapterId), inCampaign(query.campaignId));
 }
 
 /**
@@ -67,13 +70,14 @@ export async function loadDriftTurfs(db: Db, query: DriftQuery): Promise<DriftTu
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
+			campaignId: vanTurfs.campaignId,
 			doorCount: vanTurfs.doorCount,
 			printedListNumber: vanTurfs.printedListNumber,
 			vanDistributedTo: vanTurfs.vanDistributedTo,
 			retiredAt: vanTurfs.retiredAt,
 		})
 		.from(vanTurfs)
-		.where(and(chapterFilter(query.chapterId), exportsVisibleFilter()));
+		.where(and(scopeFilter(query), exportsVisibleFilter()));
 }
 
 /**
@@ -101,7 +105,7 @@ export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<DriftC
 			and(
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
-				chapterFilter(query.chapterId),
+				scopeFilter(query),
 				exportsVisibleFilter(),
 			),
 		);
@@ -120,13 +124,27 @@ export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<DriftC
  * visible. Before the first sync there is genuinely nothing to compare against,
  * and an empty report at that point would be reassurance drawn from an empty
  * table.
+ *
+ * Scoped like the turf and claims when the organizer page picks one campaign:
+ * otherwise a campaign whose exports cannot be read would show no rows while
+ * another campaign kept the check "visible", and the report would read those
+ * missing rows as a campaign that does not use exports.
  */
-export async function loadDriftVisibility(db: Db): Promise<DriftVisibility> {
+export async function loadDriftVisibility(
+	db: Db,
+	campaignId?: number | null,
+): Promise<DriftVisibility> {
 	const [row] = await db
 		.select({ minivanExportsOk: vanSyncState.minivanExportsOk })
 		.from(vanSyncState)
 		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanSyncState.campaignId))
-		.where(and(eq(vanSyncState.minivanExportsOk, true), eq(vanCampaigns.enabled, true)))
+		.where(
+			and(
+				eq(vanSyncState.minivanExportsOk, true),
+				eq(vanCampaigns.enabled, true),
+				campaignId == null ? undefined : eq(vanSyncState.campaignId, campaignId),
+			),
+		)
 		.limit(1);
 	return row?.minivanExportsOk === true ? 'visible' : 'van-side-unavailable';
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { load } from './+page.server.js';
+import { campaignFilter } from '$lib/server/van/campaigns.js';
 
 const mockSettings = vi.hoisted(() => vi.fn());
 const mockCounts = vi.hoisted(() => vi.fn());
@@ -8,6 +9,10 @@ const mockHasAnyTurf = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
+// One campaign: no picker, no badges.
+vi.mock('$lib/server/van/campaigns.js', () => ({
+	campaignFilter: vi.fn(async () => ({ campaigns: [], campaign: null, badges: {} })),
+}));
 vi.mock('$lib/server/van/activity-store.js', () => ({
 	loadActivityCounts: mockCounts,
 	loadActivityRows: mockRows,
@@ -126,6 +131,30 @@ describe('/turfs/activity filters', () => {
 			expect.anything(),
 			expect.objectContaining({ chapterId: null }),
 		);
+	});
+
+	// specs/012-multi-van-campaigns: the picker's choice reaches every query,
+	// and the page gets the list and the badges to render.
+	it('scopes the queries to a picked campaign', async () => {
+		vi.mocked(campaignFilter).mockResolvedValueOnce({
+			campaigns: [
+				{ id: 1, name: 'One Team Michigan' },
+				{ id: 2, name: 'Partner' },
+			],
+			campaign: { id: 2, name: 'Partner' },
+			badges: { 1: 'OTM', 2: 'Partner' },
+		});
+		const data = await run(event(ADMIN, 'campaign=2'));
+		expect(vi.mocked(campaignFilter)).toHaveBeenCalledWith(expect.anything(), '2');
+		expect(data.campaign).toEqual({ id: 2, name: 'Partner' });
+		expect(data.campaigns).toHaveLength(2);
+		expect(data.campaignBadges).toEqual({ 1: 'OTM', 2: 'Partner' });
+		for (const mock of [mockRows, mockCounts]) {
+			expect(mock).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ campaignId: 2 }),
+			);
+		}
 	});
 
 	it('applies the period to the query range', async () => {

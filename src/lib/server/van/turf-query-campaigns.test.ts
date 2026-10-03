@@ -92,3 +92,56 @@ describe('a disabled campaign’s turf', () => {
 		expect(idsOf(result)).toEqual([100, 200, 201]);
 	});
 });
+
+// Which campaign each turf is from (specs/012-multi-van-campaigns, Phase 6):
+// shown while more than one campaign is enabled, and always on turf from a
+// disabled one. The text travels once per payload, not on every row.
+describe('campaign badges', () => {
+	const load = (over: { includeHeldByViewer?: boolean } = {}) =>
+		loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER, now: NOW, ...over });
+
+	it('shows none while only one campaign is enabled', async () => {
+		const result = await load();
+		expect(result.turfs.map((t) => t.campaignId)).toEqual([undefined]);
+		expect(result.campaignBadges).toBeNull();
+	});
+
+	it('badges every turf once a second campaign is enabled', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 2');
+		const result = await load();
+		expect(Object.fromEntries(result.turfs.map((t) => [t.turfId, t.campaignId]))).toEqual({
+			100: 1,
+			200: 2,
+			201: 2,
+		});
+		expect(result.campaignBadges).toEqual({ 1: 'primary', 2: 'campaign2' });
+	});
+
+	it('uses the badge text, then the name, then the key', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 2');
+		await client.execute(
+			`UPDATE van_campaigns SET label = 'One Team Michigan', badge_label = 'OTM' WHERE id = 1`,
+		);
+		await client.execute(
+			`UPDATE van_campaigns SET label = 'El-Sayed', badge_label = '  ' WHERE id = 2`,
+		);
+		expect((await load()).campaignBadges).toEqual({ 1: 'OTM', 2: 'El-Sayed' });
+	});
+
+	it('names only the campaigns on the page', async () => {
+		await campaign(3, true);
+		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 2');
+		expect(Object.keys((await load()).campaignBadges ?? {})).toEqual(['1', '2']);
+	});
+
+	// With the partner disabled only one campaign is left enabled, so badges are
+	// off — but the volunteer still holding partner turf needs to see whose it is.
+	it('badges turf from a disabled campaign for its holder, and says it was disabled', async () => {
+		await claim(201);
+		const result = await load({ includeHeldByViewer: true });
+		const held = result.turfs.find((t) => t.turfId === 201)!;
+		expect(held).toMatchObject({ campaignId: 2, campaignDisabled: true });
+		expect(result.turfs.find((t) => t.turfId === 100)!.campaignId).toBeUndefined();
+		expect(result.campaignBadges).toEqual({ 2: 'campaign2' });
+	});
+});

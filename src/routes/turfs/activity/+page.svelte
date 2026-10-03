@@ -54,6 +54,24 @@
 			</select>
 		</div>
 
+		{#if data.campaigns.length > 1}
+			<div class="filter">
+				<label for="campaign">Campaign</label>
+				<select
+					id="campaign"
+					name="campaign"
+					onchange={(e) => e.currentTarget.form?.requestSubmit()}
+				>
+					<option value="" selected={data.campaign === null}>All campaigns</option>
+					{#each data.campaigns as campaign (campaign.id)}
+						<option value={campaign.id} selected={data.campaign?.id === campaign.id}>
+							{campaign.name}
+						</option>
+					{/each}
+				</select>
+			</div>
+		{/if}
+
 		<div class="filter">
 			<label for="days">Period</label>
 			<select id="days" name="days" onchange={(e) => e.currentTarget.form?.requestSubmit()}>
@@ -92,7 +110,7 @@
 			<p class="empty">
 				No turf activity in {periodLabel.toLowerCase()}{data.chapter
 					? ` for ${data.chapter.name}`
-					: ''}. Try a longer period.
+					: ''}{data.campaign ? ` in ${data.campaign.name}` : ''}. Try a longer period.
 			</p>
 		{/if}
 	{:else}
@@ -135,7 +153,12 @@
 											{/if}
 										</span>
 									</td>
-									<td>{event.chapterName}</td>
+									<td>
+										{event.chapterName}
+										{#if data.campaignBadges[event.campaignId]}
+											<span class="turf-region">{data.campaignBadges[event.campaignId]}</span>
+										{/if}
+									</td>
 									<td>{event.slackUserName}</td>
 								</tr>
 							{/each}

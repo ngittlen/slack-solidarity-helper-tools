@@ -17,6 +17,7 @@ import {
 	type ActivityEvent,
 } from '$lib/van/turf-activity.js';
 import { campaignDayKey, campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
+import { campaignFilter } from '$lib/server/van/campaigns.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
 
 // Turf checkout history, for organizers.
@@ -81,7 +82,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// and a second `new Date()` would let the window and the labels disagree.
 	const now = new Date();
 	const range = rangeFor(period, now);
-	const query = { chapterId: chapter?.chapterId ?? null, range };
+	// Every campaign unless a known one is picked, like the chapter.
+	const campaigns = await campaignFilter(db, url.searchParams.get('campaign'));
+	const query = {
+		chapterId: chapter?.chapterId ?? null,
+		campaignId: campaigns.campaign?.id ?? null,
+		range,
+	};
 
 	const [counts, rows, anyTurf] = await Promise.all([
 		loadActivityCounts(db, query),
@@ -112,6 +119,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		pageTitle: 'Turf activity',
 		chapters,
 		chapter,
+		campaigns: campaigns.campaigns,
+		campaign: campaigns.campaign,
+		// Badge text per campaign id, for rows whose campaign shows one.
+		campaignBadges: campaigns.badges,
 		period,
 		events,
 		dayLabels,
