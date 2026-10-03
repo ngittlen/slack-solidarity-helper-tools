@@ -120,6 +120,7 @@ describe('allAnchorIds', () => {
 			'excluded-chapters',
 			'zip-excluded-chapters',
 			'van-turf-checkout',
+			'turf-hidden-chapters',
 			'van-campaigns',
 			'van-blocklist',
 			'theme',

@@ -44,6 +44,24 @@ export function visibleToChapter(chapterId: number | null): SQL | undefined {
 }
 
 /**
+ * A `where` fragment restricting turf to what ANY of `chapterIds` may see — the
+ * turf at least one of them can claim. For a view that spans chapters but must
+ * still respect which of them are offered (the signed-out /turfs teaser).
+ *
+ * An empty list sees nothing, like a chapter with no folders.
+ */
+export function visibleToAnyChapter(chapterIds: readonly number[]): SQL {
+	if (chapterIds.length === 0) return sql`0`;
+	return sql`(${vanTurfs.campaignId}, ${vanTurfs.folderId}) in (
+		select ${vanChapterFolders.campaignId}, ${vanChapterFolders.folderId} from ${vanChapterFolders}
+		where ${vanChapterFolders.chapterId} in (${sql.join(
+			chapterIds.map((id) => sql`${id}`),
+			sql`, `,
+		)})
+	)`;
+}
+
+/**
  * The folders `chapterId` sees turf from — what visibleToChapter matches on —
  * as `"<campaign>:<folder>"` keys, since a folder id alone is ambiguous across
  * campaigns.

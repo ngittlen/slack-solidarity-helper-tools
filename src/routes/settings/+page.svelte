@@ -11,6 +11,8 @@
 	import InfoCommandsEditor from '$lib/components/settings/InfoCommandsEditor.svelte';
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
 	import ZipExcludedChaptersEditor from '$lib/components/settings/ZipExcludedChaptersEditor.svelte';
+	import TurfHiddenChaptersEditor from '$lib/components/settings/TurfHiddenChaptersEditor.svelte';
+	import { chaptersFromChannelMap } from '$lib/chapter-list.js';
 	import VanTurfCheckoutEditor from '$lib/components/settings/VanTurfCheckoutEditor.svelte';
 	import VanCampaignsList from '$lib/components/settings/VanCampaignsList.svelte';
 	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
@@ -20,6 +22,15 @@
 	import AppConfigEditor from '$lib/components/settings/AppConfigEditor.svelte';
 
 	const { data } = $props();
+
+	/** What /turfs can list — the chapter → channel map, one row per chapter —
+	 *  as the hidden-chapters picker wants it. */
+	const turfPickerChapters = $derived(
+		chaptersFromChannelMap(data.settings.chapterChannelMap).map((c) => ({
+			id: c.chapterId,
+			name: c.name,
+		})),
+	);
 
 	// "Last refreshed Nm ago" — derived from the oldest successful fetchedAt
 	// across the three live-list sources. Em-dash when every list rejected,
@@ -224,6 +235,18 @@
 				ttlHours={data.settings.vanTurfClaimTtlHours}
 				maxConcurrentClaims={data.settings.vanTurfMaxConcurrentClaims}
 				vanAssignmentTtlHours={data.settings.vanAssignmentTtlHours}
+			/>
+		</section>
+
+		<section
+			id={SECTION_IDS.turfHiddenChapters}
+			data-settings-anchor={SECTION_IDS.turfHiddenChapters}
+			tabindex="-1"
+		>
+			<h2>Chapters on /turfs</h2>
+			<TurfHiddenChaptersEditor
+				chapters={turfPickerChapters}
+				hiddenIds={[...data.settings.turfHiddenChapterIds]}
 			/>
 		</section>
 

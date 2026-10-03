@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chaptersFromChannelMap } from './chapter-list.js';
+import { chaptersFromChannelMap, turfChapters } from './chapter-list.js';
 
 describe('chaptersFromChannelMap', () => {
 	it('collapses a chapter that has several channels into one option', () => {
@@ -62,5 +62,30 @@ describe('chaptersFromChannelMap', () => {
 
 	it('returns nothing for an empty map rather than throwing', () => {
 		expect(chaptersFromChannelMap([])).toEqual([]);
+	});
+});
+
+describe('turfChapters', () => {
+	const map = [
+		{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' },
+		{ chapterId: 71, channelId: 'C2', name: 'Washtenaw County' },
+		{ chapterId: 72, channelId: 'C3', name: 'Wayne County' },
+		{ chapterId: 1, channelId: 'C4', name: 'Michigan (statewide)' },
+	];
+
+	it('is the deduplicated, sorted map less the hidden chapters', () => {
+		expect(turfChapters(map, new Set([1]))).toEqual([
+			{ chapterId: 71, name: 'Washtenaw County' },
+			{ chapterId: 72, name: 'Wayne County' },
+		]);
+	});
+
+	it('shows every chapter while none is hidden', () => {
+		expect(turfChapters(map, new Set())).toEqual(chaptersFromChannelMap(map));
+	});
+
+	// A chapter hidden and later dropped from the map has nothing to hide.
+	it('ignores a hidden id that is not in the map', () => {
+		expect(turfChapters(map, new Set([999]))).toHaveLength(3);
 	});
 });

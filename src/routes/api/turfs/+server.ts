@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { turfChapters } from '$lib/chapter-list.js';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
@@ -70,8 +71,14 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// Re-derived from settings rather than trusted from the query string, so a
 	// chapter id that is not a real chapter returns nothing instead of probing
 	// the table.
+	// A chapter hidden from turf is unknown here too, so the picker hiding it
+	// is not the only thing standing between a volunteer and its turf.
 	const settings = await loadSettings(db);
-	if (!settings.chapterChannelMap.some((c) => c.chapterId === chapterId)) {
+	if (
+		!turfChapters(settings.chapterChannelMap, settings.turfHiddenChapterIds).some(
+			(c) => c.chapterId === chapterId,
+		)
+	) {
 		return json({ error: 'Unknown chapter' }, { status: 400 });
 	}
 

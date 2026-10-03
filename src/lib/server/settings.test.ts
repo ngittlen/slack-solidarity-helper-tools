@@ -118,10 +118,10 @@ function makeDb(): MockDb {
 	};
 }
 
-// `loadSettings` always issues nine reads, in this exact order: chapter,
+// `loadSettings` always issues ten reads, in this exact order: chapter,
 // coalition, allowed users, excluded chapters, zip-excluded chapters, welcome
-// flags, app_config, info commands, moderators.
-const LOAD_SETTINGS_READS = 9;
+// flags, app_config, info commands, moderators, turf-hidden chapters.
+const LOAD_SETTINGS_READS = 10;
 function pushAllEmpty(db: MockDb) {
 	for (let i = 0; i < LOAD_SETTINGS_READS; i++) db._pushSelect([]);
 }
@@ -184,6 +184,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			moderatorSlackUserIds: new Set(),
 			reportExcludedChapterIds: new Set(),
 			zipExcludedChapterIds: new Set(),
+			turfHiddenChapterIds: new Set(),
 			welcomeDisabledChannelIds: new Set(),
 			slackTrackingChannelId: '',
 			slackGrowthReportChannelId: '',
@@ -493,6 +494,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'coalitionChannelMap',
 				'reportExcludedChapterIds',
 				'zipExcludedChapterIds',
+				'turfHiddenChapterIds',
 				'welcomeDisabledChannelIds',
 				'slackGrowthReportChannelId',
 				'slackGrowthReportRankingAlpha',
@@ -769,13 +771,25 @@ describe('settings setters — Story 3', () => {
 
 	it('loadSettings reads moderators into their own set, never into the admin set', async () => {
 		const db = makeDb();
-		pushEmpty(db, LOAD_SETTINGS_READS - 1);
+		// Moderators are the second-to-last read; turf-hidden chapters are last.
+		pushEmpty(db, LOAD_SETTINGS_READS - 2);
 		db._pushSelect([{ slackUserId: 'U_MO' }]);
+		db._pushSelect([]);
 
 		const result = await loadSettings(db as never);
 
 		expect(result.moderatorSlackUserIds).toEqual(new Set(['U_MO']));
 		expect(result.allowedSlackUserIds.has('U_MO')).toBe(false);
+	});
+
+	it('loadSettings reads the chapters hidden from /turfs into their own set', async () => {
+		const db = makeDb();
+		pushEmpty(db, LOAD_SETTINGS_READS - 1);
+		db._pushSelect([{ chapterId: 71 }, { chapterId: 72 }]);
+
+		const result = await loadSettings(db as never);
+
+		expect(result.turfHiddenChapterIds).toEqual(new Set([71, 72]));
 	});
 
 	it('saveExcludedChapter writes payload (with explicit null reason when omitted)', async () => {

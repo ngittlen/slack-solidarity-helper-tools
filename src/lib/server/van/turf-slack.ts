@@ -27,6 +27,7 @@
 // operation. Listing every chapter by name, as the picker does, is fine and is
 // what the web page already does.
 
+import { turfChapters } from '../../chapter-list.js';
 import { eq } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { zipChapterMap } from '../schema.js';
@@ -427,9 +428,13 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 	const access = turfAccess(viewer, blockedIds, SLACK_SUPERUSER_ID);
 	if (!access.allowed) return { ok: false, message: plainMessage(access.message) };
 
-	const chapters: ChapterRef[] = settings.chapterChannelMap
-		.map((entry) => ({ chapterId: entry.chapterId, name: entry.name }))
-		.sort((a, b) => a.name.localeCompare(b.name));
+	// The web page's list, by the same rule: deduplicated, and less any chapter
+	// hidden from turf — which every path below then treats as unknown, whether
+	// it came from a button, a ZIP or the volunteer's own profile.
+	const chapters: ChapterRef[] = turfChapters(
+		settings.chapterChannelMap,
+		settings.turfHiddenChapterIds,
+	);
 
 	// What the volunteer typed wins. With nothing typed, and no chapter carried
 	// in from a button, their own Solidarity profile says where they are.

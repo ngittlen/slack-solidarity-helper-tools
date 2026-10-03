@@ -116,6 +116,7 @@ describe('/turfs load', () => {
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		mockBlockedIds.mockResolvedValue(new Set<string>());
 		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
 			chapterChannelMap: CHAPTERS,
 			vanTurfClaimTtlHours: 48,
 			vanTurfMaxConcurrentClaims: 2,
@@ -129,6 +130,7 @@ describe('/turfs load', () => {
 	// rendered every one of them twice.
 	it('lists a chapter once even when it has several Slack channels', async () => {
 		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
 			chapterChannelMap: [
 				{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' },
 				{ chapterId: 71, channelId: 'C1b', name: 'Washtenaw County' },
@@ -149,6 +151,7 @@ describe('/turfs load', () => {
 	describe('signed out', () => {
 		beforeEach(() => {
 			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
 				chapterChannelMap: CHAPTERS,
 				publicJoinUrl: 'https://join.example/slack',
 			});
@@ -161,13 +164,27 @@ describe('/turfs load', () => {
 			expect(data.turfCentre).toEqual({ lat: 42.3, lng: -83.7 });
 		});
 
+		it('centres the teaser on turf a chapter /turfs offers can see', async () => {
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set([72]),
+				chapterChannelMap: CHAPTERS,
+				publicJoinUrl: '',
+			});
+			await runPublic(event(null));
+			expect(mockTurfCentre).toHaveBeenCalledWith(expect.anything(), [71]);
+		});
+
 		it('sends sign-in back to /turfs', async () => {
 			const data = await runPublic(event(null));
 			expect(data.signInHref).toBe('/auth/slack?redirectTo=%2Fturfs');
 		});
 
 		it('hides the join button when no link is configured', async () => {
-			mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS, publicJoinUrl: '' });
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: CHAPTERS,
+				publicJoinUrl: '',
+			});
 			const data = await runPublic(event(null));
 			expect(data.joinUrl).toBeNull();
 		});
@@ -202,6 +219,20 @@ describe('/turfs load', () => {
 		expect(result.chapter?.chapterId).toBe(71);
 		expect(result.turfs).toHaveLength(1);
 		expect(result.turfs[0]!.name).toBe('Turf 01');
+	});
+
+	// A chapter an admin hid from /turfs keeps its Slack channels, but is neither
+	// offered nor reachable here — a link to it opens the picker.
+	it('leaves a hidden chapter out of the picker, and treats a link to it as unknown', async () => {
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set([72]),
+			chapterChannelMap: CHAPTERS,
+		});
+		const listed = await run(event(VOLUNTEER));
+		expect(listed.chapters.map((c: { chapterId: number }) => c.chapterId)).toEqual([71]);
+		const linked = await run(event(VOLUNTEER, 'chapter=72'));
+		expect(linked.chapter).toBeNull();
+		expect(linked.turfs).toEqual([]);
 	});
 
 	it('ignores a chapter id that is not a real chapter', async () => {
@@ -373,7 +404,10 @@ describe('/turfs load', () => {
 			// `?chapter=N&zip=XXXXX` in a loop walks a whole chapter a payload at
 			// a time for nothing — the API route has always charged for it.
 			const { MAX_REQUESTS } = await import('$lib/van/request-budget.js');
-			mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: CHAPTERS,
+			});
 			vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const scraper = { ...VOLUNTEER, slackUserId: 'U_BUDGET' };
 
@@ -396,7 +430,10 @@ describe('/turfs load', () => {
 
 		it('never charges an admin for it', async () => {
 			const { MAX_REQUESTS } = await import('$lib/van/request-budget.js');
-			mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: CHAPTERS,
+			});
 			const organizer = { slackUserId: 'U_BUDGET_ADMIN', isAdmin: true };
 
 			for (let i = 0; i < MAX_REQUESTS + 2; i++) {
@@ -416,7 +453,10 @@ describe('/turfs load', () => {
 				channelId: `C${i}`,
 				name: `Chapter ${i}`,
 			}));
-			mockSettings.mockResolvedValue({ chapterChannelMap: many });
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: many,
+			});
 			vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const scraper = { ...VOLUNTEER, slackUserId: 'U_SCRAPER' };
 
@@ -446,7 +486,10 @@ describe('/turfs load', () => {
 				channelId: `C${i}`,
 				name: `Chapter ${i}`,
 			}));
-			mockSettings.mockResolvedValue({ chapterChannelMap: many });
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: many,
+			});
 			vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const organizer = { slackUserId: 'U_ORGANIZER', isAdmin: true };
 
@@ -536,7 +579,10 @@ describe('/turfs load', () => {
 				channelId: `C${i}`,
 				name: `Chapter ${i}`,
 			}));
-			mockSettings.mockResolvedValue({ chapterChannelMap: many });
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: many,
+			});
 			const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const wide = { ...VOLUNTEER, slackUserId: 'U_WIDE' };
 
@@ -569,6 +615,7 @@ describe('/turfs load — configured claim options', () => {
 	beforeEach(() => {
 		viewer = { slackUserId: `U_CFG_${++seq}`, slackUserName: 'Dana', isAdmin: false };
 		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
 			chapterChannelMap: CHAPTERS,
 			vanTurfClaimTtlHours: 72,
 			vanTurfMaxConcurrentClaims: 4,
@@ -613,6 +660,7 @@ describe('/turfs load — configured claim options', () => {
 		};
 
 		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
 			chapterChannelMap: CHAPTERS,
 			vanTurfClaimTtlHours: 72,
 			vanTurfMaxConcurrentClaims: 1,
@@ -624,6 +672,7 @@ describe('/turfs load — configured claim options', () => {
 
 		// Same ledger, a roomier cap: now claimable.
 		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
 			chapterChannelMap: CHAPTERS,
 			vanTurfClaimTtlHours: 72,
 			vanTurfMaxConcurrentClaims: 5,
@@ -650,7 +699,12 @@ describe('/turfs nearby action', () => {
 		address = `198.51.100.${++ip}`;
 		mockNearby.mockResolvedValue(SUMMARY);
 		mockResolveLocation.mockResolvedValue({ point: { lat: 42.2808, lng: -83.743 }, zip: '48104' });
-		mockSettings.mockResolvedValue({ vanAssignmentTtlHours: 72 });
+		// Wayne is hidden from /turfs, so only Washtenaw's turf is on offer.
+		mockSettings.mockResolvedValue({
+			vanAssignmentTtlHours: 72,
+			chapterChannelMap: CHAPTERS,
+			turfHiddenChapterIds: new Set([72]),
+		});
 	});
 
 	function post(fields: Record<string, string>) {
@@ -676,12 +730,14 @@ describe('/turfs nearby action', () => {
 	it('uses device coordinates without geocoding, rounded', async () => {
 		const result = await actions.nearby(post({ lat: '42.280812', lng: '-83.743038' }));
 		expect(mockResolveLocation).not.toHaveBeenCalled();
-		// With the admin's hand-out TTL, so it counts what the map would.
+		// With the admin's hand-out TTL and the chapters /turfs offers, so it
+		// counts what the map would — not turf only a hidden chapter can see.
 		expect(mockNearby).toHaveBeenCalledWith(
 			expect.anything(),
 			{ lat: 42.281, lng: -83.743 },
 			expect.any(Date),
 			72,
+			[71],
 		);
 		expect(result).toMatchObject({ nearby: { place: { kind: 'here' } } });
 	});

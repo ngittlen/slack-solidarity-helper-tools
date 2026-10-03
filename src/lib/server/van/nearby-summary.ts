@@ -27,10 +27,11 @@
 // `sheetAssignedTo` is left out: it carries no date and covers packets the
 // campaign marked Complete long ago, so it would count people who are not out.
 
-import { and, avg, between, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, avg, between, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { turfCampaignEnabled } from './campaigns.js';
+import { visibleToAnyChapter } from './chapter-visibility.js';
 import { chunked } from './sql-chunk.js';
 import { canClaim, isActive } from '../../van/checkout.js';
 import { latestWalkReports } from './checkout-store.js';
@@ -77,17 +78,26 @@ export async function loadNearbySummary(
 	/** The admin's hand-out TTL, so this counts the same turf as claimable
 	 *  that the map does. */
 	vanAssignmentTtlHours?: number,
+	/** The chapters /turfs offers (turfChapters). Turf no one of them can see —
+	 *  in folders mapped only to chapters hidden from /turfs — adds no doors
+	 *  and is not drawn: a visitor told about it would sign in to find no
+	 *  chapter that offers it. Null leaves turf unrestricted by chapter. */
+	turfChapterIds: readonly number[] | null = null,
 ): Promise<NearbySummary> {
 	const reach = GRID_RADIUS_MILES + HULL_REACH_MILES;
 	const dLat = reach / 69.05;
 	const dLng = reach / (69.17 * Math.max(0.05, Math.cos((point.lat * Math.PI) / 180)));
 
-	// Each turf with whether its campaign is enabled. A disabled campaign's
-	// turf is not handed out, so it adds no doors and is not drawn — the
-	// signed-in map hides it the same way — but anyone still walking it is
-	// still out canvassing, and still counted.
+	// Each turf with whether it is on offer: its campaign enabled, and a chapter
+	// /turfs lists able to see it. Turf that is not adds no doors and is not
+	// drawn — the signed-in map hides it the same way — but anyone still
+	// walking it is still out canvassing, and still counted.
+	const reachable =
+		turfChapterIds === null
+			? sql<number>`1`
+			: sql<number>`case when ${visibleToAnyChapter(turfChapterIds)} then 1 else 0 end`;
 	const rows = await db
-		.select({ turf: vanTurfs, campaignEnabled: vanCampaigns.enabled })
+		.select({ turf: vanTurfs, campaignEnabled: vanCampaigns.enabled, reachable })
 		.from(vanTurfs)
 		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
 		.where(
@@ -101,18 +111,18 @@ export async function loadNearbySummary(
 		);
 
 	const nearbyLimit = NEARBY_RADIUS_MILES * METRES_PER_MILE;
-	const turfs = rows.map(({ turf, campaignEnabled }) => {
+	const turfs = rows.map(({ turf, campaignEnabled, reachable }) => {
 		const centre = { lat: turf.centroidLat!, lng: turf.centroidLng! };
 		return {
 			...turf,
-			campaignEnabled,
+			offered: campaignEnabled && Number(reachable) === 1,
 			centre,
 			nearby: haversineMeters(point, centre) <= nearbyLimit,
 		};
 	});
 	const nearby = turfs.filter((t) => t.nearby);
-	const offered = turfs.filter((t) => t.campaignEnabled);
-	const nearbyOffered = nearby.filter((t) => t.campaignEnabled);
+	const offered = turfs.filter((t) => t.offered);
+	const nearbyOffered = nearby.filter((t) => t.offered);
 
 	const nearbyIds = nearby.map((t) => t.turfId);
 	const claims: (typeof vanTurfCheckouts.$inferSelect)[] = [];
@@ -166,7 +176,11 @@ export async function loadNearbySummary(
  * says which region the campaign works in, which its own website already does,
  * and nothing finer. Null when there is no mapped turf.
  */
-export async function loadTurfCentre(db: Db): Promise<LatLng | null> {
+export async function loadTurfCentre(
+	db: Db,
+	/** As loadNearbySummary's: only turf a chapter /turfs lists can see. */
+	turfChapterIds: readonly number[] | null = null,
+): Promise<LatLng | null> {
 	const [row] = await db
 		.select({ lat: avg(vanTurfs.centroidLat), lng: avg(vanTurfs.centroidLng) })
 		.from(vanTurfs)
@@ -174,6 +188,7 @@ export async function loadTurfCentre(db: Db): Promise<LatLng | null> {
 			and(
 				isNull(vanTurfs.retiredAt),
 				turfCampaignEnabled(),
+				turfChapterIds === null ? undefined : visibleToAnyChapter(turfChapterIds),
 				isNotNull(vanTurfs.centroidLat),
 				isNotNull(vanTurfs.centroidLng),
 			),
