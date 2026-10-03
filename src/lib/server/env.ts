@@ -4,7 +4,11 @@
 
 import { env } from '$env/dynamic/private';
 import { parseEncryptionKey } from './token-crypto.js';
-import { parseVanCampaigns, type VanCampaignCredentials } from './van/campaign-credentials.js';
+import {
+	parseLegacyExportJobTypeId,
+	parseVanCampaigns,
+	type VanCampaignCredentials,
+} from './van/campaign-credentials.js';
 
 const get = (key: string) => (env as Record<string, string | undefined>)[key] ?? '';
 
@@ -177,8 +181,17 @@ export const VAN_DATABASE_MODE = get('VAN_DATABASE_MODE').trim();
 // Export job type id for the coordinates-only export that feeds hull geometry.
 // EveryAction issues these per developer, so the `101` in VAN's docs is an
 // example — discover the real one with `npm run van:check`. Unset is fine:
-// the catalog sync runs without it and only geometry is skipped.
-export const VAN_EXPORT_JOB_TYPE_ID = intEnv('VAN_EXPORT_JOB_TYPE_ID', 0);
+// the catalog sync runs without it and only geometry is skipped. 0 means unset.
+// Parsed strictly, by the same rule the scripts use (parseLegacyExportJobTypeId),
+// so a value the app takes is a value `van:drain` takes too.
+export const VAN_EXPORT_JOB_TYPE_ID = (() => {
+	const raw = get('VAN_EXPORT_JOB_TYPE_ID');
+	const parsed = parseLegacyExportJobTypeId(raw);
+	if (parsed === null && raw.trim() !== '') {
+		console.warn(`[env] VAN_EXPORT_JOB_TYPE_ID is not a job type id: "${raw}" — ignoring it`);
+	}
+	return parsed ?? 0;
+})();
 // Key for the HMAC digests of VanIDs and addresses behind the uncontacted-door
 // count (van/person-hash.ts). Any long random string:
 //   openssl rand -base64 32

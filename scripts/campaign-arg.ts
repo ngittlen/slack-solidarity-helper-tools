@@ -14,6 +14,8 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanCampaigns, type VanCampaignRow } from '../src/lib/server/schema.js';
 import {
 	campaignSecretName,
+	exportJobTypeIdFor,
+	parseLegacyExportJobTypeId,
 	parseVanCampaigns,
 	PRIMARY_CAMPAIGN_KEY,
 	type VanCredential,
@@ -60,4 +62,10 @@ export async function campaignRow(db: Db, key: string): Promise<VanCampaignRow> 
 		process.exit(1);
 	}
 	return row;
+}
+
+/** The campaign's geometry export job type, by the app's own rule: its row's,
+ *  or for `primary` the legacy VAN_EXPORT_JOB_TYPE_ID. Null when it has none. */
+export function campaignExportJobTypeId(row: VanCampaignRow): number | null {
+	return exportJobTypeIdFor(row, parseLegacyExportJobTypeId(process.env.VAN_EXPORT_JOB_TYPE_ID));
 }

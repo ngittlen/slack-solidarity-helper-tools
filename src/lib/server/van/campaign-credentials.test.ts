@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
 	campaignSecretName,
+	exportJobTypeIdFor,
 	parseCampaignSecret,
+	parseLegacyExportJobTypeId,
 	parseVanCampaigns,
 } from './campaign-credentials.js';
 
@@ -195,5 +197,29 @@ describe('parseCampaignSecret', () => {
 describe('campaignSecretName', () => {
 	it('is the inverse of the key', () => {
 		expect(campaignSecretName('mi_2026')).toBe('VAN_CAMPAIGN_MI_2026');
+	});
+});
+
+// One rule for the app (van-env.ts) and the scripts (scripts/campaign-arg.ts).
+describe('exportJobTypeIdFor', () => {
+	it('uses the campaign’s own job type first', () => {
+		expect(exportJobTypeIdFor({ credentialKey: 'primary', exportJobTypeId: 7 }, 5)).toBe(7);
+		expect(exportJobTypeIdFor({ credentialKey: 'other', exportJobTypeId: 7 }, 5)).toBe(7);
+	});
+
+	it('falls back to the legacy var for primary only', () => {
+		expect(exportJobTypeIdFor({ credentialKey: 'primary', exportJobTypeId: null }, 5)).toBe(5);
+		expect(exportJobTypeIdFor({ credentialKey: 'other', exportJobTypeId: null }, 5)).toBeNull();
+		expect(exportJobTypeIdFor({ credentialKey: 'primary', exportJobTypeId: 0 }, 5)).toBe(5);
+	});
+});
+
+describe('parseLegacyExportJobTypeId', () => {
+	it('takes a positive whole number, and nothing else', () => {
+		expect(parseLegacyExportJobTypeId('5')).toBe(5);
+		expect(parseLegacyExportJobTypeId(' 5 ')).toBe(5);
+		for (const raw of [undefined, '', ' ', '0', '-1', '2.5', 'five']) {
+			expect(parseLegacyExportJobTypeId(raw)).toBeNull();
+		}
 	});
 });

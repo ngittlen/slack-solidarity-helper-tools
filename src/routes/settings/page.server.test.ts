@@ -25,7 +25,9 @@ vi.mock('$lib/server/van/campaign-status-store.js', () => ({
 		},
 	]),
 }));
+const mockEnsureCampaignRows = vi.hoisted(() => vi.fn(async () => [] as string[]));
 vi.mock('$lib/server/van-env.js', () => ({
+	ensureCampaignRows: mockEnsureCampaignRows,
 	credentialStatus: () => ({
 		secretName: 'VAN_CAMPAIGN_PRIMARY',
 		state: 'missing',
@@ -300,5 +302,21 @@ describe('VAN campaigns', () => {
 				liveTurfs: 0,
 			},
 		]);
+	});
+});
+
+// specs/012-multi-van-campaigns: a secret set since the last sync shows up the
+// moment an admin looks — and locally, where no scheduler runs, at all.
+describe('campaign discovery', () => {
+	it('adds rows for new campaign secrets before listing them', async () => {
+		await loadData(makeEvent({ isAdmin: true }));
+		expect(mockEnsureCampaignRows).toHaveBeenCalledOnce();
+	});
+
+	it('still renders the page when discovery fails', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockEnsureCampaignRows.mockRejectedValueOnce(new Error('db locked'));
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(data.vanCampaigns).toHaveLength(1);
 	});
 });

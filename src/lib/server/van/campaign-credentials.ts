@@ -215,3 +215,30 @@ export function parseVanCampaigns(
 
 	return { credentials, errors, warnings };
 }
+
+/**
+ * A campaign's geometry export job type: the one saved on its row, or — for
+ * `primary` only — the legacy VAN_EXPORT_JOB_TYPE_ID, so an install configured
+ * before campaigns existed keeps its geometry without re-entering it. Null
+ * means no geometry for that campaign: its turf draws as pins.
+ *
+ * Here rather than in van-env.ts so the scripts, which cannot import
+ * SvelteKit's `$env`, apply the same rule as the app.
+ */
+export function exportJobTypeIdFor(
+	campaign: { credentialKey: string; exportJobTypeId: number | null },
+	legacyJobTypeId: number | null,
+): number | null {
+	if (campaign.exportJobTypeId !== null && campaign.exportJobTypeId > 0) {
+		return campaign.exportJobTypeId;
+	}
+	return campaign.credentialKey === PRIMARY_CAMPAIGN_KEY ? legacyJobTypeId : null;
+}
+
+/** VAN_EXPORT_JOB_TYPE_ID as a job type id, or null when unset or not one. */
+export function parseLegacyExportJobTypeId(raw: string | undefined): number | null {
+	const value = Number((raw ?? '').trim());
+	return raw !== undefined && raw.trim() !== '' && Number.isInteger(value) && value > 0
+		? value
+		: null;
+}

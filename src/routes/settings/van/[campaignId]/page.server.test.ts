@@ -19,6 +19,7 @@ vi.mock('$lib/server/db.js', () => ({
 vi.mock('$lib/server/env.js', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/server/env.js')>()),
 	SOLIDARITY_API_TOKEN: 'test-token',
+	VAN_EXPORT_JOB_TYPE_ID: 5,
 	vanCampaignCredentials: () => ({
 		credentials: new Map([
 			[
@@ -95,6 +96,16 @@ describe('the page', () => {
 			error: 'VAN_CAMPAIGN_BROKEN is not valid JSON',
 		});
 		expect(data.campaign).toMatchObject({ name: 'broken', chip: 'new', label: '' });
+	});
+
+	// The legacy env var is primary's job type until one is picked; the page
+	// says so, rather than showing "None" while geometry is using it.
+	it('shows the legacy export job type primary falls back to, and none for others', async () => {
+		expect((await run('1')).campaign).toMatchObject({
+			exportJobTypeId: null,
+			fallbackExportJobTypeId: 5,
+		});
+		expect((await run('2')).campaign).toMatchObject({ fallbackExportJobTypeId: null });
 	});
 
 	it('still renders when the chapter list cannot be read', async () => {

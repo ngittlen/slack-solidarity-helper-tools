@@ -32,6 +32,7 @@ type Data = {
 	campaign: { id: number; name: string };
 	campaigns: Array<{ id: number; name: string }>;
 	folders: Array<{ folderId: number; name: string }>;
+	emptyFolders: Array<{ folderId: number; name: string }>;
 	mapping: Array<{ folderId: number; chapters: Array<{ chapterId: number }> }>;
 	error: string | null;
 };
@@ -111,6 +112,32 @@ describe('which campaign', () => {
 		mockClientFor.mockReturnValue({ ok: false, error: 'VAN_CAMPAIGN_ABDUL is not set' });
 		const data = await run('?campaign=2&refresh=1');
 		expect(data.error).toBe('VAN_CAMPAIGN_ABDUL is not set');
+	});
+
+	// A campaign whose folders are shared but not cut yet: nothing to map, but
+	// the folders are listed so they can be given chapters ahead of the cut.
+	it('lists folders with no map regions yet, and the mapping for them', async () => {
+		mockClientFor.mockImplementation(() => ({
+			ok: true,
+			client: {
+				folders: async () => [
+					{ folderId: 10, name: 'Chapter - Wayne' },
+					{ folderId: 11, name: 'Chapter - Bay' },
+				],
+				mapRegions: async (folderId: number) =>
+					folderId === 10
+						? []
+						: [{ mapRegionId: 1, name: 'R10C_Wayne_Detroit001', mapRoutes: [{ mapRouteId: 1 }] }],
+			},
+		}));
+		const data = await run('?campaign=2&refresh=1');
+		expect(data.folders.map((f) => f.folderId)).toEqual([11]);
+		expect(data.emptyFolders).toEqual([{ folderId: 10, name: 'Chapter - Wayne' }]);
+		// Folder 10 is mapped in campaign 2, so its picker opens on that.
+		expect(data.mapping).toContainEqual({
+			folderId: 10,
+			chapters: [{ chapterId: 71, chapterName: 'Wayne County' }],
+		});
 	});
 
 	it('404s for a campaign that does not exist', async () => {

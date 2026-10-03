@@ -27,9 +27,10 @@
  *     {"appName":"…","apiKey":"…","databaseMode":0}. databaseMode is optional
  *     here; leave it out to have the script work out which one your turf is
  *     in. This is how to vet a new campaign's key before it goes to Fly.
- *   otherwise: VAN_APP_NAME, VAN_API_KEY and, optionally, VAN_DATABASE_MODE
- *     (0 = My Voters, 1 = My Campaign) — the legacy vars, which the app still
- *     reads as the `primary` campaign.
+ *   otherwise the `primary` campaign, read as the app reads it:
+ *     VAN_CAMPAIGN_PRIMARY when it is set, or else the legacy VAN_APP_NAME,
+ *     VAN_API_KEY and, optionally, VAN_DATABASE_MODE (0 = My Voters,
+ *     1 = My Campaign).
  */
 
 import {
@@ -42,6 +43,7 @@ import {
 	campaignSecretName,
 	parseCampaignSecret,
 	parseDatabaseMode,
+	PRIMARY_CAMPAIGN_KEY,
 } from '../src/lib/server/van/campaign-credentials.js';
 
 const args = process.argv.slice(2);
@@ -53,14 +55,22 @@ const campaignIdx = args.indexOf('--campaign');
 // secret called VAN_CAMPAIGN_--BOTH.
 const campaignValue = campaignIdx >= 0 ? (args[campaignIdx + 1] ?? '') : undefined;
 const CAMPAIGN_ARG = campaignValue?.startsWith('--') ? '' : campaignValue;
+/** The campaign whose secret is read: the one named, or with no flag
+ *  `primary` when VAN_CAMPAIGN_PRIMARY is set — which the app then reads in
+ *  place of the legacy vars, so this must too. Undefined means the legacy vars. */
+const SECRET_KEY =
+	CAMPAIGN_ARG ??
+	(process.env[campaignSecretName(PRIMARY_CAMPAIGN_KEY)] !== undefined
+		? PRIMARY_CAMPAIGN_KEY
+		: undefined);
 
 /** Where the credentials came from, so advice names the right thing to edit. */
-const SECRET_NAME = CAMPAIGN_ARG === undefined ? null : campaignSecretName(CAMPAIGN_ARG);
+const SECRET_NAME = SECRET_KEY === undefined ? null : campaignSecretName(SECRET_KEY);
 
 /** The credentials to probe with, or exit with why there are none. */
 function loadCredentials(): { appName: string; apiKey: string; mode: VanDatabaseMode | null } {
 	if (SECRET_NAME !== null) {
-		if (!CAMPAIGN_ARG) {
+		if (!SECRET_KEY) {
 			console.error('--campaign needs a key, e.g. --campaign other for VAN_CAMPAIGN_OTHER');
 			process.exit(1);
 		}

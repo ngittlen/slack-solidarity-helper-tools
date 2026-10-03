@@ -62,6 +62,11 @@ export interface FolderSummary {
 
 interface Snapshot {
 	folders: FolderSummary[];
+	/** Folders the key can see with no map region cut in them yet. Listed so
+	 *  they can be mapped to chapters ahead of the cut — the mapping is an input
+	 *  to the sync, not something it discovers — and so a campaign whose
+	 *  folders are shared but empty does not look like a page that failed. */
+	emptyFolders: Array<{ folderId: number; name: string }>;
 	fetchedAt: string;
 	/** Folders VAN would not show us, by name — one line per failure. */
 	errors: string[];
@@ -89,6 +94,7 @@ async function buildSnapshot(campaign: VanCampaignRow): Promise<Snapshot> {
 	const client = configured.client;
 
 	const folders: FolderSummary[] = [];
+	const emptyFolders: Snapshot['emptyFolders'] = [];
 	const errors: string[] = [];
 
 	// Fetched first, so the county lookup can be built from every region name at
@@ -98,8 +104,11 @@ async function buildSnapshot(campaign: VanCampaignRow): Promise<Snapshot> {
 	for (const folder of await client.folders()) {
 		try {
 			const regions = await client.mapRegions(folder.folderId);
-			if (regions.length > 0)
+			if (regions.length > 0) {
 				fetched.push({ folderId: folder.folderId, name: folder.name, regions });
+			} else {
+				emptyFolders.push({ folderId: folder.folderId, name: folder.name });
+			}
 		} catch (err) {
 			errors.push(`${folder.name} (${folder.folderId}): ${errMessage(err)}`);
 		}
@@ -155,8 +164,10 @@ async function buildSnapshot(campaign: VanCampaignRow): Promise<Snapshot> {
 	// Most turf first — the folders worth mapping to a chapter are at the top.
 	folders.sort((a, b) => b.routes - a.routes);
 	const scopeBox = boundingBox(counties.entries.map((e) => e.centre));
+	emptyFolders.sort((a, b) => a.name.localeCompare(b.name));
 	return {
 		folders,
+		emptyFolders,
 		fetchedAt: new Date().toISOString(),
 		errors,
 		states: counties.states,
@@ -245,6 +256,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			campaign: campaignInfo,
 			campaigns,
 			folders: [],
+			emptyFolders: [] as Snapshot['emptyFolders'],
 			fetchedAt: null,
 			errors: [],
 			error: errMessage(snapshotResult.reason),
@@ -262,12 +274,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		};
 	}
 
-	const { folders, fetchedAt, errors, states, statesInferred, fallbackBounds } =
+	const { folders, emptyFolders, fetchedAt, errors, states, statesInferred, fallbackBounds } =
 		snapshotResult.value;
 	return {
 		campaign: campaignInfo,
 		campaigns,
 		folders,
+		emptyFolders,
 		fetchedAt,
 		errors,
 		error: null,
@@ -280,7 +293,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		mappingError,
 		// Only the folders on the page: a mapping row for a folder VAN no longer
 		// shows is real and stays in the table, but this page cannot edit it.
-		mapping: folders.map((folder) => ({
+		mapping: [...folders, ...emptyFolders].map((folder) => ({
 			folderId: folder.folderId,
 			chapters: chaptersByFolder.get(folder.folderId) ?? [],
 		})),

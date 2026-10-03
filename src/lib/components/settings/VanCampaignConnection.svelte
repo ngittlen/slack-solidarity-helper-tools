@@ -32,9 +32,17 @@
 		campaignId: number;
 		credentials: Credentials;
 		exportJobTypeId: number | null;
+		/** The legacy VAN_EXPORT_JOB_TYPE_ID geometry uses while none is picked
+		 *  here (primary only); null when there is none. */
+		fallbackExportJobTypeId?: number | null;
 	}
 
-	let { campaignId, credentials, exportJobTypeId }: Props = $props();
+	let {
+		campaignId,
+		credentials,
+		exportJobTypeId,
+		fallbackExportJobTypeId = null,
+	}: Props = $props();
 
 	let testing = $state(false);
 	let result = $state.raw<TestResult | null>(null);
@@ -162,7 +170,11 @@
 		onchange={jobTypeSave.oninput}
 		aria-label="Export job type"
 	>
-		<option value="">None — turf draws as pins</option>
+		<option value=""
+			>{fallbackExportJobTypeId === null
+				? 'None — turf draws as pins'
+				: `None here — using VAN_EXPORT_JOB_TYPE_ID (${fallbackExportJobTypeId})`}</option
+		>
 		{#each jobTypeOptions as type (type.exportJobTypeId)}
 			<option value={String(type.exportJobTypeId)}>
 				{type.exportJobTypeId} · {type.name}

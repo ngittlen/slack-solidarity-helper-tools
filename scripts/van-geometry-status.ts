@@ -11,6 +11,9 @@
  *   npm run van:geometry
  *   npm run van:geometry -- --failures 40
  *
+ * Every campaign's queue together: it is one table, drained campaign by
+ * campaign but read here as a whole.
+ *
  * Required env vars:
  *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN (unless the URL starts with file:)
  */
@@ -123,9 +126,10 @@ async function main(): Promise<void> {
 			if (failure.lastError) console.log(`        ${failure.lastError.slice(0, 160)}`);
 		}
 		console.log(
-			'\n  These have stopped retrying. The usual causes are a wrong\n' +
-				'  VAN_EXPORT_JOB_TYPE_ID (5 = VoterCircle carries coordinates; 4 does not)\n' +
-				'  and a key without export access — neither of which retrying fixes.',
+			'\n  These have stopped retrying. The usual causes are a wrong export job type\n' +
+				"  on the campaign's settings page (or VAN_EXPORT_JOB_TYPE_ID for primary;\n" +
+				'  VoterCircle carries coordinates, SavedListExport does not) and a key\n' +
+				'  without export access — neither of which retrying fixes.',
 		);
 	}
 

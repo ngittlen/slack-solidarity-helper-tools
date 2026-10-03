@@ -22,6 +22,7 @@ import { VAN_EXPORT_JOB_TYPE_ID, VAN_ID_HASH_SECRET, vanCampaignCredentials } fr
 import { vanCampaigns, type VanCampaignRow } from './schema.js';
 import {
 	campaignSecretName,
+	exportJobTypeIdFor,
 	PRIMARY_CAMPAIGN_KEY,
 	VAN_CAMPAIGN_PREFIX,
 } from './van/campaign-credentials.js';
@@ -123,10 +124,7 @@ export function credentialStatus(
 export function vanExportJobTypeIdFor(
 	campaign: Pick<VanCampaignRow, 'credentialKey' | 'exportJobTypeId'>,
 ): number | null {
-	if (campaign.exportJobTypeId !== null && campaign.exportJobTypeId > 0) {
-		return campaign.exportJobTypeId;
-	}
-	return campaign.credentialKey === PRIMARY_CAMPAIGN_KEY ? legacyExportJobTypeId() : null;
+	return exportJobTypeIdFor(campaign, legacyExportJobTypeId());
 }
 
 /**

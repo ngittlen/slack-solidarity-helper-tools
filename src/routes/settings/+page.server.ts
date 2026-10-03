@@ -3,7 +3,7 @@ import type { PageServerLoad } from './$types';
 
 import { errMessage } from '$lib/err-message.js';
 import { db } from '$lib/server/db.js';
-import { credentialStatus } from '$lib/server/van-env.js';
+import { credentialStatus, ensureCampaignRows } from '$lib/server/van-env.js';
 import { campaignName } from '$lib/server/van/campaigns.js';
 import { loadCampaignSummaries } from '$lib/server/van/campaign-status-store.js';
 import { campaignListRow, type CampaignListRow } from '$lib/van/campaign-list.js';
@@ -190,6 +190,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// page-fatal — an empty mapping just means no turf is published yet, and a
 	// theme read failure means the editor opens on the brand defaults, which is
 	// also what the site is rendering.
+	// A campaign secret set since the last sync gets its (disabled) row now, so
+	// it shows up the moment an admin looks rather than after the next sync
+	// tick — or never, locally, where no scheduler runs. The same bookkeeping
+	// the sync does: idempotent, and no VAN call.
+	try {
+		await ensureCampaignRows(db);
+	} catch (err) {
+		console.error('[settings] campaign discovery failed:', errMessage(err));
+	}
 	const [vanCampaignsResult, vanBlockedUsersResult, themeTokensResult] = await Promise.allSettled([
 		loadCampaignSummaries(db),
 		loadVanBlockedUsers(db),

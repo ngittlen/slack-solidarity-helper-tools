@@ -49,7 +49,12 @@ import { createVanClient } from '../src/lib/server/van/client.js';
 import { runGeometryQueue } from '../src/lib/server/van/geometry-worker.js';
 import { vanContactLock, vanSyncLock } from '../src/lib/server/van/locks.js';
 import { PRIMARY_CAMPAIGN_KEY } from '../src/lib/server/van/campaign-credentials.js';
-import { campaignCredential, campaignKeyArg, campaignRow } from './campaign-arg.js';
+import {
+	campaignCredential,
+	campaignExportJobTypeId,
+	campaignKeyArg,
+	campaignRow,
+} from './campaign-arg.js';
 import { acquireSyncLock, releaseSyncLock } from '../src/lib/server/sync-lock.js';
 import { exportCallbackUrl } from '../src/lib/server/van/webhook-token.js';
 import { createPersonHasher } from '../src/lib/server/van/person-hash.js';
@@ -75,7 +80,6 @@ const SLICE_MS = 60 * 1000;
 
 const CAMPAIGN_KEY = campaignKeyArg(args);
 const credential = campaignCredential(CAMPAIGN_KEY);
-const legacyExportJobTypeId = Number(process.env.VAN_EXPORT_JOB_TYPE_ID ?? '');
 const appUrl = process.env.APP_URL ?? '';
 const cronSecret = process.env.INTERNAL_CRON_SECRET ?? '';
 const hashSecret = process.env.VAN_ID_HASH_SECRET ?? '';
@@ -172,11 +176,8 @@ async function pullContacts(deadline: number, isStopping: () => boolean): Promis
 async function main(): Promise<void> {
 	const campaign = await campaignRow(db, CAMPAIGN_KEY);
 	campaignId = campaign.id;
-	const exportJobTypeId =
-		campaign.exportJobTypeId ??
-		(CAMPAIGN_KEY === PRIMARY_CAMPAIGN_KEY && legacyExportJobTypeId > 0
-			? legacyExportJobTypeId
-			: null);
+	// The app's own rule (exportJobTypeIdFor), so the drain and the sync agree.
+	const exportJobTypeId = campaignExportJobTypeId(campaign);
 	if (exportJobTypeId === null) {
 		fail(
 			`No export job type for ${CAMPAIGN_KEY} — set it on the campaign` +

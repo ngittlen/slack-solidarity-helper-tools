@@ -23,44 +23,44 @@
  * Usage (from project root):
  *   npm run van:e2e
  *   npm run van:e2e -- --no-export
+ *   npm run van:e2e -- --campaign other
  *
  * Required env vars:
- *   VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE, VAN_EXPORT_JOB_TYPE_ID,
- *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN (unless the URL starts with file:)
+ *   the campaign's credentials, as the app reads them (scripts/campaign-arg.ts):
+ *   VAN_CAMPAIGN_<KEY>, or for `primary` (the default) the legacy
+ *   VAN_APP_NAME, VAN_API_KEY, VAN_DATABASE_MODE;
+ *   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN (unless the URL starts with file:).
+ * The export job type is the campaign's, from its settings page — or for
+ * `primary` VAN_EXPORT_JOB_TYPE_ID — so the campaign needs its van_campaigns
+ * row, which the app adds on its first sync after the secret is set.
  */
 
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
-import {
-	createVanClient,
-	VAN_BASE_URL,
-	VanError,
-	type VanDatabaseMode,
-} from '../src/lib/server/van/client.js';
+import { createVanClient, VAN_BASE_URL, VanError } from '../src/lib/server/van/client.js';
 import { extractHull, responseChunks } from '../src/lib/server/van/hull-extract.js';
 import { runCatalogSync } from '../src/lib/server/van/sync.js';
-import { PRIMARY_CAMPAIGN_ID } from '../src/lib/server/schema.js';
 import type { VanExportJob, VanMapRegion } from '../src/lib/server/van/types.js';
+import {
+	campaignCredential,
+	campaignExportJobTypeId,
+	campaignKeyArg,
+	campaignRow,
+} from './campaign-arg.js';
 
 const SKIP_EXPORT = process.argv.slice(2).includes('--no-export');
 
-const appName = process.env.VAN_APP_NAME ?? '';
-const apiKey = process.env.VAN_API_KEY ?? '';
-const rawMode = (process.env.VAN_DATABASE_MODE ?? '').trim();
-const exportJobTypeId = Number(process.env.VAN_EXPORT_JOB_TYPE_ID ?? '');
 const appUrl = process.env.APP_URL ?? '';
 
-if (!appName || !apiKey) {
-	console.error('Missing required env vars: VAN_APP_NAME, VAN_API_KEY');
-	process.exit(1);
-}
-if (rawMode !== '0' && rawMode !== '1') {
-	console.error(`VAN_DATABASE_MODE must be 0 or 1, got "${rawMode}".`);
-	process.exit(1);
-}
-const mode = Number(rawMode) as VanDatabaseMode;
-const client = createVanClient({ appName, apiKey, databaseMode: mode });
+const CAMPAIGN_KEY = campaignKeyArg();
+const credential = campaignCredential(CAMPAIGN_KEY);
+const client = createVanClient({
+	appName: credential.appName,
+	apiKey: credential.apiKey,
+	databaseMode: credential.databaseMode,
+});
+const db = drizzle(createClient(dbConfig));
 
 // VAN requires an HTTPS webhook and POSTs the finished job to it. The token is
 // invalid on purpose: the callback rejects it with a 401 before doing anything.
@@ -105,6 +105,7 @@ function section(title: string): void {
  *  would print only the last of five attempts and none of the headers. */
 async function rawMinivanExports(): Promise<void> {
 	const url = `${VAN_BASE_URL}/minivanExports?$expand=canvassers&$top=50`;
+	const { appName, apiKey, databaseMode: mode } = credential;
 	const auth = Buffer.from(`${appName}:${apiKey}|${mode}`).toString('base64');
 	const sentAt = new Date().toISOString();
 	const res = await fetch(url, {
@@ -132,7 +133,14 @@ async function rawMinivanExports(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	console.log(`\nVAN end-to-end — app "${appName}", mode ${mode}`);
+	const campaign = await campaignRow(db, CAMPAIGN_KEY);
+	// The app's own rule: the campaign's job type, or VAN_EXPORT_JOB_TYPE_ID
+	// for primary.
+	const exportJobTypeId = campaignExportJobTypeId(campaign);
+	console.log(
+		`\nVAN end-to-end — campaign ${campaign.label ?? CAMPAIGN_KEY} (id ${campaign.id}), ` +
+			`app "${credential.appName}", mode ${credential.databaseMode}`,
+	);
 	console.log(`Database (read only; sync is a dry run): ${dbConfig.url}`);
 
 	section('Catalog reads');
@@ -183,9 +191,12 @@ async function main(): Promise<void> {
 		'GET /exportJobTypes',
 		() => client.exportJobTypes(),
 		(types) => {
+			if (exportJobTypeId === null)
+				return `${types.length} type(s); none configured for this campaign`;
 			const configured = types.find((t) => t.exportJobTypeId === exportJobTypeId);
-			if (!configured) throw new Error(`VAN_EXPORT_JOB_TYPE_ID=${exportJobTypeId} is not offered`);
-			return `VAN_EXPORT_JOB_TYPE_ID=${exportJobTypeId} is "${configured.name}"`;
+			if (!configured)
+				throw new Error(`export job type ${exportJobTypeId} is not offered to this key`);
+			return `export job type ${exportJobTypeId} is "${configured.name}"`;
 		},
 	);
 	await step(
@@ -207,16 +218,15 @@ async function main(): Promise<void> {
 	if (turfFolderIds.length === 0) {
 		record('runCatalogSync', 'skip', 'no folder holds turf');
 	} else {
-		const db = drizzle(createClient(dbConfig));
 		const sync = await step(
 			'runCatalogSync (dry run, all turf folders → one test chapter)',
 			() =>
 				runCatalogSync(
 					db,
 					client,
-					// The legacy VAN_* key is the primary campaign's, so the dry
-					// run plans against that campaign's stored turf.
-					PRIMARY_CAMPAIGN_ID,
+					// The campaign whose key this is, so the dry run plans
+					// against that campaign's stored turf.
+					campaign.id,
 					[{ chapterId: -1, chapterName: 'e2e dry run', folderIds: turfFolderIds }],
 					{ dryRun: true },
 				),
@@ -233,8 +243,13 @@ async function main(): Promise<void> {
 		record('POST /exportJobs', 'skip', '--no-export');
 		return summarise();
 	}
-	if (!Number.isFinite(exportJobTypeId) || exportJobTypeId <= 0) {
-		record('POST /exportJobs', 'FAIL', 'VAN_EXPORT_JOB_TYPE_ID is not set');
+	if (exportJobTypeId === null) {
+		record(
+			'POST /exportJobs',
+			'FAIL',
+			"no export job type — set one on the campaign's settings page" +
+				(CAMPAIGN_KEY === 'primary' ? ' or VAN_EXPORT_JOB_TYPE_ID' : ''),
+		);
 		return summarise();
 	}
 	// Smallest route: the cheapest export VAN can run, and the likeliest to come

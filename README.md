@@ -312,6 +312,7 @@ APP_URL=https://your-app.fly.dev
 SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
 SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
 GOOGLE_SHEETS_SERVICE_ACCOUNT='{"client_email":"…@….iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\n…"}'
+VAN_CAMPAIGN_PRIMARY='{"appName":"…","apiKey":"…","databaseMode":0}'  # one VAN_CAMPAIGN_<KEY> per VAN campaign
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
 
@@ -320,6 +321,8 @@ PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 `REPORT_EXCLUDED_CHAPTER_IDS` is a comma-separated list of solidarity.tech chapter IDs to omit from the dashboard charts AND the weekly growth report — useful for test chapters or internal-only ones. Leave empty (or unset) to include everything.
 
 `GOOGLE_SHEETS_SERVICE_ACCOUNT` is the whole downloaded service-account JSON key, on one line, and is optional — without it the Packet Tracker sync does nothing and says nothing. It is a credential, so it is a deployment secret rather than a `/settings` field; _which_ spreadsheets it writes to is a setting, because that changes without a deploy. Literal `\n` escapes inside `private_key` are handled, since that is what survives a trip through a shell. See [the Packet Tracker](#the-packet-tracker-in-the-campaigns-spreadsheets) for the rest of the setup.
+
+`VAN_CAMPAIGN_<KEY>` holds one VAN campaign's credentials; set one per campaign whose turf the app serves. The legacy `VAN_APP_NAME` / `VAN_API_KEY` / `VAN_DATABASE_MODE` still work in place of `VAN_CAMPAIGN_PRIMARY`. See [Setting up a VAN campaign](#setting-up-a-van-campaign) for the format, the naming rule and the rest of the setup.
 
 `INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 
@@ -787,46 +790,72 @@ A volunteer whose whole TTL is shorter than six hours is warned immediately. Tha
 
 **Missing tiers degrade rather than fail.** `/printedLists` (Tier 2) and `/minivanExports` + `/savedLists` (Tier 3) are each optional: without them the catalog still lands, with no list-number backfill and no flagging of turf an organizer distributed by hand. This is what makes a sandbox or demo key useful before the EveryAction security review clears. Anything skipped is reported in `degraded` and posted to the tracking channel.
 
-#### Setting up a VAN key
+#### Setting up a VAN campaign
 
-1. Put the credentials in Fly secrets (or `.env.local` for dev):
+The app can serve turf from several VAN campaigns at once — each its own EveryAction committee, with its own API key — on one map, in one turf channel, under one set of claim rules. Each campaign is configured on its own page under **Settings → VAN campaigns** (admins only). Only its credentials live outside the app.
 
-   ```
-   VAN_APP_NAME=…      # the Application Name EveryAction issued — this is the Basic auth username
-   VAN_API_KEY=…
-   VAN_DATABASE_MODE=0 # 0 = My Voters, 1 = My Campaign
-   ```
-
-   There is deliberately no default for `VAN_DATABASE_MODE`. The wrong mode authenticates successfully and returns a different, mostly empty database — a failure that reads as "the campaign has no turf" rather than as a misconfiguration.
-
-2. Verify the key and see what it can reach:
+1. **Credentials: one Fly secret per campaign** (or a line in `.env.local` for dev), named `VAN_CAMPAIGN_<KEY>` and holding a JSON object:
 
    ```bash
-   npm run van:check              # probes each tier, lists folders and export job types
-   npm run van:check -- --folder 1152   # dump one folder's regions and routes
+   fly secrets set VAN_CAMPAIGN_ABDUL='{"appName":"…","apiKey":"…","databaseMode":0}'
    ```
 
-   This is read-only. It never writes to VAN or to the database.
+   - `appName` is the Application Name EveryAction issued with the key — the Basic auth username.
+   - `databaseMode` is `0` (My Voters) or `1` (My Campaign). There is deliberately no default: the wrong mode authenticates successfully and returns a different, mostly empty database — a failure that reads as "the campaign has no turf" rather than as a misconfiguration.
+   - `<KEY>` is 1–40 uppercase letters, digits or underscores, and **it is the campaign's permanent id**: its turf, folder mapping and settings hang off the key (lowercased — `VAN_CAMPAIGN_ABDUL` is campaign `abdul`). Renaming the secret does not rename the campaign; it makes a new, empty one and leaves the old one showing "credentials missing".
+   - A malformed secret breaks only that campaign. Its settings page and the `/settings` list name the problem; every other campaign keeps syncing.
+   - The key is never stored in the database or shown in the app. Settings pages describe it (app name, mode, which secret) without it.
 
-3. Map folders to chapters. Either on the campaign's page under **Settings → VAN campaigns** (chapter-first), or **`/turfs/folder-map?campaign=<id>`** (folder-first, beside a map of where each folder's turf is). Folder ids are each campaign's own. A folder may be mapped to several chapters, and its turf is then visible to all of them.
+   **The original campaign** is `primary`, campaign 1. It reads `VAN_CAMPAIGN_PRIMARY` when that is set, and otherwise the legacy single-campaign vars, which keep working unchanged:
 
-   That map places each region from its name (`R04C_Livingston_BrightonCity003` → Livingston County) against the Census county list, so it needs no geometry and no particular state. It works out which state(s) the names are in; set `CAMPAIGN_STATES=MI` (comma-separated USPS codes) to pin that instead — worth doing where county names are ambiguous, since 31 states have a Washington County.
+   ```
+   VAN_APP_NAME=…
+   VAN_API_KEY=…
+   VAN_DATABASE_MODE=0
+   ```
 
-4. Trigger a sync: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET"`.
+   To move it onto a secret, set `VAN_CAMPAIGN_PRIMARY`, confirm a sync, then unset the three legacy vars — while both are set the secret wins and the app logs a warning.
 
-5. Watch the turf shapes fill in. The catalog lands immediately, but every turf needs its own VAN export job before it can be drawn as a shape rather than a pin, and the scheduled sync only has a few minutes per run for that:
+2. **Vet the key before it goes to Fly.** With the secret in your local shell or `.env.local`:
+
+   ```bash
+   npm run van:check -- --campaign abdul             # probes each tier, lists folders and export job types
+   npm run van:check -- --campaign abdul --folder 1152   # dump one folder's regions and routes
+   ```
+
+   Read-only, and it needs no database — so it can check a brand-new secret. `databaseMode` may be left out of the secret here; the script works out which database holds the turf. With no `--campaign` it checks `primary`.
+
+3. **Let the app see it.** `fly secrets set` restarts the app; the next scheduled sync adds the campaign to **Settings → VAN campaigns** as _New: not enabled_. Nothing syncs until it is enabled.
+
+4. **Set it up on its page**, `/settings/van/<id>`:
+   - **Name** (what organizers and alerts call it) and **Turf badge** (the short text volunteers see beside its turf, while more than one campaign is enabled).
+   - **Test connection** — lists the folders the key can see, with their ids, and its export job types.
+   - **Export job type** — pick **VoterCircle**, the type with coordinate columns. EveryAction issues these ids per developer, so pick from the list rather than hardcoding one. Without it the campaign's turf draws as pins. (`primary` falls back to the legacy `VAN_EXPORT_JOB_TYPE_ID`.)
+   - **Chapter → VAN folders** — or **`/turfs/folder-map?campaign=<id>`** (folder-first, beside a map of where each folder's turf is). Folder ids are each campaign's own. A folder may be mapped to several chapters, and its turf is then visible to all of them.
+
+     That map places each region from its name (`R04C_Livingston_BrightonCity003` → Livingston County) against the Census county list, so it needs no geometry and no particular state. It works out which state(s) the names are in; set `CAMPAIGN_STATES=MI` (comma-separated USPS codes) to pin that instead — worth doing where county names are ambiguous, since 31 states have a Washington County.
+
+   - **Re-cut regions in VAN** — off by default; only for a campaign that has agreed to it (see below).
+   - **Google Sheets Packet Tracker** — off by default; on only for a campaign that keeps one (see _The Packet Tracker_).
+
+5. **Enable it.** The app checks the key works and at least one folder is mapped, and refuses with the reason otherwise. **Disable** is on the same page, behind a confirmation: syncing stops and its unclaimed turf leaves the map and `/turfs` at once; claims in progress run to their end. It can be enabled again; nothing is deleted.
+
+6. Trigger a sync rather than wait for the schedule: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET&campaign=<id>"` (without `campaign`, every enabled campaign, stalest first).
+
+7. Watch the turf shapes fill in. The catalog lands immediately, but every turf needs its own VAN export job before it can be drawn as a shape rather than a pin, and the scheduled sync only has a few minutes per run for that:
 
    ```bash
    npm run van:geometry                  # how far the queue has got, and what is stuck
    npm run van:drain                     # drain it now: 30 minutes, 2 turfs at a time
    npm run van:drain -- --minutes 60 --concurrency 4
+   npm run van:drain -- --campaign abdul  # every VAN script takes --campaign; primary by default
    ```
 
    `van:geometry` is read-only. `van:drain` runs the same worker the sync endpoint runs, with the time a Fly request cannot give it, and takes the **same** `sync_locks` lock — so it refuses to start while a scheduled sync is mid-run rather than submitting a second export job per turf. Ctrl-C releases the lock and leaves every row resumable. `/turfs/organizer` shows the same progress in a line while any of it is outstanding.
 
 `CAMPAIGN_TIME_ZONE` sets the clock everything campaign-facing is bucketed and rendered in — the canvassing board's day buckets, the doors projection's knocking hours, the activity history's timestamps, and the overnight window the turf refresh sweep runs in. It takes an IANA name (`America/Chicago`), defaults to `America/Detroit`, and falls back to that default with a `[campaign-time]` warning if the runtime does not recognise the value. It is one clock for the whole campaign, not per chapter.
 
-Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` prints — pick the type that can export `VAddressLatitude` / `VAddressLongitude`. EveryAction issues these ids per developer, so the `101` in VAN's docs is an example and hardcoding it produces a 400. The catalog sync runs fine without it; only hull geometry is blocked.
+The export job type is set per campaign (step 4) — pick the type that can export `VAddressLatitude` / `VAddressLongitude`. EveryAction issues these ids per developer, so the `101` in VAN's docs is an example and hardcoding it produces a 400. The catalog sync runs fine without one; only hull geometry is blocked, and that campaign's turf draws as pins.
 
 #### The Packet Tracker in the campaign's spreadsheets
 
@@ -873,7 +902,7 @@ R10C                    → R10C_Downriver CR      ← a whole code, one sheet
 R10C_Wayne_Woodhaven    → R10C_Woodhaven CR      ← one city carved out of it
 ```
 
-`npm run van:regions` lists every region name the key can see, `-- --prefixes` groups them by leading code, and `-- --flat` prints one per line. Read-only, and it works before the first catalog sync.
+`npm run van:regions` lists every region name the key can see, `-- --prefixes` groups them by leading code, and `-- --flat` prints one per line; `-- --campaign <key>` reads another campaign's. Read-only, and it works before the first catalog sync.
 
 Separators and case are ignored, so a dotted `R08A.Macomb.WarrenCity` matches an underscored rule. **A region matching no rule has its checkouts held, not dropped** — they flow in as soon as a rule covers them, and the count and the unmatched region names ride out in the turf channel's alert. `/turfs/sheet-map` (admin) shows where every region routes, which regions route nowhere, and which rules match nothing; twelve overlapping prefixes over a few hundred region names is not something anyone can verify by reading the settings table, and a row in the wrong campaign's spreadsheet looks exactly like a correct one.
 

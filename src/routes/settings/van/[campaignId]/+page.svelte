@@ -117,6 +117,7 @@
 				campaignId={campaign.id}
 				credentials={data.credentials}
 				exportJobTypeId={campaign.exportJobTypeId}
+				fallbackExportJobTypeId={campaign.fallbackExportJobTypeId}
 			/>
 		</section>
 

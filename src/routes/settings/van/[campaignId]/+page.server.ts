@@ -4,7 +4,7 @@ import { db } from '$lib/server/db.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import { sheetsServiceAccountEmail } from '$lib/server/google-env.js';
 import { loadVanChapterFolders, loadVanSheetTargets } from '$lib/server/settings.js';
-import { credentialStatus } from '$lib/server/van-env.js';
+import { credentialStatus, vanExportJobTypeIdFor } from '$lib/server/van-env.js';
 import { campaignName, loadCampaign } from '$lib/server/van/campaigns.js';
 import { loadCampaignStatus } from '$lib/server/van/campaign-status-store.js';
 import { getSolidarityChapters } from '$lib/server/autocomplete-sources.js';
@@ -51,6 +51,11 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			disabledAt: campaign.disabledAt,
 			disabledByName: campaign.disabledByName,
 			exportJobTypeId: campaign.exportJobTypeId,
+			// What geometry uses while none is picked here: for primary, the
+			// legacy VAN_EXPORT_JOB_TYPE_ID. Shown so "None" on this page cannot
+			// read as "no geometry" when the env var is supplying one.
+			fallbackExportJobTypeId:
+				campaign.exportJobTypeId === null ? vanExportJobTypeIdFor(campaign) : null,
 			refreshEnabled: campaign.refreshEnabled,
 			sheetsEnabled: campaign.sheetsEnabled,
 			sheetTabName: campaign.sheetTabName ?? '',
