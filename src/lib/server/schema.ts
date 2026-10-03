@@ -168,6 +168,20 @@ export const zipExcludedChapters = sqliteTable('zip_excluded_chapters', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
+// Chapters left out of the /turfs chapter pickers — the web page and the Slack
+// command. The pickers otherwise list every chapter in chapter_channel_map, and
+// that map is also the auto-invite mapping, the dashboard and the growth report:
+// hiding a chapter from turf there would cost it its Slack channels. Row present
+// means hidden, so the default — an empty table — shows every chapter, and a
+// chapter added to the map later is shown without a second setting. The
+// organizer and activity pages, being admin-only, still list it.
+export const turfHiddenChapters = sqliteTable('turf_hidden_chapters', {
+	chapterId: integer('chapter_id').primaryKey(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
 // Per-channel team_join behavior: whether the bot posts its "everybody
 // welcome @X" message in the channel after inviting a new member. Row absent
 // means the default (show the welcome message), so only channels an admin has
@@ -394,6 +408,7 @@ export type NewAllowedSlackUserRow = typeof allowedSlackUsers.$inferInsert;
 export type ExcludedChapterRow = typeof reportExcludedChapters.$inferSelect;
 export type NewExcludedChapterRow = typeof reportExcludedChapters.$inferInsert;
 export type ZipExcludedChapterRow = typeof zipExcludedChapters.$inferSelect;
+export type TurfHiddenChapterRow = typeof turfHiddenChapters.$inferSelect;
 export type NewZipExcludedChapterRow = typeof zipExcludedChapters.$inferInsert;
 
 export type ChannelWelcomeFlagRow = typeof channelWelcomeFlags.$inferSelect;

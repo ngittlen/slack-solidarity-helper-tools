@@ -64,6 +64,7 @@ describe('GET /api/turfs', () => {
 		vi.clearAllMocks();
 		mockBlockedIds.mockResolvedValue(new Set<string>());
 		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
 			chapterChannelMap: [{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' }],
 		});
 		stubQueries([turfRow()]);
@@ -96,6 +97,16 @@ describe('GET /api/turfs', () => {
 		expect(body.turfs).toEqual([]);
 	});
 
+	// Hiding a chapter is not only the picker's job: the map endpoint refuses it.
+	it('rejects a chapter hidden from /turfs', async () => {
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set([71]),
+			chapterChannelMap: [{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' }],
+		});
+		const res = await GET(event(VOLUNTEER, 'chapter=71&bbox=42,-84,43,-83'));
+		expect(res.status).toBe(400);
+	});
+
 	it('rejects a chapter that is not a real chapter', async () => {
 		const res = await GET(event(VOLUNTEER, 'chapter=999&bbox=42,-84,43,-83'));
 		expect(res.status).toBe(400);
@@ -126,7 +137,10 @@ describe('GET /api/turfs', () => {
 				channelId: `C${i}`,
 				name: `Chapter ${i}`,
 			}));
-			mockSettings.mockResolvedValue({ chapterChannelMap: many });
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: many,
+			});
 			vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const sweeper = { ...VOLUNTEER, slackUserId: 'U_API_SWEEP' };
 
@@ -146,7 +160,10 @@ describe('GET /api/turfs', () => {
 				channelId: `C${i}`,
 				name: `Chapter ${i}`,
 			}));
-			mockSettings.mockResolvedValue({ chapterChannelMap: many });
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: many,
+			});
 			vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const sweeper = { ...VOLUNTEER, slackUserId: 'U_API_RETRY' };
 

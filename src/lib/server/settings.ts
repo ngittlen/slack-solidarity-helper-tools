@@ -19,6 +19,7 @@ import {
 	slackModerators,
 	reportExcludedChapters,
 	zipExcludedChapters,
+	turfHiddenChapters,
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
@@ -48,6 +49,7 @@ export {
 	slackModerators,
 	reportExcludedChapters,
 	zipExcludedChapters,
+	turfHiddenChapters,
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
@@ -109,6 +111,9 @@ export interface Settings {
 	 *  report, the other decides where a zip resolves, and a superseded chapter
 	 *  routinely needs the second without the first. DB-only, no env fallback. */
 	zipExcludedChapterIds: Set<number>;
+	/** Chapters left out of the /turfs chapter pickers (turf_hidden_chapters).
+	 *  Their Slack channel mapping is untouched. DB-only; empty shows them all. */
+	turfHiddenChapterIds: Set<number>;
 	/** Channels the bot should NOT post its channel welcome message in after
 	 *  inviting a new member. Absent = welcome on (the default). DB-only. */
 	welcomeDisabledChannelIds: Set<string>;
@@ -233,6 +238,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		appConfigRows,
 		infoCommandRows,
 		moderatorRows,
+		turfHiddenRows,
 	] = await Promise.all([
 		db.select().from(chapterChannelMap),
 		db.select().from(coalitionChannelMap),
@@ -245,6 +251,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		// Last, so the read-order-sensitive tests' offsets for the reads above
 		// stay put.
 		db.select().from(slackModerators),
+		// After the moderators, for the same reason.
+		db.select().from(turfHiddenChapters),
 	]);
 
 	const chapterChannelMapField: ChapterEntry[] =
@@ -333,6 +341,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		moderatorSlackUserIds: new Set(moderatorRows.map((r) => r.slackUserId)),
 		reportExcludedChapterIds,
 		zipExcludedChapterIds,
+		turfHiddenChapterIds: new Set(turfHiddenRows.map((r) => r.chapterId)),
 		welcomeDisabledChannelIds,
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
@@ -776,6 +785,49 @@ export async function deleteZipExcludedChapter(
 	await db.delete(zipExcludedChapters).where(eq(zipExcludedChapters.chapterId, chapterId));
 	console.log(
 		`[settings] deleted zip_excluded_chapters chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+/**
+ * Hide a chapter from the /turfs chapter pickers. Its chapter_channel_map rows —
+ * the Slack channels its new members join, and its place in the reports — are
+ * untouched.
+ */
+export async function saveTurfHiddenChapter(
+	db: Database,
+	chapterId: number,
+	editor: Editor,
+): Promise<void> {
+	const row = {
+		chapterId,
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt: new Date().toISOString(),
+	};
+	await db
+		.insert(turfHiddenChapters)
+		.values(row)
+		.onConflictDoUpdate({
+			target: turfHiddenChapters.chapterId,
+			set: {
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	console.log(
+		`[settings] saved turf_hidden_chapters chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function deleteTurfHiddenChapter(
+	db: Database,
+	chapterId: number,
+	editor: Editor,
+): Promise<void> {
+	await db.delete(turfHiddenChapters).where(eq(turfHiddenChapters.chapterId, chapterId));
+	console.log(
+		`[settings] deleted turf_hidden_chapters chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
 	);
 }
 

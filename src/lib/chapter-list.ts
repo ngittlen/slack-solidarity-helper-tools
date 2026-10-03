@@ -48,3 +48,22 @@ export function chaptersFromChannelMap(
 	}
 	return [...byChapterId.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
+
+/**
+ * The chapters a volunteer can pick on /turfs and in the Slack `/turfs`
+ * command: every chapter in the channel map, less the ones an admin has hidden
+ * from turf (turf_hidden_chapters). Hiding is turf-only — the same chapter
+ * keeps its Slack channels and its place in the reports, which read the map
+ * directly.
+ *
+ * The one rule for every volunteer-facing chapter list and every check of a
+ * chapter id a volunteer sent, so a hidden chapter is neither offered nor
+ * reachable by URL. The admin organizer and activity pages use
+ * chaptersFromChannelMap and still list it.
+ */
+export function turfChapters(
+	entries: ReadonlyArray<{ chapterId: number; name: string }>,
+	hiddenChapterIds: ReadonlySet<number>,
+): ChapterOption[] {
+	return chaptersFromChannelMap(entries).filter((c) => !hiddenChapterIds.has(c.chapterId));
+}

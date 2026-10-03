@@ -36,6 +36,7 @@ async function turf(
 		doors?: number;
 		retired?: boolean;
 		campaignId?: number;
+		folderId?: number;
 		vanAssignedAt?: string | null;
 		vanDistributedTo?: string | null;
 		sheetAssignedTo?: string | null;
@@ -48,9 +49,10 @@ async function turf(
 		         printed_list_number, van_distributed_to, sheet_assigned_to,
 		         centroid_lat, centroid_lng, retired_at, van_assigned_at, first_seen_at, last_seen_at,
 		         campaign_id)
-		      VALUES (?1, ?1, 1, 1, 71, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		      VALUES (?1, ?1, 1, ?, 71, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		args: [
 			id,
+			over.folderId ?? 1,
 			`Turf ${id}`,
 			over.doors ?? 100,
 			over.listNumber === undefined ? `L-${id}` : over.listNumber,
@@ -186,6 +188,51 @@ describe('loadNearbySummary', () => {
 			await turf(1, { lat: 42.21, lng: -83.71 });
 			await turf(2, { lat: 10, lng: 10 }, { campaignId: 2 });
 			expect(await loadTurfCentre(db)).toEqual({ lat: 42.2, lng: -83.7 });
+		});
+	});
+
+	// Settings → Chapters on /turfs: turf only a hidden chapter can see is not
+	// on offer to a visitor, who would sign in to find no chapter listing it.
+	describe('turf only a chapter hidden from /turfs can see', () => {
+		beforeEach(async () => {
+			// Folder 1 → Washtenaw (71, listed); folder 2 → Wayne (72, hidden).
+			await client.execute(
+				`INSERT INTO van_chapter_folders (chapter_id, folder_id, chapter_name, last_edited_by, last_edited_by_name, last_edited_at)
+				 VALUES (71, 1, 'Washtenaw', 'U', 'u', 'x'), (72, 2, 'Wayne', 'U', 'u', 'x')`,
+			);
+			await turf(1, HERE, { doors: 150 });
+			await turf(2, NEAR, { doors: 900, folderId: 2 });
+		});
+
+		it('adds no doors and is not drawn', async () => {
+			const listed = await loadNearbySummary(db, HERE, NOW, undefined, [71]);
+			const both = await loadNearbySummary(db, HERE, NOW, undefined, [71, 72]);
+			expect(listed.doors).toEqual({ kind: 'over', atLeast: 150 });
+			expect(both.doors).toEqual({ kind: 'over', atLeast: 1050 });
+			// The grid is drawn from offered turf only: the hidden chapter's turf
+			// changes it when listed, and not when hidden.
+			expect(listed.cells).not.toEqual(both.cells);
+			expect(listed.cells).toEqual(
+				(await loadNearbySummary(db, HERE, NOW, undefined, [71, 999])).cells,
+			);
+		});
+
+		it('still counts someone walking it', async () => {
+			await claim(2, 'U_OUT');
+			const summary = await loadNearbySummary(db, HERE, NOW, undefined, [71]);
+			expect(summary.canvassers).toBe(level('A couple'));
+		});
+
+		it('is left out of the map centre', async () => {
+			await client.execute(
+				`UPDATE van_turfs SET centroid_lat = 10, centroid_lng = 10 WHERE turf_id = 2`,
+			);
+			expect(await loadTurfCentre(db, [71])).toEqual({ lat: 42.3, lng: -83.7 });
+		});
+
+		it('leaves turf unrestricted when no chapter list is given', async () => {
+			const summary = await loadNearbySummary(db, HERE, NOW);
+			expect(summary.doors).toEqual({ kind: 'over', atLeast: 1050 });
 		});
 	});
 

@@ -113,7 +113,10 @@ describe('turfListMessage', () => {
 		mockIsSlackAdmin.mockResolvedValue(false);
 		mockDisplayName.mockResolvedValue('Dana');
 		mockBlockedIds.mockResolvedValue(new Set<string>());
-		mockSettings.mockResolvedValue({ chapterChannelMap: CHANNEL_MAP });
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
+			chapterChannelMap: CHANNEL_MAP,
+		});
 		mockResolveLocation.mockResolvedValue(null);
 		mockProfileRegion.mockResolvedValue({ zip: null, chapterIds: [71] });
 		// A folder of its own per chapter unless a test says otherwise, so each
@@ -223,6 +226,19 @@ describe('turfListMessage', () => {
 		expect(msg.text).toContain('ZIP code or address');
 		expect(body(msg)).not.toContain('Solidarity profile');
 		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
+	});
+
+	// The web page's rule: a hidden chapter is not offered, and a button or
+	// profile pointing at it falls back to the picker.
+	it('leaves a hidden chapter out, even when a button carries it', async () => {
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set([72]),
+			chapterChannelMap: CHANNEL_MAP,
+		});
+		const msg = await turfListMessage(makeDb(), { slackUserId: freshUser(), chapterId: 72 });
+		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
+		expect(body(msg)).toContain('Washtenaw County');
+		expect(body(msg)).not.toContain('Wayne County');
 	});
 
 	it('ignores a zip→chapter mapping that is not a real chapter', async () => {
@@ -341,6 +357,7 @@ describe('turfListMessage', () => {
 		it('refuses once too many chapters have been opened', async () => {
 			const user = freshUser();
 			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
 				chapterChannelMap: Array.from({ length: MAX_CHAPTER_SWITCHES + 2 }, (_, i) => ({
 					chapterId: i + 1,
 					channelId: `C${i}`,
@@ -360,6 +377,7 @@ describe('turfListMessage', () => {
 		it('does not charge for chapters that share one VAN list', async () => {
 			const user = freshUser();
 			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
 				chapterChannelMap: Array.from({ length: MAX_CHAPTER_SWITCHES + 2 }, (_, i) => ({
 					chapterId: i + 1,
 					channelId: `C${i}`,
@@ -414,7 +432,10 @@ describe('claimFromSlack', () => {
 		mockIsSlackAdmin.mockResolvedValue(false);
 		mockDisplayName.mockResolvedValue('Dana');
 		mockBlockedIds.mockResolvedValue(new Set<string>());
-		mockSettings.mockResolvedValue({ chapterChannelMap: CHANNEL_MAP });
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
+			chapterChannelMap: CHANNEL_MAP,
+		});
 		mockResolveLocation.mockResolvedValue(null);
 		mockLoadChapterTurfs.mockResolvedValue({
 			turfs: [turfView({ status: 'held-by-you', claimable: false })],
@@ -460,6 +481,7 @@ describe('claimFromSlack', () => {
 		// the web page honours it, and /turfs in Slack quietly hands out 48h and
 		// two — the same volunteer getting different rules per surface.
 		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
 			chapterChannelMap: CHANNEL_MAP,
 			vanTurfClaimTtlHours: 12,
 			vanTurfMaxConcurrentClaims: 1,
@@ -586,7 +608,10 @@ describe('releaseFromSlack', () => {
 		turfRequests.clear();
 		mockIsSlackAdmin.mockResolvedValue(false);
 		mockBlockedIds.mockResolvedValue(new Set<string>());
-		mockSettings.mockResolvedValue({ chapterChannelMap: CHANNEL_MAP });
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
+			chapterChannelMap: CHANNEL_MAP,
+		});
 		mockResolveLocation.mockResolvedValue(null);
 		mockLoadChapterTurfs.mockResolvedValue({
 			turfs: [turfView()],

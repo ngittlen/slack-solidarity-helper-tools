@@ -9,7 +9,7 @@ import {
 	SLACK_SUPERUSER_ID,
 } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
-import { chaptersFromChannelMap } from '$lib/chapter-list.js';
+import { turfChapters } from '$lib/chapter-list.js';
 import { lookupZipCentroid, normalizeZip, resolveLocation } from '$lib/server/van/zip-centroid.js';
 import {
 	loadNearbySummary,
@@ -81,15 +81,26 @@ function tileSource() {
 	};
 }
 
+/** The chapters /turfs offers, by id — for the signed-out teaser, which spans
+ *  chapters but must count only turf one of them can claim. */
+function offeredChapterIds(settings: {
+	chapterChannelMap: Array<{ chapterId: number; name: string }>;
+	turfHiddenChapterIds: ReadonlySet<number>;
+}): number[] {
+	return turfChapters(settings.chapterChannelMap, settings.turfHiddenChapterIds).map(
+		(c) => c.chapterId,
+	);
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const session = locals.session;
 	const tiles = tileSource();
 
 	if (!session) {
-		const [{ publicJoinUrl }, turfCentre] = await Promise.all([
-			loadSettings(db),
-			loadTurfCentre(db),
-		]);
+		const visitorSettings = await loadSettings(db);
+		const { publicJoinUrl } = visitorSettings;
+		// Centred on turf a chapter /turfs offers can see, like the summary.
+		const turfCentre = await loadTurfCentre(db, offeredChapterIds(visitorSettings));
 		return {
 			mode: 'public' as const,
 			pageTitle: 'Canvass near you',
@@ -148,8 +159,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// is running, which is exactly what the compartment exists to prevent.
 	// Deduplicated by chapterId — see chaptersFromChannelMap, which this page's
 	// inline version became. Leaving it inline is what let /turfs/organizer and
-	// /turfs/activity reintroduce the bug in a form that broke hydration.
-	const chapters = chaptersFromChannelMap(settings.chapterChannelMap);
+	// /turfs/activity reintroduce the bug in a form that broke hydration. Less
+	// the chapters an admin has hidden from turf, which then read as unknown
+	// below — a `?chapter=` link to one opens the picker, not the chapter.
+	const chapters = turfChapters(settings.chapterChannelMap, settings.turfHiddenChapterIds);
 
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
@@ -332,10 +345,17 @@ export const actions: Actions = {
 			place = zip ? { kind: 'zip', zip } : { kind: 'address' };
 		}
 
-		// The admin's hand-out TTL, so the summary counts the same turf as
-		// claimable that a signed-in volunteer's map would.
-		const { vanAssignmentTtlHours } = await loadSettings(db);
-		const summary = await loadNearbySummary(db, point, new Date(now), vanAssignmentTtlHours);
+		// The admin's hand-out TTL and the chapters /turfs offers, so the summary
+		// counts the same turf as claimable that a signed-in volunteer's map
+		// would — not turf only a chapter hidden from /turfs can see.
+		const settings = await loadSettings(db);
+		const summary = await loadNearbySummary(
+			db,
+			point,
+			new Date(now),
+			settings.vanAssignmentTtlHours,
+			offeredChapterIds(settings),
+		);
 		return { nearby: { ...summary, place } satisfies PublicNearby };
 	},
 };
