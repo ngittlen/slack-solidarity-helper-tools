@@ -164,8 +164,11 @@ from canvassing are stored by this app.
 
 - A **session cookie** holds a random ID; the session itself (your Slack ID, display name, and
   whether you are an admin) lives server-side and expires after 8 hours.
-- For admins only, the app stores a **Slack user token, encrypted with AES-256-GCM**, so info
-  commands can post as you rather than as the bot. A non-admin's token is deleted on sight.
+- For admins and moderators who turn it on at `/post-as-you`, the app stores a **Slack user
+  token, encrypted with AES-256-GCM**, so info commands can post as you rather than as the bot.
+  Signing in alone stores no token. **Turn off** on the same page deletes it and asks Slack to
+  revoke it (and tells you if Slack did not confirm). Anyone else's token is deleted at their next
+  sign-in.
 
 ### What is not collected
 
