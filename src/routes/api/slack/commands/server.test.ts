@@ -301,7 +301,8 @@ describe('POST /api/slack/commands — info commands', () => {
 
 		expect(mockPostMessage).not.toHaveBeenCalled();
 		const text = (await res.json()).text as string;
-		expect(text).toContain('https://app.example.org/auth/slack');
+		// Straight to the chat:write grant — signing in alone no longer gives it.
+		expect(text).toContain('https://app.example.org/auth/slack/post-as-you');
 	});
 
 	it('explains a pre-chat:write authorization specifically', async () => {

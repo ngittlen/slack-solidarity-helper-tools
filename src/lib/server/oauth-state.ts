@@ -40,6 +40,17 @@ export const STATE_TTL_MS = 60 * 60 * 1000;
  */
 const MAX_STATE_DESTINATION = 256;
 
+/**
+ * Which authorization this state belongs to. Both come back through the same
+ * callback (one registered redirect URI), so the state is what tells them
+ * apart — and, being signed, nobody can turn a login into the other or back.
+ *
+ *   login       — Sign in with Slack; creates the session
+ *   post-as-you — an already signed-in admin or moderator granting chat:write
+ *                 so the info commands can post as them
+ */
+export type OAuthPurpose = 'login' | 'post-as-you';
+
 export interface OAuthState {
 	/** Random per-attempt value, mirrored into the `oauth_state` cookie. */
 	nonce: string;
@@ -49,13 +60,14 @@ export interface OAuthState {
 	issuedAt: number;
 	/** True when this attempt *is* the one automatic retry — see the callback. */
 	isRetry: boolean;
+	purpose: OAuthPurpose;
 }
 
 export type StateVerdict =
 	| { ok: true; state: OAuthState }
 	// An expired state still passed its signature check, so the destination it
 	// carries is one we minted — enough to resume the journey on the restart.
-	| { ok: false; reason: 'expired'; destination: string | null }
+	| { ok: false; reason: 'expired'; destination: string | null; purpose: OAuthPurpose }
 	| { ok: false; reason: 'malformed' | 'bad-signature' };
 
 /**
@@ -74,7 +86,12 @@ function sign(encodedPayload: string): string {
 }
 
 /** Mint a state for a fresh authorization attempt, plus the nonce to cookie. */
-export function signState(opts: { destination: string | null; isRetry: boolean }): {
+export function signState(opts: {
+	destination: string | null;
+	isRetry: boolean;
+	/** Defaults to `login`. */
+	purpose?: OAuthPurpose;
+}): {
 	state: string;
 	nonce: string;
 } {
@@ -85,7 +102,13 @@ export function signState(opts: { destination: string | null; isRetry: boolean }
 			: null;
 
 	const encoded = Buffer.from(
-		JSON.stringify({ n: nonce, d: destination, t: Date.now(), r: opts.isRetry }),
+		JSON.stringify({
+			n: nonce,
+			d: destination,
+			t: Date.now(),
+			r: opts.isRetry,
+			p: opts.purpose ?? 'login',
+		}),
 		'utf8',
 	).toString('base64url');
 
@@ -124,12 +147,17 @@ export function verifyState(raw: string): StateVerdict {
 	}
 	if (typeof parsed !== 'object' || parsed === null) return { ok: false, reason: 'malformed' };
 
-	const { n, d, t, r } = parsed as Record<string, unknown>;
+	const { n, d, t, r, p } = parsed as Record<string, unknown>;
 	if (typeof n !== 'string' || n === '' || typeof t !== 'number' || !Number.isFinite(t)) {
 		return { ok: false, reason: 'malformed' };
 	}
 	const destination = typeof d === 'string' ? d : null;
-	if (Date.now() - t > STATE_TTL_MS) return { ok: false, reason: 'expired', destination };
+	// Anything but the one other purpose reads as a login, which covers states
+	// minted before the field existed.
+	const purpose: OAuthPurpose = p === 'post-as-you' ? 'post-as-you' : 'login';
+	if (Date.now() - t > STATE_TTL_MS) {
+		return { ok: false, reason: 'expired', destination, purpose };
+	}
 
 	return {
 		ok: true,
@@ -138,6 +166,7 @@ export function verifyState(raw: string): StateVerdict {
 			destination,
 			issuedAt: t,
 			isRetry: r === true,
+			purpose,
 		},
 	};
 }

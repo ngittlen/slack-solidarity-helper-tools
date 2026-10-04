@@ -345,24 +345,24 @@ function ephemeral(message: string): Response {
 /** All four lookup failures are fixed by logging in again, so they share a
  *  call to action and differ only in why. */
 function reauthorizeMessage(reason: TokenLookupFailure): string {
-	const authorize = `${APP_URL}/auth/slack`;
+	const authorize = `${APP_URL}/auth/slack/post-as-you`;
 	switch (reason) {
 		case 'stale-scope':
 			return (
 				'This command posts as you, and your Slack authorization predates that. ' +
-				`Sign in again at ${authorize} to grant it, then retry.`
+				`Grant it at ${authorize}, then retry.`
 			);
 		case 'unreadable':
 		case 'error':
 			return (
 				'Your stored Slack authorization could not be read. ' +
-				`Sign in again at ${authorize} to refresh it, then retry.`
+				`Grant it again at ${authorize}, then retry.`
 			);
 		case 'missing':
 		default:
 			return (
-				'This command posts as you, so it needs your authorization first. ' +
-				`Sign in at ${authorize}, then retry.`
+				'This command posts as you, so it needs your permission first. ' +
+				`Grant it at ${authorize}, then retry.`
 			);
 	}
 }
@@ -376,7 +376,7 @@ function postFailureMessage(detail: string): string {
 	if (detail.includes('token_revoked') || detail.includes('invalid_auth')) {
 		return (
 			'Slack rejected your stored authorization — it may have been revoked. ' +
-			`Sign in again at ${APP_URL}/auth/slack, then retry.`
+			`Grant it again at ${APP_URL}/auth/slack/post-as-you, then retry.`
 		);
 	}
 	return `Could not post the message: ${detail}`;

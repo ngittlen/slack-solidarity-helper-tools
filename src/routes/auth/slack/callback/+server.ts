@@ -3,14 +3,21 @@ import type { RequestHandler } from './$types';
 import { dev } from '$app/environment';
 import { db, sessionStore } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
-import { saveUserToken, deleteUserToken } from '$lib/server/user-tokens.js';
+import {
+	saveUserToken,
+	deleteUserToken,
+	loadUserToken,
+	revokeUserToken,
+	hasScope,
+	POST_AS_USER_SCOPE,
+} from '$lib/server/user-tokens.js';
 import { slack } from '$lib/server/slack.js';
 import {
 	OAUTH_REDIRECT_COOKIE,
 	resolvePostLoginRedirect,
 	sanitizeRedirectTarget,
 } from '$lib/server/post-login-redirect.js';
-import { verifyState } from '$lib/server/oauth-state.js';
+import { verifyState, type OAuthPurpose } from '$lib/server/oauth-state.js';
 import {
 	SLACK_CLIENT_ID,
 	SLACK_CLIENT_SECRET,
@@ -20,15 +27,36 @@ import {
 
 interface SlackOAuthResponse {
 	ok: boolean;
-	authed_user?: { id?: string; access_token: string; scope?: string };
+	authed_user?: { id?: string; access_token?: string; scope?: string };
 	error?: string;
 }
 
 const SESSION_MAX_AGE = 8 * 60 * 60;
 
-export const GET: RequestHandler = async ({ url, cookies }) => {
+/** Where a post-as-you grant lands, whichever way it went. */
+const POST_AS_YOU_PAGE = '/post-as-you';
+
+export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	const errorParam = url.searchParams.get('error');
 	if (errorParam) {
+		// Cancel on the post-as-you screen is a perfectly good answer — "don't
+		// post as me" — not a failed login, so it goes back to the page that
+		// asked rather than to a 403. Only a state we signed gets that (an
+		// expired one included: Cancel an hour later is still Cancel), and the
+		// worst a forged one could do is show someone that page.
+		const errorState = url.searchParams.get('state');
+		const errorVerdict = errorState ? verifyState(errorState) : null;
+		const errorPurpose = errorVerdict?.ok
+			? errorVerdict.state.purpose
+			: errorVerdict?.reason === 'expired'
+				? errorVerdict.purpose
+				: null;
+		if (errorPurpose === 'post-as-you') {
+			console.log(`[auth] post-as-you not granted: ${errorParam}`);
+			cookies.delete('oauth_state', { path: '/' });
+			cookies.delete(OAUTH_REDIRECT_COOKIE, { path: '/' });
+			redirect(302, `${POST_AS_YOU_PAGE}?declined=1`);
+		}
 		console.error('[auth] Slack OAuth error:', errorParam);
 		error(403, 'Access denied.');
 	}
@@ -56,7 +84,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		// and freshly dated by construction. An expired state did pass its
 		// signature check, so its destination is ours and rides along.
 		console.warn(`[auth] restarting login: OAuth state ${verdict.reason}`);
-		restartLogin(verdict.reason === 'expired' ? verdict.destination : null);
+		if (verdict.reason === 'expired') restart(verdict.purpose, verdict.destination);
+		restart('login', null);
 	}
 	const state = verdict.state;
 
@@ -70,7 +99,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		// could not.
 		if (!state.isRetry) {
 			console.warn('[auth] restarting login: no state cookie (browser handoff?)');
-			restartLogin(state.destination);
+			restart(state.purpose, state.destination);
 		}
 		// One retry already happened and the cookie still is not sticking, so
 		// going round again would only spin. Say what is actually wrong instead.
@@ -99,6 +128,22 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	cookies.delete('oauth_state', { path: '/' });
 	cookies.delete(OAUTH_REDIRECT_COOKIE, { path: '/' });
 
+	// Everything a grant can be refused for without knowing which Slack account
+	// approved it is refused here, before the code is exchanged: an unexchanged
+	// code mints no token, so there is nothing left at Slack to clean up.
+	if (state.purpose === 'post-as-you') {
+		// Started from a signed-in page, so a missing session means it expired
+		// or the grant finished in another browser. Either way there is nobody
+		// to check the Slack account against; sign in, then press the button
+		// again.
+		if (!locals.session) {
+			redirect(302, `/auth/slack?redirectTo=${encodeURIComponent(POST_AS_YOU_PAGE)}`);
+		}
+		if (!locals.session.isAdmin && !locals.session.isModerator) {
+			error(403, INFO_COMMANDS_ONLY);
+		}
+	}
+
 	// Exchange code for token
 	const tokenRes = await fetch('https://slack.com/api/oauth.v2.access', {
 		method: 'POST',
@@ -112,62 +157,44 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	});
 
 	const tokenData = (await tokenRes.json()) as SlackOAuthResponse;
-	if (!tokenData.ok || !tokenData.authed_user?.access_token || !tokenData.authed_user.id) {
+	if (!tokenData.ok || !tokenData.authed_user?.id) {
 		console.error('[auth] token exchange failed:', tokenData.error);
 		error(502, 'Authentication failed.');
 	}
 
-	// Straight off the token response — no users.identity round trip. That call
-	// needed the identity.basic scope, which Slack refuses to grant alongside
-	// chat:write (see the scope comment in ../+server.ts), and it told us
-	// nothing `authed_user.id` doesn't.
+	// Straight off the token response — no users.identity round trip. It
+	// would tell us nothing `authed_user.id` doesn't.
 	const userId = tokenData.authed_user.id;
-	// Admin gate reads the DB-backed allowed list via loadSettings; that table
-	// is the only source of admin access. The superuser is admitted without
-	// consulting the list — even when reading it fails — so an unreadable
-	// allowed_slack_users table can never lock every admin out of /pending and
-	// /settings.
-	//
-	// Moderators come from the same read. An admin is never also flagged a
-	// moderator: isModerator only ever widens access for someone who is not an
-	// admin, so it is kept meaningful as "moderator and nothing more".
-	const isSuperuser = SLACK_SUPERUSER_ID !== '' && userId === SLACK_SUPERUSER_ID;
-	let isAdmin = isSuperuser;
-	let isModerator = false;
-	if (!isAdmin) {
-		try {
-			const { allowedSlackUserIds, moderatorSlackUserIds } = await loadSettings(db);
-			isAdmin = allowedSlackUserIds.has(userId);
-			isModerator = !isAdmin && moderatorSlackUserIds.has(userId);
-		} catch (err) {
-			console.error(
-				'[auth] loadSettings failed — denying admin and moderator to non-superuser:',
-				err instanceof Error ? err.message : err,
-			);
-		}
+	const accessToken = tokenData.authed_user.access_token;
+	const { isAdmin, isModerator, isSuperuser, settingsUnavailable } = await resolveRole(userId);
+
+	if (state.purpose === 'post-as-you') {
+		await storePostAsYouGrant({
+			// Non-null: checked before the exchange above.
+			sessionUserId: locals.session!.slackUserId,
+			userId,
+			canUseInfoCommands: isAdmin || isModerator,
+			settingsUnavailable,
+			accessToken,
+			scopes: tokenData.authed_user.scope ?? '',
+		});
+		redirect(302, `${POST_AS_YOU_PAGE}?enabled=1`);
 	}
 
-	// Keep the user token only for admins and moderators, and only for as long
-	// as they stay one — the info commands are theirs alone, so storing anyone
-	// else's would be holding a credential the app has no use for. Anyone
-	// else's row is dropped rather than left behind, which also cleans up after
-	// someone is removed from both lists and logs in again.
-	if (isAdmin || isModerator) {
-		try {
-			await saveUserToken(db, {
-				slackUserId: userId,
-				accessToken: tokenData.authed_user.access_token,
-				scopes: tokenData.authed_user.scope ?? '',
-			});
-		} catch (err) {
-			// Never blocks the login: the session is the point of this route, and
-			// the info commands degrade to "authorize again" on their own.
-			console.error(
-				'[auth] could not store the user token:',
-				err instanceof Error ? err.message : err,
-			);
-		}
-	} else {
+	// The login token itself (users:read) is never kept — it can't post, and
+	// the session is all a login needs. What a login *does* do is drop a stored
+	// post-as-you token for anyone who is no longer an admin or moderator: the
+	// info commands are theirs alone, so holding anyone else's would be holding
+	// a credential the app has no use for.
+	//
+	// Nothing is revoked at Slack here. Revoking every member's authorization
+	// on each sign-in could put Slack's Allow screen in front of them every
+	// time, and a token the app never stores can't be used anyway.
+	//
+	// Skipped when the lists could not be read: `isAdmin` false then means
+	// "unknown", and clearing a real admin's grant over a database hiccup
+	// would be worse than leaving a member's in place until next time.
+	if (!isAdmin && !isModerator && !settingsUnavailable) {
 		try {
 			await deleteUserToken(db, userId);
 		} catch (err) {
@@ -207,15 +234,19 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 };
 
 /**
- * Send someone back through login rather than dead-ending them on a 400.
+ * Send someone back through the authorization they were in the middle of
+ * rather than dead-ending them on a 400.
  *
  * Safe by construction: the `code` Slack just handed us is dropped on the floor
  * and a brand-new authorization begins, so nothing from an unverified response
- * ever reaches a session. `retry=1` is what keeps this to at most one automatic
- * attempt — ../+server.ts folds it into the state it mints, and the branch above
- * refuses to restart a login that already carries it.
+ * ever reaches a session or the token store. `retry=1` is what keeps this to at
+ * most one automatic attempt — the start routes fold it into the state they
+ * mint, and the callback refuses to restart one that already carries it.
  */
-function restartLogin(destination: string | null): never {
+function restart(purpose: OAuthPurpose, destination: string | null): never {
+	// post-as-you always lands on its own page, so there is nothing to carry.
+	if (purpose === 'post-as-you') redirect(302, '/auth/slack/post-as-you?retry=1');
+
 	const params = new URLSearchParams();
 	// Re-sanitised rather than trusted: it is signed, but the rule that only
 	// same-origin paths reach a Location header should hold at every hop.
@@ -226,8 +257,132 @@ function restartLogin(destination: string | null): never {
 }
 
 /**
+ * Admin gate reads the DB-backed allowed list via loadSettings; that table is
+ * the only source of admin access. The superuser is admitted without
+ * consulting the list — even when reading it fails — so an unreadable
+ * allowed_slack_users table can never lock every admin out of /pending and
+ * /settings.
+ *
+ * Moderators come from the same read. An admin is never also flagged a
+ * moderator: isModerator only ever widens access for someone who is not an
+ * admin, so it is kept meaningful as "moderator and nothing more".
+ */
+async function resolveRole(userId: string): Promise<{
+	isAdmin: boolean;
+	isModerator: boolean;
+	isSuperuser: boolean;
+	/** The lists could not be read, so false above means "unknown", not "no". */
+	settingsUnavailable: boolean;
+}> {
+	const isSuperuser = SLACK_SUPERUSER_ID !== '' && userId === SLACK_SUPERUSER_ID;
+	if (isSuperuser) {
+		return { isAdmin: true, isModerator: false, isSuperuser, settingsUnavailable: false };
+	}
+	try {
+		const { allowedSlackUserIds, moderatorSlackUserIds } = await loadSettings(db);
+		const isAdmin = allowedSlackUserIds.has(userId);
+		return {
+			isAdmin,
+			isModerator: !isAdmin && moderatorSlackUserIds.has(userId),
+			isSuperuser,
+			settingsUnavailable: false,
+		};
+	} catch (err) {
+		console.error(
+			'[auth] loadSettings failed — denying admin and moderator to non-superuser:',
+			err instanceof Error ? err.message : err,
+		);
+		return { isAdmin: false, isModerator: false, isSuperuser, settingsUnavailable: true };
+	}
+}
+
+const INFO_COMMANDS_ONLY = 'Only admins and moderators can use the info commands.';
+
+/**
+ * Keep the chat:write token an admin or moderator just granted, so the info
+ * commands can post as them. Throws (as a SvelteKit error) when the grant
+ * must not be kept; returns once it is stored.
+ *
+ * The role is re-read rather than taken from the session, which may be hours
+ * old — someone removed from both lists since signing in gets nothing.
+ */
+async function storePostAsYouGrant(args: {
+	sessionUserId: string;
+	userId: string;
+	canUseInfoCommands: boolean;
+	settingsUnavailable: boolean;
+	accessToken: string | undefined;
+	scopes: string;
+}): Promise<void> {
+	const { sessionUserId, userId, accessToken } = args;
+
+	// Every refusal from here on comes after Slack has already issued the token,
+	// so it is revoked rather than just dropped — otherwise the grant we refused
+	// would still stand at Slack. Not when that account already has a grant
+	// stored, though: Slack user tokens accumulate, so revoking this one could
+	// take a working grant down with it, and nothing new was granted anyway.
+	async function refuse(status: number, message: string): Promise<never> {
+		if (accessToken) {
+			const existing = await loadUserToken(db, userId);
+			// Only a definite "nothing stored" is safe to revoke over; a failed
+			// read could be hiding a grant.
+			if (!existing.ok && existing.reason !== 'error') {
+				await revokeUserToken(accessToken, userId);
+			}
+		}
+		error(status, message);
+	}
+
+	// Slack lets you pick a workspace account on its screen, and it need not be
+	// the one this session belongs to. Storing it would make one person's
+	// commands post as someone else.
+	if (sessionUserId !== userId) {
+		console.warn(
+			`[auth] post-as-you: session ${sessionUserId} authorized as ${userId} — not stored`,
+		);
+		await refuse(
+			403,
+			'You authorized a different Slack account from the one you are signed in as. ' +
+				'Sign in with that account, or authorize again with this one.',
+		);
+	}
+	if (args.settingsUnavailable) {
+		await refuse(503, 'Could not check your access just now. Please try again in a moment.');
+	}
+	if (!args.canUseInfoCommands) {
+		// No longer an admin or moderator, so any grant they stored earlier is
+		// one the app has no use for either — dropped now rather than at their
+		// next sign-in. With it gone, refuse() revokes at Slack too.
+		try {
+			await deleteUserToken(db, userId);
+		} catch (err) {
+			console.error(
+				'[auth] could not clear a stored user token:',
+				err instanceof Error ? err.message : err,
+			);
+		}
+		await refuse(403, INFO_COMMANDS_ONLY);
+	}
+	if (!accessToken || !hasScope(args.scopes, POST_AS_USER_SCOPE)) {
+		console.error(`[auth] post-as-you: Slack returned no chat:write token for ${userId}`);
+		await refuse(502, 'Slack did not grant permission to post as you. Please try again.');
+		return;
+	}
+	try {
+		await saveUserToken(db, { slackUserId: userId, accessToken, scopes: args.scopes });
+	} catch (err) {
+		console.error(
+			'[auth] could not store the user token:',
+			err instanceof Error ? err.message : err,
+		);
+		await refuse(500, 'Could not save your permission. Please try again.');
+	}
+	console.log(`[auth] post-as-you enabled for ${userId}`);
+}
+
+/**
  * Display name for the session, read with the **bot** token — it already holds
- * `users:read`, and the user token deliberately carries only `chat:write`.
+ * `users:read`, and the login's user token is never kept.
  *
  * Never throws: the name is cosmetic (it labels the session and stamps audit
  * rows), and a Slack hiccup must not cost someone their login. Falls back to

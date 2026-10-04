@@ -63,7 +63,7 @@ A moderator can use the app's Slack side — `/member-note`, **Log member note**
 
 - Admins add moderators on `/settings` → **Allowed Slack users** → **Moderators**. The list is DB-only (`slack_moderators`): unlike the admin list there is no env fallback.
 - In Slack, a change takes effect on the next command. On the web it takes effect at the person's next sign-in, because access is decided at login and stored on the session.
-- Info commands post as the person who runs them, so a moderator has to sign in to the web app once before those work — same as an admin. `/member-note`, the shortcuts and `/list-commands` work without signing in.
+- Info commands post as the person who runs them, so a moderator has to grant that once on `/post-as-you` before those work — same as an admin. `/member-note`, the shortcuts and `/list-commands` work without it.
 - Someone on both lists is an admin.
 
 ### Member notes and warnings
@@ -85,10 +85,10 @@ Slash commands that post a set message **as the admin or moderator who runs them
 1. An admin adds a command on `/settings` → **Info commands**: a name (`/info-phone`) and the message it posts. Channels are written as `#channel-name` and become real links at post time
 2. **You must also register the command in your Slack app** (see setup step 12) — Slack only routes commands it knows about, so a command that exists only in `/settings` does nothing
 3. Running it posts the message into the current channel under the runner's own name and avatar. It is a real message from them: no **APP** badge, and they can edit or delete it like anything else they wrote
-4. This works by storing a per-user Slack user token, captured at login. Tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY` and are stored only for admins and moderators — anyone else's token is deleted on sight
-5. Admins who last logged in before this feature shipped will be told to sign in again: Slack does not add a new scope to a token it has already issued
+4. This works by storing a per-user Slack user token with `chat:write`. It is **not** asked for at login — everyone signs in with the read-only `users:read` user scope, whose token is thrown away. An admin or moderator opts in on `/post-as-you` (in the header menu, and linked from the command's reply when they haven't yet), which sends them through a second Slack screen asking for `chat:write` only. Tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY` and are stored only for admins and moderators — anyone else's token is deleted at their next sign-in (skipped if the admin and moderator lists can't be read at that moment, so a database hiccup can never clear a real admin's grant)
+5. **Turn off** on `/post-as-you` deletes the token here and asks Slack to revoke it, and says so if Slack doesn't confirm. The page always offers to grant it again, since someone can revoke it from Slack's side without the app hearing
 
-Because the token is captured at login and stored only for admins and moderators, these commands are limited to them (see [Moderators](#moderators)). An admin or moderator who has never signed in to the web app gets an ephemeral prompt with the link, rather than a failed post.
+Because only admins and moderators can grant the token, these commands are limited to them (see [Moderators](#moderators)). One who hasn't granted it gets an ephemeral prompt with the link, rather than a failed post.
 
 `/list-commands` shows every info command and the message it posts, rendered as it would be posted, in a reply only the person who ran it can see. It needs no stored token, and like the commands it lists it is for admins and moderators.
 
@@ -188,12 +188,13 @@ and posts the real answer to `response_url`, replacing the acknowledgement.
 
    If you are adding `commands` to an existing app, **reinstall the app** afterwards and re-copy the bot token if it changes.
 
-3. Under **OAuth & Permissions**, set the user scopes to exactly one entry:
-   - `chat:write` — signs people in _and_ lets the info commands post as whoever runs them rather than as the bot
+3. Under **OAuth & Permissions**, set the user scopes to:
+   - `users:read` — signs people in. Any user scope would do, since Slack returns the user's id with every authorization; this one grants nothing the bot can't already see, and the token is discarded
+   - `chat:write` — lets the info commands post as whoever runs them rather than as the bot
 
-   **If `identity.basic` is listed there, remove it.** Slack refuses any authorization that mixes an `identity.*` scope with a normal one, failing the install with _"Invalid permissions requested"_. Sign in no longer needs it: `oauth.v2.access` returns the user's id directly, and the display name comes from `users.info` on the bot token.
+   Login asks for `users:read` and `/auth/slack/post-as-you` asks for `chat:write`, the latter only of admins and moderators. Leave both as required scopes.
 
-   Adding `chat:write` after the fact does not upgrade tokens Slack has already issued: every existing admin has to sign in again before info commands work for them.
+   **Do not add `identity.basic` or the OpenID scopes (`openid`, `profile`, `email`).** Slack refuses any authorization that mixes a Sign in with Slack scope with a normal one, and installing the app requests every configured scope at once — so the install itself fails with _"Invalid permissions requested"_.
 
 4. Under **OAuth & Permissions → Redirect URLs**, add:
    ```
@@ -1097,6 +1098,10 @@ gated exactly as `/pending` is. Pushes three event types:
 ### `GET /auth/slack`
 
 Starts the Slack OAuth login flow. Redirected to automatically when visiting `/pending` without a session.
+
+### `GET /auth/slack/post-as-you`
+
+Asks Slack for `chat:write` so the info commands can post as the signed-in admin or moderator, then lands on `/post-as-you`. Anyone else gets a 403; a signed-out visitor is sent to sign in first.
 
 ### `POST /auth/logout`
 
