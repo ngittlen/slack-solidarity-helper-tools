@@ -151,11 +151,10 @@ describe('GET /auth/slack', () => {
 		expect(first.ok && first.state.isRetry).toBe(false);
 	});
 
-	// chat:write is requested at login so there is no second authorization dance
-	// the first time an admin runs an info command. It must be the ONLY user
-	// scope: Slack fails the whole authorization with "Invalid permissions
-	// requested" if an identity.* scope is asked for alongside anything else.
-	it('requests chat:write alone as the user scope', async () => {
+	// Login asks for one read-only scope and nothing else, so nobody is shown
+	// "Perform actions as you" just for signing in. chat:write is a separate
+	// grant only admins and moderators are offered (./post-as-you).
+	it('requests users:read alone as the user scope', async () => {
 		const event = makeEvent();
 
 		// The handler signals the redirect by throwing, so the location arrives on
@@ -168,7 +167,13 @@ describe('GET /auth/slack', () => {
 		);
 		const userScope = new URL(redirect).searchParams.get('user_scope');
 
-		expect(userScope?.split(',')).toEqual(['chat:write']);
+		expect(userScope?.split(',')).toEqual(['users:read']);
+	});
+
+	it('signs the state as a login', async () => {
+		const verdict = verifyState(await stateFrom(makeEvent()));
+
+		expect(verdict.ok && verdict.state.purpose).toBe('login');
 	});
 });
 

@@ -13,12 +13,18 @@
  *  `isModerator`). Kept in sync with the `locals.session` guards in the
  *  corresponding `+page.server.ts` / `+layout.server.ts` loads — this list only decides where login *sends* people; the routes
  *  still enforce their own access. */
-const ADMIN_ONLY_PREFIXES = ['/pending', '/members', '/channel-chapter-diff', '/settings'];
+const ADMIN_ONLY_PREFIXES = [
+	'/pending',
+	'/members',
+	'/channel-chapter-diff',
+	'/settings',
+	'/post-as-you',
+];
 
 /** The subset of ADMIN_ONLY_PREFIXES a moderator may also see — the page the
- *  Slack "View member record" shortcut links to. Same caveat: the routes
- *  enforce this themselves. */
-const MODERATOR_PREFIXES = ['/members'];
+ *  Slack "View member record" shortcut links to, and the info commands'
+ *  post-as-you switch. Same caveat: the routes enforce this themselves. */
+const MODERATOR_PREFIXES = ['/members', '/post-as-you'];
 
 /** Generous cap: real destinations are short, and a cookie has to hold this. */
 const MAX_TARGET_LENGTH = 512;
