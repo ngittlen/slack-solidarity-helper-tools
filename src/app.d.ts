@@ -9,6 +9,9 @@ declare global {
 				isAdmin: boolean;
 				/** Absent on sessions that predate moderators — read as false. */
 				isModerator?: boolean;
+				/** 'google' for a Google sign-in; absent means Slack. See
+				 *  $lib/server/identity.ts for what `slackUserId` holds then. */
+				authProvider?: 'google';
 			} | null;
 		}
 	}

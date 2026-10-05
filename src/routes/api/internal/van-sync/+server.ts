@@ -28,6 +28,7 @@ import { runGeometryQueue } from '$lib/server/van/geometry-worker.js';
 import { exportCallbackUrl } from '$lib/server/van/webhook-token.js';
 import { sweepExpiredClaims } from '$lib/server/van/checkout-store.js';
 import { sendExpiryWarnings } from '$lib/server/van/expiry-warning-store.js';
+import { pruneHolderNotices } from '$lib/server/van/holder-notices.js';
 import { sendDriftAlerts } from '$lib/server/van/drift-alert-store.js';
 import { sendListExpiryAlerts } from '$lib/server/van/list-expiry-alert-store.js';
 import { runRefreshSweep, settleRefreshes } from '$lib/server/van/refresh.js';
@@ -250,6 +251,15 @@ async function runHousekeeping(now: Date): Promise<Housekeeping> {
 		// Sweep first, then warn: the sweep releases anything already past its
 		// TTL, so nobody is warned about turf that expired moments ago.
 		const warnings = await sendExpiryWarnings(db, now);
+
+		// Turf messages kept for Google holders last a week at most, read or
+		// not (see holder-notices.ts). Bookkeeping, so never fails the sync.
+		try {
+			const pruned = await pruneHolderNotices(db, now);
+			if (pruned > 0) console.log(`[van] pruned ${pruned} old turf notice(s)`);
+		} catch (err) {
+			console.error('[van] turf notice prune failed:', err instanceof Error ? err.message : err);
+		}
 
 		// A campaign secret added since the last tick gets its (disabled)
 		// van_campaigns row, ready to configure in /settings. Bookkeeping only —

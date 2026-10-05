@@ -6,6 +6,8 @@ describe('isPublicPath', () => {
 		expect(isPublicPath('/policies')).toBe(true);
 		expect(isPublicPath('/privacy')).toBe(true);
 		expect(isPublicPath('/security')).toBe(true);
+		// The terms-of-service URL on Google's sign-in consent screen.
+		expect(isPublicPath('/terms')).toBe(true);
 	});
 
 	it('tolerates a trailing slash and sub-paths', () => {
@@ -36,6 +38,15 @@ describe('isPublicPath', () => {
 		]) {
 			expect(isPublicPath(path), path).toBe(false);
 		}
+	});
+
+	// Every signed-out redirect lands on /signin, so it has to be readable
+	// signed out — or the layout guard would bounce it to itself.
+	it('admits /signin itself and nothing below it', () => {
+		expect(isPublicPath('/signin')).toBe(true);
+		expect(isPublicPath('/signin/')).toBe(true);
+		expect(isPublicPath('/signin/anything')).toBe(false);
+		expect(isPublicPath('/signinx')).toBe(false);
 	});
 
 	it('keeps every real page behind the guard', () => {

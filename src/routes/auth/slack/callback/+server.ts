@@ -1,7 +1,7 @@
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { dev } from '$app/environment';
-import { db, sessionStore } from '$lib/server/db.js';
+import { db } from '$lib/server/db.js';
+import { startSession } from '$lib/server/session.js';
 import { loadSettings } from '$lib/server/settings.js';
 import {
 	saveUserToken,
@@ -18,6 +18,7 @@ import {
 	sanitizeRedirectTarget,
 } from '$lib/server/post-login-redirect.js';
 import { verifyState, type OAuthPurpose } from '$lib/server/oauth-state.js';
+import { logText } from '$lib/server/log-text.js';
 import {
 	SLACK_CLIENT_ID,
 	SLACK_CLIENT_SECRET,
@@ -30,8 +31,6 @@ interface SlackOAuthResponse {
 	authed_user?: { id?: string; access_token?: string; scope?: string };
 	error?: string;
 }
-
-const SESSION_MAX_AGE = 8 * 60 * 60;
 
 /** Where a post-as-you grant lands, whichever way it went. */
 const POST_AS_YOU_PAGE = '/post-as-you';
@@ -52,12 +51,12 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 				? errorVerdict.purpose
 				: null;
 		if (errorPurpose === 'post-as-you') {
-			console.log(`[auth] post-as-you not granted: ${errorParam}`);
+			console.log(`[auth] post-as-you not granted: ${logText(errorParam)}`);
 			cookies.delete('oauth_state', { path: '/' });
 			cookies.delete(OAUTH_REDIRECT_COOKIE, { path: '/' });
 			redirect(302, `${POST_AS_YOU_PAGE}?declined=1`);
 		}
-		console.error('[auth] Slack OAuth error:', errorParam);
+		console.error(`[auth] Slack OAuth error: ${logText(errorParam)}`);
 		error(403, 'Access denied.');
 	}
 
@@ -83,11 +82,23 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 		// 400ing. Neither reason can loop: the state we mint next is well-formed
 		// and freshly dated by construction. An expired state did pass its
 		// signature check, so its destination is ours and rides along.
+		if (verdict.reason === 'expired' && verdict.purpose === 'google-login') {
+			console.warn('[auth] Google OAuth state arrived at the Slack callback');
+			error(400, 'Invalid OAuth state.');
+		}
 		console.warn(`[auth] restarting login: OAuth state ${verdict.reason}`);
 		if (verdict.reason === 'expired') restart(verdict.purpose, verdict.destination);
 		restart('login', null);
 	}
 	const state = verdict.state;
+
+	// Signed by us, but for the other provider's round trip. Nothing honest
+	// sends one here; the code with it is Google's and Slack would refuse it
+	// anyway, but say so before spending a request finding out.
+	if (state.purpose === 'google-login') {
+		console.warn('[auth] Google OAuth state arrived at the Slack callback');
+		error(400, 'Invalid OAuth state.');
+	}
 
 	if (storedNonce === undefined) {
 		// The URL came back but the cookie did not, which is the signature of a
@@ -208,20 +219,11 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	// Read once and reused for the session and the log line below.
 	const userName = await displayName(userId);
 
-	// Create session
-	const sid = crypto.randomUUID();
-	await sessionStore.set(
-		sid,
-		{ slackUserId: userId, slackUserName: userName, isAdmin, isModerator },
-		SESSION_MAX_AGE,
-	);
-
-	cookies.set('session', sid, {
-		path: '/',
-		httpOnly: true,
-		secure: !dev,
-		sameSite: 'lax',
-		maxAge: SESSION_MAX_AGE,
+	await startSession(cookies, {
+		slackUserId: userId,
+		slackUserName: userName,
+		isAdmin,
+		isModerator,
 	});
 
 	console.log(

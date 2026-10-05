@@ -30,6 +30,7 @@ import {
 } from './checkout.js';
 import { visibleTurfState, type VolunteerStatus } from './turf-status.js';
 import { campaignDayLabel } from '../campaign-time.js';
+import type { HolderAccount } from '../holder-account.js';
 
 /** The van_turfs columns this module reads. Narrow on purpose: the row type
  *  can grow without widening what the browser can be shown. */
@@ -172,6 +173,10 @@ export interface TurfView {
 	status: VolunteerStatus;
 	/** Non-null only for admins. */
 	heldBy: string | null;
+	/** The account behind `heldBy` — the Slack or Google mark, and a Google
+	 *  holder's email. Admins only, like `heldBy`, and null too when the holder
+	 *  is VAN's (an outside assignment names a person, not an account here). */
+	heldByAccount: HolderAccount | null;
 	/** Hours until the claim lapses — yours, or any claim if you're an admin. */
 	expiresInHours: number | null;
 	/** How stale the door count is, from VAN's own region refresh timestamp.
@@ -288,6 +293,10 @@ export type TurfViewOptions = ClaimOptions & {
 	showCampaign?: boolean;
 	/** Disabled campaigns. See `TurfView.campaignDisabled`. */
 	disabledCampaigns?: ReadonlySet<number>;
+	/** Holder id → account, for `TurfView.heldByAccount`. Only ever loaded for
+	 *  an admin viewer; and even if passed for anyone else it is not used,
+	 *  because it rides on `heldBy`, which only admins get. */
+	holderAccounts?: ReadonlyMap<string, HolderAccount>;
 };
 
 /** Campaign id → the badge text volunteers see beside its turf. Sent once per
@@ -456,6 +465,10 @@ export function toTurfView(
 		bounds,
 		status: visible.status,
 		heldBy: visible.heldBy,
+		heldByAccount:
+			visible.heldBy !== null && active
+				? (options.holderAccounts?.get(active.slackUserId) ?? null)
+				: null,
 		expiresInHours: visible.expiresInHours,
 		refreshedMinutesAgo: minutesSince(doorsLeftAsOf(row, options.contactsThrough ?? null), now),
 		claimable: decision.ok,

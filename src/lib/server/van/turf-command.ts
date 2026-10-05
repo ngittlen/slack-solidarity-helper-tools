@@ -29,7 +29,7 @@
 //      and the caller re-checks the chapter against settings anyway.
 
 import { formatDistance, haversineMeters, type LatLng } from '../../van/geometry.js';
-import { escapeMrkdwn } from '../slack-mrkdwn.js';
+import { escapeMrkdwn } from '../../slack-mrkdwn.js';
 import { statusLabel } from '../../van/turf-status.js';
 import { describeAge, oldestRefreshMinutes } from '../../van/turf-freshness.js';
 import { campaignStoppedNote, type CampaignBadges, type TurfView } from '../../van/turf-view.js';

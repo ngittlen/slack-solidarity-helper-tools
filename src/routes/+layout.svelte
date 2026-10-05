@@ -18,7 +18,9 @@
 	// Not for signed-out readers: /policies is public, and an arrow pointing at
 	// a page that would bounce them to Slack OAuth is a dead end, not a way back.
 	const signedIn = $derived(data.signedIn);
-	const showBackLink = $derived(signedIn && page.url.pathname !== '/');
+	// Nor for a Google sign-in: the dashboard it points at is Slack-only, and
+	// following it would only bounce them back to /turfs.
+	const showBackLink = $derived(signedIn && !data.turfOnly && page.url.pathname !== '/');
 
 	// Moderators get the same menu, holding just the pages they can open — in
 	// the same order, so the two read as one menu with items missing rather
@@ -106,8 +108,9 @@
 				<form method="POST" action="/auth/logout">
 					<button type="submit" class="logout-btn">Log out</button>
 				</form>
-			{:else}
-				<a class="logout-btn" href={resolve('/auth/slack')}>Sign in with Slack</a>
+			{:else if data.signInHref && page.url.pathname !== '/signin'}
+				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the sign-in page with its return path -->
+				<a class="logout-btn" href={data.signInHref}>Sign in</a>
 			{/if}
 		</div>
 	</header>
@@ -115,6 +118,8 @@
 	{@render children?.()}
 
 	<footer class="app-footer">
+		<a href="{resolve('/policies')}#terms">Terms</a>
+		<span aria-hidden="true">·</span>
 		<a href="{resolve('/policies')}#privacy">Privacy</a>
 		<span aria-hidden="true">·</span>
 		<a href="{resolve('/policies')}#security">Security</a>

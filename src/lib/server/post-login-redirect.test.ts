@@ -4,6 +4,8 @@ import {
 	isAdminOnlyPath,
 	resolvePostLoginRedirect,
 	loginRedirectPath,
+	isTurfCheckoutPath,
+	withRedirectTo,
 } from './post-login-redirect.js';
 
 describe('sanitizeRedirectTarget', () => {
@@ -34,6 +36,12 @@ describe('sanitizeRedirectTarget', () => {
 	it('rejects the auth routes so login cannot loop', () => {
 		expect(sanitizeRedirectTarget('/auth/slack')).toBeNull();
 		expect(sanitizeRedirectTarget('/auth/dev-login')).toBeNull();
+		expect(sanitizeRedirectTarget('/auth/google')).toBeNull();
+	});
+
+	it('rejects the sign-in page, which only ever sends a signed-in visitor on', () => {
+		expect(sanitizeRedirectTarget('/signin')).toBeNull();
+		expect(sanitizeRedirectTarget('/signin?redirectTo=%2Fturfs')).toBeNull();
 	});
 
 	it('rejects empty, missing, and absurdly long values', () => {
@@ -62,6 +70,35 @@ describe('isAdminOnlyPath', () => {
 });
 
 describe('resolvePostLoginRedirect', () => {
+	describe('for a Google session', () => {
+		const google = { isAdmin: false, authProvider: 'google' as const };
+
+		it('returns to /turfs, query string and all', () => {
+			expect(resolvePostLoginRedirect('/turfs', google)).toBe('/turfs');
+			expect(resolvePostLoginRedirect('/turfs?chapter=12&zip=48104', google)).toBe(
+				'/turfs?chapter=12&zip=48104',
+			);
+		});
+
+		it('sends every other destination to /turfs, the dashboard included', () => {
+			expect(resolvePostLoginRedirect('/', google)).toBe('/turfs');
+			expect(resolvePostLoginRedirect('/settings', google)).toBe('/turfs');
+			expect(resolvePostLoginRedirect('/turfs/organizer', google)).toBe('/turfs');
+			expect(resolvePostLoginRedirect('/turfsx', google)).toBe('/turfs');
+		});
+
+		it('sends a missing or unsafe destination to /turfs', () => {
+			expect(resolvePostLoginRedirect(null, google)).toBe('/turfs');
+			expect(resolvePostLoginRedirect('https://evil.example', google)).toBe('/turfs');
+		});
+
+		it('ignores any role flags it is handed', () => {
+			expect(
+				resolvePostLoginRedirect('/settings', { ...google, isAdmin: true, isModerator: true }),
+			).toBe('/turfs');
+		});
+	});
+
 	it('returns the requested admin page for an admin', () => {
 		expect(resolvePostLoginRedirect('/settings', { isAdmin: true })).toBe('/settings');
 		expect(resolvePostLoginRedirect('/members?user=U123', { isAdmin: true })).toBe(
@@ -106,17 +143,45 @@ describe('resolvePostLoginRedirect', () => {
 describe('loginRedirectPath', () => {
 	it('carries the requested page as an encoded query parameter', () => {
 		expect(loginRedirectPath(new URL('http://app.test/members?user=U123'))).toBe(
-			'/auth/slack?redirectTo=%2Fmembers%3Fuser%3DU123',
+			'/signin?redirectTo=%2Fmembers%3Fuser%3DU123',
 		);
 	});
 
 	it('leaves the login URL bare for the root page', () => {
-		expect(loginRedirectPath(new URL('http://app.test/'))).toBe('/auth/slack');
+		expect(loginRedirectPath(new URL('http://app.test/'))).toBe('/signin');
 	});
 
 	it('keeps the root page query string, which the dashboard reads', () => {
 		expect(loginRedirectPath(new URL('http://app.test/?days=30'))).toBe(
-			'/auth/slack?redirectTo=%2F%3Fdays%3D30',
+			'/signin?redirectTo=%2F%3Fdays%3D30',
+		);
+	});
+});
+
+describe('isTurfCheckoutPath', () => {
+	it('matches /turfs alone, with or without a query string', () => {
+		expect(isTurfCheckoutPath('/turfs')).toBe(true);
+		expect(isTurfCheckoutPath('/turfs/')).toBe(true);
+		expect(isTurfCheckoutPath('/turfs?chapter=3')).toBe(true);
+	});
+
+	it('does not match the organizer pages under it, or lookalikes', () => {
+		expect(isTurfCheckoutPath('/turfs/organizer')).toBe(false);
+		expect(isTurfCheckoutPath('/turfs/activity')).toBe(false);
+		expect(isTurfCheckoutPath('/turfsx')).toBe(false);
+		expect(isTurfCheckoutPath('/')).toBe(false);
+	});
+});
+
+describe('withRedirectTo', () => {
+	it('leaves the URL bare for no destination or the root page', () => {
+		expect(withRedirectTo('/auth/google', null)).toBe('/auth/google');
+		expect(withRedirectTo('/auth/google', '/')).toBe('/auth/google');
+	});
+
+	it('encodes the destination', () => {
+		expect(withRedirectTo('/auth/google', '/turfs?chapter=3')).toBe(
+			'/auth/google?redirectTo=%2Fturfs%3Fchapter%3D3',
 		);
 	});
 });

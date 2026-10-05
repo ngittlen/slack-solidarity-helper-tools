@@ -75,7 +75,11 @@
 	     list twice for the seamless loop, and the sr-only list below carries
 	     the same information in a readable form. -->
 	{#snippet cells()}
-		{#each entries as entry (entry.canvasser)}
+		<!-- Keyed by rank, not name: entries are per account, and two accounts
+		     can share a name — one person signed in with both Slack and Google,
+		     or two Google volunteers with the same profile name. A duplicate key
+		     throws, even in production, and takes the dashboard down with it. -->
+		{#each entries as entry (entry.rank)}
 			<div class="cell" class:cell--lead={entry.rank === 1}>
 				<span class="cell__name">{entry.canvasser}</span>
 				<!-- No separators between count, unit and region: colour does that
@@ -105,7 +109,7 @@
 	</div>
 
 	<ol class="ticker__sr" aria-label="Most doors knocked today">
-		{#each entries as entry (entry.canvasser)}
+		{#each entries as entry (entry.rank)}
 			<li>
 				{entry.canvasser}: {entry.doors > 0
 					? `${entry.doors} doors knocked`

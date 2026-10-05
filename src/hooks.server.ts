@@ -1,5 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
-import { text } from '@sveltejs/kit';
+import { json, redirect, text } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { db, sessionStore } from '$lib/server/db.js';
@@ -10,6 +10,7 @@ import { INTERNAL_CRON_SECRET, validateEnv } from '$lib/server/env.js';
 import { localCaller, startScheduler } from '$lib/server/scheduler.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
 import { applyDevViewAs, parseDevViewAs } from '$lib/server/dev-view-as.js';
+import { gateGoogleSession } from '$lib/server/google-access.js';
 
 export async function init() {
 	validateEnv();
@@ -107,6 +108,32 @@ export const handle: Handle = async ({ event, resolve }) => {
 	if (dev) {
 		const viewAs = parseDevViewAs((env as Record<string, string | undefined>)['DEV_VIEW_AS']);
 		if (viewAs) event.locals.session = applyDevViewAs(event.locals.session, viewAs);
+	}
+
+	// A Google sign-in is for turf checkout and nothing else. Enforced here,
+	// where every request passes, rather than in the root layout — form actions
+	// and endpoints never run layout loads. Deny-by-default; the allow-list and
+	// the reasoning are in server/google-access.ts.
+	if (event.locals.session?.authProvider === 'google') {
+		const gate = gateGoogleSession({
+			routeId: event.route.id,
+			isDataRequest: event.isDataRequest,
+			isRemoteRequest: event.isRemoteRequest,
+			method: event.request.method,
+			accept: event.request.headers.get('accept'),
+			url: event.url,
+		});
+		// Kit turns a redirect thrown from handle into its JSON redirect for a
+		// data request, so client-side navigation lands on /turfs too.
+		if (gate.action === 'redirect') redirect(302, gate.location);
+		if (gate.action === 'forbid') {
+			const response = json(
+				{ error: 'Turf checkout only. This needs a Slack sign-in.' },
+				{ status: 403 },
+			);
+			setSecurityHeaders(response.headers);
+			return response;
+		}
 	}
 
 	// Inject the theme's custom properties into <head>. Done here rather than in

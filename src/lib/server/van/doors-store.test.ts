@@ -212,6 +212,32 @@ describe('loadDoorsTicker', () => {
 		]);
 	});
 
+	// Entries are per account, and since Google sign-in two accounts can share a
+	// name. The ticker must key its rows by rank, which this pins as unique —
+	// keyed by name, the duplicate threw and took the dashboard down.
+	it('lists two accounts with the same name separately, each with its own rank', async () => {
+		await turf();
+		await checkout({
+			slackUserId: 'U1',
+			slackUserName: 'Maria Torres',
+			completedAt: '2026-09-10T18:00:00.000Z',
+			doors: 40,
+		});
+		await checkout({
+			slackUserId: 'google:7',
+			slackUserName: 'Maria Torres',
+			completedAt: '2026-09-10T19:00:00.000Z',
+			doors: 90,
+		});
+
+		const ticker = await loadDoorsTicker(db, { now: NOW });
+		expect(ticker.entries.map((e) => [e.canvasser, e.rank])).toEqual([
+			['Maria Torres', 1],
+			['Maria Torres', 2],
+		]);
+		expect(new Set(ticker.entries.map((e) => e.rank)).size).toBe(ticker.entries.length);
+	});
+
 	it('carries turf counts for a canvasser whose doors are not counted yet', async () => {
 		await turf();
 		await checkout({ completedAt: '2026-09-10T18:00:00.000Z', doors: null });

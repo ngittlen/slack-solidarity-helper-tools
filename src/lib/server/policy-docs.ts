@@ -1,6 +1,6 @@
-// The privacy and security policies, rendered for the web.
+// The terms of use and the privacy and security policies, rendered for the web.
 //
-// PRIVACY.md and SECURITY.md in the repository root are the source of truth —
+// TERMS.md, PRIVACY.md and SECURITY.md in the repository root are the source of truth —
 // they are what a reader gets on GitHub and what a reviewer diffs. This module
 // renders those same files for /policies rather than keeping a second copy in a
 // Svelte component, because two copies of a policy is how a site ends up
@@ -11,7 +11,7 @@
 // ships the build output, not the markdown, and a runtime `readFile` would work
 // in dev and 500 in production.
 //
-// Both documents render onto ONE page, which creates two problems this module
+// All three documents render onto ONE page, which creates two problems this module
 // exists to solve:
 //
 //   * Heading ids would collide (both files have a "For operators"-shaped
@@ -22,13 +22,14 @@
 //     namespace as the ids.
 
 import { Marked, type Tokens } from 'marked';
+import termsMarkdown from '../../../TERMS.md?raw';
 import privacyMarkdown from '../../../PRIVACY.md?raw';
 import securityMarkdown from '../../../SECURITY.md?raw';
 
 export type PolicyHeading = { id: string; text: string };
 
 export type PolicyDoc = {
-	/** Namespace for this document's heading ids: `privacy` / `security`. */
+	/** Namespace for this document's heading ids: `terms` / `privacy` / `security`. */
 	slug: string;
 	/** The document's H1, used as the section heading. */
 	title: string;
@@ -76,6 +77,7 @@ function escapeAttribute(value: string): string {
 
 /** Where a link inside one of these documents should point on /policies. */
 export function rewriteHref(href: string, slug: string): string {
+	if (href === 'TERMS.md') return '#terms';
 	if (href === 'PRIVACY.md') return '#privacy';
 	if (href === 'SECURITY.md') return '#security';
 	// A link to the document's own section: namespace it the way the ids are.
@@ -136,7 +138,10 @@ export function renderPolicy(markdown: string, slug: string): PolicyDoc {
 
 // Parsed once at module load rather than per request. The input is a build-time
 // constant, so a second parse could never produce a different answer.
+export const TERMS_DOC: PolicyDoc = renderPolicy(termsMarkdown, 'terms');
 export const PRIVACY_DOC: PolicyDoc = renderPolicy(privacyMarkdown, 'privacy');
 export const SECURITY_DOC: PolicyDoc = renderPolicy(securityMarkdown, 'security');
 
-export const POLICY_DOCS: PolicyDoc[] = [PRIVACY_DOC, SECURITY_DOC];
+// Terms first: they are what signing in agrees to, and what Google's consent
+// screen links to (via /terms).
+export const POLICY_DOCS: PolicyDoc[] = [TERMS_DOC, PRIVACY_DOC, SECURITY_DOC];

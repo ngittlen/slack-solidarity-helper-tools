@@ -13,7 +13,7 @@ import {
 	SOLIDARITY_API_TOKEN,
 } from '$lib/server/env.js';
 import { assessMatchHealth } from '$lib/server/attendee-sync-health.js';
-import { mrkdwnLink } from '$lib/server/slack-mrkdwn.js';
+import { mrkdwnLink } from '$lib/slack-mrkdwn.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { secretMatches } from '$lib/server/secret-compare.js';

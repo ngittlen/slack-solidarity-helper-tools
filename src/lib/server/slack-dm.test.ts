@@ -18,6 +18,15 @@ beforeEach(() => {
 });
 
 describe('sendDm', () => {
+	// A Google sign-in holds turf under a `google:` id. There is nobody in Slack
+	// to message, and reporting a failure would have the turf sweeps retry it
+	// every tick.
+	it('reports a Google holder as delivered without calling Slack', async () => {
+		expect(await sendDm('google:1093', 'hello', '[test]')).toBe(true);
+		expect(mockOpen).not.toHaveBeenCalled();
+		expect(mockPostMessage).not.toHaveBeenCalled();
+	});
+
 	it('opens the DM channel and posts into it', async () => {
 		expect(await sendDm('U_VOL', 'hello', '[test]')).toBe(true);
 		expect(mockOpen).toHaveBeenCalledWith({ users: 'U_VOL' });

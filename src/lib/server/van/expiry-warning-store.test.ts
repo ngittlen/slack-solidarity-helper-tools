@@ -130,6 +130,24 @@ describe('sendExpiryWarnings', () => {
 		expect(mockSendDm).toHaveBeenCalledTimes(1);
 	});
 
+	// A Google holder has no Slack: the same warning is kept for /turfs
+	// instead (spec 013, User Story 5), and counts as delivered — once.
+	it('keeps the warning for a Google holder instead of DMing', async () => {
+		await checkout({ slack_user_id: 'google:1093', slack_user_name: 'Ana' });
+		expect(await sendExpiryWarnings(db, NOW)).toEqual({ sent: 1, failed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+
+		const notices = await client.execute('SELECT user_id, kind, text FROM turf_notices');
+		expect(notices.rows).toHaveLength(1);
+		expect(notices.rows[0]).toMatchObject({ user_id: 'google:1093', kind: 'expiry' });
+		expect(notices.rows[0]!.text).toContain('Turf 01');
+		expect(await warnedStamps()).toEqual([NOW.toISOString()]);
+
+		await sendExpiryWarnings(db, new Date(NOW.getTime() + 30 * 60_000));
+		const again = await client.execute('SELECT count(*) AS n FROM turf_notices');
+		expect(Number(again.rows[0]!.n)).toBe(1);
+	});
+
 	it('stamps the row when the DM lands', async () => {
 		await checkout();
 		await sendExpiryWarnings(db, NOW);

@@ -118,6 +118,29 @@ describe('reconcileClaims — a list number that changed', () => {
 		expect(updates).toEqual([{ issuedListNumber: '77777777-22222' }]);
 	});
 
+	// A Google holder has no Slack: the same message is kept for /turfs, and
+	// counts as delivered, so the new number is recorded as told.
+	it('keeps the message for a Google holder and records the number', async () => {
+		const { db, updates, inserts } = makeDb([
+			[liveClaim({ slackUserId: 'google:7', printedListNumber: '77777777-22222' })],
+			[],
+		]);
+
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
+
+		expect(result.listNumbersChanged).toBe(1);
+		expect(result.dmFailed).toBe(0);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(inserts).toEqual([
+			expect.objectContaining({
+				userId: 'google:7',
+				kind: 'list-number',
+				text: expect.stringContaining('77777777-22222'),
+			}),
+		]);
+		expect(updates).toEqual([{ issuedListNumber: '77777777-22222' }]);
+	});
+
 	it('leaves the record alone when Slack would not take the message', async () => {
 		mockSendDm.mockResolvedValue(false);
 		const { db, updates } = makeDb([[liveClaim({ printedListNumber: '77777777-22222' })], []]);
@@ -157,6 +180,18 @@ describe('reconcileClaims — a turf with no doors left', () => {
 		expect(mockSendDm).toHaveBeenCalledOnce();
 	});
 
+	it('tells a Google holder on /turfs instead of in Slack', async () => {
+		const { db, updates, inserts } = makeDb([
+			[liveClaim({ slackUserId: 'google:7', doorCount: 0 })],
+			[],
+		]);
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
+		expect(result.walkedOut).toBe(1);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(inserts).toEqual([expect.objectContaining({ userId: 'google:7', kind: 'walked-out' })]);
+		expect(updates).toEqual([{ releasedAt: NOW.toISOString(), releaseReason: 'walked-out' }]);
+	});
+
 	it('still releases it when the DM fails', async () => {
 		// A claim that can only be closed by a successful Slack call is one a
 		// deactivated account holds until its TTL runs out.
@@ -190,6 +225,27 @@ describe('reconcileClaims — a turf VAN re-cut', () => {
 		// The old row is stamped so the notice never repeats.
 		expect(updates).toEqual([{ recutNotifiedAt: NOW.toISOString() }]);
 		expect(mockSendDm.mock.calls[0][1]).toContain('99999999-11111');
+	});
+
+	it('keeps the re-cut message for a Google holder', async () => {
+		const { db, inserts } = makeDb([
+			[],
+			[recutRow({ slackUserId: 'google:7', slackUserName: 'Ana' })],
+			[replacementRow()],
+			[],
+		]);
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP, ttlHours: 48 });
+		expect(result.recutReplaced).toBe(1);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		// The moved claim, then the notice telling them about it.
+		expect(inserts).toEqual([
+			expect.objectContaining({ turfId: 56502, slackUserId: 'google:7' }),
+			expect.objectContaining({
+				userId: 'google:7',
+				kind: 'recut',
+				text: expect.stringContaining('99999999-11111'),
+			}),
+		]);
 	});
 
 	it('tells the holder it is gone when the replacement was taken in the gap', async () => {

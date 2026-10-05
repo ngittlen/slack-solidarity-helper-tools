@@ -22,23 +22,50 @@
 		realName: string;
 	}
 
-	interface Props {
-		users: UserOption[];
-		/** Currently blocked Slack ids, from loadVanBlockedUsers. */
-		blockedIds: string[];
+	/** Mirrors BlockableGoogleVolunteer from $lib/server/google-volunteers.ts. */
+	interface GoogleOption {
+		userId: string;
+		displayName: string;
+		/** Null for someone holding turf whose stored record is gone. */
+		email: string | null;
 	}
 
-	let { users, blockedIds }: Props = $props();
+	interface Props {
+		users: UserOption[];
+		/** Everyone who has signed in with Google, pickable alongside Slack
+		 *  members — blocking is how an organizer deals with a stranger. */
+		googleVolunteers: GoogleOption[];
+		/** Currently blocked ids — Slack or `google:` — from loadVanBlockedUsers. */
+		blockedIds: string[];
+		/** Each blocked id's stored name, for a chip whose person is in neither
+		 *  list any more: a Google record cleared at the end of a campaign, or a
+		 *  deactivated Slack account. Without it the chip reads as a raw id. */
+		blockedNames: Record<string, string>;
+	}
+
+	let { users, googleVolunteers, blockedIds, blockedNames }: Props = $props();
 
 	let blocked = $state<string[]>([...blockedIds]);
 
-	const userItems = $derived<PickerItem<string>[]>(
-		users.map((u) => ({
-			id: u.id,
-			label: u.name,
-			sublabel: u.realName && u.realName !== u.name ? u.realName : undefined,
-		})),
-	);
+	const userItems = $derived.by<PickerItem<string>[]>(() => {
+		const items: PickerItem<string>[] = [
+			...users.map((u) => ({
+				id: u.id,
+				label: u.name,
+				sublabel: u.realName && u.realName !== u.name ? u.realName : undefined,
+			})),
+			...googleVolunteers.map((g) => ({
+				id: g.userId,
+				label: g.displayName,
+				sublabel: g.email ? `Google · ${g.email}` : 'Google · no stored record',
+			})),
+		];
+		const known = new Set(items.map((i) => i.id));
+		for (const id of blocked) {
+			if (!known.has(id) && blockedNames[id]) items.push({ id, label: blockedNames[id] });
+		}
+		return items;
+	});
 
 	interface Op {
 		action: 'block' | 'unblock';
@@ -146,8 +173,9 @@
 			<p class="van-blocklist-notice" role="status">{notice}</p>
 		{/if}
 		<p class="van-blocklist-note">
-			Blocked members can’t see the turf map or claim turf. Blocking takes effect immediately — it
-			releases any turf they’re holding and signs them out. Admins and the
+			Blocked members — and volunteers who signed in with Google — can’t see the turf map or claim
+			turf. Blocking takes effect immediately — it releases any turf they’re holding and signs them
+			out. Admins and the
 			<code>SLACK_SUPERUSER_ID</code> user can’t be blocked. Unblocking does not give their turf back,
 			since someone else may have claimed it.
 		</p>

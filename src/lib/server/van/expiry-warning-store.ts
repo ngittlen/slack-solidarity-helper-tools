@@ -16,7 +16,7 @@
 import { and, eq, isNull, lte } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
-import { sendDm } from '../slack-dm.js';
+import { notifyHolder } from './holder-notices.js';
 import { APP_URL } from '../env.js';
 import {
 	EXPIRY_WARNING_LEAD_HOURS,
@@ -138,7 +138,7 @@ export async function sendExpiryWarnings(
 			appUrl: APP_URL,
 		});
 
-		if (!(await sendDm(row.slackUserId, text, LOG))) {
+		if (!(await notifyHolder(db, row.slackUserId, 'expiry', text, LOG))) {
 			failed += 1;
 			continue;
 		}

@@ -11,6 +11,7 @@ const mockRelease = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockSweep = vi.hoisted(() => vi.fn());
 const mockWarn = vi.hoisted(() => vi.fn());
+const mockPrune = vi.hoisted(() => vi.fn());
 const mockDrift = vi.hoisted(() => vi.fn());
 const mockListExpiry = vi.hoisted(() => vi.fn());
 const mockSettle = vi.hoisted(() => vi.fn());
@@ -79,6 +80,7 @@ vi.mock('$lib/server/van/geometry-worker.js', () => ({
 vi.mock('$lib/server/van/sync.js', () => ({ runCatalogSync: mockRunCatalogSync }));
 vi.mock('$lib/server/van/checkout-store.js', () => ({ sweepExpiredClaims: mockSweep }));
 vi.mock('$lib/server/van/expiry-warning-store.js', () => ({ sendExpiryWarnings: mockWarn }));
+vi.mock('$lib/server/van/holder-notices.js', () => ({ pruneHolderNotices: mockPrune }));
 vi.mock('$lib/server/van/drift-alert-store.js', () => ({ sendDriftAlerts: mockDrift }));
 vi.mock('$lib/server/van/list-expiry-alert-store.js', () => ({
 	sendListExpiryAlerts: mockListExpiry,
@@ -224,6 +226,7 @@ describe('POST /api/internal/van-sync', () => {
 		mockRunGeometryQueue.mockResolvedValue(geometryResult);
 		mockSweep.mockResolvedValue(0);
 		mockWarn.mockResolvedValue({ sent: 0, failed: 0 });
+		mockPrune.mockResolvedValue(0);
 		mockDrift.mockResolvedValue(driftResult);
 		mockListExpiry.mockResolvedValue({ announced: 0, failed: false, skipped: 'nothing-new' });
 		mockRunPacketTracker.mockResolvedValue(sheetLogResult);
@@ -337,6 +340,40 @@ describe('POST /api/internal/van-sync', () => {
 		await POST(event());
 		expect(order).toEqual(['sweep', 'warn']);
 		expect(mockWarn.mock.calls[0]![1]).toBe(mockSweep.mock.calls[0]![1]);
+	});
+
+	// The week-at-most promise for turf notices kept for Google holders rests
+	// on this running every tick, read or not (spec 013, User Story 5).
+	it('prunes old turf notices with the housekeeping, against the same clock', async () => {
+		const order: string[] = [];
+		mockWarn.mockImplementation(async () => {
+			order.push('warn');
+			return { sent: 0, failed: 0 };
+		});
+		mockPrune.mockImplementation(async () => {
+			order.push('prune');
+			return 2;
+		});
+		await POST(event());
+		expect(mockPrune).toHaveBeenCalledOnce();
+		expect(mockPrune.mock.calls[0]![1]).toBe(mockSweep.mock.calls[0]![1]);
+		expect(order).toEqual(['warn', 'prune']);
+	});
+
+	it('does not let a failed prune fail the sync', async () => {
+		mockPrune.mockRejectedValue(new Error('db down'));
+		const res = await POST(event());
+		expect(res.status).toBe(200);
+		expect(mockRunCatalogSync).toHaveBeenCalled();
+	});
+
+	it('leaves the prune to the next tick when another request holds the ledger', async () => {
+		mockAcquire.mockImplementation(async (_db: unknown, name: string) =>
+			name === 'van-ledger' ? null : 'lock-token',
+		);
+		await POST(event());
+		expect(mockSweep).not.toHaveBeenCalled();
+		expect(mockPrune).not.toHaveBeenCalled();
 	});
 
 	it('reports what the warning sweep did', async () => {

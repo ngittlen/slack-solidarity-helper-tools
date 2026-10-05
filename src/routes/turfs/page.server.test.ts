@@ -10,6 +10,14 @@ const mockZipLookup = vi.hoisted(() => vi.fn());
 const mockResolveLocation = vi.hoisted(() => vi.fn());
 const mockNearby = vi.hoisted(() => vi.fn());
 const mockTurfCentre = vi.hoisted(() => vi.fn());
+const mockLoadNotices = vi.hoisted(() => vi.fn());
+const mockDismissNotice = vi.hoisted(() => vi.fn());
+
+// Has its own tests on real SQLite (holder-notices.test.ts).
+vi.mock('$lib/server/van/holder-notices.js', () => ({
+	loadHolderNotices: mockLoadNotices,
+	dismissHolderNotice: mockDismissNotice,
+}));
 
 // Walk reports have their own tests on real SQLite (checkout-store.test.ts);
 // the stubbed db here answers only the chains this module's tests script.
@@ -21,6 +29,7 @@ vi.mock('$lib/server/env.js', () => ({
 	MAP_TILE_ATTRIBUTION: '',
 	MAP_TILE_API_KEY: '',
 	FLY_APP_NAME: '',
+	APP_URL: 'https://app.example',
 }));
 vi.mock('$lib/server/van/zip-centroid.js', async (importOriginal) => ({
 	normalizeZip: (await importOriginal<typeof import('$lib/server/van/zip-centroid.js')>())
@@ -176,7 +185,7 @@ describe('/turfs load', () => {
 
 		it('sends sign-in back to /turfs', async () => {
 			const data = await runPublic(event(null));
-			expect(data.signInHref).toBe('/auth/slack?redirectTo=%2Fturfs');
+			expect(data.signInHref).toBe('/signin?redirectTo=%2Fturfs');
 		});
 
 		it('hides the join button when no link is configured', async () => {
@@ -252,6 +261,134 @@ describe('/turfs load', () => {
 		// A load that returned every chapter and let the client filter would
 		// never call .where() on the turf query.
 		expect(where).toHaveBeenCalled();
+	});
+
+	// What the turf sweeps would have DMed a Google holder (User Story 5).
+	describe('holder notices', () => {
+		const GOOGLE = {
+			slackUserId: 'google:1093',
+			slackUserName: 'Ana',
+			isAdmin: false,
+			authProvider: 'google' as const,
+		};
+		const NOTICE = {
+			id: 5,
+			kind: 'expiry',
+			text: ':hourglass: *Your turf expires soon.*\n<https://app.example/turfs?chapter=71|Open turf checkout>',
+			createdAt: '2026-10-04T10:00:00Z',
+		};
+
+		beforeEach(() => {
+			mockLoadNotices.mockResolvedValue([NOTICE]);
+			mockDismissNotice.mockResolvedValue(undefined);
+		});
+
+		it('ships a Google holder their notices, rendered, on the picker and a chapter', async () => {
+			const expected = [
+				{
+					id: 5,
+					lines: [
+						[{ text: 'Your turf expires soon.', bold: true }],
+						[{ text: 'Open turf checkout', href: '/turfs?chapter=71' }],
+					],
+				},
+			];
+			expect((await run(event(GOOGLE))).notices).toEqual(expected);
+			expect((await run(event(GOOGLE, 'chapter=71'))).notices).toEqual(expected);
+			expect(mockLoadNotices).toHaveBeenCalledWith(expect.anything(), 'google:1093');
+		});
+
+		it('reads nothing for a Slack session, whose notices went as DMs', async () => {
+			expect((await run(event(VOLUNTEER))).notices).toEqual([]);
+			expect(mockLoadNotices).not.toHaveBeenCalled();
+		});
+
+		it('shows a blocked holder none of them', async () => {
+			mockBlockedIds.mockResolvedValue(new Set(['google:1093']));
+			expect((await run(event(GOOGLE))).notices).toEqual([]);
+		});
+
+		it('still serves the map when the notices cannot be read', async () => {
+			vi.spyOn(console, 'error').mockImplementation(() => {});
+			mockLoadNotices.mockRejectedValue(new Error('db down'));
+			const result = await run(event(GOOGLE, 'chapter=71'));
+			expect(result.notices).toEqual([]);
+			expect(result.chapter).not.toBeNull();
+		});
+
+		const dismiss = (session: unknown, id: string) =>
+			({
+				locals: { session },
+				request: { formData: async () => new Map([['id', id]]) },
+			}) as never;
+
+		it('dismisses a notice, scoped to the holder', async () => {
+			expect(await actions.dismissNotice(dismiss(GOOGLE, '5'))).toEqual({ dismissed: 5 });
+			expect(mockDismissNotice).toHaveBeenCalledWith(expect.anything(), 'google:1093', 5);
+		});
+
+		it('refuses a dismiss without a session or a numeric id', async () => {
+			// `dismissError`, so the page can show it without the teaser's
+			// `error` (from the nearby action) picking it up.
+			expect(await actions.dismissNotice(dismiss(null, '5'))).toMatchObject({
+				status: 401,
+				data: { dismissError: expect.any(String) },
+			});
+			expect(await actions.dismissNotice(dismiss(GOOGLE, 'abc'))).toMatchObject({ status: 400 });
+			expect(mockDismissNotice).not.toHaveBeenCalled();
+		});
+
+		it('reports a failed dismiss so the page can say so', async () => {
+			vi.spyOn(console, 'error').mockImplementation(() => {});
+			mockDismissNotice.mockRejectedValue(new Error('db down'));
+			expect(await actions.dismissNotice(dismiss(GOOGLE, '5'))).toMatchObject({
+				status: 500,
+				data: { dismissError: expect.stringContaining('Could not dismiss') },
+			});
+		});
+
+		it('does nothing for a Slack session, which has no notices here', async () => {
+			expect(await actions.dismissNotice(dismiss(VOLUNTEER, '5'))).toEqual({ dismissed: 5 });
+			expect(mockDismissNotice).not.toHaveBeenCalled();
+		});
+	});
+
+	// A Google sign-in turned away from a Slack-only page lands here with
+	// ?needsSlack=<where it was going> (server/google-access.ts).
+	describe('the needs-Slack notice', () => {
+		const GOOGLE = {
+			slackUserId: 'google:1093',
+			slackUserName: 'Ana',
+			isAdmin: false,
+			authProvider: 'google' as const,
+		};
+
+		it('offers a Google session Slack sign-in back to the page it wanted', async () => {
+			const result = await run(event(GOOGLE, 'needsSlack=%2Fmembers%3Fuser%3DU1'));
+			expect(result.needsSlackHref).toBe('/auth/slack?redirectTo=%2Fmembers%3Fuser%3DU1');
+		});
+
+		it('still shows on a chapter page, and on the blocked page', async () => {
+			const chapter = await run(event(GOOGLE, 'chapter=71&needsSlack=%2Fsettings'));
+			expect(chapter.needsSlackHref).toBe('/auth/slack?redirectTo=%2Fsettings');
+
+			mockBlockedIds.mockResolvedValue(new Set(['google:1093']));
+			const blocked = await run(event(GOOGLE, 'needsSlack=%2Fsettings'));
+			expect(blocked.blocked).toBeTruthy();
+			expect(blocked.needsSlackHref).toBe('/auth/slack?redirectTo=%2Fsettings');
+		});
+
+		it('drops an unsafe destination but keeps the offer', async () => {
+			const result = await run(event(GOOGLE, 'needsSlack=1'));
+			expect(result.needsSlackHref).toBe('/auth/slack');
+			const offsite = await run(event(GOOGLE, 'needsSlack=https%3A%2F%2Fevil.example'));
+			expect(offsite.needsSlackHref).toBe('/auth/slack');
+		});
+
+		it('is absent without the parameter, and never shown to a Slack session', async () => {
+			expect((await run(event(GOOGLE))).needsSlackHref).toBeNull();
+			expect((await run(event(VOLUNTEER, 'needsSlack=%2Fsettings'))).needsSlackHref).toBeNull();
+		});
 	});
 
 	it('shows a blocked user a plain message and no turf', async () => {

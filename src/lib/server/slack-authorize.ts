@@ -5,10 +5,9 @@
 // they ask for and the purpose they sign into the state.
 
 import { redirect, type Cookies } from '@sveltejs/kit';
-import { dev } from '$app/environment';
 import { SLACK_CLIENT_ID, REDIRECT_URI } from './env.js';
-import { OAUTH_REDIRECT_COOKIE } from './post-login-redirect.js';
-import { signState, STATE_TTL_MS, type OAuthPurpose } from './oauth-state.js';
+import { signState, type OAuthPurpose } from './oauth-state.js';
+import { setOAuthCookies } from './oauth-cookies.js';
 import { workspaceTeamId } from './slack-team.js';
 
 export const OAUTH_STATE_COOKIE = 'oauth_state';
@@ -32,26 +31,7 @@ export async function redirectToSlackAuthorize(args: {
 		purpose: args.purpose,
 	});
 
-	cookies.set(OAUTH_STATE_COOKIE, nonce, {
-		path: '/',
-		httpOnly: true,
-		secure: !dev,
-		sameSite: 'lax',
-		maxAge: STATE_TTL_MS / 1000,
-	});
-
-	if (destination === null) {
-		// A stale cookie from an abandoned login would otherwise hijack this one.
-		cookies.delete(OAUTH_REDIRECT_COOKIE, { path: '/' });
-	} else {
-		cookies.set(OAUTH_REDIRECT_COOKIE, destination, {
-			path: '/',
-			httpOnly: true,
-			secure: !dev,
-			sameSite: 'lax',
-			maxAge: STATE_TTL_MS / 1000,
-		});
-	}
+	setOAuthCookies(cookies, { [OAUTH_STATE_COOKIE]: nonce }, destination);
 
 	const params = new URLSearchParams({
 		client_id: SLACK_CLIENT_ID,

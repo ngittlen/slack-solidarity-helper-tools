@@ -1196,6 +1196,49 @@ export const vanBlockedUsers = sqliteTable('van_blocked_users', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
+// Everyone who has signed in with Google (specs/013-google-sso-login, FR-020).
+//
+// The only place a Google volunteer's email is kept, and kept for one reason:
+// so an organizer can tell who is holding turf and block them if need be. Read
+// by admin views and the block-list editor, and by nothing else.
+//
+// Keyed by the holder id the rest of the app uses (`google:<sub>`, see
+// server/identity.ts), so it joins straight onto checkouts and blocks. Upserted
+// on every sign-in, so a changed email or name catches up. Cleared wholesale by
+// an admin at the end of a campaign (FR-020a); blocks and past claims survive
+// that, since they carry their own display name.
+export const googleVolunteers = sqliteTable('google_volunteers', {
+	userId: text('user_id').primaryKey(),
+	email: text('email').notNull(),
+	displayName: text('display_name').notNull(),
+	firstSignedInAt: text('first_signed_in_at').notNull(),
+	lastSignedInAt: text('last_signed_in_at').notNull(),
+});
+
+// What a turf holder would have been DMed, kept for one who has no Slack.
+//
+// The expiry warning, the "did MiniVAN sync?" nudge and the re-cut messages
+// are Slack DMs. A Google volunteer (specs/013-google-sso-login, User Story 5)
+// cannot get those, so van/holder-notices.ts writes the same text here and
+// /turfs shows it until they dismiss it. Dismissing deletes the row, and rows
+// past NOTICE_MAX_AGE are dropped unread — a week-old warning about a claim
+// that has long since lapsed is noise, and some of these name a MiniVAN list
+// number, which is not worth keeping longer than it is useful.
+export const turfNotices = sqliteTable(
+	'turf_notices',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		/** The holder id — always `google:<sub>` today. */
+		userId: text('user_id').notNull(),
+		/** Which message: 'expiry' | 'unsynced' | 'list-number' | 'walked-out' | 'recut'. */
+		kind: text('kind').notNull(),
+		/** The message exactly as the DM would have said it, in Slack mrkdwn. */
+		text: text('text').notNull(),
+		createdAt: text('created_at').notNull(),
+	},
+	(table) => [index('turf_notices_user').on(table.userId, table.createdAt)],
+);
+
 // Work queue for the per-turf export jobs that produce hull geometry. Export
 // Jobs are scoped to one savedListId, so a 200-turf region is 200 jobs; this
 // exists to throttle them and to survive a dropped webhook.

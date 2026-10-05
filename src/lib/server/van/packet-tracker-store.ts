@@ -31,6 +31,7 @@ import { and, eq, gte, isNotNull, isNull, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanSheetHealth, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { postAlert } from '../slack.js';
+import { escapeMrkdwn } from '../../slack-mrkdwn.js';
 import { OUT_OF_TIME, type SheetsClient } from '../google/sheets.js';
 import {
 	DEFAULT_SHEET_TAB_NAME,
@@ -412,7 +413,8 @@ async function syncCheckout(
 	};
 	// The turf, never the list number: that is the credential that loads the
 	// doors in MiniVAN, and this goes to a Slack channel.
-	const label = `${candidate.turfName} (${candidate.slackUserName})`;
+	// Escaped for the same channel: a Google volunteer picks their own name.
+	const label = escapeMrkdwn(`${candidate.turfName} (${candidate.slackUserName})`);
 	const base: SheetState = { ...state, spreadsheetId: tab.spreadsheetId };
 
 	const rows = candidate.issuedListNumber

@@ -269,7 +269,13 @@ describe('/turfs/activity payload', () => {
 	// still ships in the SSR payload.
 	it('carries no list number and nothing address-like', async () => {
 		const data = await run(event(ADMIN));
-		const serialised = JSON.stringify(data).toLowerCase();
+		// `account` is the holder's own Slack/Google mark, with a Google
+		// volunteer's email for organizers by design (spec 013, FR-015). It is
+		// left out here so this keeps guarding what it is for: nothing about a
+		// voter, and no list number, reaching the payload.
+		const serialised = JSON.stringify(data, (key, value) =>
+			key === 'account' ? undefined : value,
+		).toLowerCase();
 		for (const field of [
 			'printedlist',
 			'35536745',

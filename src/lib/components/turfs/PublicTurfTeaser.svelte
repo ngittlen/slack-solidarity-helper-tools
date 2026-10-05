@@ -386,9 +386,9 @@
 				{@render arrow()}
 			</a>
 		{/if}
-		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the OAuth start URL with its return path -->
+		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the sign-in page with its return path -->
 		<a class="cta soft" href={signInHref}>
-			<span><span class="q">Already in our Slack?</span><span class="a">Sign in</span></span>
+			<span><span class="q">Already volunteering?</span><span class="a">Sign in</span></span>
 			{@render arrow()}
 		</a>
 	</div>
