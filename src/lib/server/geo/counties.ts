@@ -57,6 +57,10 @@ const ALL: CountyEntry[] = (rows as Array<[string, string, number, number]>).map
 	}),
 );
 
+/** Every USPS code the table covers, sorted — the choices for a page that lets
+ *  someone pin the lookup to one state. */
+export const ALL_STATES: readonly string[] = [...new Set(ALL.map((e) => e.state))].sort();
+
 /** What a name lookup can answer with. */
 export interface CountyIndex {
 	/** The counties this index covers — the bounds of the map, when a page has
