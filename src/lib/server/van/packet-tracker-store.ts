@@ -99,14 +99,25 @@ const NOTICES: ReadonlySet<string> = new Set<Notice>(['not-listed', 'duplicate',
 
 const EMPTY_STATE: SheetState = { spreadsheetId: null, cells: null };
 
+/** States saved before the campaign renamed Doors Knocked to Knocked #
+ *  (2026-10-05) hold the old name; read it as the new one. */
+function renamedCells(cells: unknown): PacketCells | null {
+	if (!cells || typeof cells !== 'object') return null;
+	const { 'Doors Knocked': legacy, ...rest } = cells as PacketCells & {
+		'Doors Knocked'?: string;
+	};
+	return legacy === undefined || 'Knocked #' in rest ? rest : { ...rest, 'Knocked #': legacy };
+}
+
 export function parseSheetState(raw: string | null): SheetState | null {
 	if (!raw) return null;
 	try {
 		const parsed = JSON.parse(raw) as Partial<SheetState>;
+		const prior = renamedCells(parsed.prior);
 		return {
 			spreadsheetId: typeof parsed.spreadsheetId === 'string' ? parsed.spreadsheetId : null,
-			cells: parsed.cells && typeof parsed.cells === 'object' ? parsed.cells : null,
-			...(parsed.prior && typeof parsed.prior === 'object' ? { prior: parsed.prior } : {}),
+			cells: renamedCells(parsed.cells),
+			...(prior ? { prior } : {}),
 			...(parsed.told && NOTICES.has(parsed.told) ? { told: parsed.told } : {}),
 			...(parsed.gone ? { gone: true as const } : {}),
 		};

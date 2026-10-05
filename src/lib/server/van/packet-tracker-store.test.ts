@@ -36,7 +36,7 @@ const HEADER = [
 	'Time Departed',
 	'Walk Mode',
 	'Phone Number',
-	'Doors Knocked',
+	'Knocked #',
 	'Status',
 	'Today?',
 	'Knocked %',
@@ -282,7 +282,7 @@ describe('a checkout through its life', () => {
 		// From the packet's own Doors (80), so its Knocked % formula reads 85%.
 		expect(fake.entry('sheet-downriver')).toMatchObject({
 			Status: 'Incomplete',
-			'Doors Knocked': '68',
+			'Knocked #': '68',
 			'Knocked %': '0%',
 		});
 	});
@@ -810,5 +810,19 @@ describe('one campaign at a time', () => {
 
 		expect(await assignedTo(100)).toBe('Organizer Olu');
 		expect(await assignedTo(200)).toBeNull();
+	});
+});
+
+describe('parseSheetState', () => {
+	it('reads cells saved under the old Doors Knocked name as Knocked #', () => {
+		const state = parseSheetState(
+			JSON.stringify({
+				spreadsheetId: 'sheet-downriver',
+				cells: { Canvasser: 'Dana', Status: 'Complete', 'Doors Knocked': '64' },
+				prior: { Status: 'Unwalked' },
+			}),
+		);
+		expect(state?.cells).toEqual({ Canvasser: 'Dana', Status: 'Complete', 'Knocked #': '64' });
+		expect(state?.prior).toEqual({ Status: 'Unwalked' });
 	});
 });
