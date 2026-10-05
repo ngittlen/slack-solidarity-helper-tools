@@ -11,6 +11,9 @@ export interface SessionData {
 	/** Slack moderator (and not an admin). Optional because sessions created
 	 *  before moderators existed lack it, and absent must read as false. */
 	isModerator?: boolean;
+	/** 'google' for a Google sign-in, whose `slackUserId` is `google:<sub>` —
+	 *  see identity.ts. Absent means Slack, which every older session is. */
+	authProvider?: 'google';
 }
 
 // Lazy-initialized so module import (e.g. SvelteKit's build-time analyse step,

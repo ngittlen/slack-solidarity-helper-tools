@@ -1,6 +1,7 @@
 <script lang="ts">
 	import './organizer.css';
 	import { resolve } from '$app/paths';
+	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
 
 	const { data } = $props();
@@ -145,7 +146,7 @@
 										)}
 									</span>
 								</td>
-								<td>{held.slackUserName}</td>
+								<td><HolderName name={held.slackUserName} account={held.account} /></td>
 								<td class="col-num">
 									{held.hoursHeld}h
 									<span class="turf-sub">{held.claimedAgoLabel}</span>
@@ -229,7 +230,7 @@
 										>{suspect.chapterName}{campaignSuffix(suspect.campaignId)}</span
 									>
 								</td>
-								<td>{suspect.slackUserName}</td>
+								<td><HolderName name={suspect.slackUserName} account={suspect.account} /></td>
 								<td class="col-num">
 									{suspect.completedLabel}
 									<span class="turf-sub">{suspect.completedAgoLabel}</span>
@@ -307,7 +308,7 @@
 									</span>
 								</td>
 								<td>
-									{item.heldBy}
+									<HolderName name={item.heldBy} account={item.account} />
 									{#if !item.hasListNumber}
 										<span class="turf-sub">no MiniVAN list number</span>
 									{/if}

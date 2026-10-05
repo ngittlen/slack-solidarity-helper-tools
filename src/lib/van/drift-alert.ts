@@ -15,6 +15,7 @@
 
 import { driftAdvice, driftLabel, type DriftItem, type DriftKind } from './turf-drift.js';
 import type { CampaignBadges } from './turf-view.js';
+import { escapeMrkdwn } from '../slack-mrkdwn.js';
 
 /**
  * How many rows of one kind to name before summarising the rest.
@@ -84,7 +85,9 @@ function renderRow(item: DriftItem, badges: CampaignBadges): string {
 	const badge = badges[item.campaignId];
 	const where = badge ? `${badge} · ${place}` : place;
 	const doors = `${item.doorCount.toLocaleString('en-US')} doors`;
-	const who = `held by ${item.heldBy}`;
+	// Escaped: a Google volunteer chooses their own name, and an unescaped
+	// `<!channel>` or `<url|label>` in it would ping or link from the bot.
+	const who = `held by ${escapeMrkdwn(item.heldBy)}`;
 	// `canClaim` should have made this impossible, so it is an upstream fault
 	// worth naming inline rather than a variant of the normal advice.
 	const anomaly = item.hasListNumber ? '' : ' · :question: no MiniVAN list number';

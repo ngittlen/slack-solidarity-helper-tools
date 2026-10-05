@@ -1,4 +1,4 @@
-// Signed OAuth `state` for the Slack login round trip.
+// Signed OAuth `state` for the login round trips — Slack's, and Google's.
 //
 // The state used to be a bare UUID whose only job was to match a cookie. That
 // works right up until the browser that *finishes* a login is not the browser
@@ -41,15 +41,18 @@ export const STATE_TTL_MS = 60 * 60 * 1000;
 const MAX_STATE_DESTINATION = 256;
 
 /**
- * Which authorization this state belongs to. Both come back through the same
- * callback (one registered redirect URI), so the state is what tells them
- * apart — and, being signed, nobody can turn a login into the other or back.
+ * Which authorization this state belongs to. The two Slack ones come back
+ * through the same callback (one registered redirect URI), so the state is what
+ * tells them apart — and, being signed, nobody can turn a login into the other
+ * or back. Google's has a callback of its own, and each callback refuses a
+ * state minted for the other provider.
  *
- *   login       — Sign in with Slack; creates the session
- *   post-as-you — an already signed-in admin or moderator granting chat:write
- *                 so the info commands can post as them
+ *   login        — Sign in with Slack; creates the session
+ *   post-as-you  — an already signed-in admin or moderator granting chat:write
+ *                  so the info commands can post as them
+ *   google-login — Sign in with Google; a turf-checkout-only session
  */
-export type OAuthPurpose = 'login' | 'post-as-you';
+export type OAuthPurpose = 'login' | 'post-as-you' | 'google-login';
 
 export interface OAuthState {
 	/** Random per-attempt value, mirrored into the `oauth_state` cookie. */
@@ -152,9 +155,9 @@ export function verifyState(raw: string): StateVerdict {
 		return { ok: false, reason: 'malformed' };
 	}
 	const destination = typeof d === 'string' ? d : null;
-	// Anything but the one other purpose reads as a login, which covers states
-	// minted before the field existed.
-	const purpose: OAuthPurpose = p === 'post-as-you' ? 'post-as-you' : 'login';
+	// Anything unrecognised reads as a Slack login, which covers states minted
+	// before the field existed.
+	const purpose: OAuthPurpose = p === 'post-as-you' || p === 'google-login' ? p : 'login';
 	if (Date.now() - t > STATE_TTL_MS) {
 		return { ok: false, reason: 'expired', destination, purpose };
 	}

@@ -49,7 +49,14 @@ vi.mock('$lib/server/autocomplete-sources.js', () => ({
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/slack.js', () => ({ slack: {} }));
-vi.mock('$lib/server/env.js', () => ({ SOLIDARITY_API_TOKEN: 'test-token' }));
+vi.mock('$lib/server/env.js', () => ({
+	SOLIDARITY_API_TOKEN: 'test-token',
+	googleSignInConfigured: () => false,
+}));
+vi.mock('$lib/server/google-volunteers.js', () => ({
+	loadGoogleVolunteers: async () => [],
+	loadBlockableGoogleVolunteers: async () => [],
+}));
 
 import { load, type SettingsPageData } from './+page.server.js';
 import { loadSettings, loadVanBlockedUsers, refreshChapterNames } from '$lib/server/settings.js';

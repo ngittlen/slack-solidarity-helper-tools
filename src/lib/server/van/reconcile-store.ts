@@ -23,7 +23,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
-import { sendDm } from '../slack-dm.js';
+import { notifyHolder } from './holder-notices.js';
 import { expiryFor, DEFAULT_CLAIM_TTL_HOURS } from '../../van/checkout.js';
 import {
 	planReconciliation,
@@ -260,7 +260,7 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 					// DM first: the stamp is what stops the message repeating, so
 					// stamping before a failed send would swallow the one thing the
 					// volunteer needs to know.
-					if (!(await sendDm(action.slackUserId, action.text, LOG))) {
+					if (!(await notifyHolder(db, action.slackUserId, 'list-number', action.text, LOG))) {
 						result.dmFailed += 1;
 						break;
 					}
@@ -286,7 +286,9 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 						.set({ releasedAt: nowIso, releaseReason: 'walked-out' })
 						.where(eq(vanTurfCheckouts.id, action.checkoutId));
 					result.walkedOut += 1;
-					if (!(await sendDm(action.slackUserId, action.text, LOG))) result.dmFailed += 1;
+					if (!(await notifyHolder(db, action.slackUserId, 'walked-out', action.text, LOG))) {
+						result.dmFailed += 1;
+					}
 					console.log(`${LOG} walked out: checkout=${action.checkoutId}`);
 					break;
 				}
@@ -336,13 +338,17 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 					if (inserted.length === 0) {
 						const claim = recut.find((c) => c.checkoutId === action.checkoutId);
 						const text = claim ? renderRecutGone({ turf: claim.turf, appUrl }) : action.text;
-						if (!(await sendDm(action.slackUserId, text, LOG))) result.dmFailed += 1;
+						if (!(await notifyHolder(db, action.slackUserId, 'recut', text, LOG))) {
+							result.dmFailed += 1;
+						}
 						result.recutGone += 1;
 						break;
 					}
 
 					result.recutReplaced += 1;
-					if (!(await sendDm(action.slackUserId, action.text, LOG))) result.dmFailed += 1;
+					if (!(await notifyHolder(db, action.slackUserId, 'recut', action.text, LOG))) {
+						result.dmFailed += 1;
+					}
 					console.log(
 						`${LOG} re-cut: checkout=${action.checkoutId} moved to route=${action.replacement.turfId}`,
 					);
@@ -352,7 +358,9 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 				case 'recut-gone': {
 					await markRecutNotified(db, action.checkoutId, nowIso);
 					result.recutGone += 1;
-					if (!(await sendDm(action.slackUserId, action.text, LOG))) result.dmFailed += 1;
+					if (!(await notifyHolder(db, action.slackUserId, 'recut', action.text, LOG))) {
+						result.dmFailed += 1;
+					}
 					break;
 				}
 

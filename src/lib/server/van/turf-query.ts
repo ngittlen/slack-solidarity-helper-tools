@@ -45,6 +45,7 @@ import type { BoundingBox, LatLng } from '../../van/geometry.js';
 import { selectNearest, TURFS_PER_PAYLOAD, withinBounds } from '../../van/turf-paging.js';
 import { toTurfView, turfSnapshot, type TurfView } from '../../van/turf-view.js';
 import { visibleToChapter } from './chapter-visibility.js';
+import { loadHolderAccounts } from '../google-volunteers.js';
 import type { VanTurfRow } from '../schema.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -243,6 +244,16 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		selected.map((r) => r.campaignId).filter((id) => badgeShown(campaigns, id)),
 	);
 
+	// The Slack or Google mark (and a Google holder's email) beside each holder
+	// name. Admins only — nobody else is shown who holds anything, so nobody
+	// else needs the read.
+	const holderAccounts = viewer.isAdmin
+		? await loadHolderAccounts(
+				db,
+				claims.map((c) => c.slackUserId),
+			)
+		: undefined;
+
 	return {
 		// toTurfView is the single gate on what reaches a viewer; see its header.
 		// Nothing here should ever be spread from a raw row instead.
@@ -254,6 +265,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				contactsThrough: marksFor(contactMarks, row.campaignId).cursor,
 				showCampaign: badged.has(row.campaignId),
 				disabledCampaigns: campaigns.disabled,
+				holderAccounts,
 			}),
 		),
 		total: claimableOnly ? candidates.length : rows.length,

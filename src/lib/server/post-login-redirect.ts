@@ -54,9 +54,11 @@ export function sanitizeRedirectTarget(raw: string | null | undefined): string |
 	}
 	if (parsed.origin !== 'http://redirect.invalid') return null;
 
-	// The auth endpoints themselves are never a useful destination — sending a
-	// freshly signed-in user back to /auth/slack just loops them through OAuth.
+	// The auth endpoints and the sign-in page are never a useful destination —
+	// sending a freshly signed-in user back to /auth/slack just loops them
+	// through OAuth.
 	if (parsed.pathname === '/auth' || parsed.pathname.startsWith('/auth/')) return null;
+	if (parsed.pathname === '/signin' || parsed.pathname === '/signin/') return null;
 
 	// Hashes never reach the server, so pathname + search is the whole story.
 	return parsed.pathname + parsed.search;
@@ -74,15 +76,38 @@ export function isAdminOnlyPath(path: string): boolean {
 	return matchesPrefix(path, ADMIN_ONLY_PREFIXES);
 }
 
+/** Where a Google session goes when it has nowhere it may go in particular. */
+const TURF_CHECKOUT_PATH = '/turfs';
+
+/**
+ * True for the volunteer turf page itself — `/turfs`, with or without a query
+ * string — and not the organizer pages below it. The only page a Google
+ * sign-in is for.
+ */
+export function isTurfCheckoutPath(path: string): boolean {
+	return (
+		path === TURF_CHECKOUT_PATH ||
+		path === `${TURF_CHECKOUT_PATH}/` ||
+		path.startsWith(`${TURF_CHECKOUT_PATH}?`)
+	);
+}
+
 /**
  * Where to send someone immediately after their session is created: the page
  * they originally asked for when they may see it, `/` otherwise.
+ *
+ * A Google session is for turf checkout and nothing else, so it goes back to
+ * the page it asked for only when that page is /turfs, and to /turfs whatever
+ * it asked for otherwise.
  */
 export function resolvePostLoginRedirect(
 	raw: string | null | undefined,
-	session: { isAdmin: boolean; isModerator?: boolean },
+	session: { isAdmin: boolean; isModerator?: boolean; authProvider?: 'google' },
 ): string {
 	const target = sanitizeRedirectTarget(raw);
+	if (session.authProvider === 'google') {
+		return target !== null && isTurfCheckoutPath(target) ? target : TURF_CHECKOUT_PATH;
+	}
 	if (target === null) return '/';
 	if (session.isAdmin || !isAdminOnlyPath(target)) return target;
 	if (session.isModerator && matchesPrefix(target, MODERATOR_PREFIXES)) return target;
@@ -90,12 +115,19 @@ export function resolvePostLoginRedirect(
 }
 
 /**
- * The login URL to bounce an unauthenticated request to, carrying the page it
- * was trying to reach. Pass the request's `url`.
+ * The sign-in page to bounce an unauthenticated request to, carrying the page
+ * it was trying to reach. Pass the request's `url`.
+ *
+ * The page offers Slack and Google both (and goes straight on to Slack when
+ * Google is not configured), so this no longer names a provider.
  */
 export function loginRedirectPath(url: URL): string {
-	const target = sanitizeRedirectTarget(url.pathname + url.search);
+	return withRedirectTo('/signin', sanitizeRedirectTarget(url.pathname + url.search));
+}
+
+/** `base`, carrying an already-sanitised destination along when there is one. */
+export function withRedirectTo(base: string, target: string | null): string {
 	// `/` is the default destination anyway — no need to decorate the URL.
-	if (target === null || target === '/') return '/auth/slack';
-	return `/auth/slack?redirectTo=${encodeURIComponent(target)}`;
+	if (target === null || target === '/') return base;
+	return `${base}?redirectTo=${encodeURIComponent(target)}`;
 }

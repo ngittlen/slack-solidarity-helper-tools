@@ -39,6 +39,7 @@ function view(over: Partial<TurfView> = {}): TurfView {
 		bounds: { minLat: 42.28, minLng: -83.75, maxLat: 42.29, maxLng: -83.73 },
 		status: 'available',
 		heldBy: null,
+		heldByAccount: null,
 		expiresInHours: null,
 		refreshedMinutesAgo: 120,
 		claimable: true,

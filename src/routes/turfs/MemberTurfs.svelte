@@ -15,6 +15,7 @@
 	import { rampStyle, turfShade } from '$lib/van/turf-shade.js';
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
+	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import {
 		campaignStoppedNote,
 		mappableTurfs,
@@ -791,7 +792,10 @@
 									     which lapses, from turf an organizer sent to someone in
 									     VAN, which does not. -->
 										<span class="card-note admin-only">
-											Held by {turf.heldBy}{turf.expiresInHours
+											Held by <HolderName
+												name={turf.heldBy}
+												account={turf.heldByAccount}
+											/>{turf.expiresInHours
 												? ` — frees up in ${turf.expiresInHours} h`
 												: ' (assigned in VAN)'}
 										</span>

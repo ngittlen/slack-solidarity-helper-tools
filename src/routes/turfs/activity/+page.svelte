@@ -1,6 +1,7 @@
 <script lang="ts">
 	import './activity.css';
 	import { resolve } from '$app/paths';
+	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import {
 		ACTIVITY_KINDS,
 		activityLabel,
@@ -159,7 +160,7 @@
 											<span class="turf-region">{data.campaignBadges[event.campaignId]}</span>
 										{/if}
 									</td>
-									<td>{event.slackUserName}</td>
+									<td><HolderName name={event.slackUserName} account={event.account} /></td>
 								</tr>
 							{/each}
 						</tbody>

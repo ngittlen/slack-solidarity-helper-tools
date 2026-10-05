@@ -16,6 +16,7 @@
 	import VanTurfCheckoutEditor from '$lib/components/settings/VanTurfCheckoutEditor.svelte';
 	import VanCampaignsList from '$lib/components/settings/VanCampaignsList.svelte';
 	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
+	import GoogleVolunteerRecords from '$lib/components/settings/GoogleVolunteerRecords.svelte';
 	import ThemeEditor from '$lib/components/settings/ThemeEditor.svelte';
 	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
 	import { SECTION_IDS } from '$lib/components/settings/sections.js';
@@ -284,11 +285,23 @@
 			{#if data.errors.slackUsers}
 				<p class="error">Slack users: {data.errors.slackUsers}</p>
 			{/if}
-			{#if data.slackUsers}
+			{#if data.errors.googleVolunteers}
+				<p class="error">{data.errors.googleVolunteers}</p>
+			{/if}
+			<!-- Shown whenever either list loaded: a Slack outage must not also take
+			     away the means to block a Google volunteer. -->
+			{#if data.slackUsers || data.googleBlockable.length > 0}
 				<VanBlocklistEditor
-					users={data.slackUsers.items}
+					users={data.slackUsers?.items ?? []}
+					googleVolunteers={data.googleBlockable}
 					blockedIds={data.vanBlockedUsers.map((u) => u.slackUserId)}
+					blockedNames={Object.fromEntries(
+						data.vanBlockedUsers.map((u) => [u.slackUserId, u.displayName]),
+					)}
 				/>
+			{/if}
+			{#if data.googleSignIn || data.googleVolunteerCount > 0}
+				<GoogleVolunteerRecords count={data.googleVolunteerCount} />
 			{/if}
 		</section>
 

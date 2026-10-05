@@ -5,7 +5,7 @@ import { runMobilizeSync } from '$lib/server/mobilize-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
 import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
-import { mrkdwnLink } from '$lib/server/slack-mrkdwn.js';
+import { mrkdwnLink } from '$lib/slack-mrkdwn.js';
 import { CAMPAIGN_TIMEZONE } from '../../../../../mobilize-migrator/lib/payload.js';
 import { secretMatches } from '$lib/server/secret-compare.js';
 

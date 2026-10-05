@@ -2,6 +2,7 @@ import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import {
+	APP_URL,
 	FLY_APP_NAME,
 	MAP_TILE_API_KEY,
 	MAP_TILE_ATTRIBUTION,
@@ -17,7 +18,11 @@ import {
 	type NearbySummary,
 } from '$lib/server/van/nearby-summary.js';
 import { parseCoordinates, type NearbyPlace } from '$lib/van/nearby-summary.js';
-import { loginRedirectPath } from '$lib/server/post-login-redirect.js';
+import {
+	loginRedirectPath,
+	sanitizeRedirectTarget,
+	withRedirectTo,
+} from '$lib/server/post-login-redirect.js';
 import { visitorAddress } from '$lib/server/visitor-address.js';
 import { turfAccess } from '$lib/van/access.js';
 import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js';
@@ -29,6 +34,9 @@ import {
 	turfRequests,
 } from '$lib/server/van/rate-limit-store.js';
 import { loadChapterTurfs } from '$lib/server/van/turf-query.js';
+import { dismissHolderNotice, loadHolderNotices } from '$lib/server/van/holder-notices.js';
+import { noticeLines, type NoticeLine } from '$lib/van/notice-text.js';
+import { errMessage } from '$lib/err-message.js';
 import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
 import type { CampaignBadges, TurfView } from '$lib/van/turf-view.js';
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
@@ -114,6 +122,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const [blockedIds, settings] = await Promise.all([loadVanBlockedIds(db), loadSettings(db)]);
 
+	// Set by the Google-session gate (server/google-access.ts) when it turned a
+	// Google sign-in away from a Slack-only page: the page explains, and offers
+	// Slack sign-in straight back to where they were going. Shipped on every
+	// member branch below so the notice shows whatever else this page says.
+	const needsSlack = url.searchParams.get('needsSlack');
+	const needsSlackHref =
+		session.authProvider === 'google' && needsSlack !== null
+			? withRedirectTo('/auth/slack', sanitizeRedirectTarget(needsSlack))
+			: null;
+
 	// The admin-tunable TTL and per-volunteer cap (Story 7.4), already resolved
 	// and clamped by loadSettings. Computed here rather than beside the claim
 	// logic so every branch below ships the SAME number: a payload that told a
@@ -139,6 +157,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			mode: 'member' as const,
 			pageTitle: 'Turf checkout',
 			blocked: access.message,
+			needsSlackHref,
+			// Nothing about turf for a blocked user, these included.
+			notices: [] as TurfNoticeView[],
 			rateLimited: 0,
 			rateLimitReason: null as RateLimitReason | null,
 			chapters: [],
@@ -164,6 +185,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// below — a `?chapter=` link to one opens the picker, not the chapter.
 	const chapters = turfChapters(settings.chapterChannelMap, settings.turfHiddenChapterIds);
 
+	// What the turf sweeps would have DMed a Google holder, who has no Slack
+	// (User Story 5 of specs/013-google-sso-login). Slack holders got theirs as
+	// DMs, so there is nothing to read for them. Like needsSlackHref, shipped on
+	// every branch below.
+	const notices =
+		session.authProvider === 'google' ? await turfNoticesFor(session.slackUserId) : [];
+
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
 
@@ -171,6 +199,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		mode: 'member' as const,
 		pageTitle: 'Turf checkout',
 		blocked: null,
+		needsSlackHref,
+		notices,
 		rateLimited: 0,
 		rateLimitReason: null as RateLimitReason | null,
 		chapters,
@@ -265,6 +295,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		mode: 'member' as const,
 		pageTitle: `Turf checkout — ${chapter.name}`,
 		blocked: null,
+		needsSlackHref,
+		notices,
 		rateLimited: 0,
 		rateLimitReason: null as RateLimitReason | null,
 		chapters,
@@ -291,7 +323,50 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	};
 };
 
+/** A holder notice as the page renders it — see $lib/van/notice-text.ts. */
+export interface TurfNoticeView {
+	id: number;
+	lines: NoticeLine[];
+}
+
+/**
+ * A Google holder's notices, rendered. Never throws: a failed read costs the
+ * notices for this visit, not the turf map, and the rows are still there for
+ * the next one.
+ */
+async function turfNoticesFor(holderId: string): Promise<TurfNoticeView[]> {
+	try {
+		const rows = await loadHolderNotices(db, holderId);
+		return rows.map((n) => ({ id: n.id, lines: noticeLines(n.text, APP_URL) }));
+	} catch (err) {
+		console.error('[van] could not read holder notices:', errMessage(err));
+		return [];
+	}
+}
+
 export const actions: Actions = {
+	/**
+	 * Dismiss one of your own notices. Only a Google sign-in has any; anyone
+	 * else gets a quiet no-op, and the delete is scoped to the holder, so a
+	 * guessed id dismisses nothing of anyone else's.
+	 */
+	dismissNotice: async ({ request, locals }) => {
+		const session = locals.session;
+		// `dismissError`, not `error`: the teaser's `nearby` action owns `error`,
+		// and this page tells the two apart by key.
+		if (!session) return fail(401, { dismissError: 'Not signed in' });
+		const id = Number((await request.formData()).get('id'));
+		if (!Number.isInteger(id)) return fail(400, { dismissError: 'Unknown notice' });
+		if (session.authProvider !== 'google') return { dismissed: id };
+		try {
+			await dismissHolderNotice(db, session.slackUserId, id);
+		} catch (err) {
+			console.error('[van] could not dismiss a holder notice:', errMessage(err));
+			return fail(500, { dismissError: 'Could not dismiss that. Please try again.' });
+		}
+		return { dismissed: id };
+	},
+
 	/**
 	 * The signed-out teaser's lookup: an address or ZIP (`q`), or device
 	 * coordinates (`lat`, `lng`), in; coarse aggregates out.

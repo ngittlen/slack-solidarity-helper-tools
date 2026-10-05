@@ -27,6 +27,8 @@ import { driftReport } from '$lib/van/turf-drift.js';
 import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
 import { campaignFilter, campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
+import { loadHolderAccounts } from '$lib/server/google-volunteers.js';
+import type { HolderAccount } from '$lib/holder-account.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -46,6 +48,9 @@ import { campaignFilter, campaignRefreshSwitches } from '$lib/server/van/campaig
 // selects it.
 
 export interface HoldingView extends Holding {
+	/** The Slack or Google mark beside the holder, and a Google holder's email
+	 *  so an organizer can reach someone who is not in the Slack. */
+	account: HolderAccount | null;
 	/** Campaign-local "until" stamp, formatted server-side so two organizers
 	 *  comparing notes see the same time — and so SSR and hydration agree. */
 	expiresLabel: string;
@@ -56,6 +61,8 @@ export interface HoldingView extends Holding {
 }
 
 export interface SuspectView extends SuspectCompletion {
+	/** See HoldingView.account. */
+	account: HolderAccount | null;
 	completedLabel: string;
 	/** "2 days ago", against this load's `now`. See HoldingView.claimedAgoLabel. */
 	completedAgoLabel: string;
@@ -104,25 +111,42 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			loadGeometryProgress(db),
 		]);
 
-	const holdings: HoldingView[] = currentHoldings(holdingRows, now).map((h) => ({
-		...h,
-		expiresLabel: `${campaignDayLabel(h.expiresAt)} at ${campaignTimeLabel(h.expiresAt)}`,
-		claimedAgoLabel: relativeSince(h.claimedAt, now),
-	}));
-
-	const suspects: SuspectView[] = suspectCompletions(completionRows).map((c) => ({
-		...c,
-		completedLabel: `${campaignDayLabel(c.completedAt)} at ${campaignTimeLabel(c.completedAt)}`,
-		completedAgoLabel: relativeSince(c.completedAt, now),
-	}));
-
 	// Story 8.2. Both sides of the comparison are our own columns — the sync
 	// lands VAN's half — so this costs two reads and no VAN call.
 	const drift = driftReport(driftTurfs, driftClaims, now, driftVisibility);
 
+	const current = currentHoldings(holdingRows, now);
+	const suspected = suspectCompletions(completionRows);
+	// Every holder this page names, in one read.
+	const accounts = await loadHolderAccounts(db, [
+		...current.map((h) => h.slackUserId),
+		...suspected.map((c) => c.slackUserId),
+		...drift.items.map((i) => i.heldByUserId),
+	]);
+
+	const holdings: HoldingView[] = current.map((h) => ({
+		...h,
+		account: accounts.get(h.slackUserId) ?? null,
+		expiresLabel: `${campaignDayLabel(h.expiresAt)} at ${campaignTimeLabel(h.expiresAt)}`,
+		claimedAgoLabel: relativeSince(h.claimedAt, now),
+	}));
+
+	const suspects: SuspectView[] = suspected.map((c) => ({
+		...c,
+		account: accounts.get(c.slackUserId) ?? null,
+		completedLabel: `${campaignDayLabel(c.completedAt)} at ${campaignTimeLabel(c.completedAt)}`,
+		completedAgoLabel: relativeSince(c.completedAt, now),
+	}));
+
 	return {
 		pageTitle: 'Turf right now',
-		drift,
+		drift: {
+			...drift,
+			items: drift.items.map((item) => ({
+				...item,
+				account: accounts.get(item.heldByUserId) ?? null,
+			})),
+		},
 		chapters,
 		chapter,
 		campaigns: campaigns.campaigns,

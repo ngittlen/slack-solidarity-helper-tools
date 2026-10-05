@@ -54,14 +54,16 @@ async function completion(
 		completedAt?: string;
 		claimDoorCount?: number | null;
 		confirmedDoorDelta?: number | null;
+		holder?: string;
 	} = {},
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
 		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         completed_at, claim_door_count, confirmed_door_delta)
-		      VALUES (100, 'U1', 'Dana', '2026-09-11T12:00:00.000Z', '2026-09-13T12:00:00.000Z', ?, ?, ?)`,
+		      VALUES (100, ?, 'Dana', '2026-09-11T12:00:00.000Z', '2026-09-13T12:00:00.000Z', ?, ?, ?)`,
 		args: [
+			over.holder ?? 'U1',
 			over.completedAt ?? '2026-09-12T12:00:00.000Z',
 			over.claimDoorCount === undefined ? 250 : over.claimDoorCount,
 			over.confirmedDoorDelta ?? null,
@@ -183,6 +185,21 @@ describe('stampDoorDeltas', () => {
 		expect(mockSendDm).toHaveBeenCalledOnce();
 		expect(mockSendDm.mock.calls[0][0]).toBe('U1');
 		expect(mockSendDm.mock.calls[0][1]).toContain('Sync');
+	});
+
+	// A Google holder has no Slack: the nudge is kept for /turfs instead.
+	it('keeps the nudge for a Google holder rather than DMing', async () => {
+		await turf({ doorCount: 250 });
+		await completion({ claimDoorCount: 250, holder: 'google:7' });
+
+		const result = await stampDoorDeltas(db, { now: NOW, appUrl: 'https://app.example' });
+
+		expect(result).toMatchObject({ measured: 1, unsynced: 1, dmFailed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+		const notices = await client.execute('SELECT user_id, kind, text FROM turf_notices');
+		expect(notices.rows).toHaveLength(1);
+		expect(notices.rows[0]).toMatchObject({ user_id: 'google:7', kind: 'unsynced' });
+		expect(notices.rows[0]!.text).toContain('Sync');
 	});
 
 	it('keeps the stamp even when the nudge cannot be delivered', async () => {

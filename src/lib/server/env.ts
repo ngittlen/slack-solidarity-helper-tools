@@ -220,6 +220,20 @@ export function vanCampaignCredentials(): VanCampaignCredentials {
 // which is what an unconfigured integration should do.
 export const GOOGLE_SHEETS_SERVICE_ACCOUNT = get('GOOGLE_SHEETS_SERVICE_ACCOUNT');
 
+// Sign in with Google, for volunteers who use turf checkout without joining the
+// Slack (see server/google-signin.ts and specs/013-google-sso-login/spec.md).
+// An OAuth "Web application" client from Google Cloud — nothing to do with the
+// Sheets service account above. Optional: with either half unset the Google
+// option is hidden everywhere and sign-in is Slack-only, as it always was.
+export const GOOGLE_OAUTH_CLIENT_ID = get('GOOGLE_OAUTH_CLIENT_ID');
+export const GOOGLE_OAUTH_CLIENT_SECRET = get('GOOGLE_OAUTH_CLIENT_SECRET');
+export const GOOGLE_REDIRECT_URI = `${APP_URL}/auth/google/callback`;
+
+/** True when both halves of the Google OAuth client are set. */
+export function googleSignInConfigured(): boolean {
+	return GOOGLE_OAUTH_CLIENT_ID !== '' && GOOGLE_OAUTH_CLIENT_SECRET !== '';
+}
+
 // Basemap tiles for the turf map. Defaults to CARTO's keyless Positron
 // endpoint, which is what the demo has always used.
 //

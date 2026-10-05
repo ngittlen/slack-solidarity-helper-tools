@@ -22,6 +22,7 @@ function item(over: Partial<AlertableDrift> = {}): AlertableDrift {
 		campaignId: 1,
 		doorCount: 250,
 		heldBy: 'Dana',
+		heldByUserId: 'U_DANA',
 		hasListNumber: true,
 		alertedKind: null,
 		...over,
@@ -69,6 +70,18 @@ describe('staleDriftStamps', () => {
 });
 
 describe('renderDriftAlert', () => {
+	// A Google volunteer chooses their own name, and this goes to a channel.
+	it("escapes the holder's name so it cannot ping or link", () => {
+		const text = renderDriftAlert(
+			[item({ heldBy: '<!channel> <https://evil.example|re-auth> & co' })],
+			APP,
+		)!;
+		expect(text).toContain(
+			'held by &lt;!channel&gt; &lt;https://evil.example|re-auth&gt; &amp; co',
+		);
+		expect(text).not.toContain('<!channel>');
+	});
+
 	it('returns null for an empty list rather than a header with nothing under it', () => {
 		expect(renderDriftAlert([], APP)).toBeNull();
 	});

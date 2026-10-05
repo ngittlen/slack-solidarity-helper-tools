@@ -314,6 +314,8 @@ SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
 SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
 GOOGLE_SHEETS_SERVICE_ACCOUNT='{"client_email":"…@….iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\n…"}'
 VAN_CAMPAIGN_PRIMARY='{"appName":"…","apiKey":"…","databaseMode":0}'  # one VAN_CAMPAIGN_<KEY> per VAN campaign
+GOOGLE_OAUTH_CLIENT_ID=…apps.googleusercontent.com   # optional; Sign in with Google for turf checkout
+GOOGLE_OAUTH_CLIENT_SECRET=…
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
 
@@ -324,6 +326,8 @@ PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 `GOOGLE_SHEETS_SERVICE_ACCOUNT` is the whole downloaded service-account JSON key, on one line, and is optional — without it the Packet Tracker sync does nothing and says nothing. It is a credential, so it is a deployment secret rather than a `/settings` field; _which_ spreadsheets it writes to is a setting, because that changes without a deploy. Literal `\n` escapes inside `private_key` are handled, since that is what survives a trip through a shell. See [the Packet Tracker](#the-packet-tracker-in-the-campaigns-spreadsheets) for the rest of the setup.
 
 `VAN_CAMPAIGN_<KEY>` holds one VAN campaign's credentials; set one per campaign whose turf the app serves. The legacy `VAN_APP_NAME` / `VAN_API_KEY` / `VAN_DATABASE_MODE` still work in place of `VAN_CAMPAIGN_PRIMARY`. See [Setting up a VAN campaign](#setting-up-a-van-campaign) for the format, the naming rule and the rest of the setup.
+
+`GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` turn on **Sign in with Google**, which lets volunteers who are not in the Slack use turf checkout (and nothing else). Both are optional; with either unset, the sign-in page goes straight to Slack as before. They come from an OAuth client of type _Web application_ in Google Cloud (APIs & Services → Credentials) — unrelated to the Sheets service account above. Set its authorized redirect URI to `${APP_URL}/auth/google/callback` (and `http://localhost:5173/auth/google/callback` for local development). The app asks only for `openid email profile`, which needs no Google verification review, but the OAuth consent screen must be switched from _Testing_ to _In production_: while it is in Testing, only the test users listed on it can sign in.
 
 `INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 

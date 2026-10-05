@@ -24,7 +24,7 @@ import { and, eq, gte, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
-import { sendDm } from '../slack-dm.js';
+import { notifyHolder } from './holder-notices.js';
 import { chunked } from './sql-chunk.js';
 import {
 	DELTA_HORIZON_MS,
@@ -168,7 +168,9 @@ export async function stampDoorDeltas(db: Db, options: DoorDeltaOptions): Promis
 
 			if (action.kind === 'unsynced') {
 				result.unsynced += 1;
-				if (!(await sendDm(action.slackUserId, action.text, LOG))) result.dmFailed += 1;
+				if (!(await notifyHolder(db, action.slackUserId, 'unsynced', action.text, LOG))) {
+					result.dmFailed += 1;
+				}
 				console.log(`${LOG} completion with no door movement: checkout=${action.checkoutId}`);
 			}
 		} catch (err) {

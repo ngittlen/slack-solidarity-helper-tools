@@ -80,6 +80,9 @@ export interface DriftItem {
 	doorCount: number;
 	/** Who holds it in our ledger. */
 	heldBy: string;
+	/** Their holder id — a Slack id, or `google:<sub>` — so the organizer page
+	 *  can mark which kind of account it is. */
+	heldByUserId: string;
 	/** Whether the turf has a MiniVAN list number at all. A claim on turf
 	 *  without one cannot happen (canClaim refuses it), so this being false on a
 	 *  drift row means something is wrong upstream rather than with the export. */
@@ -191,6 +194,7 @@ export function driftReport(
 				campaignId: turf.campaignId,
 				doorCount: turf.doorCount,
 				heldBy: claim.slackUserName,
+				heldByUserId: claim.slackUserId,
 				hasListNumber: turf.printedListNumber !== null,
 			});
 		}

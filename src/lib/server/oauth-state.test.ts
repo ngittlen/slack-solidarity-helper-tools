@@ -38,6 +38,10 @@ describe('oauth state', () => {
 
 		expect(grant.ok && grant.state.purpose).toBe('post-as-you');
 		expect(login.ok && login.state.purpose).toBe('login');
+		const google = verifyState(
+			signState({ destination: null, isRetry: false, purpose: 'google-login' }).state,
+		);
+		expect(google.ok && google.state.purpose).toBe('google-login');
 	});
 
 	it('reads a state minted before the purpose existed as a login', () => {

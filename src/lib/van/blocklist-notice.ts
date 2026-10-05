@@ -22,6 +22,13 @@ function mention(slackUserId: string): string {
 
 export interface BlockNoticeInput {
 	targetSlackUserId: string;
+	/** How to name the target instead of mentioning them — for a Google
+	 *  volunteer, who has no Slack account to mention. */
+	targetLabel?: string;
+	/** Whether the target can be DMed about freed turf. False for a Google
+	 *  volunteer, so the notice does not claim a DM that never went. Defaults
+	 *  to true. */
+	reachableByDm?: boolean;
 	actorSlackUserId: string;
 	/** Free text the admin typed. Optional — a block does not require a stated
 	 *  reason, though the editor encourages one. */
@@ -41,9 +48,10 @@ export interface BlockNoticeInput {
  */
 export function renderBlockNotice(input: BlockNoticeInput): string {
 	const { targetSlackUserId, actorSlackUserId, reason, releasedTurfNames, sessionsRevoked } = input;
+	const target = input.targetLabel ?? mention(targetSlackUserId);
 
 	const parts = [
-		`:no_entry_sign: ${mention(targetSlackUserId)} was blocked from turf checkout by ${mention(actorSlackUserId)}.`,
+		`:no_entry_sign: ${target} was blocked from turf checkout by ${mention(actorSlackUserId)}.`,
 	];
 
 	const trimmed = (reason ?? '').trim();
@@ -52,7 +60,7 @@ export function renderBlockNotice(input: BlockNoticeInput): string {
 	if (releasedTurfNames.length > 0) {
 		const list = releasedTurfNames.join(', ');
 		parts.push(
-			`Freed ${releasedTurfNames.length} turf${releasedTurfNames.length === 1 ? '' : 's'} they were holding — ${list} — now claimable by anyone. They have been DMed.`,
+			`Freed ${releasedTurfNames.length} turf${releasedTurfNames.length === 1 ? '' : 's'} they were holding — ${list} — now claimable by anyone.${input.reachableByDm === false ? '' : ' They have been DMed.'}`,
 		);
 	}
 
@@ -68,9 +76,14 @@ export function renderBlockNotice(input: BlockNoticeInput): string {
 /** The admin-channel line for an unblock. Deliberately notes what unblocking
  *  does NOT do — turf released by the block is not handed back, and an
  *  organizer who assumes otherwise will wonder where it went. */
-export function renderUnblockNotice(targetSlackUserId: string, actorSlackUserId: string): string {
+export function renderUnblockNotice(
+	targetSlackUserId: string,
+	actorSlackUserId: string,
+	/** See BlockNoticeInput.targetLabel. */
+	targetLabel?: string,
+): string {
 	return (
-		`:white_check_mark: ${mention(targetSlackUserId)} was unblocked from turf checkout by ${mention(actorSlackUserId)}. ` +
+		`:white_check_mark: ${targetLabel ?? mention(targetSlackUserId)} was unblocked from turf checkout by ${mention(actorSlackUserId)}. ` +
 		'They can claim turf again. Anything freed when they were blocked is not returned — they claim it like anyone else.'
 	);
 }
