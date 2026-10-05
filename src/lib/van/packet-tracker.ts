@@ -12,7 +12,7 @@
 //   claimed                  → Canvasser, Shift Time, Date Sent Out,
 //                              Walk Mode filled, Status Unwalked
 //   list loaded in MiniVAN   → Time Departed filled, Status Out
-//   marked walked            → Doors Knocked filled, Status Complete (100%)
+//   marked walked            → Knocked # filled, Status Complete (100%)
 //                              or Incomplete; the sheet computes Knocked %
 //   released, never loaded   → everything we filled in is cleared
 //   released after loading   → Status Incomplete
@@ -39,7 +39,7 @@ export const PACKET_COLUMNS = [
 	'Date Sent Out',
 	'Time Departed',
 	'Walk Mode',
-	'Doors Knocked',
+	'Knocked #',
 	'Status',
 ] as const;
 
@@ -55,7 +55,7 @@ export const FILL_COLUMNS = [
 	'Date Sent Out',
 	'Time Departed',
 	'Walk Mode',
-	'Doors Knocked',
+	'Knocked #',
 	'Status',
 ] as const satisfies readonly PacketColumn[];
 
@@ -132,7 +132,7 @@ function statusFor(checkout: PacketCheckout): PacketStatus | null {
  * What this checkout should have filled in on its packet's row, or null when
  * it should have nothing there.
  *
- * `sheetDoors` is the packet's Doors as the campaign listed it. Doors Knocked
+ * `sheetDoors` is the packet's Doors as the campaign listed it. Knocked #
  * is computed from that when it is readable, because the sheet's Knocked %
  * formula divides by that cell — so the percentage it shows comes out as the
  * one the volunteer reported.
@@ -163,7 +163,7 @@ export function desiredCells(
 		'Walk Mode': 'MiniVAN',
 		// From the volunteer's reported percentage: VAN's API gives us no
 		// contact counts at the access level the campaign has.
-		'Doors Knocked': percent === null ? '' : String(Math.round((percent / 100) * doors)),
+		'Knocked #': percent === null ? '' : String(Math.round((percent / 100) * doors)),
 		Status: status,
 	};
 }
@@ -176,7 +176,7 @@ export interface ColumnLayout {
 }
 
 function normaliseHeader(value: string): string {
-	return value.toLowerCase().replace(/[^a-z0-9%]/g, '');
+	return value.toLowerCase().replace(/[^a-z0-9%#]/g, '');
 }
 
 /** How far down the header is looked for. The campaign's is on row 2. */

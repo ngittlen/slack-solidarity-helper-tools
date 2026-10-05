@@ -48,7 +48,7 @@ const HEADER = [
 	'Time Departed',
 	'Walk Mode',
 	'Phone Number',
-	'Doors Knocked',
+	'Knocked #',
 	'Status',
 	'Today?',
 	'Knocked %',
@@ -84,7 +84,7 @@ describe('desiredCells', () => {
 			'Date Sent Out': '09/19/2026',
 			'Time Departed': '',
 			'Walk Mode': 'MiniVAN',
-			'Doors Knocked': '',
+			'Knocked #': '',
 			Status: 'Unwalked',
 		});
 	});
@@ -115,18 +115,18 @@ describe('desiredCells', () => {
 		const cells = desiredCells(
 			checkout({ completedAt: '2026-09-19T17:00:00.000Z', reportedPercent: 100 }),
 		);
-		expect(cells).toMatchObject({ Status: 'Complete', 'Doors Knocked': '64' });
+		expect(cells).toMatchObject({ Status: 'Complete', 'Knocked #': '64' });
 	});
 
-	// The sheet's Knocked % divides by its own Doors cell, so Doors Knocked is
+	// The sheet's Knocked % divides by its own Doors cell, so Knocked # is
 	// computed from that — the % it shows is then the one reported.
 	it('computes doors knocked from the packet’s own door count', () => {
 		const done = checkout({ completedAt: '2026-09-19T17:00:00.000Z', reportedPercent: 85 });
-		expect(desiredCells(done, 80)).toMatchObject({ Status: 'Incomplete', 'Doors Knocked': '68' });
+		expect(desiredCells(done, 80)).toMatchObject({ Status: 'Incomplete', 'Knocked #': '68' });
 		// Falls back to the claim-time count, 0.85 × 64 = 54.4.
-		expect(desiredCells(done)).toMatchObject({ 'Doors Knocked': '54' });
+		expect(desiredCells(done)).toMatchObject({ 'Knocked #': '54' });
 		expect(desiredCells({ ...done, claimDoorCount: null })).toMatchObject({
-			'Doors Knocked': '43',
+			'Knocked #': '43',
 		});
 	});
 
@@ -141,7 +141,7 @@ describe('desiredCells', () => {
 				loadedInMinivanAt: '2026-09-19T14:41:00.000Z',
 			}),
 		);
-		expect(cells).toMatchObject({ Status: 'Incomplete', 'Doors Knocked': '' });
+		expect(cells).toMatchObject({ Status: 'Incomplete', 'Knocked #': '' });
 	});
 });
 
@@ -165,6 +165,15 @@ describe('findLayout', () => {
 
 	it('does not mistake shift_key for Shift Time', () => {
 		expect(LAYOUT.columns['Shift Time']).toBe(col('Shift Time'));
+	});
+
+	it('tells Knocked # from the Knocked % formula', () => {
+		expect(LAYOUT.columns['Knocked #']).toBe(col('Knocked #'));
+	});
+
+	it('does not take the old Doors Knocked header for Knocked #', () => {
+		const old = HEADER.map((h) => (h === 'Knocked #' ? 'Doors Knocked' : h));
+		expect(findLayout([old])).toEqual({ ok: false, missing: ['Knocked #'] });
 	});
 
 	it('names the columns it could not find', () => {
