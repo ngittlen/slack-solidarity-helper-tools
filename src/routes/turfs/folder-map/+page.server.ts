@@ -17,6 +17,7 @@ import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/ti
 import { errMessage } from '$lib/err-message.js';
 import { countyCandidates, parseRegionName } from '$lib/van/region-name.js';
 import {
+	ALL_STATES,
 	countyIndexFor,
 	inferCountyIndex,
 	parseCampaignStates,
@@ -39,6 +40,13 @@ import type { VanMapRegion } from '$lib/server/van/types.js';
 // mapping exists, and a mapping is what this page exists to decide. That makes
 // it the one place outside scripts/ that talks to VAN on a page load, so the
 // result is cached in module memory and refreshed on demand.
+//
+// Only the VAN read is cached. Which state the counties are read in is decided
+// per request — `?state=XX`, else CAMPAIGN_STATES, else inferred from the names
+// — so picking a state on the page re-reads the cached regions, not VAN.
+//
+// The slow part is returned unawaited, so SvelteKit streams it: the page
+// renders its header and state picker at once and fills in when VAN answers.
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -60,8 +68,11 @@ export interface FolderSummary {
 	unplaced: string[];
 }
 
+/** What VAN returned for one campaign — the expensive part, cached as-is so
+ *  the county lookup can be redone against any state without asking again. */
 interface Snapshot {
-	folders: FolderSummary[];
+	/** Folders with at least one map region, with those regions. */
+	fetched: Array<{ folderId: number; name: string; regions: VanMapRegion[] }>;
 	/** Folders the key can see with no map region cut in them yet. Listed so
 	 *  they can be mapped to chapters ahead of the cut — the mapping is an input
 	 *  to the sync, not something it discovers — and so a campaign whose
@@ -70,11 +81,17 @@ interface Snapshot {
 	fetchedAt: string;
 	/** Folders VAN would not show us, by name — one line per failure. */
 	errors: string[];
-	/** The states the counties were read in, and whether that was configured or
-	 *  worked out from the names. Shown on the page, because a guessed state is
-	 *  something an operator should be able to see and correct. */
+}
+
+/** Where the states the counties were read in came from. Shown on the page,
+ *  because a guessed state is something an operator should be able to see and
+ *  correct. */
+export type StatesSource = 'picked' | 'configured' | 'inferred';
+
+interface Placement {
+	folders: FolderSummary[];
 	states: string[];
-	statesInferred: boolean;
+	statesSource: StatesSource;
 	/** Frame for the map when no folder resolved to anywhere — the states in
 	 *  scope, rather than a hardcoded corner of the country. */
 	fallbackBounds: BoundingBox | null;
@@ -93,14 +110,10 @@ async function buildSnapshot(campaign: VanCampaignRow): Promise<Snapshot> {
 	if (!configured.ok) throw new Error(configured.error);
 	const client = configured.client;
 
-	const folders: FolderSummary[] = [];
+	const fetched: Snapshot['fetched'] = [];
 	const emptyFolders: Snapshot['emptyFolders'] = [];
 	const errors: string[] = [];
 
-	// Fetched first, so the county lookup can be built from every region name at
-	// once: which states are in play is a property of the whole catalog, not of
-	// the folder that happens to be read first.
-	const fetched: Array<{ folderId: number; name: string; regions: VanMapRegion[] }> = [];
 	for (const folder of await client.folders()) {
 		try {
 			const regions = await client.mapRegions(folder.folderId);
@@ -114,13 +127,30 @@ async function buildSnapshot(campaign: VanCampaignRow): Promise<Snapshot> {
 		}
 	}
 
+	emptyFolders.sort((a, b) => a.name.localeCompare(b.name));
+	return { fetched, emptyFolders, fetchedAt: new Date().toISOString(), errors };
+}
+
+/** Place every folder's regions on counties. `picked` is a state chosen on the
+ *  page; it wins over CAMPAIGN_STATES, which wins over inference. */
+function placeFolders(fetched: Snapshot['fetched'], picked: string | null): Placement {
 	const configuredStates = parseCampaignStates(CAMPAIGN_STATES);
+	// The county lookup is built from every region name at once: which states
+	// are in play is a property of the whole catalog, not of the folder that
+	// happens to be read first.
 	const regionNames = fetched.flatMap((f) => f.regions.map((r) => r.name ?? ''));
-	const counties: CountyIndex =
-		configuredStates.length > 0
+	const statesSource: StatesSource = picked
+		? 'picked'
+		: configuredStates.length > 0
+			? 'configured'
+			: 'inferred';
+	const counties: CountyIndex = picked
+		? countyIndexFor([picked])
+		: configuredStates.length > 0
 			? countyIndexFor(configuredStates)
 			: inferCountyIndex(regionNames.flatMap(countyCandidates));
 
+	const folders: FolderSummary[] = [];
 	for (const folder of fetched) {
 		const regions = folder.regions;
 
@@ -164,14 +194,10 @@ async function buildSnapshot(campaign: VanCampaignRow): Promise<Snapshot> {
 	// Most turf first — the folders worth mapping to a chapter are at the top.
 	folders.sort((a, b) => b.routes - a.routes);
 	const scopeBox = boundingBox(counties.entries.map((e) => e.centre));
-	emptyFolders.sort((a, b) => a.name.localeCompare(b.name));
 	return {
 		folders,
-		emptyFolders,
-		fetchedAt: new Date().toISOString(),
-		errors,
 		states: counties.states,
-		statesInferred: configuredStates.length === 0,
+		statesSource,
 		fallbackBounds: scopeBox ? padBounds(scopeBox, 0.08) : null,
 	};
 }
@@ -193,30 +219,32 @@ async function snapshot(campaign: VanCampaignRow, force: boolean): Promise<Snaps
 	return started;
 }
 
-export const load: PageServerLoad = async ({ locals, url }) => {
-	// Same gate as the other organizer pages: a bare 302 for a missing session
-	// and for a signed-in non-admin alike.
-	if (!locals.session?.isAdmin) redirect(302, '/');
+type ChapterRef = { chapterId: number; chapterName: string };
 
-	// `?campaign=<id>`, the primary campaign by default: the page shows and
-	// edits one campaign's folders at a time.
-	const requested = Number(url.searchParams.get('campaign') ?? PRIMARY_CAMPAIGN_ID);
-	const campaign =
-		Number.isInteger(requested) && requested > 0 ? await loadCampaign(db, requested) : null;
-	if (!campaign) error(404, 'No such campaign');
-	const campaigns = (await db.select().from(vanCampaigns).orderBy(vanCampaigns.id)).map((c) => ({
-		id: c.id,
-		name: campaignName(c),
-	}));
-	const campaignInfo = { id: campaign.id, name: campaignName(campaign) };
+/** Everything that waits on VAN or the chapter list — streamed to the page. */
+export interface FolderData {
+	folders: FolderSummary[];
+	emptyFolders: Snapshot['emptyFolders'];
+	fetchedAt: string | null;
+	errors: string[];
+	/** Set when the folders could not be read at all. */
+	error: string | null;
+	states: string[];
+	statesSource: StatesSource;
+	fallbackBounds: BoundingBox | null;
+	chapters: Array<{ id: number; name: string }>;
+	chaptersError: string | null;
+	mappingError: string | null;
+	mapping: Array<{ folderId: number; chapters: ChapterRef[] }>;
+}
 
-	// Same basemap the volunteer turf page uses, keyed the same way: the keyless
-	// CARTO endpoint watermarks every tile with "API Key required".
-	const tiles = {
-		urlTemplate: withTileApiKey(MAP_TILE_URL_TEMPLATE || TILE_URL_TEMPLATE, MAP_TILE_API_KEY),
-		attribution: MAP_TILE_ATTRIBUTION || TILE_ATTRIBUTION,
-	};
-
+/** Never rejects: every failure becomes a field the page renders, so a
+ *  streamed promise cannot take the page down with it. */
+async function loadFolderData(
+	campaign: VanCampaignRow,
+	force: boolean,
+	picked: string | null,
+): Promise<FolderData> {
 	// The mapping the page edits, and the chapters it can be edited to. Both
 	// degrade rather than failing the page: with no chapter list the map and the
 	// counties still answer the question the page is for, and the editor says
@@ -224,11 +252,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const [mappingResult, chapterResult, snapshotResult] = await Promise.allSettled([
 		loadVanChapterFolders(db, campaign.id),
 		getSolidarityChapters(SOLIDARITY_API_TOKEN),
-		snapshot(campaign, url.searchParams.get('refresh') === '1'),
+		snapshot(campaign, force),
 	]);
 
 	// folderId → the chapters that see it, which is the direction this page edits.
-	const chaptersByFolder = new Map<number, Array<{ chapterId: number; chapterName: string }>>();
+	const chaptersByFolder = new Map<number, ChapterRef[]>();
 	if (mappingResult.status === 'fulfilled') {
 		for (const row of mappingResult.value) {
 			for (const folderId of row.folderIds) {
@@ -253,40 +281,31 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// The page renders the reason rather than 500ing: "the key cannot read
 		// folders" is exactly the sort of thing someone opens this page to find.
 		return {
-			campaign: campaignInfo,
-			campaigns,
 			folders: [],
-			emptyFolders: [] as Snapshot['emptyFolders'],
+			emptyFolders: [],
 			fetchedAt: null,
 			errors: [],
 			error: errMessage(snapshotResult.reason),
-			tiles,
-			states: [] as string[],
-			statesInferred: true,
-			fallbackBounds: null as BoundingBox | null,
+			states: [],
+			statesSource: picked ? 'picked' : 'inferred',
+			fallbackBounds: null,
 			chapters,
 			chaptersError,
 			mappingError,
-			mapping: [] as Array<{
-				folderId: number;
-				chapters: Array<{ chapterId: number; chapterName: string }>;
-			}>,
+			mapping: [],
 		};
 	}
 
-	const { folders, emptyFolders, fetchedAt, errors, states, statesInferred, fallbackBounds } =
-		snapshotResult.value;
+	const { fetched, emptyFolders, fetchedAt, errors } = snapshotResult.value;
+	const { folders, states, statesSource, fallbackBounds } = placeFolders(fetched, picked);
 	return {
-		campaign: campaignInfo,
-		campaigns,
 		folders,
 		emptyFolders,
 		fetchedAt,
 		errors,
 		error: null,
-		tiles,
 		states,
-		statesInferred,
+		statesSource,
 		fallbackBounds,
 		chapters,
 		chaptersError,
@@ -297,5 +316,46 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			folderId: folder.folderId,
 			chapters: chaptersByFolder.get(folder.folderId) ?? [],
 		})),
+	};
+}
+
+export const load: PageServerLoad = async ({ locals, url }) => {
+	// Same gate as the other organizer pages: a bare 302 for a missing session
+	// and for a signed-in non-admin alike.
+	if (!locals.session?.isAdmin) redirect(302, '/');
+
+	// `?campaign=<id>`, the primary campaign by default: the page shows and
+	// edits one campaign's folders at a time.
+	const requested = Number(url.searchParams.get('campaign') ?? PRIMARY_CAMPAIGN_ID);
+	const campaign =
+		Number.isInteger(requested) && requested > 0 ? await loadCampaign(db, requested) : null;
+	if (!campaign) error(404, 'No such campaign');
+	const campaigns = (await db.select().from(vanCampaigns).orderBy(vanCampaigns.id)).map((c) => ({
+		id: c.id,
+		name: campaignName(c),
+	}));
+
+	// `?state=XX` confines the county lookup to one state. Anything that is not
+	// a state in the table is ignored rather than 400ing — it is a picker, and
+	// a stale link should still show the page.
+	const stateParam = (url.searchParams.get('state') ?? '').trim().toUpperCase();
+	const pickedState = ALL_STATES.includes(stateParam) ? stateParam : null;
+
+	// Same basemap the volunteer turf page uses, keyed the same way: the keyless
+	// CARTO endpoint watermarks every tile with "API Key required".
+	const tiles = {
+		urlTemplate: withTileApiKey(MAP_TILE_URL_TEMPLATE || TILE_URL_TEMPLATE, MAP_TILE_API_KEY),
+		attribution: MAP_TILE_ATTRIBUTION || TILE_ATTRIBUTION,
+	};
+
+	return {
+		campaign: { id: campaign.id, name: campaignName(campaign) },
+		campaigns,
+		tiles,
+		stateOptions: ALL_STATES,
+		pickedState,
+		configuredStates: parseCampaignStates(CAMPAIGN_STATES),
+		// Returned unawaited so SvelteKit streams it.
+		folderData: loadFolderData(campaign, url.searchParams.get('refresh') === '1', pickedState),
 	};
 };

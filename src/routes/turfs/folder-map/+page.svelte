@@ -6,6 +6,9 @@
 	// Names, not geometry: see the note in +page.server.ts. The caption and the
 	// note below say so on the page too, because a dot on a street map invites
 	// exactly the wrong reading ("that is where the turf is").
+	//
+	// The VAN read is streamed: the header and state picker render at once, and
+	// everything below waits on `data.folderData` behind a spinner.
 
 	import FolderCountyMap from '$lib/components/turfs/FolderCountyMap.svelte';
 	import FolderChapterPicker from '$lib/components/turfs/FolderChapterPicker.svelte';
@@ -13,6 +16,7 @@
 	import { chartBands } from '$lib/styles/chart-bands.svelte.js';
 	import { resolve } from '$app/paths';
 	import type { PageData } from './$types';
+	import type { FolderData, FolderSummary } from './+page.server.js';
 
 	let { data }: { data: PageData } = $props();
 
@@ -22,8 +26,11 @@
 	/** One colour per folder, cycling the theme's categorical bands. */
 	const colourFor = $derived((index: number) => bands.current[index % bands.current.length]!);
 
-	const dots = $derived(
-		data.folders.flatMap((folder, i) =>
+	/** The query string for this campaign, keeping the picked state. */
+	const stateQuery = $derived(data.pickedState ? `&state=${data.pickedState}` : '');
+
+	function dotsFor(fd: FolderData): MapDot[] {
+		return fd.folders.flatMap((folder, i) =>
 			folder.counties.map((county): MapDot => ({
 				key: `${folder.folderId}:${county.county}`,
 				centre: county.centre,
@@ -32,20 +39,24 @@
 				folderId: folder.folderId,
 				label: `${folder.name} — ${county.county} County: ${county.routes} turf(s) in ${county.regions} region(s)`,
 			})),
-		),
-	);
+		);
+	}
 
-	const totals = $derived({
-		folders: data.folders.length,
-		routes: data.folders.reduce((n, f) => n + f.routes, 0),
-		unplaced: data.folders.reduce((n, f) => n + f.unplaced.length, 0),
-	});
+	function totalsFor(fd: FolderData) {
+		return {
+			folders: fd.folders.length,
+			routes: fd.folders.reduce((n, f) => n + f.routes, 0),
+			unplaced: fd.folders.reduce((n, f) => n + f.unplaced.length, 0),
+		};
+	}
 
-	/** The chapters already mapped to a folder, by folder id. */
-	const mappedChapters = $derived(new Map(data.mapping.map((m) => [m.folderId, m.chapters])));
+	/** The chapters already mapped to a folder. */
+	function mappedChapters(fd: FolderData, folderId: number) {
+		return fd.mapping.find((m) => m.folderId === folderId)?.chapters ?? [];
+	}
 
 	/** "Wayne (23), Oakland (1)" — the counties a folder actually covers. */
-	function countyList(folder: PageData['folders'][number]): string {
+	function countyList(folder: FolderSummary): string {
 		return folder.counties.map((c) => `${c.county} (${c.routes})`).join(', ');
 	}
 </script>
@@ -72,32 +83,69 @@
 			turf's real shape or position. Pick the chapters that should see each folder in the last
 			column.
 		</p>
-		{#if data.states.length > 0}
-			<p class="note">
-				Counties read in {data.states.join(', ')}{data.statesInferred
-					? ' — worked out from the region names. Set CAMPAIGN_STATES to pin it.'
-					: ' (from CAMPAIGN_STATES).'}
-			</p>
-		{/if}
-		{#if data.fetchedAt}
-			<p class="note">
-				Read live from VAN, cached for 10 minutes.
-				<a
-					href="{resolve('/turfs/folder-map')}?campaign={data.campaign.id}&refresh=1"
-					data-sveltekit-reload>Refresh now</a
+		<!-- A GET form, so SvelteKit handles it as a navigation: the cached VAN
+		     read is re-placed in the picked state without asking VAN again. -->
+		<form class="state-picker" method="GET" action={resolve('/turfs/folder-map')}>
+			<input type="hidden" name="campaign" value={data.campaign.id} />
+			<label>
+				Look up counties in
+				<select
+					name="state"
+					value={data.pickedState ?? ''}
+					onchange={(e) => e.currentTarget.form?.requestSubmit()}
 				>
-			</p>
-		{/if}
+					<option value=""
+						>{data.configuredStates.length > 0
+							? `Default (${data.configuredStates.join(', ')})`
+							: 'Auto-detect from region names'}</option
+					>
+					{#each data.stateOptions as code (code)}
+						<option value={code}>{code}</option>
+					{/each}
+				</select>
+			</label>
+			<noscript><button type="submit">Apply</button></noscript>
+		</form>
 	</header>
 
-	{#if data.error}
-		<p class="error">Could not read folders from VAN: {data.error}</p>
-	{:else if data.folders.length === 0}
-		{#if data.emptyFolders.length === 0 && data.errors.length === 0}
+	{#await data.folderData}
+		<div class="loading" role="status">
+			<span class="spinner" aria-hidden="true"></span>
+			Reading folders from VAN…
+		</div>
+	{:then fd}
+		{@render folderPage(fd)}
+	{/await}
+</main>
+
+{#snippet folderPage(fd: FolderData)}
+	{#if fd.states.length > 0}
+		<p class="note">
+			Counties read in {fd.states.join(', ')}{fd.statesSource === 'picked'
+				? ' (picked above).'
+				: fd.statesSource === 'configured'
+					? ' (from CAMPAIGN_STATES).'
+					: ' — worked out from the region names. Pick a state above, or set CAMPAIGN_STATES to pin it.'}
+		</p>
+	{/if}
+	{#if fd.fetchedAt}
+		<p class="note">
+			Read live from VAN, cached for 10 minutes.
+			<a
+				href="{resolve('/turfs/folder-map')}?campaign={data.campaign.id}{stateQuery}&refresh=1"
+				data-sveltekit-reload>Refresh now</a
+			>
+		</p>
+	{/if}
+
+	{#if fd.error}
+		<p class="error">Could not read folders from VAN: {fd.error}</p>
+	{:else if fd.folders.length === 0}
+		{#if fd.emptyFolders.length === 0 && fd.errors.length === 0}
 			<p class="note">
 				This key can see no folders. Share the campaign's folders with its API user in VAN.
 			</p>
-		{:else if data.emptyFolders.length === 0}
+		{:else if fd.emptyFolders.length === 0}
 			<!-- Folders exist, but VAN refused their regions: the errors below say
 			     why, and "share the folders" would send the admin the wrong way. -->
 			<p class="note">
@@ -105,15 +153,16 @@
 			</p>
 		{:else}
 			<p class="note">
-				This key can see {data.emptyFolders.length}
-				folder{data.emptyFolders.length === 1 ? '' : 's'}, but none has turf cut yet — no map
-				regions in any of them. Map them to chapters now if you like; their turf appears after the
-				next sync once regions are cut in VAN.
+				This key can see {fd.emptyFolders.length}
+				folder{fd.emptyFolders.length === 1 ? '' : 's'}, but none has turf cut yet — no map regions
+				in any of them. Map them to chapters now if you like; their turf appears after the next sync
+				once regions are cut in VAN.
 			</p>
-			{@render chapterNotes()}
-			{@render emptyFolderTable(false)}
+			{@render chapterNotes(fd)}
+			{@render emptyFolderTable(fd, false)}
 		{/if}
 	{:else}
+		{@const totals = totalsFor(fd)}
 		<p class="totals">
 			{totals.folders} folder{totals.folders === 1 ? '' : 's'} with turf · {totals.routes.toLocaleString(
 				'en-US',
@@ -122,14 +171,14 @@
 		</p>
 
 		<FolderCountyMap
-			{dots}
+			dots={dotsFor(fd)}
 			tiles={data.tiles}
-			fallbackBounds={data.fallbackBounds}
+			fallbackBounds={fd.fallbackBounds}
 			highlightFolderId={highlight}
 		/>
 
 		<ul class="legend">
-			{#each data.folders as folder, i (folder.folderId)}
+			{#each fd.folders as folder, i (folder.folderId)}
 				<li>
 					<button
 						type="button"
@@ -146,7 +195,7 @@
 			{/each}
 		</ul>
 
-		{@render chapterNotes()}
+		{@render chapterNotes(fd)}
 
 		<table>
 			<caption>
@@ -164,7 +213,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each data.folders as folder (folder.folderId)}
+				{#each fd.folders as folder (folder.folderId)}
 					<tr class:highlighted={highlight === folder.folderId}>
 						<th scope="row">{folder.name}</th>
 						<td><code>{folder.folderId}</code></td>
@@ -185,8 +234,8 @@
 								campaignId={data.campaign.id}
 								folderId={folder.folderId}
 								folderName={folder.name}
-								chapters={data.chapters}
-								selected={mappedChapters.get(folder.folderId) ?? []}
+								chapters={fd.chapters}
+								selected={mappedChapters(fd, folder.folderId)}
 							/>
 						</td>
 					</tr>
@@ -194,65 +243,109 @@
 			</tbody>
 		</table>
 
-		{#if data.emptyFolders.length > 0}
-			{@render emptyFolderTable(true)}
+		{#if fd.emptyFolders.length > 0}
+			{@render emptyFolderTable(fd, true)}
 		{/if}
 	{/if}
 
-	{#snippet chapterNotes()}
-		{#if data.chaptersError}
-			<p class="note">Chapter list unavailable: {data.chaptersError}</p>
-		{/if}
-		{#if data.mappingError}
-			<p class="note">Existing mapping could not be read: {data.mappingError}</p>
-		{/if}
-	{/snippet}
-
-	<!-- Folders with no map region cut yet: nothing to put on the map, but
-	     still worth mapping to chapters ahead of the cut. -->
-	{#snippet emptyFolderTable(withHeading: boolean)}
-		{#if withHeading}
-			<h2 class="empty-heading">Folders with no turf cut yet</h2>
-		{/if}
-		<table>
-			<thead>
-				<tr>
-					<th scope="col">Folder</th>
-					<th scope="col">Id</th>
-					<th scope="col">Chapters that see this folder</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each data.emptyFolders as folder (folder.folderId)}
-					<tr>
-						<th scope="row">{folder.name}</th>
-						<td><code>{folder.folderId}</code></td>
-						<td class="chapters-cell">
-							<FolderChapterPicker
-								campaignId={data.campaign.id}
-								folderId={folder.folderId}
-								folderName={folder.name}
-								chapters={data.chapters}
-								selected={mappedChapters.get(folder.folderId) ?? []}
-							/>
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/snippet}
-
-	{#if data.errors.length > 0}
+	{#if fd.errors.length > 0}
 		<section class="folder-errors">
 			<h2>Folders VAN would not show</h2>
 			<ul>
-				{#each data.errors as line (line)}<li>{line}</li>{/each}
+				{#each fd.errors as line (line)}<li>{line}</li>{/each}
 			</ul>
 		</section>
 	{/if}
-</main>
+{/snippet}
+
+{#snippet chapterNotes(fd: FolderData)}
+	{#if fd.chaptersError}
+		<p class="note">Chapter list unavailable: {fd.chaptersError}</p>
+	{/if}
+	{#if fd.mappingError}
+		<p class="note">Existing mapping could not be read: {fd.mappingError}</p>
+	{/if}
+{/snippet}
+
+<!-- Folders with no map region cut yet: nothing to put on the map, but
+     still worth mapping to chapters ahead of the cut. -->
+{#snippet emptyFolderTable(fd: FolderData, withHeading: boolean)}
+	{#if withHeading}
+		<h2 class="empty-heading">Folders with no turf cut yet</h2>
+	{/if}
+	<table>
+		<thead>
+			<tr>
+				<th scope="col">Folder</th>
+				<th scope="col">Id</th>
+				<th scope="col">Chapters that see this folder</th>
+			</tr>
+		</thead>
+		<tbody>
+			{#each fd.emptyFolders as folder (folder.folderId)}
+				<tr>
+					<th scope="row">{folder.name}</th>
+					<td><code>{folder.folderId}</code></td>
+					<td class="chapters-cell">
+						<FolderChapterPicker
+							campaignId={data.campaign.id}
+							folderId={folder.folderId}
+							folderName={folder.name}
+							chapters={fd.chapters}
+							selected={mappedChapters(fd, folder.folderId)}
+						/>
+					</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+{/snippet}
 
 <style>
+	.state-picker {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin: var(--space-2) 0 0;
+		font-size: var(--font-size-sm);
+	}
+
+	.state-picker select {
+		margin-left: var(--space-2);
+		font: inherit;
+	}
+
+	.loading {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-4) 0;
+		font-size: var(--font-size-sm);
+		color: var(--color-text-muted);
+	}
+
+	.spinner {
+		display: block;
+		width: 1em;
+		height: 1em;
+		border: 2px solid var(--color-border);
+		border-top-color: var(--color-blue);
+		border-radius: 50%;
+		animation: folder-map-spin 0.7s linear infinite;
+	}
+
+	@keyframes folder-map-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	/* Respect reduced-motion: the label alone carries the meaning. */
+	@media (prefers-reduced-motion: reduce) {
+		.spinner {
+			animation-duration: 3s;
+		}
+	}
 	.empty-heading {
 		margin: 24px 0 8px;
 		font-size: 1.05rem;

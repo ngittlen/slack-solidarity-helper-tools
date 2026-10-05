@@ -31,17 +31,27 @@ const ADMIN = { slackUserId: 'U_ADMIN', slackUserName: 'Alice', isAdmin: true };
 type Data = {
 	campaign: { id: number; name: string };
 	campaigns: Array<{ id: number; name: string }>;
-	folders: Array<{ folderId: number; name: string }>;
+	pickedState: string | null;
+	folders: Array<{
+		folderId: number;
+		name: string;
+		counties: Array<{ county: string; centre: { lat: number; lng: number } }>;
+		unplaced: string[];
+	}>;
 	emptyFolders: Array<{ folderId: number; name: string }>;
 	mapping: Array<{ folderId: number; chapters: Array<{ chapterId: number }> }>;
 	error: string | null;
+	states: string[];
+	statesSource: string;
 };
 
-function run(query = '') {
-	return load({
+/** The load, with its streamed half awaited and flattened in. */
+async function run(query = '') {
+	const { folderData, ...rest } = (await load({
 		locals: { session: ADMIN },
 		url: new URL(`http://localhost/turfs/folder-map${query}`),
-	} as never) as Promise<Data>;
+	} as never)) as Record<string, unknown> & { folderData: Promise<object> };
+	return { ...rest, ...(await folderData) } as Data;
 }
 
 /** A VAN client for one campaign: one folder, named for it, with one region. */
@@ -142,5 +152,36 @@ describe('which campaign', () => {
 
 	it('404s for a campaign that does not exist', async () => {
 		await expect(run('?campaign=99')).rejects.toMatchObject({ status: 404 });
+	});
+});
+
+// Wayne County exists in several states, so with nothing to decide between them
+// the name places nowhere; a state picked on the page decides it.
+describe('confining the lookup to a state', () => {
+	it('places an ambiguous county in the picked state', async () => {
+		const mi = await run('?refresh=1&state=mi');
+		expect(mi.pickedState).toBe('MI');
+		expect(mi.states).toEqual(['MI']);
+		expect(mi.statesSource).toBe('picked');
+		expect(mi.folders[0]!.counties[0]!.county).toBe('Wayne');
+		expect(mi.folders[0]!.counties[0]!.centre.lat).toBeGreaterThan(41);
+
+		// Same cached VAN read, placed again in another state.
+		mockClientFor.mockClear();
+		const nc = await run('?state=NC');
+		expect(mockClientFor).not.toHaveBeenCalled();
+		expect(nc.folders[0]!.counties[0]!.centre.lat).toBeLessThan(37);
+	});
+
+	it('leaves a county unplaced when the picked state has no such county', async () => {
+		const data = await run('?refresh=1&state=AK');
+		expect(data.folders[0]!.counties).toEqual([]);
+		expect(data.folders[0]!.unplaced).toEqual(['R10C_Wayne_Detroit001']);
+	});
+
+	it('ignores a state that is not one', async () => {
+		const data = await run('?refresh=1&state=ZZ');
+		expect(data.pickedState).toBeNull();
+		expect(data.statesSource).not.toBe('picked');
 	});
 });
