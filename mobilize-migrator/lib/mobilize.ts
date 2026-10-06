@@ -305,7 +305,20 @@ export interface MobilizeEvent {
 		region?: string | null;
 		postal_code?: string | null;
 		address_lines?: string[] | null;
+		location?: { latitude?: number | null; longitude?: number | null } | null;
 	} | null;
+	// Read by the partner-org import (import-transform.ts) only. Optional
+	// because the outbound sync never needed them and its fixtures omit them.
+	tags?: { id: number; name: string }[] | null;
+	/** The org that OWNS the event. An org's event list also carries events
+	 *  it merely promotes, which belong to someone else. */
+	sponsor?: { id: number; name?: string } | null;
+	/** Separate from `visibility`: a public event can hide its address until
+	 *  someone registers. `PUBLIC` | `PRIVATE`. */
+	address_visibility?: string | null;
+	is_virtual?: boolean;
+	/** Where an unshifted virtual event sends people. Otherwise null. */
+	virtual_action_url?: string | null;
 }
 
 /** Every upcoming event for the org — the duplicate-detection corpus, and the

@@ -141,6 +141,9 @@ export interface Settings {
 	mobilizeContactName: string;
 	mobilizeContactEmail: string;
 	mobilizeContactPhone: string;
+	/** Partner Mobilize events carrying this tag are imported into Solidarity.
+	 *  DB-only, no env fallback; '' means the import is off. */
+	mobilizeImportTag: string;
 	slackGrowthReportRankingAlpha: number | undefined;
 	/** Shown after each page's own name in the browser tab. DB-only with a code
 	 *  default; '' means "use DEFAULT_SITE_NAME". */
@@ -198,6 +201,8 @@ export type AppConfigPatch = Partial<{
 	mobilizeContactName: string;
 	mobilizeContactEmail: string;
 	mobilizeContactPhone: string;
+	/** Tag selecting partner Mobilize events to import. '' turns it off. */
+	mobilizeImportTag: string;
 	slackGrowthReportRankingAlpha: number;
 	siteName: string;
 	countdownLabel: string;
@@ -309,6 +314,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	const mobilizeContactName = cfg?.mobilizeContactName ?? MOBILIZE_CONTACT_NAME;
 	const mobilizeContactEmail = cfg?.mobilizeContactEmail ?? MOBILIZE_CONTACT_EMAIL;
 	const mobilizeContactPhone = cfg?.mobilizeContactPhone ?? MOBILIZE_CONTACT_PHONE;
+	// No env fallback: whether to import is an organizer's call, made here.
+	const mobilizeImportTag = cfg?.mobilizeImportTag?.trim() ?? '';
 	const slackGrowthReportRankingAlpha =
 		cfg?.slackGrowthReportRankingAlpha ?? SLACK_GROWTH_REPORT_RANKING_ALPHA;
 	const siteName = cfg?.siteName ?? '';
@@ -351,6 +358,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
+		mobilizeImportTag,
 		slackGrowthReportRankingAlpha,
 		siteName,
 		countdownLabel,
@@ -923,6 +931,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'mobilizeContactName',
 	'mobilizeContactEmail',
 	'mobilizeContactPhone',
+	'mobilizeImportTag',
 	'slackGrowthReportRankingAlpha',
 	'siteName',
 	'countdownLabel',
