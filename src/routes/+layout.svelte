@@ -18,7 +18,7 @@
 	// Not for signed-out readers: /policies is public, and an arrow pointing at
 	// a page that would bounce them to Slack OAuth is a dead end, not a way back.
 	const signedIn = $derived(data.signedIn);
-	// Nor for a Google sign-in: the dashboard it points at is Slack-only, and
+	// Nor for a Google or Apple sign-in: the dashboard it points at is Slack-only, and
 	// following it would only bounce them back to /turfs.
 	const showBackLink = $derived(signedIn && !data.turfOnly && page.url.pathname !== '/');
 

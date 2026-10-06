@@ -1,8 +1,9 @@
 // A holder DM, reshaped for showing on /turfs instead of in Slack.
 //
 // The messages are written once, as Slack mrkdwn, by the renderers in
-// expiry-warning.ts, door-delta.ts and refresh-reconcile.ts. A Google volunteer
-// sees the same words on the page (specs/013-google-sso-login, User Story 5),
+// expiry-warning.ts, door-delta.ts and refresh-reconcile.ts. A Google or Apple
+// volunteer sees the same words on the page (specs/013-google-sso-login and
+// specs/014-apple-sso-login, User Story 5),
 // so rather than a second set of renderers that would drift from the first,
 // this turns the small subset of mrkdwn they use into plain segments the page
 // renders as text — never as HTML, so nothing in a turf name can become markup.

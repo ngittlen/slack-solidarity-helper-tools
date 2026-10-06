@@ -1,4 +1,4 @@
-// Signed OAuth `state` for the login round trips — Slack's, and Google's.
+// Signed OAuth `state` for the login round trips — Slack's, Google's and Apple's.
 //
 // The state used to be a bare UUID whose only job was to match a cookie. That
 // works right up until the browser that *finishes* a login is not the browser
@@ -44,15 +44,16 @@ const MAX_STATE_DESTINATION = 256;
  * Which authorization this state belongs to. The two Slack ones come back
  * through the same callback (one registered redirect URI), so the state is what
  * tells them apart — and, being signed, nobody can turn a login into the other
- * or back. Google's has a callback of its own, and each callback refuses a
- * state minted for the other provider.
+ * or back. Google and Apple each have a callback of their own, and each
+ * callback refuses a state minted for another provider.
  *
  *   login        — Sign in with Slack; creates the session
  *   post-as-you  — an already signed-in admin or moderator granting chat:write
  *                  so the info commands can post as them
  *   google-login — Sign in with Google; a turf-checkout-only session
+ *   apple-login  — Sign in with Apple; the same
  */
-export type OAuthPurpose = 'login' | 'post-as-you' | 'google-login';
+export type OAuthPurpose = 'login' | 'post-as-you' | 'google-login' | 'apple-login';
 
 export interface OAuthState {
 	/** Random per-attempt value, mirrored into the `oauth_state` cookie. */
@@ -157,7 +158,8 @@ export function verifyState(raw: string): StateVerdict {
 	const destination = typeof d === 'string' ? d : null;
 	// Anything unrecognised reads as a Slack login, which covers states minted
 	// before the field existed.
-	const purpose: OAuthPurpose = p === 'post-as-you' || p === 'google-login' ? p : 'login';
+	const purpose: OAuthPurpose =
+		p === 'post-as-you' || p === 'google-login' || p === 'apple-login' ? p : 'login';
 	if (Date.now() - t > STATE_TTL_MS) {
 		return { ok: false, reason: 'expired', destination, purpose };
 	}

@@ -82,8 +82,8 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 		// 400ing. Neither reason can loop: the state we mint next is well-formed
 		// and freshly dated by construction. An expired state did pass its
 		// signature check, so its destination is ours and rides along.
-		if (verdict.reason === 'expired' && verdict.purpose === 'google-login') {
-			console.warn('[auth] Google OAuth state arrived at the Slack callback');
+		if (verdict.reason === 'expired' && !isSlackPurpose(verdict.purpose)) {
+			console.warn(`[auth] ${verdict.purpose} OAuth state arrived at the Slack callback`);
 			error(400, 'Invalid OAuth state.');
 		}
 		console.warn(`[auth] restarting login: OAuth state ${verdict.reason}`);
@@ -92,11 +92,11 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	}
 	const state = verdict.state;
 
-	// Signed by us, but for the other provider's round trip. Nothing honest
-	// sends one here; the code with it is Google's and Slack would refuse it
+	// Signed by us, but for Google's or Apple's round trip. Nothing honest
+	// sends one here; the code with it is theirs and Slack would refuse it
 	// anyway, but say so before spending a request finding out.
-	if (state.purpose === 'google-login') {
-		console.warn('[auth] Google OAuth state arrived at the Slack callback');
+	if (!isSlackPurpose(state.purpose)) {
+		console.warn(`[auth] ${state.purpose} OAuth state arrived at the Slack callback`);
 		error(400, 'Invalid OAuth state.');
 	}
 
@@ -234,6 +234,12 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 	// nothing or for something this session may not see.
 	redirect(302, resolvePostLoginRedirect(requestedPath, { isAdmin, isModerator }));
 };
+
+/** The two purposes that come back through this callback. Anything else was
+ *  minted for another provider's round trip. */
+function isSlackPurpose(purpose: OAuthPurpose): boolean {
+	return purpose === 'login' || purpose === 'post-as-you';
+}
 
 /**
  * Send someone back through the authorization they were in the middle of

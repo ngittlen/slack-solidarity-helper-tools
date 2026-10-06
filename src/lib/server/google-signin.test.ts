@@ -11,9 +11,6 @@ import {
 	buildGoogleAuthorizeUrl,
 	createPkcePair,
 	exchangeGoogleCode,
-	googleDisplayName,
-	MAX_DISPLAY_NAME,
-	NAMELESS_VOLUNTEER,
 	readIdTokenClaims,
 } from './google-signin.js';
 
@@ -95,70 +92,6 @@ describe('readIdTokenClaims', () => {
 	it('refuses a token that is not three parts, or whose payload is not JSON', () => {
 		expect(readIdTokenClaims('nope', NOW)).toEqual({ ok: false, reason: 'malformed' });
 		expect(readIdTokenClaims('a.%%%.c', NOW)).toEqual({ ok: false, reason: 'malformed' });
-	});
-});
-
-describe('googleDisplayName', () => {
-	it('uses the profile name', () => {
-		expect(googleDisplayName({ name: 'Ana Ruiz' })).toBe('Ana Ruiz');
-	});
-
-	// Never part of the email: the name reaches Slack and the spreadsheets,
-	// and the privacy policy says the email does not.
-	it('falls back to a neutral label, not the email', () => {
-		expect(googleDisplayName({ name: '' })).toBe(NAMELESS_VOLUNTEER);
-		expect(googleDisplayName({ name: '  \n\t ' })).toBe(NAMELESS_VOLUNTEER);
-	});
-
-	// The name is chosen by a stranger and ends up in Slack posts and sheets.
-	it('makes it one tidy line', () => {
-		expect(googleDisplayName({ name: 'Ana\nRuiz\r\n<!channel>\u0000  x' })).toBe(
-			'Ana Ruiz <!channel> x',
-		);
-	});
-
-	it('caps the length', () => {
-		const long = googleDisplayName({ name: 'a'.repeat(500) });
-		expect(long).toHaveLength(MAX_DISPLAY_NAME);
-	});
-
-	// Escaping `& < >` at the Slack sinks cannot stop either of these.
-	it('defangs anything Slack would auto-link', () => {
-		expect(googleDisplayName({ name: 'https://evil.example/login' })).toBe(
-			'https evil·example/login',
-		);
-		expect(googleDisplayName({ name: 'Log in at evil.com' })).toBe('Log in at evil·com');
-		expect(googleDisplayName({ name: 'J.R. Ortiz' })).toBe('J.R. Ortiz');
-	});
-
-	it("drops Slack's formatting characters", () => {
-		expect(googleDisplayName({ name: '*Ana* _Ruiz_ ~x~ `y`' })).toBe('Ana Ruiz x y');
-	});
-
-	it('defangs IP addresses and domains in any script', () => {
-		expect(googleDisplayName({ name: '10.0.0.1:8080/x' })).toBe('10·0·0·1:8080/x');
-		expect(googleDisplayName({ name: 'пример.рф' })).toBe('пример·рф');
-	});
-
-	// Characters that draw nothing: a name made only of them is no name, and
-	// one hidden inside a domain must not hide it from the link check.
-	it('treats every invisible character as a space', () => {
-		expect(googleDisplayName({ name: 'ㅤ' })).toBe(NAMELESS_VOLUNTEER);
-		expect(googleDisplayName({ name: '⠀ᅟ️' })).toBe(NAMELESS_VOLUNTEER);
-		expect(googleDisplayName({ name: 'evil­.com' })).not.toContain('evil.com');
-		expect(googleDisplayName({ name: 'evil.c­om' })).not.toContain('evil.com');
-		expect(googleDisplayName({ name: 'Ana\u{e0041}\u{e0100}' })).toBe('Ana');
-	});
-
-	it('removes bidi overrides and zero-width characters', () => {
-		expect(googleDisplayName({ name: 'An​a‮ Ruiz⁦﻿' })).toBe('An a Ruiz');
-	});
-
-	it('never cuts a character in half at the cap', () => {
-		const emoji = '😀';
-		const capped = googleDisplayName({ name: `${'a'.repeat(MAX_DISPLAY_NAME - 1)}${emoji}x` });
-		expect(Array.from(capped)).toHaveLength(MAX_DISPLAY_NAME);
-		expect(capped.endsWith(emoji)).toBe(true);
 	});
 });
 

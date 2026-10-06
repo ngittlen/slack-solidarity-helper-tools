@@ -12,6 +12,15 @@ const mockNearby = vi.hoisted(() => vi.fn());
 const mockTurfCentre = vi.hoisted(() => vi.fn());
 const mockLoadNotices = vi.hoisted(() => vi.fn());
 const mockDismissNotice = vi.hoisted(() => vi.fn());
+const mockSetNameOnce = vi.hoisted(() => vi.fn());
+const mockUpdateSession = vi.hoisted(() => vi.fn());
+
+// Both have their own tests (outside-volunteers.test.ts on real SQLite).
+vi.mock('$lib/server/outside-volunteers.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/outside-volunteers.js')>()),
+	setDisplayNameOnce: mockSetNameOnce,
+}));
+vi.mock('$lib/server/session.js', () => ({ updateSession: mockUpdateSession }));
 
 // Has its own tests on real SQLite (holder-notices.test.ts).
 vi.mock('$lib/server/van/holder-notices.js', () => ({
@@ -353,8 +362,8 @@ describe('/turfs load', () => {
 		});
 	});
 
-	// A Google sign-in turned away from a Slack-only page lands here with
-	// ?needsSlack=<where it was going> (server/google-access.ts).
+	// A Google or Apple sign-in turned away from a Slack-only page lands here
+	// with ?needsSlack=<where it was going> (server/turf-only-access.ts).
 	describe('the needs-Slack notice', () => {
 		const GOOGLE = {
 			slackUserId: 'google:1093',
@@ -385,9 +394,152 @@ describe('/turfs load', () => {
 			expect(offsite.needsSlackHref).toBe('/auth/slack');
 		});
 
+		it('is offered to an Apple session too', async () => {
+			const apple = { ...GOOGLE, slackUserId: 'apple:001.abc', authProvider: 'apple' as const };
+			const result = await run(event(apple, 'needsSlack=%2Fsettings'));
+			expect(result.needsSlackHref).toBe('/auth/slack?redirectTo=%2Fsettings');
+		});
+
 		it('is absent without the parameter, and never shown to a Slack session', async () => {
 			expect((await run(event(GOOGLE))).needsSlackHref).toBeNull();
 			expect((await run(event(VOLUNTEER, 'needsSlack=%2Fsettings'))).needsSlackHref).toBeNull();
+		});
+	});
+
+	// specs/014-apple-sso-login FR-011: an outside volunteer with no name.
+	describe('the name prompt', () => {
+		const UNNAMED = {
+			slackUserId: 'apple:001.abc',
+			slackUserName: '',
+			isAdmin: false,
+			authProvider: 'apple' as const,
+			needsName: true as const,
+		};
+
+		beforeEach(() => {
+			mockSetNameOnce.mockResolvedValue({ status: 'saved' });
+			mockUpdateSession.mockResolvedValue(true);
+			vi.spyOn(console, 'log').mockImplementation(() => {});
+		});
+
+		it('asks on the picker and on a chapter — but serves the map', async () => {
+			expect((await run(event(UNNAMED))).needsName).toBe(true);
+			const chapter = await run(event(UNNAMED, 'chapter=71'));
+			expect(chapter.needsName).toBe(true);
+			expect(chapter.chapter).not.toBeNull();
+		});
+
+		// setName would refuse them anyway, after they had typed and confirmed.
+		it('does not ask a blocked volunteer', async () => {
+			mockBlockedIds.mockResolvedValue(new Set(['apple:001.abc']));
+			const blocked = await run(event(UNNAMED));
+			expect(blocked.blocked).toBeTruthy();
+			expect(blocked.needsName).toBe(false);
+		});
+
+		it('does not ask anyone who has a name', async () => {
+			expect((await run(event(VOLUNTEER))).needsName).toBe(false);
+			expect(
+				(await run(event({ ...UNNAMED, needsName: undefined, slackUserName: 'Bo' }))).needsName,
+			).toBe(false);
+		});
+
+		const post = (session: unknown, fields: Record<string, string>) =>
+			({
+				locals: { session },
+				cookies: {},
+				request: { formData: async () => new Map(Object.entries(fields)) },
+			}) as never;
+
+		it('shows a tidied name back first, saving nothing', async () => {
+			expect(await actions.setName(post(UNNAMED, { name: '  *Bo*  Lee ' }))).toEqual({
+				confirmName: 'Bo Lee',
+			});
+			expect(mockSetNameOnce).not.toHaveBeenCalled();
+			expect(mockUpdateSession).not.toHaveBeenCalled();
+		});
+
+		it('saves it once confirmed, and names the session with it', async () => {
+			const confirmed = post(UNNAMED, { name: 'Bo Lee', confirm: '1' });
+			expect(await actions.setName(confirmed)).toEqual({ nameSaved: 'Bo Lee' });
+			// The no-JS reload's load runs on these locals: it must not ask again.
+			const locals = (confirmed as unknown as { locals: App.Locals }).locals;
+			expect(locals.session).toMatchObject({ slackUserName: 'Bo Lee' });
+			expect(locals.session?.needsName).toBeUndefined();
+			expect(mockSetNameOnce).toHaveBeenCalledWith(expect.anything(), 'apple:001.abc', 'Bo Lee');
+			expect(mockUpdateSession).toHaveBeenCalledWith(expect.anything(), {
+				slackUserId: 'apple:001.abc',
+				slackUserName: 'Bo Lee',
+				isAdmin: false,
+				authProvider: 'apple',
+			});
+		});
+
+		it('keeps the first name when one was already set, and catches the session up', async () => {
+			mockSetNameOnce.mockResolvedValue({ status: 'taken', displayName: 'Bo' });
+			expect(await actions.setName(post(UNNAMED, { name: 'Robert', confirm: '1' }))).toEqual({
+				nameTaken: 'Bo',
+			});
+			// Named as typed first, then caught up to the name that stands.
+			expect(mockUpdateSession.mock.calls.at(-1)?.[1].slackUserName).toBe('Bo');
+		});
+
+		it('names the session even when there is no record to save it on', async () => {
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			mockSetNameOnce.mockResolvedValue({ status: 'no-record' });
+			expect(await actions.setName(post(UNNAMED, { name: 'Bo', confirm: '1' }))).toEqual({
+				nameSaved: 'Bo',
+			});
+			expect(mockUpdateSession).toHaveBeenCalled();
+		});
+
+		it('refuses a name that tidies down to nothing', async () => {
+			expect(await actions.setName(post(UNNAMED, { name: ' ** ', confirm: '1' }))).toMatchObject({
+				status: 400,
+				data: { nameError: expect.any(String) },
+			});
+			expect(mockSetNameOnce).not.toHaveBeenCalled();
+		});
+
+		it('changes nothing for someone who already has a name', async () => {
+			const named = { ...UNNAMED, needsName: undefined, slackUserName: 'Bo' };
+			expect(await actions.setName(post(named, { name: 'Robert', confirm: '1' }))).toEqual({
+				nameSaved: 'Bo',
+			});
+			expect(await actions.setName(post(VOLUNTEER, { name: 'X', confirm: '1' }))).toEqual({
+				nameSaved: 'Dana',
+			});
+			expect(mockSetNameOnce).not.toHaveBeenCalled();
+		});
+
+		it('refuses without a session, and when the session has run out', async () => {
+			expect(await actions.setName(post(null, { name: 'Bo' }))).toMatchObject({ status: 401 });
+			mockUpdateSession.mockResolvedValue(false);
+			expect(await actions.setName(post(UNNAMED, { name: 'Bo', confirm: '1' }))).toMatchObject({
+				status: 401,
+			});
+			// Ended by a sign-out or a block: nothing is stored for it.
+			expect(mockSetNameOnce).not.toHaveBeenCalled();
+		});
+
+		it('refuses a blocked volunteer, storing nothing', async () => {
+			mockBlockedIds.mockResolvedValue(new Set(['apple:001.abc']));
+			expect(await actions.setName(post(UNNAMED, { name: 'Bo', confirm: '1' }))).toMatchObject({
+				status: 403,
+				data: { nameError: expect.any(String) },
+			});
+			expect(mockSetNameOnce).not.toHaveBeenCalled();
+			expect(mockUpdateSession).not.toHaveBeenCalled();
+		});
+
+		it('says so when the save fails', async () => {
+			vi.spyOn(console, 'error').mockImplementation(() => {});
+			mockSetNameOnce.mockRejectedValue(new Error('db down'));
+			expect(await actions.setName(post(UNNAMED, { name: 'Bo', confirm: '1' }))).toMatchObject({
+				status: 500,
+			});
+			// Back to asking, rather than a session named by an unsaved name.
+			expect(mockUpdateSession.mock.calls.at(-1)?.[1]).toEqual(UNNAMED);
 		});
 	});
 

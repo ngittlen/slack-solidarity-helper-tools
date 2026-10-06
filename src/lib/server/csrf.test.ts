@@ -47,6 +47,37 @@ describe('isCrossSiteFormPost', () => {
 		).toBe(true);
 	});
 
+	it("exempts Apple's sign-in post to /auth/apple/callback", () => {
+		expect(
+			isCrossSiteFormPost(
+				req({
+					contentType: 'application/x-www-form-urlencoded',
+					origin: 'https://appleid.apple.com',
+				}),
+				url('/auth/apple/callback'),
+			),
+		).toBe(false);
+	});
+
+	it('exempts only that exact path, and only for POST', () => {
+		const form = {
+			contentType: 'application/x-www-form-urlencoded',
+			origin: 'https://evil.example',
+		};
+		for (const path of [
+			'/auth/apple/callback/',
+			'/auth/apple/callbackx',
+			'/auth/apple',
+			'/auth/google/callback',
+			'/auth/apple/callback/../../settings',
+		]) {
+			expect(isCrossSiteFormPost(req(form), url(path)), path).toBe(true);
+		}
+		expect(isCrossSiteFormPost(req({ ...form, method: 'PUT' }), url('/auth/apple/callback'))).toBe(
+			true,
+		);
+	});
+
 	it('allows a same-origin form POST (the /auth/logout case)', () => {
 		expect(
 			isCrossSiteFormPost(

@@ -27,7 +27,7 @@ import { driftReport } from '$lib/van/turf-drift.js';
 import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
 import { campaignFilter, campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
-import { loadHolderAccounts } from '$lib/server/google-volunteers.js';
+import { loadHolderAccounts } from '$lib/server/outside-volunteers.js';
 import type { HolderAccount } from '$lib/holder-account.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
@@ -48,7 +48,7 @@ import type { HolderAccount } from '$lib/holder-account.js';
 // selects it.
 
 export interface HoldingView extends Holding {
-	/** The Slack or Google mark beside the holder, and a Google holder's email
+	/** The Slack, Google or Apple mark beside the holder, and an outside holder's email
 	 *  so an organizer can reach someone who is not in the Slack. */
 	account: HolderAccount | null;
 	/** Campaign-local "until" stamp, formatted server-side so two organizers

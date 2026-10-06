@@ -37,6 +37,9 @@ import { loadChapterTurfs } from '$lib/server/van/turf-query.js';
 import { dismissHolderNotice, loadHolderNotices } from '$lib/server/van/holder-notices.js';
 import { noticeLines, type NoticeLine } from '$lib/van/notice-text.js';
 import { errMessage } from '$lib/err-message.js';
+import { tidyDisplayName } from '$lib/server/display-name.js';
+import { setDisplayNameOnce } from '$lib/server/outside-volunteers.js';
+import { updateSession } from '$lib/server/session.js';
 import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
 import type { CampaignBadges, TurfView } from '$lib/van/turf-view.js';
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
@@ -122,13 +125,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const [blockedIds, settings] = await Promise.all([loadVanBlockedIds(db), loadSettings(db)]);
 
-	// Set by the Google-session gate (server/google-access.ts) when it turned a
-	// Google sign-in away from a Slack-only page: the page explains, and offers
+	// Set by the turf-only gate (server/turf-only-access.ts) when it turned a
+	// Google or Apple sign-in away from a Slack-only page: the page explains, and offers
 	// Slack sign-in straight back to where they were going. Shipped on every
 	// member branch below so the notice shows whatever else this page says.
 	const needsSlack = url.searchParams.get('needsSlack');
 	const needsSlackHref =
-		session.authProvider === 'google' && needsSlack !== null
+		session.authProvider !== undefined && needsSlack !== null
 			? withRedirectTo('/auth/slack', sanitizeRedirectTarget(needsSlack))
 			: null;
 
@@ -138,6 +141,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// volunteer "48 hours" on one code path and 72 on another would be lying on
 	// one of them, and which branch renders the claim copy is a fact about the
 	// markup that can change without anyone thinking about this file.
+	// An outside volunteer with no name yet (see SessionData.needsName): the page
+	// asks for one, and the claim route refuses until they give it. Like
+	// needsSlackHref, shipped on every member branch below.
+	const needsName = session.needsName === true;
+
 	const options = {
 		ttlHours: settings.vanTurfClaimTtlHours,
 		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
@@ -158,6 +166,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			pageTitle: 'Turf checkout',
 			blocked: access.message,
 			needsSlackHref,
+			// Not asked: setName refuses a blocked volunteer, so the prompt
+			// would only lead to a refusal after they had typed and confirmed.
+			needsName: false,
 			// Nothing about turf for a blocked user, these included.
 			notices: [] as TurfNoticeView[],
 			rateLimited: 0,
@@ -185,12 +196,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// below — a `?chapter=` link to one opens the picker, not the chapter.
 	const chapters = turfChapters(settings.chapterChannelMap, settings.turfHiddenChapterIds);
 
-	// What the turf sweeps would have DMed a Google holder, who has no Slack
-	// (User Story 5 of specs/013-google-sso-login). Slack holders got theirs as
+	// What the turf sweeps would have DMed a Google or Apple holder, who has no
+	// Slack (User Story 5 of specs/013-google-sso-login). Slack holders got theirs as
 	// DMs, so there is nothing to read for them. Like needsSlackHref, shipped on
 	// every branch below.
 	const notices =
-		session.authProvider === 'google' ? await turfNoticesFor(session.slackUserId) : [];
+		session.authProvider !== undefined ? await turfNoticesFor(session.slackUserId) : [];
 
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
@@ -200,6 +211,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		pageTitle: 'Turf checkout',
 		blocked: null,
 		needsSlackHref,
+		needsName,
 		notices,
 		rateLimited: 0,
 		rateLimitReason: null as RateLimitReason | null,
@@ -296,6 +308,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		pageTitle: `Turf checkout — ${chapter.name}`,
 		blocked: null,
 		needsSlackHref,
+		needsName,
 		notices,
 		rateLimited: 0,
 		rateLimitReason: null as RateLimitReason | null,
@@ -330,7 +343,7 @@ export interface TurfNoticeView {
 }
 
 /**
- * A Google holder's notices, rendered. Never throws: a failed read costs the
+ * A Google or Apple holder's notices, rendered. Never throws: a failed read costs the
  * notices for this visit, not the turf map, and the rows are still there for
  * the next one.
  */
@@ -346,7 +359,7 @@ async function turfNoticesFor(holderId: string): Promise<TurfNoticeView[]> {
 
 export const actions: Actions = {
 	/**
-	 * Dismiss one of your own notices. Only a Google sign-in has any; anyone
+	 * Dismiss one of your own notices. Only a Google or Apple sign-in has any; anyone
 	 * else gets a quiet no-op, and the delete is scoped to the holder, so a
 	 * guessed id dismisses nothing of anyone else's.
 	 */
@@ -357,7 +370,7 @@ export const actions: Actions = {
 		if (!session) return fail(401, { dismissError: 'Not signed in' });
 		const id = Number((await request.formData()).get('id'));
 		if (!Number.isInteger(id)) return fail(400, { dismissError: 'Unknown notice' });
-		if (session.authProvider !== 'google') return { dismissed: id };
+		if (session.authProvider === undefined) return { dismissed: id };
 		try {
 			await dismissHolderNotice(db, session.slackUserId, id);
 		} catch (err) {
@@ -365,6 +378,80 @@ export const actions: Actions = {
 			return fail(500, { dismissError: 'Could not dismiss that. Please try again.' });
 		}
 		return { dismissed: id };
+	},
+
+	/**
+	 * Give the name /turfs asked for — an outside volunteer whose provider sent
+	 * none (specs/014-apple-sso-login, FR-011). Two steps, because the name can
+	 * never be changed afterwards (FR-011b): the first submit tidies it and
+	 * shows it back, and only a second, with `confirm=1`, saves it.
+	 *
+	 * Saved once: if a name was already set (another tab, a replayed form), that
+	 * one stands and the session catches up to it. If there is no record to
+	 * save it on — cleared, or the sign-in could not write it — it still names
+	 * this session, and they are asked again on their next sign-in.
+	 *
+	 * Results use `name*` keys: `error` belongs to the teaser's `nearby` action.
+	 */
+	setName: async ({ request, locals, cookies }) => {
+		const session = locals.session;
+		if (!session) return fail(401, { nameError: 'Not signed in' });
+		// Slack members and anyone already named: nothing to do.
+		if (!session.needsName) return { nameSaved: session.slackUserName };
+
+		const form = await request.formData();
+		const raw = form.get('name');
+		const name = typeof raw === 'string' ? tidyDisplayName(raw) : '';
+		if (name === '') {
+			return fail(400, { nameError: 'Enter the name organizers should know you by.' });
+		}
+		if (form.get('confirm') !== '1') return { confirmName: name };
+
+		// Someone blocked from turf checkout has nothing to name themselves
+		// for, and a name set now would change how they appear to the admin
+		// who blocked them.
+		const access = turfAccess(
+			{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+			await loadVanBlockedIds(db),
+			SLACK_SUPERUSER_ID,
+		);
+		if (!access.allowed) return fail(403, { nameError: access.message });
+
+		// Everything but the placeholder and its flag.
+		const rest = { ...session };
+		delete rest.needsName;
+		const named = (displayName: string) => ({ ...rest, slackUserName: displayName });
+
+		// The session first: if it has ended — signed out, revoked by a block —
+		// nothing is stored for it. The record second, which may say a name was
+		// already saved (another tab), in which case the session follows that.
+		if (!(await updateSession(cookies, named(name)))) {
+			return fail(401, { nameError: 'Your sign-in has expired. Please sign in again.' });
+		}
+		let finalName = name;
+		try {
+			const result = await setDisplayNameOnce(db, session.slackUserId, name);
+			if (result.status === 'taken') {
+				finalName = result.displayName;
+				await updateSession(cookies, named(finalName));
+			}
+			if (result.status === 'no-record') {
+				console.warn(`[auth] no record to name for ${session.slackUserId}; session only`);
+			}
+		} catch (err) {
+			console.error('[auth] could not save a typed name:', errMessage(err));
+			// Back to asking: a session named by a name that was never stored
+			// would be asked again at the next sign-in, under a different name.
+			await updateSession(cookies, session).catch(() => {});
+			return fail(500, { nameError: 'Could not save your name. Please try again.' });
+		}
+
+		// And for the rest of this request: without JavaScript the page's load
+		// runs straight after this action, on the same `locals`, and would
+		// otherwise ask for the name it was just given.
+		locals.session = named(finalName);
+		console.log(`[auth] named: ${finalName} (${session.slackUserId})`);
+		return finalName === name ? { nameSaved: finalName } : { nameTaken: finalName };
 	},
 
 	/**

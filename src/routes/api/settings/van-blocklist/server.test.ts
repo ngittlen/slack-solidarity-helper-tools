@@ -18,7 +18,7 @@ vi.mock('$lib/server/settings', () => ({
 	loadSettings: mockLoadSettings,
 	loadVanBlockedUsers: mockLoadVanBlockedUsers,
 }));
-vi.mock('$lib/server/google-volunteers', () => ({ googleBlockTargetName: mockBlockTargetName }));
+vi.mock('$lib/server/outside-volunteers', () => ({ outsideBlockTargetName: mockBlockTargetName }));
 vi.mock('$lib/server/settings-validation', () => ({ validateSlackUser: mockValidateSlackUser }));
 vi.mock('$lib/server/van/blocklist', () => ({
 	blockFromTurfCheckout: mockBlock,
@@ -111,6 +111,28 @@ describe('POST /api/settings/van-blocklist', () => {
 			expect(res.status).toBe(200);
 			expect(mockUnblock).toHaveBeenCalledWith({}, 'google:7', { id: 'U_ADMIN', name: 'Alice' });
 			expect(await postedNotice()).toContain('*Ana Ruiz* (signed in with Google) was unblocked');
+		});
+	});
+
+	describe('an Apple volunteer', () => {
+		beforeEach(() => {
+			mockLoadSettings.mockResolvedValue({
+				allowedSlackUserIds: new Set(['U_ADMIN']),
+				slackMemberNoteChannelId: 'C_NOTES',
+			});
+		});
+
+		it('is blocked like a Google one, and named as signed in with Apple', async () => {
+			mockBlockTargetName.mockResolvedValue('Bo Lee');
+			const res = await POST(
+				makeEvent(authed, { action: 'block', userId: 'apple:001.abc' }) as never,
+			);
+			expect(res.status).toBe(200);
+			expect(mockValidateSlackUser).not.toHaveBeenCalled();
+			const notice = await postedNotice();
+			expect(notice).toContain('*Bo Lee* (signed in with Apple)');
+			expect(notice).not.toContain('<@apple:001.abc>');
+			expect(notice).not.toContain('DMed');
 		});
 	});
 

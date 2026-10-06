@@ -141,6 +141,21 @@ describe('reconcileClaims — a list number that changed', () => {
 		expect(updates).toEqual([{ issuedListNumber: '77777777-22222' }]);
 	});
 
+	it('keeps the message for an Apple holder too', async () => {
+		const { db, inserts } = makeDb([
+			[liveClaim({ slackUserId: 'apple:001.abc', printedListNumber: '77777777-22222' })],
+			[],
+		]);
+
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
+
+		expect(result.dmFailed).toBe(0);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(inserts).toEqual([
+			expect.objectContaining({ userId: 'apple:001.abc', kind: 'list-number' }),
+		]);
+	});
+
 	it('leaves the record alone when Slack would not take the message', async () => {
 		mockSendDm.mockResolvedValue(false);
 		const { db, updates } = makeDb([[liveClaim({ printedListNumber: '77777777-22222' })], []]);

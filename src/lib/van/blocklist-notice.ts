@@ -22,11 +22,11 @@ function mention(slackUserId: string): string {
 
 export interface BlockNoticeInput {
 	targetSlackUserId: string;
-	/** How to name the target instead of mentioning them — for a Google
-	 *  volunteer, who has no Slack account to mention. */
+	/** How to name the target instead of mentioning them — for a Google or
+	 *  Apple volunteer, who has no Slack account to mention. */
 	targetLabel?: string;
-	/** Whether the target can be DMed about freed turf. False for a Google
-	 *  volunteer, so the notice does not claim a DM that never went. Defaults
+	/** Whether the target can be DMed about freed turf. False for a Google or
+	 *  Apple volunteer, so the notice does not claim a DM that never went. Defaults
 	 *  to true. */
 	reachableByDm?: boolean;
 	actorSlackUserId: string;

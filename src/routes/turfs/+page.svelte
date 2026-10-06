@@ -5,6 +5,7 @@
 
 	import PublicTurfTeaser from '$lib/components/turfs/PublicTurfTeaser.svelte';
 	import MemberTurfs from './MemberTurfs.svelte';
+	import NamePrompt from './NamePrompt.svelte';
 	import { enhance } from '$app/forms';
 	import { afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
@@ -23,19 +24,24 @@
 	// The dismiss form posts to `?/dismissNotice` plus the page's own query, so
 	// without JavaScript the reload lands back on the same chapter rather than
 	// on a bare /turfs. Kit reads the action from the `/`-prefixed key alone.
-	const dismissAction = $derived.by(() => {
-		const rest = [...page.url.searchParams]
+	// The same for the name prompt's `?/setName`.
+	const pageQuery = $derived(
+		[...page.url.searchParams]
 			// Not `needsSlack` either: carrying it would bring back the line the
 			// volunteer may already have dismissed.
 			.filter(([key]) => !key.startsWith('/') && key !== 'needsSlack')
 			.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
-			.join('&');
-		return `?/dismissNotice${rest ? `&${rest}` : ''}`;
-	});
+			.join('&'),
+	);
+	const dismissAction = $derived(`?/dismissNotice${pageQuery ? `&${pageQuery}` : ''}`);
+	const setNameAction = $derived(`?/setName${pageQuery ? `&${pageQuery}` : ''}`);
 
 	const dismissError = $derived(
 		form && 'dismissError' in form ? (form.dismissError ?? null) : null,
 	);
+	const confirmName = $derived(form && 'confirmName' in form ? (form.confirmName ?? null) : null);
+	const nameError = $derived(form && 'nameError' in form ? (form.nameError ?? null) : null);
+	const nameTaken = $derived(form && 'nameTaken' in form ? (form.nameTaken ?? null) : null);
 </script>
 
 {#if data.mode === 'public'}
@@ -49,8 +55,8 @@
 	/>
 {:else}
 	{#if data.needsSlackHref && !noticeDismissed}
-		<!-- A Google sign-in that tried a Slack-only page was sent here instead
-		     (server/google-access.ts). Say why, rather than leave them wondering
+		<!-- A Google or Apple sign-in that tried a Slack-only page was sent here
+		     instead (server/turf-only-access.ts). Say why, rather than leave them wondering
 		     what happened to the link they followed. -->
 		<p class="needs-slack" role="status">
 			<span>
@@ -64,7 +70,7 @@
 		</p>
 	{/if}
 	{#if data.notices.length > 0}
-		<!-- What a Google holder would have been DMed: an expiry warning, a
+		<!-- What a Google or Apple holder would have been DMed: an expiry warning, a
 		     "did MiniVAN sync?" nudge, a re-cut. Kept until dismissed — the
 		     server drops them after a week regardless. Rendered from plain
 		     segments ($lib/van/notice-text.ts), never as HTML. -->
@@ -101,6 +107,14 @@
 				</li>
 			{/each}
 		</ul>
+	{/if}
+	{#if data.needsName}
+		<NamePrompt action={setNameAction} {confirmName} error={nameError} />
+	{:else if nameTaken}
+		<!-- Saved from another tab first: that name stands (FR-011b). -->
+		<p class="needs-slack" role="status">
+			You'd already chosen a name in another tab, so you're <strong>{nameTaken}</strong>.
+		</p>
 	{/if}
 	<MemberTurfs {data} />
 {/if}

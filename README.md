@@ -316,6 +316,10 @@ GOOGLE_SHEETS_SERVICE_ACCOUNT='{"client_email":"…@….iam.gserviceaccount.com"
 VAN_CAMPAIGN_PRIMARY='{"appName":"…","apiKey":"…","databaseMode":0}'  # one VAN_CAMPAIGN_<KEY> per VAN campaign
 GOOGLE_OAUTH_CLIENT_ID=…apps.googleusercontent.com   # optional; Sign in with Google for turf checkout
 GOOGLE_OAUTH_CLIENT_SECRET=…
+APPLE_SIGNIN_SERVICES_ID=org.example.turfs   # optional; Sign in with Apple for turf checkout
+APPLE_SIGNIN_TEAM_ID=…
+APPLE_SIGNIN_KEY_ID=…
+APPLE_SIGNIN_PRIVATE_KEY='-----BEGIN PRIVATE KEY-----\n…'
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
 
@@ -327,7 +331,9 @@ PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 
 `VAN_CAMPAIGN_<KEY>` holds one VAN campaign's credentials; set one per campaign whose turf the app serves. The legacy `VAN_APP_NAME` / `VAN_API_KEY` / `VAN_DATABASE_MODE` still work in place of `VAN_CAMPAIGN_PRIMARY`. See [Setting up a VAN campaign](#setting-up-a-van-campaign) for the format, the naming rule and the rest of the setup.
 
-`GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` turn on **Sign in with Google**, which lets volunteers who are not in the Slack use turf checkout (and nothing else). Both are optional; with either unset, the sign-in page goes straight to Slack as before. They come from an OAuth client of type _Web application_ in Google Cloud (APIs & Services → Credentials) — unrelated to the Sheets service account above. Set its authorized redirect URI to `${APP_URL}/auth/google/callback` (and `http://localhost:5173/auth/google/callback` for local development). The app asks only for `openid email profile`, which needs no Google verification review, but the OAuth consent screen must be switched from _Testing_ to _In production_: while it is in Testing, only the test users listed on it can sign in.
+`GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` turn on **Sign in with Google**, which lets volunteers who are not in the Slack use turf checkout (and nothing else). Both are optional; with either unset, the Google option is hidden (and with Apple unset too, the sign-in page goes straight to Slack as before). They come from an OAuth client of type _Web application_ in Google Cloud (APIs & Services → Credentials) — unrelated to the Sheets service account above. Set its authorized redirect URI to `${APP_URL}/auth/google/callback` (and `http://localhost:5173/auth/google/callback` for local development). The app asks only for `openid email profile`, which needs no Google verification review, but the OAuth consent screen must be switched from _Testing_ to _In production_: while it is in Testing, only the test users listed on it can sign in.
+
+`APPLE_SIGNIN_SERVICES_ID` / `APPLE_SIGNIN_TEAM_ID` / `APPLE_SIGNIN_KEY_ID` / `APPLE_SIGNIN_PRIVATE_KEY` turn on **Sign in with Apple**, the same turf-checkout-only way in for volunteers with an Apple ID. All four are optional and need all four to work; with any unset, the Apple option is hidden. They need a paid Apple Developer Program membership. In Certificates, Identifiers & Profiles, create a _Services ID_ (its identifier is `APPLE_SIGNIN_SERVICES_ID`) with Sign in with Apple enabled, register the app's domain and the return URL `${APP_URL}/auth/apple/callback` on it, and create a key with Sign in with Apple enabled: its Key ID is `APPLE_SIGNIN_KEY_ID`, the downloaded `.p8` file's contents are `APPLE_SIGNIN_PRIVATE_KEY` (literal `\n` escapes are handled), and your Team ID is `APPLE_SIGNIN_TEAM_ID`. The app mints the short-lived client secret Apple wants from that key on every sign-in, so nothing needs renewing. **Set these secrets only after the release that adds Apple sign-in has fully deployed:** while old and new machines overlap, an Apple session made on a new machine would reach an old one, and older code does not confine Apple sessions to turf checkout. Apple does not accept `localhost` return URLs, so trying it locally needs an HTTPS tunnel whose domain is registered on the Services ID: set `APP_URL` to the tunnel's URL, and list its hostname in `DEV_ALLOWED_HOSTS` (comma-separated), which the dev server otherwise refuses with "Blocked request".
 
 `INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 
@@ -445,8 +451,9 @@ TURSO_DATABASE_URL=file:local-replica.db npm run dev
 ```
 
 - **What it copies:** the schema as production has it, with its migration history, so `db:migrate` against the copy runs exactly the pending migrations a deploy would. Turf for the named chapters and only the rows hanging off it (checkouts, rosters, geometry jobs, contact marks, MiniVAN exports). Every other table whole.
-- **What it leaves out:** sessions, stored Slack tokens and sync locks — sign in locally for a session of your own.
-- **Unlike `db:seed`, this is real data:** volunteer names, Slack IDs and notes come with it. The file is gitignored (`*.db`); keep it on your machine.
+- **What it leaves out:** sessions, stored Slack tokens and sync locks — sign in locally for a session of your own — and the sign-in records (`outside_volunteers`, and the retired `google_volunteers`) and turf messages of volunteers who signed in with Google or Apple.
+- **What it changes:** those volunteers' account IDs become stand-ins (`apple:replica-3`), and their names become "Apple volunteer 3" wherever the app or VAN wrote them — checkouts, blocks, the turf's sheet and VAN assignees, door-knock and MiniVAN canvassers. Matching is by name, so a spelling VAN or the sheet has that differs from theirs is copied as it is. See `scripts/replica-scrub.ts`.
+- **Unlike `db:seed`, this is real data:** Slack members' names, Slack IDs and notes come with it. The file is gitignored (`*.db`); keep it on your machine.
 - **Production is only read.** Every statement is checked to be a `SELECT` or a `PRAGMA table_info` before it is sent, and the source is opened as a plain client, never as an embedded replica (which would forward writes back). A local-file source is refused, and an existing copy is only replaced with `--force`.
 - **A failed run leaves nothing behind.** The copy is built as `<out>.partial` and renamed into place only when every table has copied; reads are paged and retried, and a failure names the table and the underlying cause.
 

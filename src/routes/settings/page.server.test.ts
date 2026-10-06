@@ -52,10 +52,11 @@ vi.mock('$lib/server/slack.js', () => ({ slack: {} }));
 vi.mock('$lib/server/env.js', () => ({
 	SOLIDARITY_API_TOKEN: 'test-token',
 	googleSignInConfigured: () => false,
+	appleSignInConfigured: () => false,
 }));
-vi.mock('$lib/server/google-volunteers.js', () => ({
-	loadGoogleVolunteers: async () => [],
-	loadBlockableGoogleVolunteers: async () => [],
+vi.mock('$lib/server/outside-volunteers.js', () => ({
+	countOutsideVolunteers: async () => ({ google: 0, apple: 0 }),
+	loadBlockableOutsideVolunteers: async () => [],
 }));
 
 import { load, type SettingsPageData } from './+page.server.js';

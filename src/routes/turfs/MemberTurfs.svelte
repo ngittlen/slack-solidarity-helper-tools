@@ -824,7 +824,10 @@
 											type="button"
 											class="claim-btn"
 											class:is-no-list={turf.noListNumber}
-											disabled={!turf.claimable || turf.doorsRemaining <= 0 || busy[turf.turfId]}
+											disabled={data.needsName ||
+												!turf.claimable ||
+												turf.doorsRemaining <= 0 ||
+												busy[turf.turfId]}
 											onclick={() => act(turf, 'claim')}
 										>
 											{busy[turf.turfId] ? 'Checking out…' : 'Check out this turf'}
@@ -833,7 +836,10 @@
 										     reason. Written the other way round, a refusal that
 										     arrived without a message would fall through and
 										     promise a list number under a dead button. -->
-										{#if turf.claimable}
+										{#if data.needsName}
+											<!-- The claim route refuses until they do (FR-011). -->
+											<p class="claim-note">Choose your name at the top of the page first.</p>
+										{:else if turf.claimable}
 											<!-- Said before the claim, not after: what you get and how
 											     long you keep it are the two things someone wants to
 											     know before committing to walk somewhere. -->

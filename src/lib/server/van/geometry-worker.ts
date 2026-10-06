@@ -78,6 +78,18 @@ const MAX_POLLS = 5;
  *  job id, so the next run polls rather than re-submitting. */
 const MIN_DOWNLOAD_MS = 5_000;
 
+/** How long a submitted job may go without a downloadUrl before it is given
+ *  up on and resubmitted. A turf's export normally finishes in seconds; one
+ *  still pending after this is not coming, and leaving it resumable forever
+ *  would keep it at the head of every run's queue. */
+export const STALE_JOB_MS = 60 * 60 * 1000;
+
+/** How long after submission a job reading Completed with no downloadUrl is
+ *  taken to have expired. Not zero: a job just submitted may say Completed a
+ *  moment before its link is filled in, and failing it there would spend an
+ *  attempt and a duplicate export on a job that was about to be fine. */
+export const EXPIRED_LINK_GRACE_MS = 5 * 60 * 1000;
+
 export interface GeometryWorkerOptions {
 	/** The campaign whose queue this run drains, with that campaign's client.
 	 *  Export jobs are created and read with a campaign's own key, so a run
@@ -172,6 +184,8 @@ interface QueueItem {
 	savedListId: number;
 	exportJobId: number | null;
 	attempts: number;
+	/** When the row's current export job was submitted. */
+	requestedAt: string | null;
 }
 
 function isTerminal(status: string | null, wanted: 'completed' | 'error'): boolean {
@@ -227,6 +241,7 @@ export async function runGeometryQueue(
 			savedListId: vanGeometryQueue.savedListId,
 			exportJobId: vanGeometryQueue.exportJobId,
 			attempts: vanGeometryQueue.attempts,
+			requestedAt: vanGeometryQueue.requestedAt,
 		})
 		.from(vanGeometryQueue)
 		.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanGeometryQueue.turfId))
@@ -269,7 +284,9 @@ export async function runGeometryQueue(
 			.set({
 				status: 'running',
 				attempts,
-				requestedAt: now.toISOString(),
+				// Stamped when a job is submitted, never on a resume: it is what
+				// tells a slow job from one that is never going to finish.
+				...(item.exportJobId === null ? { requestedAt: now.toISOString() } : {}),
 				lastError: null,
 			})
 			.where(eq(vanGeometryQueue.turfId, item.turfId));
@@ -296,7 +313,12 @@ export async function runGeometryQueue(
 			}
 
 			// Small lists are already Completed here and skip the loop entirely.
-			for (let poll = 0; poll < MAX_POLLS && !job.downloadUrl; poll++) {
+			// Only a job submitted this pass is waited on. A resumed one has had
+			// at least a run already, so it gets the single GET above: polling
+			// it would spend the budget on rows that sort ahead of all the
+			// fresh work, and a handful of slow jobs would starve the queue.
+			const polls = item.exportJobId === null ? MAX_POLLS : 0;
+			for (let poll = 0; poll < polls && !job.downloadUrl; poll++) {
 				if (isTerminal(job.status, 'error')) break;
 				if (Date.now() >= deadline) break;
 				await sleep(POLL_INTERVAL_MS);
@@ -305,6 +327,29 @@ export async function runGeometryQueue(
 
 			if (isTerminal(job.status, 'error')) {
 				throw new Error(`VAN reported the export job failed (${job.errorCode ?? 'no code'})`);
+			}
+
+			// Only a resumed job is judged here. One submitted this pass is never
+			// expired or stale, however it reads — and `item.requestedAt` would
+			// be the previous job's anyway. A retry clears the job id, so the
+			// next pass submits afresh.
+			if (!job.downloadUrl && item.exportJobId !== null) {
+				const age = now.getTime() - (item.requestedAt ? Date.parse(item.requestedAt) : NaN);
+				// Finished, but the link is gone: VAN drops downloadUrl once the
+				// job expires, and a finished job never grows a new one. Left
+				// "running", these were re-polled every run and, sorting first,
+				// starved the fresh rows behind them.
+				if (isTerminal(job.status, 'completed') && age >= EXPIRED_LINK_GRACE_MS) {
+					throw new Error('VAN export job completed but its download link has expired');
+				}
+				// Pending far longer than any export takes. Resubmitting costs an
+				// attempt, so a list VAN can never export still dead-letters
+				// rather than holding its place at the head of the queue forever.
+				if (age >= STALE_JOB_MS) {
+					throw new Error(
+						`VAN export job still had no download link ${Math.round(age / 60_000)} min after it was submitted`,
+					);
+				}
 			}
 
 			if (!job.downloadUrl) {

@@ -8,7 +8,11 @@ import { campaignName } from '$lib/server/van/campaigns.js';
 import { loadCampaignSummaries } from '$lib/server/van/campaign-status-store.js';
 import { campaignListRow, type CampaignListRow } from '$lib/van/campaign-list.js';
 import { slack } from '$lib/server/slack.js';
-import { googleSignInConfigured, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
+import {
+	appleSignInConfigured,
+	googleSignInConfigured,
+	SOLIDARITY_API_TOKEN,
+} from '$lib/server/env.js';
 import {
 	loadSettings,
 	refreshChapterNames,
@@ -19,10 +23,10 @@ import {
 } from '$lib/server/settings.js';
 import { loadThemeTokensJson } from '$lib/server/theme.js';
 import {
-	loadBlockableGoogleVolunteers,
-	loadGoogleVolunteers,
-	type BlockableGoogleVolunteer,
-} from '$lib/server/google-volunteers.js';
+	countOutsideVolunteers,
+	loadBlockableOutsideVolunteers,
+	type BlockableOutsideVolunteer,
+} from '$lib/server/outside-volunteers.js';
 import { loadDoorsTicker, type TickerEntry } from '$lib/server/van/doors-store.js';
 import {
 	computeWeeklyLeaderboard,
@@ -62,15 +66,15 @@ export interface SettingsPageData {
 	 *  folders, spreadsheets and switches are edited. */
 	vanCampaigns: CampaignListRow[];
 	vanBlockedUsers: VanBlockedUserEntry[];
-	/** How many Google volunteers have a stored record, for the
-	 *  end-of-campaign clear. 0 when the read failed. */
-	googleVolunteerCount: number;
+	/** How many Google and Apple volunteers have a stored record, for the
+	 *  end-of-campaign clear. Zeros when the read failed. */
+	outsideVolunteerCounts: { google: number; apple: number };
 	/** Who the block-list picker offers: everyone with a record plus any
-	 *  Google volunteer holding turf without one. */
-	googleBlockable: BlockableGoogleVolunteer[];
-	/** Whether Google sign-in is configured — the records section shows when
-	 *  it is, or while any records remain from when it was. */
-	googleSignIn: boolean;
+	 *  Google or Apple volunteer holding turf without one. */
+	outsideBlockable: BlockableOutsideVolunteer[];
+	/** Whether Google or Apple sign-in is configured — the records section
+	 *  shows when one is, or while any records remain from when one was. */
+	outsideSignIn: boolean;
 	/** Stored theme overrides as JSON; '{}' when untouched. */
 	themeTokens: string;
 	slackChannels: AutocompleteResult<ChannelEntry> | null;
@@ -86,7 +90,7 @@ export interface SettingsPageData {
 		userLists?: string;
 		vanCampaigns?: string;
 		vanBlocklist?: string;
-		googleVolunteers?: string;
+		outsideVolunteers?: string;
 	};
 	oldestFetchedAt: number | null;
 	/** Today's real ticker standings, so the speed slider previews the board
@@ -247,14 +251,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		vanCampaignsResult,
 		vanBlockedUsersResult,
 		themeTokensResult,
-		googleVolunteersResult,
-		googleBlockableResult,
+		outsideCountsResult,
+		outsideBlockableResult,
 	] = await Promise.allSettled([
 		loadCampaignSummaries(db),
 		loadVanBlockedUsers(db),
 		loadThemeTokensJson(db),
-		loadGoogleVolunteers(db),
-		loadBlockableGoogleVolunteers(db),
+		countOutsideVolunteers(db),
+		loadBlockableOutsideVolunteers(db),
 	]);
 	// Credentials are described, never shown: credentialStatus carries no key.
 	const vanCampaigns =
@@ -285,13 +289,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		errors.vanBlocklist = 'Failed to load the turf-checkout block list.';
 	}
 	// Only the count goes to the browser: the records section shows nothing
-	// else, and the picker takes its names and emails from googleBlockable.
-	const googleVolunteerCount =
-		googleVolunteersResult.status === 'fulfilled' ? googleVolunteersResult.value.length : 0;
-	const googleBlockable =
-		googleBlockableResult.status === 'fulfilled' ? googleBlockableResult.value : [];
-	if (googleVolunteersResult.status === 'rejected' || googleBlockableResult.status === 'rejected') {
-		errors.googleVolunteers = 'Failed to load the Google volunteers.';
+	// else, and the picker takes its names and emails from outsideBlockable.
+	const outsideVolunteerCounts =
+		outsideCountsResult.status === 'fulfilled'
+			? outsideCountsResult.value
+			: { google: 0, apple: 0 };
+	const outsideBlockable =
+		outsideBlockableResult.status === 'fulfilled' ? outsideBlockableResult.value : [];
+	if (outsideCountsResult.status === 'rejected' || outsideBlockableResult.status === 'rejected') {
+		errors.outsideVolunteers = 'Failed to load the Google and Apple volunteers.';
 	}
 
 	return {
@@ -301,9 +307,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		renamedChapters,
 		vanCampaigns,
 		vanBlockedUsers,
-		googleVolunteerCount,
-		googleBlockable,
-		googleSignIn: googleSignInConfigured(),
+		outsideVolunteerCounts,
+		outsideBlockable,
+		outsideSignIn: googleSignInConfigured() || appleSignInConfigured(),
 		themeTokens,
 		leaderboard,
 		slackChannels,

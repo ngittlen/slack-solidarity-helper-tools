@@ -10,7 +10,7 @@ import { INTERNAL_CRON_SECRET, validateEnv } from '$lib/server/env.js';
 import { localCaller, startScheduler } from '$lib/server/scheduler.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
 import { applyDevViewAs, parseDevViewAs } from '$lib/server/dev-view-as.js';
-import { gateGoogleSession } from '$lib/server/google-access.js';
+import { gateTurfOnlySession } from '$lib/server/turf-only-access.js';
 
 export async function init() {
 	validateEnv();
@@ -110,12 +110,12 @@ export const handle: Handle = async ({ event, resolve }) => {
 		if (viewAs) event.locals.session = applyDevViewAs(event.locals.session, viewAs);
 	}
 
-	// A Google sign-in is for turf checkout and nothing else. Enforced here,
+	// A Google or Apple sign-in is for turf checkout and nothing else. Enforced here,
 	// where every request passes, rather than in the root layout — form actions
 	// and endpoints never run layout loads. Deny-by-default; the allow-list and
-	// the reasoning are in server/google-access.ts.
-	if (event.locals.session?.authProvider === 'google') {
-		const gate = gateGoogleSession({
+	// the reasoning are in server/turf-only-access.ts.
+	if (event.locals.session?.authProvider !== undefined) {
+		const gate = gateTurfOnlySession({
 			routeId: event.route.id,
 			isDataRequest: event.isDataRequest,
 			isRemoteRequest: event.isRemoteRequest,

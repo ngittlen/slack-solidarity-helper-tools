@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockClear = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({ db: {} }));
-vi.mock('$lib/server/google-volunteers', () => ({ clearGoogleVolunteers: mockClear }));
+vi.mock('$lib/server/outside-volunteers', () => ({ clearOutsideVolunteers: mockClear }));
 
 import { POST } from './+server.js';
 
@@ -14,7 +14,7 @@ function makeEvent(session: unknown, body: unknown) {
 	return { locals: { session }, request: { json: async () => body } } as never;
 }
 
-describe('POST /api/settings/google-volunteers', () => {
+describe('POST /api/settings/outside-volunteers', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.spyOn(console, 'log').mockImplementation(() => {});

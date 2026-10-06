@@ -74,6 +74,26 @@ describe('POST /api/turfs/[turfId]', () => {
 		});
 	});
 
+	it('refuses a claim from a volunteer who has not given a name yet', async () => {
+		const unnamed = {
+			slackUserId: 'apple:001.abc',
+			slackUserName: '',
+			isAdmin: false,
+			authProvider: 'apple',
+			needsName: true,
+		};
+		const res = await POST(event(unnamed, { action: 'claim' }));
+		expect(res.status).toBe(409);
+		expect(mockClaim).not.toHaveBeenCalled();
+	});
+
+	it('lets a volunteer with no name yet release or finish turf they hold', async () => {
+		const unnamed = { ...VOLUNTEER, slackUserId: 'google:1', needsName: true };
+		const res = await POST(event(unnamed, { action: 'release' }));
+		expect(res.status).toBe(200);
+		expect(mockEndClaim).toHaveBeenCalled();
+	});
+
 	it('passes the session identity through rather than trusting the body', async () => {
 		// A body-supplied slackUserId would let anyone claim as anyone.
 		await POST(event(VOLUNTEER, { action: 'claim', slackUserId: 'U_SOMEONE_ELSE' }));

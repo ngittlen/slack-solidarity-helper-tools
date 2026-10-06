@@ -424,7 +424,7 @@ async function syncCheckout(
 	};
 	// The turf, never the list number: that is the credential that loads the
 	// doors in MiniVAN, and this goes to a Slack channel.
-	// Escaped for the same channel: a Google volunteer picks their own name.
+	// Escaped for the same channel: a Google or Apple volunteer picks their own name.
 	const label = escapeMrkdwn(`${candidate.turfName} (${candidate.slackUserName})`);
 	const base: SheetState = { ...state, spreadsheetId: tab.spreadsheetId };
 

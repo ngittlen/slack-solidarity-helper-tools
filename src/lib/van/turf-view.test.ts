@@ -135,17 +135,21 @@ describe('toTurfView — what reaches the browser', () => {
 		);
 	});
 
-	// The Slack/Google mark and a Google holder's email ride on `heldBy`, so
+	// The Slack/Google/Apple mark and an outside holder's email ride on `heldBy`, so
 	// they reach exactly the viewers `heldBy` does: admins.
 	it('marks the holder’s account for an admin, and for nobody else', () => {
 		const held = [claim({ slackUserId: 'google:7', slackUserName: 'Ana Ruiz' })];
 		const holderAccounts = new Map([
-			['google:7', { provider: 'google' as const, email: 'ana@example.com' }],
+			[
+				'google:7',
+				{ provider: 'google' as const, email: 'ana@example.com', isPrivateEmail: false },
+			],
 		]);
 
 		expect(toTurfView(row(), held, ADMIN, NOW, { holderAccounts }).heldByAccount).toEqual({
 			provider: 'google',
 			email: 'ana@example.com',
+			isPrivateEmail: false,
 		});
 		expect(toTurfView(row(), held, VOLUNTEER, NOW, { holderAccounts }).heldByAccount).toBeNull();
 		// No claim — nothing held, or held in VAN — means no account to mark.

@@ -148,6 +148,17 @@ describe('sendExpiryWarnings', () => {
 		expect(Number(again.rows[0]!.n)).toBe(1);
 	});
 
+	// Spec 014, User Story 5: an Apple holder is treated the same way.
+	it('keeps the warning for an Apple holder instead of DMing', async () => {
+		await checkout({ slack_user_id: 'apple:001.abc', slack_user_name: 'Bo' });
+		expect(await sendExpiryWarnings(db, NOW)).toEqual({ sent: 1, failed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+		const notices = await client.execute('SELECT user_id, kind FROM turf_notices');
+		expect(notices.rows).toEqual([
+			expect.objectContaining({ user_id: 'apple:001.abc', kind: 'expiry' }),
+		]);
+	});
+
 	it('stamps the row when the DM lands', async () => {
 		await checkout();
 		await sendExpiryWarnings(db, NOW);

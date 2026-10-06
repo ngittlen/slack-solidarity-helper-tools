@@ -19,7 +19,7 @@ import {
 import { campaignDayKey, campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { campaignFilter } from '$lib/server/van/campaigns.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
-import { loadHolderAccounts } from '$lib/server/google-volunteers.js';
+import { loadHolderAccounts } from '$lib/server/outside-volunteers.js';
 import type { HolderAccount } from '$lib/holder-account.js';
 
 // Turf checkout history, for organizers.
@@ -47,7 +47,7 @@ import type { HolderAccount } from '$lib/holder-account.js';
 // hydration mismatch on every row.
 
 export interface ActivityEventView extends ActivityEvent {
-	/** The Slack or Google mark beside the name, and a Google holder's email. */
+	/** The Slack, Google or Apple mark beside the name, and an outside holder's email. */
 	account: HolderAccount | null;
 	/** Campaign-local grouping key, `YYYY-MM-DD`. */
 	dayKey: string;
@@ -104,7 +104,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// one event, so slicing here can only trim events the page was never going
 	// to show — see loadActivityRows for why fetching more would not help.
 	const capped = activityEvents(rows, range).slice(0, EVENT_CAP);
-	// The Slack or Google mark beside each name, and a Google holder's email.
+	// The Slack, Google or Apple mark beside each name, and an outside holder's email.
 	const accounts = await loadHolderAccounts(
 		db,
 		capped.map((event) => event.slackUserId),

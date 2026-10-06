@@ -59,6 +59,12 @@ describe('notifyHolder', () => {
 		]);
 	});
 
+	it('keeps the message for an Apple holder too', async () => {
+		expect(await notifyHolder(db, 'apple:001.abc', 'expiry', 'Expiring', '[test]', NOW)).toBe(true);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(await loadHolderNotices(db, 'apple:001.abc', NOW)).toHaveLength(1);
+	});
+
 	it('reports a failed write as undelivered, so the sweep retries', async () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		client.close();

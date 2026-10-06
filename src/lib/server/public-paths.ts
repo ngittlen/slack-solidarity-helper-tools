@@ -19,8 +19,8 @@
 // this is the record of what this deployment serves without a session and a
 // list that omitted public URLs would be a worse record than a redundant one.
 // If any of them ever becomes a page, it is already covered. `/terms` in
-// particular is the terms-of-service URL Google's sign-in consent screen links
-// to, so it must answer anyone.
+// particular is the terms-of-service URL Google's and Apple's sign-in consent
+// screens link to, so it must answer anyone.
 
 /** Page routes served without a session. Prefix matches, so `/policies#x` and
  *  `/policies?print=1` are covered too. */
@@ -38,7 +38,7 @@ const PUBLIC_PREFIXES = ['/policies', '/privacy', '/security', '/terms'];
  *
  * `/signin` is the page every signed-out redirect lands on, so it is public by
  * necessity. It reads the session only to send an already-signed-in visitor
- * on, and shows nothing but the two sign-in buttons.
+ * on, and shows nothing but the sign-in buttons.
  */
 const PUBLIC_EXACT = ['/turfs', '/signin'];
 

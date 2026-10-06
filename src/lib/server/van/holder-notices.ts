@@ -1,7 +1,7 @@
 // Telling a turf holder something, whichever way they signed in.
 //
-// The turf sweeps used to DM every holder through sendDm. A Google volunteer
-// has no Slack, so notifyHolder writes the same message to `turf_notices`
+// The turf sweeps used to DM every holder through sendDm. A Google or Apple
+// volunteer has no Slack, so notifyHolder writes the same message to `turf_notices`
 // instead, and /turfs shows it (specs/013-google-sso-login, User Story 5).
 // Same boolean contract as sendDm — true when the message is delivered or
 // stored — so the sweeps keep their stamp-on-success, retry-on-failure logic
@@ -10,7 +10,7 @@
 import { and, desc, eq, gte, lt } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { turfNotices } from '../schema.js';
-import { isGoogleUserId } from '../identity.js';
+import { isOutsideUserId } from '../identity.js';
 import { sendDm } from '../slack-dm.js';
 import { errMessage } from '../../err-message.js';
 
@@ -30,7 +30,7 @@ export interface HolderNotice {
 }
 
 /**
- * DM a Slack holder, or keep the message for a Google holder's next visit to
+ * DM a Slack holder, or keep the message for a Google or Apple holder's next visit to
  * /turfs. Never throws.
  */
 export async function notifyHolder(
@@ -41,7 +41,7 @@ export async function notifyHolder(
 	logTag: string,
 	now: Date = new Date(),
 ): Promise<boolean> {
-	if (!isGoogleUserId(holderId)) return sendDm(holderId, text, logTag);
+	if (!isOutsideUserId(holderId)) return sendDm(holderId, text, logTag);
 	try {
 		await db
 			.insert(turfNotices)

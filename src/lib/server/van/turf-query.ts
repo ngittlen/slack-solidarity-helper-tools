@@ -45,7 +45,7 @@ import type { BoundingBox, LatLng } from '../../van/geometry.js';
 import { selectNearest, TURFS_PER_PAYLOAD, withinBounds } from '../../van/turf-paging.js';
 import { toTurfView, turfSnapshot, type TurfView } from '../../van/turf-view.js';
 import { visibleToChapter } from './chapter-visibility.js';
-import { loadHolderAccounts } from '../google-volunteers.js';
+import { loadHolderAccounts } from '../outside-volunteers.js';
 import type { VanTurfRow } from '../schema.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -244,7 +244,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		selected.map((r) => r.campaignId).filter((id) => badgeShown(campaigns, id)),
 	);
 
-	// The Slack or Google mark (and a Google holder's email) beside each holder
+	// The Slack, Google or Apple mark (and an outside holder's email) beside each holder
 	// name. Admins only — nobody else is shown who holds anything, so nobody
 	// else needs the read.
 	const holderAccounts = viewer.isAdmin

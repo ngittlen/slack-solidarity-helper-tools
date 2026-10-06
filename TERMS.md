@@ -1,9 +1,9 @@
 # Terms of Use
 
-_Last updated: 2026-10-04_
+_Last updated: 2026-10-05_
 
 These terms cover **Tools for Abdul's deployment** of slack-solidarity-helper-tools at
-`https://slack.tools4abdul.com`. By signing in, with Slack or with Google, you agree to them.
+`https://slack.tools4abdul.com`. By signing in, with Slack, Google or Apple, you agree to them.
 They sit alongside the [Privacy Policy](PRIVACY.md), which says what is recorded about you and
 for how long, and the [Security Policy](SECURITY.md), which says how to report a problem.
 
@@ -21,9 +21,9 @@ company, and it is offered free of charge. The source code is public at
 
 - **Members of the campaign's Slack workspace** sign in with Slack. What they can reach depends
   on the role organizers have given them.
-- **Anyone with a Google account** can sign in with Google to use turf checkout: the canvassing
-  map at `/turfs`, where you claim turf, walk it and mark it done. A Google sign-in reaches turf
-  checkout and nothing else.
+- **Anyone with a Google account or an Apple ID** can sign in with Google or Apple to use turf
+  checkout: the canvassing map at `/turfs`, where you claim turf, walk it and mark it done. A
+  Google or Apple sign-in reaches turf checkout and nothing else.
 
 The app is not directed at children under 13. Canvassing may carry its own age requirements
 under the campaign's volunteer guidelines; follow them.
@@ -63,7 +63,8 @@ Don't republish them.
 - Look for security weaknesses, except as the [Security Policy](SECURITY.md) describes, and report
   what you find there.
 - Put abusive, misleading or unlawful content anywhere the app shows it to others, including your
-  display name.
+  display name. If the app asks you to type a name, use one organizers can know you by: it goes on
+  the turf you claim, and you can't change it in the app once saved.
 
 ## Organizers' decisions
 
@@ -74,15 +75,16 @@ organizer.
 
 ## Your account
 
-You sign in with an account from Slack or Google; this app does not create one. Their own terms
-apply to that account, and you are responsible for keeping it secure. The app asks Google only
-for your name, email address and account ID, and asks Slack only who you are. See the
+You sign in with an account from Slack, Google or Apple; this app does not create one. Their own
+terms apply to that account, and you are responsible for keeping it secure. The app asks Google
+only for your name, email address and account ID, asks Apple only for your name and email address
+(which may be a Hide My Email relay address), and asks Slack only who you are. See the
 [Privacy Policy](PRIVACY.md) for what is kept and for how long. You can stop using the app at any
 time by signing out.
 
 ## Other services
 
-The app connects to services run by other people, including Slack, Google, NGP VAN and MiniVAN,
+The app connects to services run by other people, including Slack, Google, Apple, NGP VAN and MiniVAN,
 solidarity.tech and Mobilize. Each has its own terms, and nothing here changes them.
 
 ## No guarantees

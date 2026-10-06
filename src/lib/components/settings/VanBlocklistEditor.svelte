@@ -22,9 +22,12 @@
 		realName: string;
 	}
 
-	/** Mirrors BlockableGoogleVolunteer from $lib/server/google-volunteers.ts. */
-	interface GoogleOption {
+	/** Mirrors BlockableOutsideVolunteer from $lib/server/outside-volunteers.ts. */
+	interface OutsideOption {
 		userId: string;
+		provider: 'google' | 'apple';
+		/** An Apple Hide My Email relay address. */
+		isPrivateEmail: boolean;
 		displayName: string;
 		/** Null for someone holding turf whose stored record is gone. */
 		email: string | null;
@@ -32,18 +35,19 @@
 
 	interface Props {
 		users: UserOption[];
-		/** Everyone who has signed in with Google, pickable alongside Slack
-		 *  members — blocking is how an organizer deals with a stranger. */
-		googleVolunteers: GoogleOption[];
-		/** Currently blocked ids — Slack or `google:` — from loadVanBlockedUsers. */
+		/** Everyone who has signed in with Google or Apple, pickable alongside
+		 *  Slack members — blocking is how an organizer deals with a stranger. */
+		outsideVolunteers: OutsideOption[];
+		/** Currently blocked ids — Slack, `google:` or `apple:` — from
+		 *  loadVanBlockedUsers. */
 		blockedIds: string[];
 		/** Each blocked id's stored name, for a chip whose person is in neither
-		 *  list any more: a Google record cleared at the end of a campaign, or a
+		 *  list any more: a Google or Apple record cleared at the end of a campaign, or a
 		 *  deactivated Slack account. Without it the chip reads as a raw id. */
 		blockedNames: Record<string, string>;
 	}
 
-	let { users, googleVolunteers, blockedIds, blockedNames }: Props = $props();
+	let { users, outsideVolunteers, blockedIds, blockedNames }: Props = $props();
 
 	let blocked = $state<string[]>([...blockedIds]);
 
@@ -54,11 +58,16 @@
 				label: u.name,
 				sublabel: u.realName && u.realName !== u.name ? u.realName : undefined,
 			})),
-			...googleVolunteers.map((g) => ({
-				id: g.userId,
-				label: g.displayName,
-				sublabel: g.email ? `Google · ${g.email}` : 'Google · no stored record',
-			})),
+			...outsideVolunteers.map((v) => {
+				const via = v.provider === 'apple' ? 'Apple' : 'Google';
+				return {
+					id: v.userId,
+					label: v.displayName,
+					sublabel: v.email
+						? `${via} · ${v.email}${v.isPrivateEmail ? ' (private relay)' : ''}`
+						: `${via} · no stored record`,
+				};
+			}),
 		];
 		const known = new Set(items.map((i) => i.id));
 		for (const id of blocked) {
@@ -173,9 +182,9 @@
 			<p class="van-blocklist-notice" role="status">{notice}</p>
 		{/if}
 		<p class="van-blocklist-note">
-			Blocked members — and volunteers who signed in with Google — can’t see the turf map or claim
-			turf. Blocking takes effect immediately — it releases any turf they’re holding and signs them
-			out. Admins and the
+			Blocked members — and volunteers who signed in with Google or Apple — can’t see the turf map
+			or claim turf. Blocking takes effect immediately — it releases any turf they’re holding and
+			signs them out. Admins and the
 			<code>SLACK_SUPERUSER_ID</code> user can’t be blocked. Unblocking does not give their turf back,
 			since someone else may have claimed it.
 		</p>
