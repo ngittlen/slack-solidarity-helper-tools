@@ -14,7 +14,7 @@ Useful things to include, roughly in order of value:
 1. What an attacker gets — read a volunteer's phone number, post as another member, claim turf
    someone else holds, reach an admin-only page without being an admin.
 2. The route or file involved, and the request that triggers it.
-3. Whether it needs a Slack session, a Google sign-in (which anyone can get), a workspace
+3. Whether it needs a Slack session, a Google or Apple sign-in (which anyone can get), a workspace
    membership, an admin role, or nothing at all. "Unauthenticated" and "needs an admin account"
    are very different findings.
 4. Anything you had to guess about the deployment.
@@ -51,8 +51,8 @@ Dependencies are pinned in `package-lock.json`; the Node version in the `Dockerf
 
 **In scope** — this repository's code and the app it builds:
 
-- Authentication and session handling, for both Slack and Google sign-in
-- Anything a Google sign-in can reach beyond turf checkout
+- Authentication and session handling, for Slack, Google and Apple sign-in
+- Anything a Google or Apple sign-in can reach beyond turf checkout
 - The admin allowlist and any way around it
 - Slack request-signature verification and the webhook / cron secrets
 - The turf checkout rules (claiming turf you do not hold, exceeding limits, reading another
@@ -80,20 +80,29 @@ the app is unbreakable.
 
 ### Authentication and authorization
 
-- **Sign-in is Slack OAuth, or Google for turf checkout only.** The site is behind a root layout
+- **Sign-in is Slack OAuth, or Google or Apple for turf checkout only.** The site is behind a root layout
   guard that redirects unauthenticated visitors to `/signin`. Only the policy pages, the sign-in
   page and the `/turfs` teaser are public. There is no password to leak or guess.
 - **Session cookies** carry a random ID only, and are `httpOnly`, `sameSite=lax`, and `secure`
   outside dev. Sessions live server-side, expire after 8 hours, and are deleted on expiry.
 - **The OAuth `state` is signed and time-limited**, and its nonce is bound to a cookie
   (`src/lib/server/oauth-state.ts`). The state names which flow it belongs to, and each callback
-  refuses the other's. Google sign-in also uses PKCE, asks only for `openid email profile`, and
+  refuses the others'. Google sign-in also uses PKCE, asks only for `openid email profile`, and
   keeps no Google token.
+- **Apple sign-in returns by a cross-site form post**, because Apple requires that when asking
+  for name and email. So its callback, `POST /auth/apple/callback` and nothing else, is exempt
+  from the cross-site form check (`src/lib/server/csrf.ts`), and its flow cookies are
+  `SameSite=None; Secure` so they survive the post. What authenticates it instead: the signed
+  state's nonce must match one cookie, the id token's `nonce` must match a second, and the code
+  becomes a session only after Apple accepts it with a client secret signed by our key. The
+  id token Apple also posts in the form is ignored. It asks only for name and email and keeps no
+  Apple token.
 - **Four tiers.**
-  - Anyone with a Google account can sign in, but a Google session reaches turf checkout and
-    nothing else. That is enforced for every request in `src/hooks.server.ts` by a deny-by-default
-    allow-list of routes (`src/lib/server/google-access.ts`), and a test walks every route to
-    keep it that way. A Google session is never an admin or moderator.
+  - Anyone with a Google account or an Apple ID can sign in, but such a session reaches turf
+    checkout and nothing else. That is enforced for every request in `src/hooks.server.ts` by a
+    deny-by-default allow-list of routes (`src/lib/server/turf-only-access.ts`), one list for
+    both providers, and a test walks every route to keep it that way. A Google or Apple session is
+    never an admin or moderator.
   - Any Slack workspace member may see the dashboards and the turf page.
   - Moderators (`slack_moderators`) can also use member lookup and the info commands.
   - Everything else is gated on a database-backed admin allowlist (`allowed_slack_users`, edited
@@ -126,9 +135,11 @@ the app is unbreakable.
 - **All other secrets live in Fly secrets**, never in the repository or the database.
   `.env.local` is gitignored.
 - **Nothing sensitive is committed.** The seed data (`npm run db:seed`) is fully synthetic.
-  `npm run db:replica` does copy production into a local file for testing. It leaves out sessions
-  and Slack tokens but copies everything else, moderation notes and contact details included, so
-  a replica is production data and should be handled as such.
+  `npm run db:replica` does copy production into a local file for testing. It leaves out sessions,
+  Slack tokens, and the sign-in records and turf messages of Google and Apple volunteers, and
+  replaces those volunteers' account IDs and names with stand-ins (`scripts/replica-scrub.ts`).
+  Everything else is copied, moderation notes and Slack members' contact details included, so a
+  replica is production data and should be handled as such.
 
 ### Data minimization, by design
 
@@ -137,8 +148,8 @@ regression even though nothing would visibly break:
 
 - **The MiniVAN list number is the credential** that pulls voter records down to a phone. It is
   given only to the volunteer currently holding the turf: in an ephemeral Slack message, or on
-  their own turf card on `/turfs`. For a Google holder, a changed number is kept with their turf
-  messages for at most a week. It is withheld from the organizer and activity pages — from admins
+  their own turf card on `/turfs`. For a Google or Apple holder, a changed number is kept with their
+  turf messages for at most a week. It is withheld from the organizer and activity pages — from admins
   too — and kept out of Slack notification fallback text, the one thing that renders on a locked
   phone.
 - **Chapter filtering happens server-side before serializing.** The payload is the boundary;
@@ -146,10 +157,11 @@ regression even though nothing would visibly break:
 - **The Solidarity roster is searched server-side and never sent to the browser.**
 - **Typed addresses are never stored or logged**, and coordinates in button values are rounded
   to ~100 m.
-- **A Google volunteer's email is shown to admins only.** It is added to admin views on the
-  server and never logged or posted to Slack. Google display names are cleaned at sign-in and
-  escaped wherever they are posted to Slack, so a chosen name cannot ping a channel or post a
-  link.
+- **A Google or Apple volunteer's email is shown to admins only** — an Apple Hide My Email relay
+  address marked as one. It is added to admin views on the server and never logged or posted to
+  Slack. Display names — from a Google profile, Apple's first sign-in, or typed on `/turfs` — are
+  cleaned before they are stored and escaped wherever they are posted to Slack, so a chosen name
+  cannot ping a channel or post a link, and are written to sheets so they cannot run as a formula.
 
 ### Abuse limits
 
@@ -158,8 +170,8 @@ regression even though nothing would visibly break:
   requests/minute), shared between the page and the API in
   `src/lib/server/van/rate-limit-store.ts`. They follow the user, not the URL — an earlier
   module-scoped limiter was bypassed simply by using the API instead of the page. They apply to
-  Google sign-ins the same way, per account. Because Google accounts are free to create, they
-  slow down one account rather than a determined person. That gap is known and recorded for
+  Google and Apple sign-ins the same way, per account. Because those accounts are free to create,
+  they slow down one account rather than a determined person. That gap is known and recorded for
   follow-up.
 - **The signed-out `/turfs` teaser** allows 10 lookups a minute per visitor address.
 - **Turf claim races are resolved in storage**, by a partial unique index on
@@ -187,7 +199,7 @@ If you deploy this yourself, the checklist:
    either is set.
 3. **Set `ORIGIN` to your real public URL.** It is what the CSRF check compares against.
 4. **Make the member notes channel private.** Note text and warning text both land there.
-5. **Keep the admin allowlist short**, and remove people when they stop organising. An admin who
+5. **Keep the admin allowlist short**, and remove people when they stop organizing. An admin who
    turned on "post as you" has a Slack user token stored (encrypted) that can post as them.
 6. **Rotate `WEBHOOK_SECRET` and `INTERNAL_CRON_SECRET` periodically**, since they travel in URLs.
 7. **Restrict database access.** The Turso token reads everything, including moderation records
@@ -200,6 +212,10 @@ If you deploy this yourself, the checklist:
     (`<APP_URL>/auth/google/callback`), keep `GOOGLE_OAUTH_CLIENT_SECRET` in Fly secrets, and
     point the consent screen's terms and privacy links at `/terms` and `/privacy`. Remember that
     anyone with a Google account can then open turf checkout.
+11. **If you enable Apple sign-in,** register the domain and `<APP_URL>/auth/apple/callback` on
+    the Services ID, keep the `.p8` key in Fly secrets (`APPLE_SIGNIN_PRIVATE_KEY`) and nowhere
+    in the repository, and revoke and replace it if it ever leaks. Anyone with an Apple ID can
+    then open turf checkout.
 
 See [PRIVACY.md](PRIVACY.md) for what the app collects and how long it keeps it, and
 [TERMS.md](TERMS.md) for the terms of use.

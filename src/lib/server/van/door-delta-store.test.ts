@@ -202,6 +202,20 @@ describe('stampDoorDeltas', () => {
 		expect(notices.rows[0]!.text).toContain('Sync');
 	});
 
+	it('keeps the nudge for an Apple holder rather than DMing', async () => {
+		await turf({ doorCount: 250 });
+		await completion({ claimDoorCount: 250, holder: 'apple:001.abc' });
+
+		const result = await stampDoorDeltas(db, { now: NOW, appUrl: 'https://app.example' });
+
+		expect(result).toMatchObject({ measured: 1, unsynced: 1, dmFailed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+		const notices = await client.execute('SELECT user_id, kind FROM turf_notices');
+		expect(notices.rows).toEqual([
+			expect.objectContaining({ user_id: 'apple:001.abc', kind: 'unsynced' }),
+		]);
+	});
+
 	it('keeps the stamp even when the nudge cannot be delivered', async () => {
 		// The measurement is what the organizer view reads; a deactivated account
 		// must not leave a completion permanently unchecked.

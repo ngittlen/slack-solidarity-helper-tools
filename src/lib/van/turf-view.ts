@@ -173,8 +173,8 @@ export interface TurfView {
 	status: VolunteerStatus;
 	/** Non-null only for admins. */
 	heldBy: string | null;
-	/** The account behind `heldBy` — the Slack or Google mark, and a Google
-	 *  holder's email. Admins only, like `heldBy`, and null too when the holder
+	/** The account behind `heldBy` — the Slack, Google or Apple mark, and a
+	 *  Google or Apple holder's email. Admins only, like `heldBy`, and null too when the holder
 	 *  is VAN's (an outside assignment names a person, not an account here). */
 	heldByAccount: HolderAccount | null;
 	/** Hours until the claim lapses — yours, or any claim if you're an admin. */

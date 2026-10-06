@@ -2,10 +2,11 @@ import { readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import { gateGoogleSession, GOOGLE_SESSION_ROUTES } from './google-access.js';
+import { gateTurfOnlySession, TURF_ONLY_ROUTES } from './turf-only-access.js';
 
 // SC-002 of specs/013-google-sso-login: every route outside turf checkout
-// refuses a Google session. Walks the real src/routes tree, so a route added
+// refuses a Google session — and, from specs/014-apple-sso-login, an Apple
+// one, through the same gate. Walks the real src/routes tree, so a route added
 // later is checked without anyone remembering to add it here.
 
 const ROUTES_DIR = fileURLToPath(new URL('../../routes', import.meta.url));
@@ -27,7 +28,7 @@ function urlFor(routeId: string, search = ''): URL {
 }
 
 function htmlGet(routeId: string) {
-	return gateGoogleSession({
+	return gateTurfOnlySession({
 		routeId,
 		isDataRequest: false,
 		isRemoteRequest: false,
@@ -38,7 +39,7 @@ function htmlGet(routeId: string) {
 }
 
 function jsonPost(routeId: string) {
-	return gateGoogleSession({
+	return gateTurfOnlySession({
 		routeId,
 		isDataRequest: false,
 		isRemoteRequest: false,
@@ -50,7 +51,7 @@ function jsonPost(routeId: string) {
 
 const ALL_ROUTES = routeIds();
 
-describe('the Google-session allow-list', () => {
+describe('the turf-only allow-list', () => {
 	it('finds the routes it is meant to be checking', () => {
 		// Guards the walk itself: an empty or wrong-rooted walk would pass
 		// every assertion below vacuously.
@@ -60,10 +61,11 @@ describe('the Google-session allow-list', () => {
 		expect(ALL_ROUTES.length).toBeGreaterThan(40);
 	});
 
-	// Widening this list publishes a route to anyone with a Google account.
+	// Widening this list publishes a route to anyone with a Google account or
+	// an Apple ID.
 	// Changing it should mean changing this test, on purpose.
 	it('is exactly the turf checkout, sign-in and public routes', () => {
-		expect([...GOOGLE_SESSION_ROUTES].sort()).toEqual(
+		expect([...TURF_ONLY_ROUTES].sort()).toEqual(
 			[
 				'/turfs',
 				'/api/turfs',
@@ -72,6 +74,8 @@ describe('the Google-session allow-list', () => {
 				'/auth/logout',
 				'/auth/google',
 				'/auth/google/callback',
+				'/auth/apple',
+				'/auth/apple/callback',
 				'/auth/slack',
 				'/auth/slack/callback',
 				'/policies',
@@ -84,19 +88,19 @@ describe('the Google-session allow-list', () => {
 	});
 
 	it('names only routes that exist', () => {
-		for (const id of GOOGLE_SESSION_ROUTES) expect(ALL_ROUTES, id).toContain(id);
+		for (const id of TURF_ONLY_ROUTES) expect(ALL_ROUTES, id).toContain(id);
 	});
 
 	it('allows every listed route, page or API', () => {
-		for (const id of GOOGLE_SESSION_ROUTES) {
+		for (const id of TURF_ONLY_ROUTES) {
 			expect(htmlGet(id), id).toEqual({ action: 'allow' });
 			expect(jsonPost(id), id).toEqual({ action: 'allow' });
 		}
 	});
 });
 
-describe('gateGoogleSession', () => {
-	const denied = ALL_ROUTES.filter((id) => !GOOGLE_SESSION_ROUTES.has(id));
+describe('gateTurfOnlySession', () => {
+	const denied = ALL_ROUTES.filter((id) => !TURF_ONLY_ROUTES.has(id));
 
 	it('denies every other route in the app', () => {
 		expect(denied.length).toBeGreaterThan(0);
@@ -121,7 +125,7 @@ describe('gateGoogleSession', () => {
 
 	it('sends a page request to /turfs, carrying where it was going', () => {
 		expect(
-			gateGoogleSession({
+			gateTurfOnlySession({
 				routeId: '/members',
 				isDataRequest: false,
 				isRemoteRequest: false,
@@ -134,7 +138,7 @@ describe('gateGoogleSession', () => {
 
 	it('redirects a client-side navigation (a data request) the same way', () => {
 		expect(
-			gateGoogleSession({
+			gateTurfOnlySession({
 				routeId: '/',
 				isDataRequest: true,
 				isRemoteRequest: false,
@@ -147,7 +151,7 @@ describe('gateGoogleSession', () => {
 
 	it('forbids a GET that does not want HTML — an API call, not a page', () => {
 		expect(
-			gateGoogleSession({
+			gateTurfOnlySession({
 				routeId: '/api/pending',
 				isDataRequest: false,
 				isRemoteRequest: false,
@@ -160,7 +164,7 @@ describe('gateGoogleSession', () => {
 
 	it('forbids a form post to a denied page', () => {
 		expect(
-			gateGoogleSession({
+			gateTurfOnlySession({
 				routeId: '/post-as-you',
 				isDataRequest: false,
 				isRemoteRequest: false,
@@ -173,7 +177,7 @@ describe('gateGoogleSession', () => {
 
 	it('refuses a remote function call, which matches no route', () => {
 		expect(
-			gateGoogleSession({
+			gateTurfOnlySession({
 				routeId: null,
 				isDataRequest: false,
 				isRemoteRequest: true,
@@ -186,7 +190,7 @@ describe('gateGoogleSession', () => {
 
 	it('refuses anything but a read to an unmatched route', () => {
 		expect(
-			gateGoogleSession({
+			gateTurfOnlySession({
 				routeId: null,
 				isDataRequest: false,
 				isRemoteRequest: false,
@@ -199,7 +203,7 @@ describe('gateGoogleSession', () => {
 
 	it('allows an unmatched route, so the 404 page renders', () => {
 		expect(
-			gateGoogleSession({
+			gateTurfOnlySession({
 				routeId: null,
 				isDataRequest: false,
 				isRemoteRequest: false,
@@ -213,7 +217,7 @@ describe('gateGoogleSession', () => {
 	it('carries a placeholder rather than an unsafe destination', () => {
 		const tooLong = `/settings?x=${'a'.repeat(600)}`;
 		expect(
-			gateGoogleSession({
+			gateTurfOnlySession({
 				routeId: '/settings',
 				isDataRequest: false,
 				isRemoteRequest: false,

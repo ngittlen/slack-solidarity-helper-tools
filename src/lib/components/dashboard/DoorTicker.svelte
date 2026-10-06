@@ -76,8 +76,8 @@
 	     the same information in a readable form. -->
 	{#snippet cells()}
 		<!-- Keyed by rank, not name: entries are per account, and two accounts
-		     can share a name — one person signed in with both Slack and Google,
-		     or two Google volunteers with the same profile name. A duplicate key
+		     can share a name — one person signed in with Slack and Google or
+		     Apple, or two outside volunteers with the same name. A duplicate key
 		     throws, even in production, and takes the dashboard down with it. -->
 		{#each entries as entry (entry.rank)}
 			<div class="cell" class:cell--lead={entry.rank === 1}>

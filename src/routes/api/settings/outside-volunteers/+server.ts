@@ -1,11 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
-import { clearGoogleVolunteers } from '$lib/server/google-volunteers.js';
+import { clearOutsideVolunteers } from '$lib/server/outside-volunteers.js';
 import { errMessage } from '$lib/err-message.js';
 
-// Clear every stored Google volunteer record — the end-of-campaign step
-// (specs/013-google-sso-login, FR-020a). Admin-only, and the one action here.
+// Clear every stored outside volunteer record, Google and Apple alike — the
+// end-of-campaign step (specs/013-google-sso-login FR-020a,
+// specs/014-apple-sso-login FR-020). Admin-only, and the one action here.
 //
 // Blocks and past claims are untouched: a block must outlive the record, and a
 // claim keeps the holder's display name on its own row. Volunteers who sign in
@@ -26,13 +27,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	try {
-		const cleared = await clearGoogleVolunteers(db);
+		const cleared = await clearOutsideVolunteers(db);
 		console.log(
-			`[google] ${locals.session.slackUserName} (${locals.session.slackUserId}) cleared ${cleared} Google volunteer record(s)`,
+			`[outside] ${locals.session.slackUserName} (${locals.session.slackUserId}) cleared ${cleared} outside volunteer record(s)`,
 		);
 		return json({ ok: true, cleared });
 	} catch (err) {
-		console.error('[google] clearing volunteer records failed:', errMessage(err));
+		console.error('[outside] clearing volunteer records failed:', errMessage(err));
 		return json({ error: 'Could not clear the records. Please try again.' }, { status: 500 });
 	}
 };

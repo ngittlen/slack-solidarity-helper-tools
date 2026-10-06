@@ -85,7 +85,7 @@ function renderRow(item: DriftItem, badges: CampaignBadges): string {
 	const badge = badges[item.campaignId];
 	const where = badge ? `${badge} · ${place}` : place;
 	const doors = `${item.doorCount.toLocaleString('en-US')} doors`;
-	// Escaped: a Google volunteer chooses their own name, and an unescaped
+	// Escaped: a Google or Apple volunteer chooses their own name, and an unescaped
 	// `<!channel>` or `<url|label>` in it would ping or link from the bot.
 	const who = `held by ${escapeMrkdwn(item.heldBy)}`;
 	// `canClaim` should have made this impossible, so it is an upstream fault

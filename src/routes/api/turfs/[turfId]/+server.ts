@@ -73,6 +73,16 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	}
 
 	if (action === 'claim') {
+		// An outside volunteer who has not given a name yet would stamp their
+		// claim with a blank one, and from there the turf channel and the
+		// sheets (specs/014-apple-sso-login, FR-011c). The page hides the
+		// button until they do; this is what makes that more than cosmetic.
+		if (session.needsName) {
+			return json(
+				{ error: 'Choose the name organizers will see before claiming turf.' },
+				{ status: 409 },
+			);
+		}
 		// The TTL and the per-volunteer cap come from /settings (Story 7.4). This
 		// is the enforcing side: the page greys out a turf it thinks is
 		// unclaimable, but `canClaim` inside claimTurf is what actually refuses,

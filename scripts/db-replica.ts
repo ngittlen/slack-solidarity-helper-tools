@@ -15,6 +15,15 @@
  *   - `sessions` and `slack_user_tokens` — logins and OAuth tokens. Sign in
  *     locally to get a session of your own.
  *   - `sync_locks` — a lock copied mid-run would stall the local sync.
+ *   - `outside_volunteers` (and the retired `google_volunteers`)
+ *     and `turf_notices` — the emails and messages of volunteers who signed
+ *     in with Google or Apple.
+ *
+ * What it changes on the way: every Google or Apple volunteer's id becomes a
+ * stand-in (`apple:replica-3`), their name becomes "Apple volunteer 3" on
+ * checkouts and blocks and wherever else it appears as a canvasser name, and
+ * the reason on their blocks is dropped. See replica-scrub.ts for exactly
+ * which columns, and what it cannot see.
  *
  * Safety:
  *   - The source is only ever read. Every statement sent to it is checked to
@@ -48,6 +57,8 @@
 
 import { existsSync, renameSync, rmSync } from 'node:fs';
 import { createClient, type InArgs, type InValue, type ResultSet } from '@libsql/client';
+import { OUTSIDE_VOLUNTEER_TABLES, OutsideIdScrubber } from './replica-scrub.js';
+import { insertRows } from './replica-insert.js';
 
 const args = process.argv.slice(2);
 function flag(name: string): string | undefined {
@@ -63,7 +74,15 @@ const OUT = flag('out') || 'local-replica.db';
 const rawChapters = flag('chapters');
 
 /** Tables whose rows are never copied. */
-const SKIPPED = new Set(['sessions', 'slack_user_tokens', 'sync_locks']);
+const SKIPPED = new Set([
+	'sessions',
+	'slack_user_tokens',
+	'sync_locks',
+	...OUTSIDE_VOLUNTEER_TABLES,
+]);
+
+/** One for the whole run, so a volunteer gets the same stand-in in every table. */
+const scrubber = new OutsideIdScrubber();
 
 const sourceUrl = process.env.REPLICA_SOURCE_URL ?? process.env.TURSO_DATABASE_URL ?? '';
 const sourceToken = process.env.REPLICA_SOURCE_AUTH_TOKEN ?? process.env.TURSO_AUTH_TOKEN;
@@ -176,30 +195,6 @@ async function listChapters(): Promise<void> {
 		);
 	}
 	console.log('\nThen: --chapters <id>,<id>\n');
-}
-
-/** Insert one page of rows into the destination, in one transaction. */
-async function insertRows(
-	local: ReturnType<typeof createClient>,
-	table: string,
-	columns: readonly string[],
-	rows: ResultSet['rows'],
-): Promise<void> {
-	const sql = `INSERT INTO ${quote(table)} (${columns.map(quote).join(', ')}) VALUES (${columns
-		.map(() => '?')
-		.join(', ')})`;
-	// One transaction per page: a commit per 200 rows was most of the run's
-	// time on a Windows-mounted disk, and left the source connection idle long
-	// enough for Turso to close it.
-	if (rows.length > 0) {
-		await local.batch(
-			rows.map((row) => ({
-				sql,
-				args: columns.map((c) => (row[c] ?? null) as InValue),
-			})),
-			'write',
-		);
-	}
 }
 
 /** Rows per request. A whole table, or every roster row of a few hundred turf,
@@ -328,6 +323,29 @@ async function main(): Promise<void> {
 	);
 }
 
+/** Where an outside volunteer's id sits beside their name: the sign-in
+ *  records (never copied themselves) and the turf rows that name holders. */
+const OUTSIDE_NAME_SOURCES: Array<{ table: string; id: string; name: string }> = [
+	{ table: 'outside_volunteers', id: 'user_id', name: 'display_name' },
+	{ table: 'google_volunteers', id: 'user_id', name: 'display_name' },
+	{ table: 'van_turf_checkouts', id: 'slack_user_id', name: 'slack_user_name' },
+	{ table: 'van_blocked_users', id: 'slack_user_id', name: 'display_name' },
+];
+
+async function learnOutsideNames(tables: readonly string[]): Promise<void> {
+	for (const source of OUTSIDE_NAME_SOURCES) {
+		if (!tables.includes(source.table)) continue;
+		const res = await read(
+			`select distinct ${quote(source.id)} as id, ${quote(source.name)} as name
+			 from ${quote(source.table)}
+			 where ${quote(source.id)} like 'google:%' or ${quote(source.id)} like 'apple:%'`,
+		);
+		for (const row of res.rows) {
+			scrubber.learn(String(row.id), row.name === null ? null : String(row.name));
+		}
+	}
+}
+
 /** Schema and rows, from the source into `local`. Throws rather than calling
  *  `fail`, so the caller can remove the partial file on the way out. */
 async function copyInto(
@@ -343,6 +361,11 @@ async function copyInto(
 	);
 	for (const row of schema.rows) await local.execute(String(row.sql));
 	const tables = schema.rows.filter((r) => r.type === 'table').map((r) => String(r.name));
+
+	// Every Google or Apple volunteer's real name, before any row is copied,
+	// so it can be replaced in the canvasser columns that carry no id — some
+	// of which are copied before the rows that tie the name to them.
+	await learnOutsideNames(tables);
 
 	// The chapters' turf: everything in the folders they are mapped to, which is
 	// how the app decides what a chapter sees. Joined on campaign too, once
@@ -403,10 +426,12 @@ async function copyInto(
 		}
 
 		let copied = 0;
+		let duplicates = 0;
 		const hashes: InValue[] = [];
 		const take = async (rows: ResultSet['rows']) => {
-			await insertRows(local, table, columns, rows);
-			copied += rows.length;
+			const skipped = await insertRows(local, table, columns, rows, scrubber);
+			copied += rows.length - skipped;
+			duplicates += skipped;
 			if (table === 'van_turf_roster' && columns.includes('person_hash')) {
 				for (const r of rows) hashes.push(r.person_hash as InValue);
 			}
@@ -418,11 +443,15 @@ async function copyInto(
 			throw new Error(`copying ${table} (${copied} row(s) in)`, { cause: err });
 		}
 		if (table === 'van_turf_roster') rosterHashes = distinct(hashes);
-		console.log(`  ${table.padEnd(34)} ${String(copied).padStart(7)}  ${how}`);
+		console.log(
+			`  ${table.padEnd(34)} ${String(copied).padStart(7)}  ${how}` +
+				(duplicates > 0 ? ` (${duplicates} skipped: two spellings of one stand-in)` : ''),
+		);
 		counts.push([table, copied, how]);
 	}
 	const count = (table: string) => counts.find(([t]) => t === table)?.[1] ?? 0;
 	console.log(`\n${count('__drizzle_migrations')} migration(s) recorded as applied.`);
+	console.log(`${scrubber.count} Google or Apple volunteer(s) replaced with stand-ins.`);
 	// Production always has its settings row and a migration history. Without
 	// them this is not production — most likely the URL points somewhere else.
 	if (count('app_config') === 0 || count('__drizzle_migrations') === 0) {

@@ -4,7 +4,7 @@ const mockSessionSet = vi.hoisted(() => vi.fn());
 const mockConfigured = vi.hoisted(() => ({ value: true }));
 const mockRecord = vi.hoisted(() => vi.fn());
 
-vi.mock('$lib/server/google-volunteers', () => ({ recordGoogleSignIn: mockRecord }));
+vi.mock('$lib/server/outside-volunteers', () => ({ recordOutsideSignIn: mockRecord }));
 
 vi.mock('$lib/server/db', () => ({
 	sessionStore: { set: mockSessionSet },
@@ -92,7 +92,8 @@ describe('GET /auth/google/callback', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockConfigured.value = true;
-		mockRecord.mockResolvedValue(undefined);
+		// Stores and returns the name it was offered, as on a first sign-in.
+		mockRecord.mockImplementation(async (_db, v: { displayName: string | null }) => v.displayName);
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 		vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -138,7 +139,9 @@ describe('GET /auth/google/callback', () => {
 		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
 		expect(mockRecord).toHaveBeenCalledWith(expect.anything(), {
 			userId: 'google:1093',
+			provider: 'google',
 			email: 'ana@example.com',
+			isPrivateEmail: false,
 			displayName: 'Ana Ruiz',
 		});
 	});
@@ -173,10 +176,24 @@ describe('GET /auth/google/callback', () => {
 		});
 	});
 
-	it('names a volunteer with no profile name neutrally, never by their email', async () => {
+	// specs/014-apple-sso-login FR-011: no placeholder on claims any more.
+	it('asks a volunteer with no profile name for one, never using their email', async () => {
 		mockTokenResponse({ id_token: idToken({ name: undefined }) });
 		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
-		expect(mockSessionSet.mock.calls[0]?.[1].slackUserName).toBe('Google volunteer');
+		const session = mockSessionSet.mock.calls[0]?.[1];
+		expect(session.needsName).toBe(true);
+		// Spec 013's placeholder, for older code that knows nothing of needsName.
+		expect(session.slackUserName).toBe('Google volunteer');
+		expect(mockRecord.mock.calls[0]?.[1].displayName).toBeNull();
+	});
+
+	it('uses the stored name when the profile has none', async () => {
+		mockRecord.mockResolvedValue('Ana');
+		mockTokenResponse({ id_token: idToken({ name: '' }) });
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
+		const session = mockSessionSet.mock.calls[0]?.[1];
+		expect(session.slackUserName).toBe('Ana');
+		expect(session.needsName).toBeUndefined();
 	});
 
 	it('never logs the email', async () => {
@@ -190,7 +207,7 @@ describe('GET /auth/google/callback', () => {
 	it('sends a Cancel back to the sign-in page', async () => {
 		await expect(GET(makeEvent({ googleError: 'access_denied' }) as never)).rejects.toMatchObject({
 			status: 302,
-			location: '/signin?cancelled=1',
+			location: '/signin?cancelled=google',
 		});
 		expect(mockSessionSet).not.toHaveBeenCalled();
 	});
@@ -199,7 +216,7 @@ describe('GET /auth/google/callback', () => {
 		await expect(
 			GET(makeEvent({ googleError: 'access_denied', redirectTo: '/members?user=U1' }) as never),
 		).rejects.toMatchObject({
-			location: '/signin?redirectTo=%2Fmembers%3Fuser%3DU1&cancelled=1',
+			location: '/signin?redirectTo=%2Fmembers%3Fuser%3DU1&cancelled=google',
 		});
 		// The cookie lost in a browser handoff: the signed state still knows.
 		await expect(
@@ -207,14 +224,14 @@ describe('GET /auth/google/callback', () => {
 				makeEvent({ googleError: 'access_denied', stateDestination: '/turfs?chapter=3' }) as never,
 			),
 		).rejects.toMatchObject({
-			location: '/signin?redirectTo=%2Fturfs%3Fchapter%3D3&cancelled=1',
+			location: '/signin?redirectTo=%2Fturfs%3Fchapter%3D3&cancelled=google',
 		});
 	});
 
 	it('drops an unsafe destination on the way back', async () => {
 		await expect(
 			GET(makeEvent({ googleError: 'access_denied', redirectTo: '//evil.example' }) as never),
-		).rejects.toMatchObject({ location: '/signin?cancelled=1' });
+		).rejects.toMatchObject({ location: '/signin?cancelled=google' });
 	});
 
 	it('refuses an unverified email with 403 and no session', async () => {

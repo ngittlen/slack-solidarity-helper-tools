@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// The wiring of the Google-session gate into `handle`. The rule itself is
-// tested route by route in $lib/server/google-access.test.ts; this checks the
+// The wiring of the turf-only gate into `handle`. The rule itself is
+// tested route by route in $lib/server/turf-only-access.test.ts; this checks the
 // part that file cannot see — that handle hands it the real request facts
 // (route id, data request, method, Accept) and acts on the answer before any
 // route runs.
@@ -24,6 +24,7 @@ const GOOGLE = {
 	isModerator: false,
 	authProvider: 'google',
 };
+const APPLE = { ...GOOGLE, slackUserId: 'apple:000123.abc', authProvider: 'apple' };
 const SLACK = { slackUserId: 'U1', slackUserName: 'Dana', isAdmin: false };
 
 function call(opts: {
@@ -61,7 +62,7 @@ function call(opts: {
 	return { result: handle({ event, resolve } as never), resolve };
 }
 
-describe('handle: the Google-session gate', () => {
+describe('handle: the turf-only gate', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
@@ -105,6 +106,18 @@ describe('handle: the Google-session gate', () => {
 		const { result, resolve } = call({ session: GOOGLE, routeId: '/turfs', path: '/turfs' });
 		expect((await result).status).toBe(200);
 		expect(resolve).toHaveBeenCalledTimes(1);
+	});
+
+	it('gates an Apple session exactly as it gates a Google one', async () => {
+		const away = call({ session: APPLE, routeId: '/settings', path: '/settings' });
+		await expect(away.result).rejects.toMatchObject({
+			status: 302,
+			location: '/turfs?needsSlack=%2Fsettings',
+		});
+		expect(away.resolve).not.toHaveBeenCalled();
+
+		const through = call({ session: APPLE, routeId: '/turfs', path: '/turfs' });
+		expect((await through.result).status).toBe(200);
 	});
 
 	it('leaves Slack sessions and signed-out visitors to the routes', async () => {

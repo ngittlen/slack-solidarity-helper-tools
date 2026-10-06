@@ -99,6 +99,16 @@ describe('resolvePostLoginRedirect', () => {
 		});
 	});
 
+	describe('for an Apple session', () => {
+		const apple = { isAdmin: false, authProvider: 'apple' as const };
+
+		it('is confined to /turfs exactly like a Google one', () => {
+			expect(resolvePostLoginRedirect('/turfs?chapter=12', apple)).toBe('/turfs?chapter=12');
+			expect(resolvePostLoginRedirect('/settings', { ...apple, isAdmin: true })).toBe('/turfs');
+			expect(resolvePostLoginRedirect(null, apple)).toBe('/turfs');
+		});
+	});
+
 	it('returns the requested admin page for an admin', () => {
 		expect(resolvePostLoginRedirect('/settings', { isAdmin: true })).toBe('/settings');
 		expect(resolvePostLoginRedirect('/members?user=U123', { isAdmin: true })).toBe(

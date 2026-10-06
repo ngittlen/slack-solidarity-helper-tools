@@ -339,27 +339,28 @@ describe('GET /auth/slack/callback', () => {
 		expect(mockSessionSet).not.toHaveBeenCalled();
 	});
 
-	// Signed by us, but for the Google round trip — fresh or expired, it is
-	// refused rather than exchanged or restarted as a Slack login.
-	it('rejects a Google sign-in state with 400 and never calls Slack', async () => {
-		const fetchMock = vi.fn();
-		vi.stubGlobal('fetch', fetchMock);
+	// Signed by us, but for the Google or Apple round trip — fresh or expired,
+	// it is refused rather than exchanged or restarted as a Slack login.
+	it.each(['google-login', 'apple-login'] as const)(
+		'rejects a %s state with 400 and never calls Slack',
+		async (purpose) => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal('fetch', fetchMock);
 
-		await expect(GET(makeEvent({ purpose: 'google-login' }) as never)).rejects.toMatchObject({
-			status: 400,
-		});
+			await expect(GET(makeEvent({ purpose }) as never)).rejects.toMatchObject({ status: 400 });
 
-		vi.useFakeTimers();
-		try {
-			const stale = makeEvent({ purpose: 'google-login' });
-			vi.advanceTimersByTime(STATE_TTL_MS + 1000);
-			await expect(GET(stale as never)).rejects.toMatchObject({ status: 400 });
-		} finally {
-			vi.useRealTimers();
-		}
-		expect(fetchMock).not.toHaveBeenCalled();
-		expect(mockSessionSet).not.toHaveBeenCalled();
-	});
+			vi.useFakeTimers();
+			try {
+				const stale = makeEvent({ purpose });
+				vi.advanceTimersByTime(STATE_TTL_MS + 1000);
+				await expect(GET(stale as never)).rejects.toMatchObject({ status: 400 });
+			} finally {
+				vi.useRealTimers();
+			}
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(mockSessionSet).not.toHaveBeenCalled();
+		},
+	);
 
 	it('rejects with 502 when Slack token exchange fails (preserved behavior)', async () => {
 		vi.stubGlobal(

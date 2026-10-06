@@ -142,6 +142,6 @@ export const TERMS_DOC: PolicyDoc = renderPolicy(termsMarkdown, 'terms');
 export const PRIVACY_DOC: PolicyDoc = renderPolicy(privacyMarkdown, 'privacy');
 export const SECURITY_DOC: PolicyDoc = renderPolicy(securityMarkdown, 'security');
 
-// Terms first: they are what signing in agrees to, and what Google's consent
-// screen links to (via /terms).
+// Terms first: they are what signing in agrees to, and what Google's and
+// Apple's consent screens link to (via /terms).
 export const POLICY_DOCS: PolicyDoc[] = [TERMS_DOC, PRIVACY_DOC, SECURITY_DOC];

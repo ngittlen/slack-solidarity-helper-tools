@@ -1196,17 +1196,18 @@ export const vanBlockedUsers = sqliteTable('van_blocked_users', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
-// Everyone who has signed in with Google (specs/013-google-sso-login, FR-020).
+// RETIRED — replaced by `outside_volunteers` below, which migration 0063
+// copied its rows into. Nothing in the app reads or writes it any more.
 //
-// The only place a Google volunteer's email is kept, and kept for one reason:
-// so an organizer can tell who is holding turf and block them if need be. Read
-// by admin views and the block-list editor, and by nothing else.
-//
-// Keyed by the holder id the rest of the app uses (`google:<sub>`, see
-// server/identity.ts), so it joins straight onto checkouts and blocks. Upserted
-// on every sign-in, so a changed email or name catches up. Cleared wholesale by
-// an admin at the end of a campaign (FR-020a); blocks and past claims survive
-// that, since they carry their own display name.
+// It is still declared so the next `db:generate` does not drop it. Dropping it
+// in the same release as 0063 would pull it out from under the previous
+// version while Fly's release command runs and the old machines still serve:
+// their Google sign-ins would fail to record, and a failed deploy would leave
+// them running against a missing table. Remove this declaration in a later
+// release, and have that migration first copy across any rows the old
+// machines wrote during the switchover — an INSERT OR IGNORE … SELECT shaped
+// like 0063's copy, with the IGNORE so rows 0063 already moved are skipped —
+// before the DROP.
 export const googleVolunteers = sqliteTable('google_volunteers', {
 	userId: text('user_id').primaryKey(),
 	email: text('email').notNull(),
@@ -1215,11 +1216,44 @@ export const googleVolunteers = sqliteTable('google_volunteers', {
 	lastSignedInAt: text('last_signed_in_at').notNull(),
 });
 
+// Everyone who has signed in outside Slack — with Google
+// (specs/013-google-sso-login, FR-020) or Apple (specs/014-apple-sso-login,
+// FR-019). Replaces `google_volunteers`, whose rows it took over.
+//
+// The only place an outside volunteer's email is kept, and kept for one
+// reason: so an organizer can tell who is holding turf and block them if need
+// be. Read by admin views and the block-list editor, and by nothing else.
+//
+// Keyed by the holder id the rest of the app uses (`google:<sub>` or
+// `apple:<sub>`, see server/identity.ts), so it joins straight onto checkouts
+// and blocks. Upserted on every sign-in, so a changed email catches up.
+// Cleared wholesale by an admin at the end of a campaign; blocks and past
+// claims survive that, since they carry their own display name.
+//
+// `display_name` is null while the volunteer has no usable name — Apple sends
+// one only on the first authorization, and a Google profile may have none.
+// /turfs asks for it then, and a typed name is set once and never changed
+// (FR-011b). A Google profile name, when there is one, still refreshes it on
+// every sign-in, as before.
+export const outsideVolunteers = sqliteTable('outside_volunteers', {
+	userId: text('user_id').primaryKey(),
+	/** 'google' | 'apple' — also readable from the id's prefix; stored so a
+	 *  count by provider is a plain GROUP BY. */
+	provider: text('provider').notNull(),
+	email: text('email').notNull(),
+	/** An Apple Hide My Email relay address: unique to this app, but mail from
+	 *  an organizer's own account will not reach it. Always false for Google. */
+	isPrivateEmail: integer('is_private_email', { mode: 'boolean' }).notNull().default(false),
+	displayName: text('display_name'),
+	firstSignedInAt: text('first_signed_in_at').notNull(),
+	lastSignedInAt: text('last_signed_in_at').notNull(),
+});
+
 // What a turf holder would have been DMed, kept for one who has no Slack.
 //
 // The expiry warning, the "did MiniVAN sync?" nudge and the re-cut messages
-// are Slack DMs. A Google volunteer (specs/013-google-sso-login, User Story 5)
-// cannot get those, so van/holder-notices.ts writes the same text here and
+// are Slack DMs. A Google or Apple volunteer (specs/013-google-sso-login, User
+// Story 5) cannot get those, so van/holder-notices.ts writes the same text here and
 // /turfs shows it until they dismiss it. Dismissing deletes the row, and rows
 // past NOTICE_MAX_AGE are dropped unread — a week-old warning about a claim
 // that has long since lapsed is noise, and some of these name a MiniVAN list
@@ -1228,7 +1262,7 @@ export const turfNotices = sqliteTable(
 	'turf_notices',
 	{
 		id: integer('id').primaryKey({ autoIncrement: true }),
-		/** The holder id — always `google:<sub>` today. */
+		/** The holder id — always `google:<sub>` or `apple:<sub>`. */
 		userId: text('user_id').notNull(),
 		/** Which message: 'expiry' | 'unsynced' | 'list-number' | 'walked-out' | 'recut'. */
 		kind: text('kind').notNull(),

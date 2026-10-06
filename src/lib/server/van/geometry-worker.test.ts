@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runGeometryQueue, MAX_ATTEMPTS } from './geometry-worker.js';
+import {
+	runGeometryQueue,
+	MAX_ATTEMPTS,
+	STALE_JOB_MS,
+	EXPIRED_LINK_GRACE_MS,
+} from './geometry-worker.js';
 import { VanError, type VanClient } from './client.js';
 import { vanGeometryQueue, vanTurfs } from '../schema.js';
 import type { VanExportJob } from './types.js';
@@ -298,6 +303,135 @@ describe('runGeometryQueue', () => {
 		const last = patchesFor(updates, vanGeometryQueue).at(-1)!;
 		expect(last.status).toBe('running');
 		expect(last.attempts).toBe(0);
+	});
+
+	// VAN keeps the job Completed but drops the link once it expires. Left
+	// "running", these were re-polled forever and starved the rest of the queue.
+	it('resubmits a completed job whose download link has expired', async () => {
+		const NOW = new Date('2026-10-05T06:00:00.000Z');
+		const requestedAt = new Date(NOW.getTime() - EXPIRED_LINK_GRACE_MS).toISOString();
+		const { db, updates } = makeDb(
+			[pendingRow({ exportJobId: 901, requestedAt })],
+			[{ turfId: 100, routeSize: 76 }],
+		);
+		const exportJob = vi.fn(async () => job({ exportJobId: 901, downloadUrl: null }));
+		const result = await runGeometryQueue(db, makeClient({ exportJob }), {
+			...OPTIONS,
+			now: NOW,
+			fetchFn: okCsv(),
+		});
+
+		expect(exportJob).toHaveBeenCalledTimes(1);
+		expect(result.stillRunning).toBe(0);
+		expect(result.retried).toBe(1);
+		const last = patchesFor(updates, vanGeometryQueue).at(-1)!;
+		expect(last.status).toBe('pending');
+		expect(last.exportJobId).toBeNull();
+		expect(last.lastError).toMatch(/expired/);
+	});
+
+	// VAN may say Completed a moment before the link is filled in. A job just
+	// submitted must wait for it, not fail as expired.
+	it('waits for the link on a just-submitted job that already reads Completed', async () => {
+		const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
+		const exportJob = vi
+			.fn<VanClient['exportJob']>()
+			.mockResolvedValueOnce(job({ downloadUrl: null }))
+			.mockResolvedValue(job());
+		const result = await runGeometryQueue(
+			db,
+			makeClient({ createExportJob: async () => job({ downloadUrl: null }), exportJob }),
+			{ ...OPTIONS, fetchFn: okCsv() },
+		);
+
+		expect(exportJob).toHaveBeenCalledTimes(2);
+		expect(result.retried).toBe(0);
+		expect(result.hullsStored).toBe(1);
+	});
+
+	it('leaves a just-submitted Completed job resumable if its link never shows', async () => {
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
+		const noLink = job({ downloadUrl: null });
+		const result = await runGeometryQueue(
+			db,
+			makeClient({ createExportJob: async () => noLink, exportJob: async () => noLink }),
+			{ ...OPTIONS, fetchFn: okCsv() },
+		);
+
+		expect(result.retried).toBe(0);
+		expect(result.stillRunning).toBe(1);
+		const last = patchesFor(updates, vanGeometryQueue).at(-1)!;
+		expect(last.status).toBe('running');
+		expect(last.attempts).toBe(0);
+	});
+
+	it('gives a resumed Completed job without a link the grace period', async () => {
+		const NOW = new Date('2026-10-05T06:00:00.000Z');
+		const requestedAt = new Date(NOW.getTime() - EXPIRED_LINK_GRACE_MS + 1000).toISOString();
+		const { db } = makeDb(
+			[pendingRow({ exportJobId: 901, requestedAt })],
+			[{ turfId: 100, routeSize: 76 }],
+		);
+		const result = await runGeometryQueue(
+			db,
+			makeClient({ exportJob: async () => job({ exportJobId: 901, downloadUrl: null }) }),
+			{ ...OPTIONS, now: NOW, fetchFn: okCsv() },
+		);
+
+		expect(result.retried).toBe(0);
+		expect(result.stillRunning).toBe(1);
+	});
+
+	// Resumed rows sort ahead of all fresh work, so polling them is what let a
+	// few slow jobs eat every run's budget.
+	it('checks a resumed job once rather than polling it', async () => {
+		const NOW = new Date('2026-10-05T06:00:00.000Z');
+		const requestedAt = new Date(NOW.getTime() - 10 * 60 * 1000).toISOString();
+		const { db, updates } = makeDb(
+			[pendingRow({ exportJobId: 901, requestedAt })],
+			[{ turfId: 100, routeSize: 76 }],
+		);
+		const exportJob = vi.fn(async () =>
+			job({ exportJobId: 901, status: 'Pending', downloadUrl: null }),
+		);
+		const sleep = vi.fn(async () => undefined);
+		const result = await runGeometryQueue(db, makeClient({ exportJob }), {
+			...OPTIONS,
+			now: NOW,
+			sleep,
+			fetchFn: okCsv(),
+		});
+
+		expect(exportJob).toHaveBeenCalledTimes(1);
+		expect(sleep).not.toHaveBeenCalled();
+		expect(result.stillRunning).toBe(1);
+		const patches = patchesFor(updates, vanGeometryQueue);
+		// A resume keeps the submission time, or the job could never age out.
+		expect(patches.some((p) => 'requestedAt' in p)).toBe(false);
+		expect(patches.at(-1)!.attempts).toBe(0);
+	});
+
+	it('resubmits a resumed job still pending past STALE_JOB_MS', async () => {
+		const NOW = new Date('2026-10-05T06:00:00.000Z');
+		const requestedAt = new Date(NOW.getTime() - STALE_JOB_MS).toISOString();
+		const { db, updates } = makeDb(
+			[pendingRow({ exportJobId: 901, requestedAt })],
+			[{ turfId: 100, routeSize: 76 }],
+		);
+		const result = await runGeometryQueue(
+			db,
+			makeClient({
+				exportJob: async () => job({ exportJobId: 901, status: 'Pending', downloadUrl: null }),
+			}),
+			{ ...OPTIONS, now: NOW, fetchFn: okCsv() },
+		);
+
+		expect(result.stillRunning).toBe(0);
+		expect(result.retried).toBe(1);
+		const last = patchesFor(updates, vanGeometryQueue).at(-1)!;
+		expect(last.status).toBe('pending');
+		expect(last.exportJobId).toBeNull();
+		expect(last.lastError).toMatch(/60 min after it was submitted/);
 	});
 
 	it('stores a centroid but no hull when the points are degenerate', async () => {

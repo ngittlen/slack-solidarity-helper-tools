@@ -2,24 +2,20 @@ import { error, redirect, type Cookies } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
 	OAUTH_REDIRECT_COOKIE,
-	resolvePostLoginRedirect,
 	sanitizeRedirectTarget,
 	withRedirectTo,
 } from '$lib/server/post-login-redirect.js';
 import { verifyState } from '$lib/server/oauth-state.js';
 import {
 	exchangeGoogleCode,
-	googleDisplayName,
 	readIdTokenClaims,
 	GOOGLE_PKCE_COOKIE,
 	GOOGLE_STATE_COOKIE,
 } from '$lib/server/google-signin.js';
 import { googleUserId } from '$lib/server/identity.js';
 import { googleSignInConfigured } from '$lib/server/env.js';
-import { startSession } from '$lib/server/session.js';
 import { db } from '$lib/server/db.js';
-import { recordGoogleSignIn } from '$lib/server/google-volunteers.js';
-import { errMessage } from '$lib/err-message.js';
+import { finishOutsideSignIn } from '$lib/server/outside-signin.js';
 import { logText } from '$lib/server/log-text.js';
 
 // Sign in with Google: the callback. Shaped like the Slack one on purpose —
@@ -49,7 +45,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		);
 		clearFlowCookies(cookies);
 		const back = withRedirectTo('/signin', destination);
-		redirect(302, `${back}${back.includes('?') ? '&' : '?'}cancelled=1`);
+		redirect(302, `${back}${back.includes('?') ? '&' : '?'}cancelled=google`);
 	}
 
 	const code = url.searchParams.get('code');
@@ -63,7 +59,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 			error(400, 'Invalid OAuth state.');
 		}
 		if (verdict.reason === 'expired' && verdict.purpose !== 'google-login') {
-			console.warn('[auth] Slack OAuth state arrived at the Google callback');
+			console.warn('[auth] another sign-in’s OAuth state arrived at the Google callback');
 			error(400, 'Invalid OAuth state.');
 		}
 		console.warn(`[auth] restarting Google sign-in: OAuth state ${verdict.reason}`);
@@ -71,9 +67,9 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 	const state = verdict.state;
 
-	// Signed by us, but for a Slack round trip.
+	// Signed by us, but for a Slack or Apple round trip.
 	if (state.purpose !== 'google-login') {
-		console.warn('[auth] Slack OAuth state arrived at the Google callback');
+		console.warn('[auth] another sign-in’s OAuth state arrived at the Google callback');
 		error(400, 'Invalid OAuth state.');
 	}
 
@@ -118,37 +114,20 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 
 	const { identity } = claims;
-	const userId = googleUserId(identity.sub);
-	const userName = googleDisplayName(identity);
-
-	// What lets an organizer see who this is and block them if need be
-	// (FR-020). Not allowed to cost the volunteer their sign-in: a failed write
-	// means admins see no email for them until their next sign-in, which is a
-	// smaller problem than a turf map nobody can get into.
-	try {
-		await recordGoogleSignIn(db, {
-			userId,
-			email: identity.email,
-			displayName: userName,
-		});
-	} catch (err) {
-		console.error('[auth] could not record the Google sign-in:', errMessage(err));
-	}
-
-	await startSession(cookies, {
-		slackUserId: userId,
-		slackUserName: userName,
-		isAdmin: false,
-		isModerator: false,
-		authProvider: 'google',
-	});
-
-	// No email in the log: it is the one thing here that identifies a person
-	// outside this app, and the id is enough to find the session.
-	console.log(`[auth] login (google): ${userName} (${userId})`);
 	redirect(
 		302,
-		resolvePostLoginRedirect(requestedPath, { isAdmin: false, authProvider: 'google' }),
+		await finishOutsideSignIn(
+			db,
+			cookies,
+			{
+				provider: 'google',
+				userId: googleUserId(identity.sub),
+				email: identity.email,
+				isPrivateEmail: false,
+				rawName: identity.name,
+			},
+			requestedPath,
+		),
 	);
 };
 

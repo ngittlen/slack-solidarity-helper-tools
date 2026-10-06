@@ -2,6 +2,7 @@
 // Uses $env/dynamic/private so Vite's .env/.env.local loading works in dev.
 // Call validateEnv() from hooks.server.ts init() — never at module level.
 
+import { createPrivateKey } from 'node:crypto';
 import { env } from '$env/dynamic/private';
 import { parseEncryptionKey } from './token-crypto.js';
 import {
@@ -234,6 +235,65 @@ export function googleSignInConfigured(): boolean {
 	return GOOGLE_OAUTH_CLIENT_ID !== '' && GOOGLE_OAUTH_CLIENT_SECRET !== '';
 }
 
+// Sign in with Apple, the same turf-checkout-only way in for volunteers whose
+// account is an Apple ID (see server/apple-signin.ts and
+// specs/014-apple-sso-login/spec.md). All four come from an Apple Developer
+// account: the Services ID is the OAuth client id, and the Team ID, Key ID
+// and `.p8` private key sign the short-lived client secret Apple wants on
+// every token exchange — minted per request, so nothing here ever expires.
+// Optional: with any of them unset the Apple option is hidden everywhere.
+export const APPLE_SIGNIN_SERVICES_ID = get('APPLE_SIGNIN_SERVICES_ID');
+export const APPLE_SIGNIN_TEAM_ID = get('APPLE_SIGNIN_TEAM_ID');
+export const APPLE_SIGNIN_KEY_ID = get('APPLE_SIGNIN_KEY_ID');
+/** The `.p8` file's PEM. A secret set on one line with literal `\n`s is put
+ *  back on its lines, so either way of pasting it works. */
+export const APPLE_SIGNIN_PRIVATE_KEY = get('APPLE_SIGNIN_PRIVATE_KEY').replace(/\\n/g, '\n');
+export const APPLE_REDIRECT_URI = `${APP_URL}/auth/apple/callback`;
+
+/**
+ * Why the Apple private key cannot sign, or null when it can. Only a P-256 EC
+ * key signs ES256, which is what Apple's `.p8` holds. Checked once: a pasted
+ * secret with a mangled header or newlines would otherwise show the Apple
+ * button and fail every sign-in with a bare "Sign-in failed".
+ */
+export function applePrivateKeyProblem(pem: string): string | null {
+	try {
+		const key = createPrivateKey(pem);
+		if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') {
+			return 'it is not a P-256 EC key (the .p8 file from Apple)';
+		}
+		return null;
+	} catch {
+		return 'it does not parse as a PEM private key — check the BEGIN/END lines and newlines';
+	}
+}
+
+let appleKeyChecked: boolean | undefined;
+
+/**
+ * True when every part of the Apple sign-in configuration is set and the key
+ * can sign. A key that cannot is reported once, without its value, and Apple
+ * sign-in stays hidden as if unconfigured.
+ */
+export function appleSignInConfigured(): boolean {
+	if (
+		APPLE_SIGNIN_SERVICES_ID === '' ||
+		APPLE_SIGNIN_TEAM_ID === '' ||
+		APPLE_SIGNIN_KEY_ID === '' ||
+		APPLE_SIGNIN_PRIVATE_KEY === ''
+	) {
+		return false;
+	}
+	if (appleKeyChecked === undefined) {
+		const problem = applePrivateKeyProblem(APPLE_SIGNIN_PRIVATE_KEY);
+		if (problem) {
+			console.error(`[env] APPLE_SIGNIN_PRIVATE_KEY is set but ${problem}; Apple sign-in is off.`);
+		}
+		appleKeyChecked = problem === null;
+	}
+	return appleKeyChecked;
+}
+
 // Basemap tiles for the turf map. Defaults to CARTO's keyless Positron
 // endpoint, which is what the demo has always used.
 //
@@ -323,4 +383,6 @@ export function validateEnv(): void {
 	const van = vanCampaignCredentials();
 	for (const error of van.errors.values()) console.warn(`[env] ${error}`);
 	for (const warning of van.warnings) console.warn(`[env] ${warning}`);
+	// Logs a bad Apple key at boot rather than on the first sign-in page view.
+	appleSignInConfigured();
 }

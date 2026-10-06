@@ -21,8 +21,9 @@ describe('sendDm', () => {
 	// A Google sign-in holds turf under a `google:` id. There is nobody in Slack
 	// to message, and reporting a failure would have the turf sweeps retry it
 	// every tick.
-	it('reports a Google holder as delivered without calling Slack', async () => {
+	it('reports a Google or Apple holder as delivered without calling Slack', async () => {
 		expect(await sendDm('google:1093', 'hello', '[test]')).toBe(true);
+		expect(await sendDm('apple:001.abc', 'hello', '[test]')).toBe(true);
 		expect(mockOpen).not.toHaveBeenCalled();
 		expect(mockPostMessage).not.toHaveBeenCalled();
 	});

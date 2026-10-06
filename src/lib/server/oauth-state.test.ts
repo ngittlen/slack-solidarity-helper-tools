@@ -42,6 +42,10 @@ describe('oauth state', () => {
 			signState({ destination: null, isRetry: false, purpose: 'google-login' }).state,
 		);
 		expect(google.ok && google.state.purpose).toBe('google-login');
+		const apple = verifyState(
+			signState({ destination: null, isRetry: false, purpose: 'apple-login' }).state,
+		);
+		expect(apple.ok && apple.state.purpose).toBe('apple-login');
 	});
 
 	it('reads a state minted before the purpose existed as a login', () => {

@@ -252,7 +252,7 @@ async function runHousekeeping(now: Date): Promise<Housekeeping> {
 		// TTL, so nobody is warned about turf that expired moments ago.
 		const warnings = await sendExpiryWarnings(db, now);
 
-		// Turf messages kept for Google holders last a week at most, read or
+		// Turf messages kept for Google and Apple holders last a week at most, read or
 		// not (see holder-notices.ts). Bookkeeping, so never fails the sync.
 		try {
 			const pruned = await pruneHolderNotices(db, now);

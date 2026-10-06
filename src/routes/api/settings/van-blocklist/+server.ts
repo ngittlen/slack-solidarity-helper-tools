@@ -4,8 +4,8 @@ import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedUsers, type Editor } from '$lib/server/settings.js';
-import { isGoogleUserId } from '$lib/server/identity.js';
-import { googleBlockTargetName } from '$lib/server/google-volunteers.js';
+import { isOutsideUserId, providerOf } from '$lib/server/identity.js';
+import { outsideBlockTargetName } from '$lib/server/outside-volunteers.js';
 import { validateSlackUser } from '$lib/server/settings-validation.js';
 import { blockFromTurfCheckout, unblockFromTurfCheckout } from '$lib/server/van/blocklist.js';
 import { canBlock } from '$lib/van/access.js';
@@ -18,8 +18,9 @@ import { sendDm } from '$lib/server/slack-dm.js';
 import { errMessage } from '$lib/err-message.js';
 import { escapeMrkdwn } from '$lib/slack-mrkdwn.js';
 
-// Block / unblock one person from turf checkout: a Slack user, or a Google
-// volunteer (`google:<sub>`, see server/identity.ts) who has signed in.
+// Block / unblock one person from turf checkout: a Slack user, or a Google or
+// Apple volunteer (`google:<sub>` / `apple:<sub>`, see server/identity.ts) who
+// has signed in.
 //
 // `block` is not a simple insert: it also releases any turf the person is
 // holding and ends their sessions, so the block takes effect on their next
@@ -66,13 +67,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		name: locals.session.slackUserName ?? locals.session.slackUserId,
 	};
 
-	const isGoogle = isGoogleUserId(userId);
+	const isOutside = isOutsideUserId(userId);
 
 	if (action === 'unblock') {
-		// Named from the block row, which outlives the Google record: an admin
+		// Named from the block row, which outlives the stored record: an admin
 		// may have cleared those at the end of a campaign.
-		const targetLabel = isGoogle
-			? googleLabel(
+		const targetLabel = isOutside
+			? outsideLabel(
+					userId,
 					(await loadVanBlockedUsers(db)).find((u) => u.slackUserId === userId)?.displayName ??
 						null,
 				)
@@ -94,17 +96,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return json({ error: decision.message }, { status: 400 });
 	}
 
-	// A Google volunteer is checked against the record of who has signed in,
-	// not against Slack, which has never heard of them. Only someone who has
+	// A Google or Apple volunteer is checked against the record of who has
+	// signed in, not against Slack, which has never heard of them. Only someone who has
 	// signed in can be picked, and only someone who has can hold turf.
 	let displayName: string;
-	if (isGoogle) {
+	if (isOutside) {
 		// Their stored record, or — if it was cleared or never written — the
 		// name on their newest claim. Someone with neither has never signed
 		// in, so there is nobody to block.
-		const name = await googleBlockTargetName(db, userId);
+		const name = await outsideBlockTargetName(db, userId);
 		if (name === null) {
-			return json({ error: 'No Google volunteer with that id has signed in.' }, { status: 400 });
+			return json({ error: 'No volunteer with that id has signed in.' }, { status: 400 });
 		}
 		displayName = name;
 	} else {
@@ -129,8 +131,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	void announce(
 		renderBlockNotice({
 			targetSlackUserId: userId,
-			targetLabel: isGoogle ? googleLabel(displayName) : undefined,
-			reachableByDm: !isGoogle,
+			targetLabel: isOutside ? outsideLabel(userId, displayName) : undefined,
+			reachableByDm: !isOutside,
 			actorSlackUserId: editor.id,
 			reason: reason ?? '',
 			releasedTurfNames: turfNames,
@@ -150,15 +152,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 };
 
 /**
- * How the admin channel names a Google volunteer, who has no Slack account to
- * mention. Name only — the email stays on /settings and the turf pages rather
- * than being copied into Slack history.
+ * How the admin channel names a Google or Apple volunteer, who has no Slack
+ * account to mention. Name only — the email stays on /settings and the turf
+ * pages rather than being copied into Slack history.
  */
-function googleLabel(displayName: string | null): string {
-	// Escaped: the name is whatever the volunteer set on their Google profile.
+function outsideLabel(userId: string, displayName: string | null): string {
+	const via = providerOf(userId) === 'apple' ? 'Apple' : 'Google';
+	// Escaped: the name is whatever the volunteer chose, on their profile or
+	// on /turfs.
 	return displayName
-		? `*${escapeMrkdwn(displayName)}* (signed in with Google)`
-		: 'A Google volunteer';
+		? `*${escapeMrkdwn(displayName)}* (signed in with ${via})`
+		: `A ${via} volunteer`;
 }
 
 /**
