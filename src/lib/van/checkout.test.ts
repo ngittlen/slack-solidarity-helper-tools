@@ -5,14 +5,17 @@ import {
 	canClaim,
 	DEFAULT_CLAIM_TTL_HOURS,
 	DEFAULT_MAX_CONCURRENT_CLAIMS,
+	DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 	expiryFor,
 	hoursRemaining,
 	isActive,
 	lapsedClaims,
 	MAX_CLAIM_TTL_HOURS,
 	MAX_CONCURRENT_CLAIMS,
+	MAX_VAN_ASSIGNMENT_TTL_HOURS,
 	MIN_CLAIM_TTL_HOURS,
 	MIN_CONCURRENT_CLAIMS,
+	MIN_VAN_ASSIGNMENT_TTL_HOURS,
 	resolveClaimOptions,
 	turfStatus,
 	type ClaimSnapshot,
@@ -22,16 +25,17 @@ import {
 const NOW = new Date('2026-08-16T12:00:00.000Z');
 
 const turf = (over: Partial<TurfSnapshot> = {}): TurfSnapshot => ({
-	mapRouteId: 4101,
+	turfId: 4101,
 	printedListNumber: '35536742-78261',
 	retiredAt: null,
 	vanDistributedTo: null,
 	doorCount: 91,
+	reportedPercent: null,
 	...over,
 });
 
 const claim = (over: Partial<ClaimSnapshot> = {}): ClaimSnapshot => ({
-	mapRouteId: 4101,
+	turfId: 4101,
 	slackUserId: 'U_ALICE',
 	slackUserName: 'Alice',
 	claimedAt: '2026-08-16T09:00:00.000Z',
@@ -60,7 +64,7 @@ describe('isActive', () => {
 
 describe('activeClaimFor', () => {
 	it('finds the holder of one turf and ignores other turf', () => {
-		const claims = [claim(), claim({ mapRouteId: 4102, slackUserId: 'U_BOB' })];
+		const claims = [claim(), claim({ turfId: 4102, slackUserId: 'U_BOB' })];
 		expect(activeClaimFor(4101, claims, NOW)?.slackUserId).toBe('U_ALICE');
 		expect(activeClaimFor(4102, claims, NOW)?.slackUserId).toBe('U_BOB');
 	});
@@ -160,8 +164,8 @@ describe('canClaim', () => {
 
 	it('enforces the per-volunteer claim cap', () => {
 		const held = [
-			claim({ mapRouteId: 4200, slackUserId: 'U_BOB' }),
-			claim({ mapRouteId: 4201, slackUserId: 'U_BOB' }),
+			claim({ turfId: 4200, slackUserId: 'U_BOB' }),
+			claim({ turfId: 4201, slackUserId: 'U_BOB' }),
 		];
 		expect(canClaim(turf(), held, 'U_BOB', NOW)).toMatchObject({
 			ok: false,
@@ -171,14 +175,14 @@ describe('canClaim', () => {
 
 	it('does not count finished claims toward the cap', () => {
 		const held = [
-			claim({ mapRouteId: 4200, slackUserId: 'U_BOB', completedAt: '2026-08-16T10:00:00.000Z' }),
-			claim({ mapRouteId: 4201, slackUserId: 'U_BOB', releasedAt: '2026-08-16T10:00:00.000Z' }),
+			claim({ turfId: 4200, slackUserId: 'U_BOB', completedAt: '2026-08-16T10:00:00.000Z' }),
+			claim({ turfId: 4201, slackUserId: 'U_BOB', releasedAt: '2026-08-16T10:00:00.000Z' }),
 		];
 		expect(canClaim(turf(), held, 'U_BOB', NOW).ok).toBe(true);
 	});
 
 	it('honours a configured cap and TTL', () => {
-		const held = [claim({ mapRouteId: 4200, slackUserId: 'U_BOB' })];
+		const held = [claim({ turfId: 4200, slackUserId: 'U_BOB' })];
 		expect(canClaim(turf(), held, 'U_BOB', NOW, { maxConcurrentClaims: 1 })).toMatchObject({
 			ok: false,
 			reason: 'at-claim-limit',
@@ -192,8 +196,8 @@ describe('canClaim', () => {
 	// should be told why the TURF is unavailable, not blamed for their cap.
 	it('reports the turf problem before the claim limit', () => {
 		const held = [
-			claim({ mapRouteId: 4200, slackUserId: 'U_BOB' }),
-			claim({ mapRouteId: 4201, slackUserId: 'U_BOB' }),
+			claim({ turfId: 4200, slackUserId: 'U_BOB' }),
+			claim({ turfId: 4201, slackUserId: 'U_BOB' }),
 		];
 		expect(
 			canClaim(turf({ retiredAt: '2026-08-15T00:00:00.000Z' }), held, 'U_BOB', NOW),
@@ -220,20 +224,20 @@ describe('canClaim', () => {
 describe('activeClaimsFor / lapsedClaims / hoursRemaining', () => {
 	it('counts only a person’s live claims', () => {
 		const claims = [
-			claim({ slackUserId: 'U_BOB', mapRouteId: 1 }),
-			claim({ slackUserId: 'U_BOB', mapRouteId: 2, releasedAt: '2026-08-16T10:00:00.000Z' }),
-			claim({ slackUserId: 'U_ALICE', mapRouteId: 3 }),
+			claim({ slackUserId: 'U_BOB', turfId: 1 }),
+			claim({ slackUserId: 'U_BOB', turfId: 2, releasedAt: '2026-08-16T10:00:00.000Z' }),
+			claim({ slackUserId: 'U_ALICE', turfId: 3 }),
 		];
 		expect(activeClaimsFor('U_BOB', claims, NOW)).toHaveLength(1);
 	});
 
 	it('finds claims needing a release stamp', () => {
 		const claims = [
-			claim({ mapRouteId: 1, expiresAt: '2026-08-16T11:00:00.000Z' }),
-			claim({ mapRouteId: 2 }),
-			claim({ mapRouteId: 3, expiresAt: '2026-08-16T11:00:00.000Z', releasedAt: 'done' }),
+			claim({ turfId: 1, expiresAt: '2026-08-16T11:00:00.000Z' }),
+			claim({ turfId: 2 }),
+			claim({ turfId: 3, expiresAt: '2026-08-16T11:00:00.000Z', releasedAt: 'done' }),
 		];
-		expect(lapsedClaims(claims, NOW).map((c) => c.mapRouteId)).toEqual([1]);
+		expect(lapsedClaims(claims, NOW).map((c) => c.turfId)).toEqual([1]);
 	});
 
 	it('rounds remaining hours up and floors at zero', () => {
@@ -256,6 +260,7 @@ describe('resolveClaimOptions', () => {
 		expect(resolveClaimOptions()).toEqual({
 			ttlHours: DEFAULT_CLAIM_TTL_HOURS,
 			maxConcurrentClaims: DEFAULT_MAX_CONCURRENT_CLAIMS,
+			vanAssignmentTtlHours: DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 		});
 	});
 
@@ -263,16 +268,26 @@ describe('resolveClaimOptions', () => {
 		['null', null],
 		['undefined', undefined],
 	])('falls back for a %s column', (_label, value) => {
-		expect(resolveClaimOptions({ ttlHours: value, maxConcurrentClaims: value })).toEqual({
+		expect(
+			resolveClaimOptions({
+				ttlHours: value,
+				maxConcurrentClaims: value,
+				vanAssignmentTtlHours: value,
+			}),
+		).toEqual({
 			ttlHours: DEFAULT_CLAIM_TTL_HOURS,
 			maxConcurrentClaims: DEFAULT_MAX_CONCURRENT_CLAIMS,
+			vanAssignmentTtlHours: DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 		});
 	});
 
 	it('passes configured values through', () => {
-		expect(resolveClaimOptions({ ttlHours: 24, maxConcurrentClaims: 5 })).toEqual({
+		expect(
+			resolveClaimOptions({ ttlHours: 24, maxConcurrentClaims: 5, vanAssignmentTtlHours: 72 }),
+		).toEqual({
 			ttlHours: 24,
 			maxConcurrentClaims: 5,
+			vanAssignmentTtlHours: 72,
 		});
 	});
 
@@ -299,7 +314,21 @@ describe('resolveClaimOptions', () => {
 			MIN_CONCURRENT_CLAIMS,
 		],
 	])('clamps a value %s', (_label, config, ttl, cap) => {
-		expect(resolveClaimOptions(config)).toEqual({ ttlHours: ttl, maxConcurrentClaims: cap });
+		expect(resolveClaimOptions(config)).toMatchObject({ ttlHours: ttl, maxConcurrentClaims: cap });
+	});
+
+	it.each([
+		// Below zero reads as "never" — the conservative side.
+		['below the floor', -5, MIN_VAN_ASSIGNMENT_TTL_HOURS],
+		['above the ceiling', 10_000, MAX_VAN_ASSIGNMENT_TTL_HOURS],
+	])('clamps a VAN hand-out TTL %s', (_label, value, expected) => {
+		expect(resolveClaimOptions({ vanAssignmentTtlHours: value }).vanAssignmentTtlHours).toBe(
+			expected,
+		);
+	});
+
+	it('keeps a VAN hand-out TTL of 0, which means never', () => {
+		expect(resolveClaimOptions({ vanAssignmentTtlHours: 0 }).vanAssignmentTtlHours).toBe(0);
 	});
 
 	it.each([
@@ -316,14 +345,16 @@ describe('resolveClaimOptions', () => {
 		expect(DEFAULT_CLAIM_TTL_HOURS).toBeLessThanOrEqual(MAX_CLAIM_TTL_HOURS);
 		expect(DEFAULT_MAX_CONCURRENT_CLAIMS).toBeGreaterThanOrEqual(MIN_CONCURRENT_CLAIMS);
 		expect(DEFAULT_MAX_CONCURRENT_CLAIMS).toBeLessThanOrEqual(MAX_CONCURRENT_CLAIMS);
+		expect(DEFAULT_VAN_ASSIGNMENT_TTL_HOURS).toBeGreaterThanOrEqual(MIN_VAN_ASSIGNMENT_TTL_HOURS);
+		expect(DEFAULT_VAN_ASSIGNMENT_TTL_HOURS).toBeLessThanOrEqual(MAX_VAN_ASSIGNMENT_TTL_HOURS);
 	});
 
 	// What the settings are actually for: the resolved numbers have to change
 	// what canClaim decides, not just travel alongside it.
 	it('feeds a cap that canClaim then enforces', () => {
 		const now = new Date('2026-08-30T12:00:00.000Z');
-		const held = (mapRouteId: number) => ({
-			mapRouteId,
+		const held = (turfId: number) => ({
+			turfId,
 			slackUserId: 'U_VOL',
 			slackUserName: 'Dana',
 			claimedAt: '2026-08-30T09:00:00.000Z',
@@ -332,11 +363,12 @@ describe('resolveClaimOptions', () => {
 			completedAt: null,
 		});
 		const turf = {
-			mapRouteId: 900,
+			turfId: 900,
 			printedListNumber: '123-456',
 			retiredAt: null,
 			vanDistributedTo: null,
 			doorCount: 100,
+			reportedPercent: null,
 		};
 		const claims = [held(1), held(2)];
 
@@ -352,5 +384,39 @@ describe('resolveClaimOptions', () => {
 		const now = new Date('2026-08-30T12:00:00.000Z');
 		const { ttlHours } = resolveClaimOptions({ ttlHours: 6 });
 		expect(expiryFor(now, ttlHours)).toBe('2026-08-30T18:00:00.000Z');
+	});
+});
+
+describe('walk reports', () => {
+	// Without an uncontacted count, VAN's door count only moves on a re-cut, so
+	// a turf walked to the end would otherwise come straight back into the pool.
+	it('refuses a turf with no count that was last reported at 100%', () => {
+		const decision = canClaim(turf({ reportedPercent: 100 }), [], 'U_VOL', NOW);
+		expect(decision).toMatchObject({ ok: false, reason: 'no-doors-left' });
+	});
+
+	it('still offers a part-walked turf', () => {
+		expect(canClaim(turf({ reportedPercent: 70 }), [], 'U_VOL', NOW).ok).toBe(true);
+	});
+
+	// With a count, it alone decides: any uncontacted door puts the turf back.
+	it('offers a turf reported at 100% while doors are still uncontacted', () => {
+		const decision = canClaim(
+			turf({ reportedPercent: 100, uncontactedDoors: 4, doorCount: 4 }),
+			[],
+			'U_VOL',
+			NOW,
+		);
+		expect(decision.ok).toBe(true);
+	});
+
+	it('refuses a turf with every door contacted', () => {
+		const decision = canClaim(
+			turf({ reportedPercent: 60, uncontactedDoors: 0, doorCount: 0 }),
+			[],
+			'U_VOL',
+			NOW,
+		);
+		expect(decision).toMatchObject({ ok: false, reason: 'no-doors-left' });
 	});
 });

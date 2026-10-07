@@ -5,8 +5,38 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // `vi.mock('./env.js', …)` pattern from `src/lib/server/settings.test.ts`.
 vi.mock('$lib/server/settings.js', () => ({
 	loadSettings: vi.fn(),
-	loadVanChapterFolders: vi.fn(),
 	loadVanBlockedUsers: vi.fn(),
+	refreshChapterNames: vi.fn(async () => []),
+}));
+
+// The campaign list: one campaign, never synced, credentials not set.
+vi.mock('$lib/server/van/campaign-status-store.js', () => ({
+	loadCampaignSummaries: vi.fn(async () => [
+		{
+			campaign: {
+				id: 1,
+				credentialKey: 'primary',
+				label: 'One Team Michigan',
+				enabled: true,
+				disabledAt: null,
+			},
+			liveTurfs: 0,
+			lastSyncAt: null,
+			lastError: null,
+		},
+	]),
+}));
+const mockEnsureCampaignRows = vi.hoisted(() => vi.fn(async () => [] as string[]));
+vi.mock('$lib/server/van-env.js', () => ({
+	ensureCampaignRows: mockEnsureCampaignRows,
+	credentialStatus: () => ({
+		secretName: 'VAN_CAMPAIGN_PRIMARY',
+		state: 'missing',
+		error: null,
+		appName: null,
+		databaseMode: null,
+		source: null,
+	}),
 }));
 
 vi.mock('$lib/server/autocomplete-sources.js', () => ({
@@ -19,10 +49,18 @@ vi.mock('$lib/server/autocomplete-sources.js', () => ({
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/slack.js', () => ({ slack: {} }));
-vi.mock('$lib/server/env.js', () => ({ SOLIDARITY_API_TOKEN: 'test-token' }));
+vi.mock('$lib/server/env.js', () => ({
+	SOLIDARITY_API_TOKEN: 'test-token',
+	googleSignInConfigured: () => false,
+	appleSignInConfigured: () => false,
+}));
+vi.mock('$lib/server/outside-volunteers.js', () => ({
+	countOutsideVolunteers: async () => ({ google: 0, apple: 0 }),
+	loadBlockableOutsideVolunteers: async () => [],
+}));
 
 import { load, type SettingsPageData } from './+page.server.js';
-import { loadSettings, loadVanChapterFolders, loadVanBlockedUsers } from '$lib/server/settings.js';
+import { loadSettings, loadVanBlockedUsers, refreshChapterNames } from '$lib/server/settings.js';
 import {
 	getSlackChannels,
 	getSlackUsers,
@@ -47,6 +85,7 @@ const settingsFixture = {
 	moderatorSlackUserIds: new Set<string>(),
 	reportExcludedChapterIds: new Set<number>(),
 	zipExcludedChapterIds: new Set<number>(),
+	turfHiddenChapterIds: new Set<number>(),
 	slackTrackingChannelId: 'C_TRACK',
 	slackGrowthReportChannelId: 'C_GROWTH',
 	slackMobilizeSyncChannelId: 'C_GROWTH',
@@ -55,6 +94,7 @@ const settingsFixture = {
 	mobilizeContactName: 'Field Team',
 	mobilizeContactEmail: 'field@example.org',
 	mobilizeContactPhone: '',
+	mobilizeImportTag: '',
 	slackGrowthReportRankingAlpha: 0.5,
 	welcomeDisabledChannelIds: new Set<string>(),
 	siteName: '',
@@ -66,6 +106,10 @@ const settingsFixture = {
 	doorTickerColumnsPerSecond: 30,
 	vanTurfClaimTtlHours: 48,
 	vanTurfMaxConcurrentClaims: 2,
+	vanAssignmentTtlHours: 48,
+	vanRegionRefreshEnabled: false,
+	vanSheetTabName: 'Packet Tracker',
+	publicJoinUrl: '',
 };
 
 function makeEvent(overrides: {
@@ -89,9 +133,6 @@ function makeEvent(overrides: {
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.mocked(loadSettings).mockResolvedValue(settingsFixture);
-	// VAN settings load alongside the rest. Empty is the normal pre-launch
-	// state — no chapter mapped yet means no turf published.
-	vi.mocked(loadVanChapterFolders).mockResolvedValue([]);
 	vi.mocked(loadVanBlockedUsers).mockResolvedValue([]);
 	vi.mocked(getSlackChannels).mockResolvedValue({
 		items: [{ id: 'C1', name: 'general', isPrivate: false }],
@@ -255,5 +296,71 @@ describe('US2: ?refresh=lists honoring', () => {
 		expect(getSolidarityChapters).toHaveBeenCalledWith(expect.anything(), { force: false });
 		expect(getSolidarityCustomProperties).toHaveBeenCalledWith(expect.anything(), { force: false });
 		expect(getSolidarityUserLists).toHaveBeenCalledWith(expect.anything(), { force: false });
+	});
+});
+
+describe('VAN campaigns', () => {
+	it('lists each campaign by name with what its state is, never its credentials', async () => {
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(data.vanCampaigns).toEqual([
+			{
+				id: 1,
+				name: 'One Team Michigan',
+				chip: 'enabled',
+				health: 'no-credentials',
+				detail: 'VAN_CAMPAIGN_PRIMARY is not set',
+				lastSyncAt: null,
+				liveTurfs: 0,
+			},
+		]);
+	});
+});
+
+// specs/012-multi-van-campaigns: a secret set since the last sync shows up the
+// moment an admin looks — and locally, where no scheduler runs, at all.
+describe('campaign discovery', () => {
+	it('adds rows for new campaign secrets before listing them', async () => {
+		await loadData(makeEvent({ isAdmin: true }));
+		expect(mockEnsureCampaignRows).toHaveBeenCalledOnce();
+	});
+
+	it('still renders the page when discovery fails', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockEnsureCampaignRows.mockRejectedValueOnce(new Error('db locked'));
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(data.vanCampaigns).toHaveLength(1);
+	});
+});
+
+// Stored chapter names drift when Solidarity renames a chapter, and /turfs
+// lists chapters by the stored name; this page has the live list, so it fixes them.
+describe('chapter names', () => {
+	it('brings stored names up to date from the live list, and shows what changed', async () => {
+		vi.mocked(loadSettings).mockResolvedValue({
+			...settingsFixture,
+			chapterChannelMap: [{ chapterId: 1, channelId: 'C1', name: 'New York' }],
+		});
+		vi.mocked(refreshChapterNames).mockResolvedValueOnce([
+			{ chapterId: 1, from: 'New York', to: 'NYC' },
+		]);
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(refreshChapterNames).toHaveBeenCalledWith(expect.anything(), [{ id: 1, name: 'NYC' }]);
+		expect(data.renamedChapters).toEqual([{ chapterId: 1, from: 'New York', to: 'NYC' }]);
+		// The rest of this load uses the new name, not the one it just replaced.
+		expect(data.settings.chapterChannelMap).toEqual([
+			{ chapterId: 1, channelId: 'C1', name: 'NYC' },
+		]);
+	});
+
+	it('does not try without the live list, and survives a failed refresh', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.mocked(refreshChapterNames).mockRejectedValueOnce(new Error('database is locked'));
+		const data = await loadData(makeEvent({ isAdmin: true }));
+		expect(data.renamedChapters).toEqual([]);
+
+		vi.mocked(refreshChapterNames).mockClear();
+		vi.mocked(getSolidarityChapters).mockRejectedValueOnce(new Error('Solidarity is down'));
+		await loadData(makeEvent({ isAdmin: true }));
+		expect(refreshChapterNames).not.toHaveBeenCalled();
 	});
 });

@@ -709,7 +709,7 @@ describe('POST /api/slack/interactivity — turf buttons', () => {
 		});
 
 	const VALUE = encodeTurfAction({
-		mapRouteId: 100,
+		turfId: 100,
 		chapterId: 71,
 		offset: 0,
 		location: { lat: 42.28, lng: -83.74 },
@@ -737,7 +737,7 @@ describe('POST /api/slack/interactivity — turf buttons', () => {
 			expect.anything(),
 			expect.objectContaining({
 				slackUserId: 'U_VOL',
-				mapRouteId: 100,
+				turfId: 100,
 				chapterId: 71,
 				location: { lat: 42.28, lng: -83.74 },
 			}),
@@ -754,7 +754,7 @@ describe('POST /api/slack/interactivity — turf buttons', () => {
 		await flush();
 		expect(mockReleaseFromSlack).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ mapRouteId: 100 }),
+			expect.objectContaining({ turfId: 100 }),
 		);
 	});
 

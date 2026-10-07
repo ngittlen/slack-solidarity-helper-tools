@@ -5,18 +5,17 @@
 // re-render the same twelve rows every load, and a channel cannot. Two people on
 // one doorstep is urgent the first time it is announced and noise the fortieth.
 //
-// So the unit of idempotency is (turf, kind) — see `needsDriftAlert`. It is a
-// pair rather than a plain "already told them" flag because a turf can drift one
-// way, get half-fixed, and start drifting the other way: an organizer who
-// bulk-exports turf that was claimed here resolves
-// `claimed-not-in-minivan` and, if the claim then lapses, creates
-// `in-minivan-not-claimed` on the same route. That is genuinely new information
-// and the more dangerous of the two directions, so it has to get through.
+// So the unit of idempotency is (turf, kind) — see `needsDriftAlert`. There is
+// only one kind now (turf-drift.ts says why the other was dropped), but the
+// stamp keeps the pair: it is what lets a stamp written by an older version,
+// with a kind that no longer exists, read as "never announced" and be swept.
 //
 // Pure — no DB, no Slack, no clock of its own. drift-alert-store.ts does the
 // rows and the posting.
 
 import { driftAdvice, driftLabel, type DriftItem, type DriftKind } from './turf-drift.js';
+import type { CampaignBadges } from './turf-view.js';
+import { escapeMrkdwn } from '../slack-mrkdwn.js';
 
 /**
  * How many rows of one kind to name before summarising the rest.
@@ -72,24 +71,25 @@ export function staleDriftStamps(
 	items: readonly AlertableDrift[],
 ): number[] {
 	const drifting = new Map<number, DriftKind>();
-	for (const item of items) drifting.set(item.mapRouteId, item.kind);
+	for (const item of items) drifting.set(item.turfId, item.kind);
 	// A route whose drift changed kind is NOT stale — the alert path rewrites its
 	// stamp in the same run, and clearing it here as well would mean two writes
 	// racing to describe one route.
 	return stampedRouteIds.filter((id) => !drifting.has(id));
 }
 
-/** One row, as a bullet. */
-function renderRow(item: DriftItem): string {
-	const where = item.regionName ? `${item.regionName}` : item.chapterName;
+/** One row, as a bullet. The campaign leads `where` while it shows a badge:
+ *  the organizer has to know whose VAN to look in. */
+function renderRow(item: DriftItem, badges: CampaignBadges): string {
+	const place = item.regionName ? `${item.regionName}` : item.chapterName;
+	const badge = badges[item.campaignId];
+	const where = badge ? `${badge} · ${place}` : place;
 	const doors = `${item.doorCount.toLocaleString('en-US')} doors`;
-	const who =
-		item.kind === 'in-minivan-not-claimed'
-			? `VAN says ${item.distributedTo}`
-			: `held by ${item.heldBy}`;
-	// Only meaningful on `claimed-not-in-minivan`, where `canClaim` should have
-	// made it impossible — so it is an upstream fault worth naming inline rather
-	// than a variant of the normal advice.
+	// Escaped: a Google or Apple volunteer chooses their own name, and an unescaped
+	// `<!channel>` or `<url|label>` in it would ping or link from the bot.
+	const who = `held by ${escapeMrkdwn(item.heldBy)}`;
+	// `canClaim` should have made this impossible, so it is an upstream fault
+	// worth naming inline rather than a variant of the normal advice.
 	const anomaly = item.hasListNumber ? '' : ' · :question: no MiniVAN list number';
 	return `• *${item.turfName}* — ${where} · ${doors} · ${who}${anomaly}`;
 }
@@ -107,11 +107,17 @@ function renderRow(item: DriftItem): string {
 export function renderDriftAlert(
 	items: readonly DriftItem[],
 	appUrl: string,
-	maxRows: number = DRIFT_ALERT_MAX_ROWS,
+	options: {
+		maxRows?: number;
+		/** Campaign id → badge, for the campaigns whose turf shows one
+		 *  (badgeShown). Empty while there is one campaign: no badge. */
+		badges?: CampaignBadges;
+	} = {},
 ): string | null {
+	const { maxRows = DRIFT_ALERT_MAX_ROWS, badges = {} } = options;
 	if (items.length === 0) return null;
 
-	const kinds: DriftKind[] = ['in-minivan-not-claimed', 'claimed-not-in-minivan'];
+	const kinds: DriftKind[] = ['claimed-not-in-minivan'];
 	const lines: string[] = [];
 	const n = items.length;
 
@@ -124,7 +130,7 @@ export function renderDriftAlert(
 		const group = items.filter((i) => i.kind === kind);
 		if (group.length === 0) continue;
 		lines.push('', `*${driftLabel(kind)}* (${group.length})`, `_${driftAdvice(kind)}_`);
-		for (const item of group.slice(0, maxRows)) lines.push(renderRow(item));
+		for (const item of group.slice(0, maxRows)) lines.push(renderRow(item, badges));
 		if (group.length > maxRows) {
 			lines.push(`• _… +${group.length - maxRows} more_`);
 		}

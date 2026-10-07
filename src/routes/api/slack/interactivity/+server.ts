@@ -30,8 +30,17 @@ import {
 	TURF_CLAIM_ACTION_ID,
 	TURF_PAGE_ACTION_ID,
 	TURF_RELEASE_ACTION_ID,
+	TURF_RELEASE_MINE_ACTION_ID,
+	TURF_COMPLETE_ACTION_ID,
 } from '$lib/server/van/turf-command.js';
-import { claimFromSlack, releaseFromSlack, turfListMessage } from '$lib/server/van/turf-slack.js';
+import {
+	claimFromSlack,
+	completeFromSlack,
+	myTurfMessage,
+	releaseFromSlack,
+	releaseMineFromSlack,
+	turfListMessage,
+} from '$lib/server/van/turf-slack.js';
 import { errMessage } from '$lib/err-message.js';
 
 // Everything Slack sends back from an interactive surface:
@@ -57,7 +66,7 @@ interface SlackPayload {
 	team?: { domain?: string };
 	channel?: { id?: string };
 	message?: { user?: string; bot_id?: string; ts?: string; thread_ts?: string };
-	actions?: { action_id?: string; value?: string }[];
+	actions?: { action_id?: string; value?: string; selected_option?: { value?: string } }[];
 	view?: { id?: string; hash?: string; callback_id?: string };
 }
 
@@ -189,6 +198,8 @@ async function handleBlockActions(payload: SlackPayload): Promise<Response> {
 		(a) =>
 			a.action_id === TURF_CLAIM_ACTION_ID ||
 			a.action_id === TURF_RELEASE_ACTION_ID ||
+			a.action_id === TURF_RELEASE_MINE_ACTION_ID ||
+			a.action_id === TURF_COMPLETE_ACTION_ID ||
 			a.action_id === TURF_PAGE_ACTION_ID,
 	);
 	if (turfAction) return handleTurfAction(payload, turfAction);
@@ -237,14 +248,19 @@ async function handleBlockActions(payload: SlackPayload): Promise<Response> {
  */
 function handleTurfAction(
 	payload: SlackPayload,
-	action: { action_id?: string; value?: string },
+	action: { action_id?: string; value?: string; selected_option?: { value?: string } },
 ): Response {
 	const slackUserId = payload.user?.id ?? '';
 	const responseUrl = payload.response_url;
 	// The value round-tripped through a client, so it is untrusted input.
 	// decodeTurfAction validates it; turf-slack re-checks the chapter against
 	// settings regardless.
-	const decoded = decodeTurfAction(action.value);
+	// Buttons carry `value`. A `selected_option` is the retired "Mark it done —
+	// MiniVAN %" dropdown on a message posted before the synced-MiniVAN
+	// confirm existed; it is decoded so the mine list can be redrawn with the
+	// new button, but never completes anything.
+	const fromOldDropdown = action.value === undefined && action.selected_option !== undefined;
+	const decoded = decodeTurfAction(action.value ?? action.selected_option?.value);
 
 	if (!slackUserId || !decoded) {
 		respondToSlack(
@@ -258,18 +274,33 @@ function handleTurfAction(
 	void (async () => {
 		const ctx = {
 			slackUserId,
-			channelId: payload.channel?.id ?? null,
 			chapterId: decoded.chapterId,
 			offset: decoded.offset,
 			location: decoded.location ?? null,
 		};
 
+		// Every branch needing a turfId checks for one: the value came back
+		// from a client, so "the button said complete but named no turf" is a
+		// request that has to land somewhere sane rather than throw.
+		const routeId = decoded.turfId;
 		const message =
-			action.action_id === TURF_CLAIM_ACTION_ID && decoded.mapRouteId !== undefined
-				? await claimFromSlack(db, { ...ctx, mapRouteId: decoded.mapRouteId })
-				: action.action_id === TURF_RELEASE_ACTION_ID && decoded.mapRouteId !== undefined
-					? await releaseFromSlack(db, { ...ctx, mapRouteId: decoded.mapRouteId })
-					: await turfListMessage(db, ctx);
+			action.action_id === TURF_CLAIM_ACTION_ID && routeId !== undefined
+				? await claimFromSlack(db, { ...ctx, turfId: routeId })
+				: action.action_id === TURF_RELEASE_ACTION_ID && routeId !== undefined
+					? await releaseFromSlack(db, { ...ctx, turfId: routeId })
+					: action.action_id === TURF_RELEASE_MINE_ACTION_ID && routeId !== undefined
+						? await releaseMineFromSlack(db, { ...ctx, turfId: routeId })
+						: action.action_id === TURF_COMPLETE_ACTION_ID &&
+							  routeId !== undefined &&
+							  !fromOldDropdown
+							? await completeFromSlack(db, { ...ctx, turfId: routeId })
+							: // A mine-list button that lost its turf id redraws the mine
+								// list, not the nearby one — landing somewhere unrelated to
+								// where the tap happened is its own small betrayal.
+								action.action_id === TURF_RELEASE_MINE_ACTION_ID ||
+								  action.action_id === TURF_COMPLETE_ACTION_ID
+								? await myTurfMessage(db, ctx)
+								: await turfListMessage(db, ctx);
 
 		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
 	})().catch((err) => {

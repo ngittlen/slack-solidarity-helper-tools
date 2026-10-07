@@ -6,12 +6,10 @@
 	} from '$lib/van/doors-leaderboard';
 	import LeaderboardCard, { type LeaderboardTab } from './LeaderboardCard.svelte';
 
-	// The metric set changed with the source (plan.md 9.1). VAN can say how many
-	// doors left a turf, how many turfs were walked and by how many people; it
-	// cannot say how many doors were KNOCKED, because a not-home door stays on
-	// the list. So attempts and the contact rate are gone rather than filled
-	// with a number that means something else — doors-cleared in both columns
-	// would render a permanent 100% contact rate.
+	// Doors are doors KNOCKED — in-person contact attempts in VAN's
+	// ContactHistory during each claim, not-homes included (contact-sync.ts) —
+	// falling back to doors cleared for completions with no roster to count on.
+	// There is still no contact rate: nothing here says which knocks answered.
 	type Props = { leaderboard: DoorsLeaderboardPair };
 	let { leaderboard }: Props = $props();
 
@@ -27,7 +25,7 @@
 
 {#snippet total(lb: DoorsLeaderboard, tab: LeaderboardTab)}
 	<strong>{lb.totalDoorsCleared.toLocaleString('en-US')}</strong>
-	{plural(lb.totalDoorsCleared, 'door', 'doors')} cleared
+	{plural(lb.totalDoorsCleared, 'door', 'doors')} knocked
 	{tab === 'lastWeek' ? 'that week' : 'so far this week'}
 	· <strong>{lb.totalTurfsCompleted.toLocaleString('en-US')}</strong>
 	{plural(lb.totalTurfsCompleted, 'turf', 'turfs')}
@@ -35,11 +33,11 @@
 	{plural(lb.totalCanvassers, 'canvasser', 'canvassers')}
 	{#if lb.awaitingCount > 0}
 		<!-- Two clocks (9.6): turfs are known the moment they are marked walked,
-		     their doors only after VAN recounts the region. Saying so is the
-		     difference between a number that looks low and one that is unfinished. -->
+		     their doors only once VAN has them. Saying so is the difference
+		     between a number that looks low and one that is unfinished. -->
 		<span class="leaderboard__note"
 			>· {lb.awaitingCount}
-			{plural(lb.awaitingCount, 'turf', 'turfs')} awaiting VAN's recount</span
+			{plural(lb.awaitingCount, 'turf', 'turfs')} with doors not counted yet</span
 		>
 	{/if}
 {/snippet}

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -28,39 +28,48 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 });
 
-async function turf(over: { mapRouteId?: number; chapterId?: number; chapterName?: string } = {}) {
+async function turf(over: { turfId?: number; chapterId?: number; chapterName?: string } = {}) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, door_count, first_seen_at, last_seen_at)
-		      VALUES (?, 1, 1, ?, ?, 'Region', 'Turf', 100, 'x', 'x')`,
-		args: [over.mapRouteId ?? 100, over.chapterId ?? 71, over.chapterName ?? 'Washtenaw County'],
+		      VALUES (?1, ?1, 1, 1, ?, ?, 'Region', 'Turf', 100, 'x', 'x')`,
+		args: [over.turfId ?? 100, over.chapterId ?? 71, over.chapterName ?? 'Washtenaw County'],
 	});
 }
 
 async function checkout(over: {
-	mapRouteId?: number;
+	turfId?: number;
 	slackUserId?: string;
 	slackUserName?: string;
 	completedAt?: string | null;
 	releasedAt?: string | null;
 	doors?: number | null;
+	knocked?: number | null;
 }) {
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
-		        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
-		         completed_at, released_at, confirmed_door_delta)
-		      VALUES (?, ?, ?, '2026-09-01T12:00:00.000Z', '2026-09-30T12:00:00.000Z', ?, ?, ?)`,
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		         completed_at, released_at, confirmed_door_delta, doors_knocked)
+		      VALUES (?, ?, ?, '2026-09-01T12:00:00.000Z', '2026-09-30T12:00:00.000Z', ?, ?, ?, ?)`,
 		args: [
-			over.mapRouteId ?? 100,
+			over.turfId ?? 100,
 			over.slackUserId ?? 'U1',
 			over.slackUserName ?? 'Dana',
 			over.completedAt ?? null,
 			over.releasedAt ?? null,
 			over.doors ?? null,
+			over.knocked ?? null,
 		],
 	});
 }
+
+// Each test opens its own in-memory client. Closing it keeps one per test from
+// leaking for the life of the worker — which never shows up while this file is
+// run on its own.
+afterEach(() => {
+	client.close();
+});
 
 describe('loadClearedRows', () => {
 	it('reads completed checkouts with the turf they were on', async () => {
@@ -70,7 +79,7 @@ describe('loadClearedRows', () => {
 		const rows = await loadClearedRows(db);
 		expect(rows).toEqual([
 			{
-				mapRouteId: 100,
+				turfId: 100,
 				chapterId: 71,
 				chapterName: 'Washtenaw County',
 				slackUserId: 'U1',
@@ -99,11 +108,22 @@ describe('loadClearedRows', () => {
 		expect(row.doorsCleared).toBeNull();
 	});
 
+	// Doors knocked (ContactHistory) wins; VAN's delta covers completions on
+	// turf with no roster to count against.
+	it('counts doors knocked, falling back to doors cleared', async () => {
+		await turf();
+		await checkout({ completedAt: '2026-09-09T18:00:00.000Z', doors: 5, knocked: 42 });
+		await checkout({ completedAt: '2026-09-09T19:00:00.000Z', doors: 7, knocked: null });
+
+		const rows = await loadClearedRows(db);
+		expect(rows.map((r) => r.doorsCleared)).toEqual([42, 7]);
+	});
+
 	it('drops chapters the report excludes', async () => {
-		await turf({ mapRouteId: 100, chapterId: 71 });
-		await turf({ mapRouteId: 200, chapterId: 99, chapterName: 'Test Chapter' });
-		await checkout({ mapRouteId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 10 });
-		await checkout({ mapRouteId: 200, completedAt: '2026-09-09T18:00:00.000Z', doors: 10 });
+		await turf({ turfId: 100, chapterId: 71 });
+		await turf({ turfId: 200, chapterId: 99, chapterName: 'Test Chapter' });
+		await checkout({ turfId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 10 });
+		await checkout({ turfId: 200, completedAt: '2026-09-09T18:00:00.000Z', doors: 10 });
 
 		const rows = await loadClearedRows(db, { excludedChapterIds: new Set([99]) });
 		expect(rows.map((r) => r.chapterId)).toEqual([71]);
@@ -192,6 +212,32 @@ describe('loadDoorsTicker', () => {
 		]);
 	});
 
+	// Entries are per account, and since Google sign-in two accounts can share a
+	// name. The ticker must key its rows by rank, which this pins as unique —
+	// keyed by name, the duplicate threw and took the dashboard down.
+	it('lists two accounts with the same name separately, each with its own rank', async () => {
+		await turf();
+		await checkout({
+			slackUserId: 'U1',
+			slackUserName: 'Maria Torres',
+			completedAt: '2026-09-10T18:00:00.000Z',
+			doors: 40,
+		});
+		await checkout({
+			slackUserId: 'google:7',
+			slackUserName: 'Maria Torres',
+			completedAt: '2026-09-10T19:00:00.000Z',
+			doors: 90,
+		});
+
+		const ticker = await loadDoorsTicker(db, { now: NOW });
+		expect(ticker.entries.map((e) => [e.canvasser, e.rank])).toEqual([
+			['Maria Torres', 1],
+			['Maria Torres', 2],
+		]);
+		expect(new Set(ticker.entries.map((e) => e.rank)).size).toBe(ticker.entries.length);
+	});
+
 	it('carries turf counts for a canvasser whose doors are not counted yet', async () => {
 		await turf();
 		await checkout({ completedAt: '2026-09-10T18:00:00.000Z', doors: null });
@@ -207,10 +253,10 @@ describe('loadDoorsTicker', () => {
 
 describe('loadDoorsClearedSignups and loadDoorsDayTotals', () => {
 	it('shapes the chart series by campaign day and chapter', async () => {
-		await turf({ mapRouteId: 100, chapterId: 71, chapterName: 'Washtenaw County' });
-		await turf({ mapRouteId: 200, chapterId: 12, chapterName: 'Oakland County' });
-		await checkout({ mapRouteId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 60 });
-		await checkout({ mapRouteId: 200, completedAt: '2026-09-09T19:00:00.000Z', doors: 15 });
+		await turf({ turfId: 100, chapterId: 71, chapterName: 'Washtenaw County' });
+		await turf({ turfId: 200, chapterId: 12, chapterName: 'Oakland County' });
+		await checkout({ turfId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 60 });
+		await checkout({ turfId: 200, completedAt: '2026-09-09T19:00:00.000Z', doors: 15 });
 
 		const series = await loadDoorsClearedSignups(db, { days: 30, now: NOW });
 		expect(series).toEqual([
@@ -265,5 +311,35 @@ describe('doorsHealthWarning', () => {
 		}
 
 		expect(await doorsHealthWarning(db, NOW)).toBeNull();
+	});
+});
+
+// R10 (specs/012-multi-van-campaigns): door totals and the leaderboard
+// combine every campaign, disabled ones included — doors knocked for a
+// campaign that has since been switched off were still knocked.
+describe('across campaigns', () => {
+	it('counts every campaign’s completions together, even with the same VAN route id', async () => {
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 0, 's', 's', 'x')`,
+		);
+		await turf({ turfId: 100 });
+		// Turf 200 is VAN route 100 in the partner campaign.
+		await client.execute(
+			`INSERT INTO van_turfs
+			   (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
+			    region_name, name, door_count, first_seen_at, last_seen_at)
+			 VALUES (200, 2, 100, 1, 1, 71, 'Washtenaw County', 'Region', 'Turf', 100, 'x', 'x')`,
+		);
+		await checkout({ turfId: 100, completedAt: '2026-09-09T18:00:00.000Z', doors: 60 });
+		await checkout({
+			turfId: 200,
+			slackUserId: 'U2',
+			completedAt: '2026-09-09T19:00:00.000Z',
+			doors: 15,
+		});
+
+		expect((await loadClearedRows(db)).map((r) => r.turfId).sort()).toEqual([100, 200]);
+		expect(await loadDoorsDayTotals(db)).toEqual([{ date: '2026-09-09', total: 75 }]);
 	});
 });

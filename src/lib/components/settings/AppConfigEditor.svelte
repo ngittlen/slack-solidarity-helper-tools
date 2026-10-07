@@ -45,9 +45,13 @@
 		/** Contact published on events the sync creates in Mobilize ('' when
 		 *  neither /settings nor the MOBILIZE_CONTACT_* env vars set it). */
 		siteName: string;
+		/** "Join our chat" link on the signed-out /turfs page ('' = hidden). */
+		publicJoinUrl: string;
 		mobilizeContactName: string;
 		mobilizeContactEmail: string;
 		mobilizeContactPhone: string;
+		/** Tag selecting partner Mobilize events to import ('' = import off). */
+		mobilizeImportTag: string;
 		rankingAlpha: number | undefined;
 		/** Header countdown config ('' when unset). */
 		countdownLabel: string;
@@ -74,9 +78,11 @@
 		turfChannelId,
 		memberNoteChannelId,
 		siteName,
+		publicJoinUrl,
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
+		mobilizeImportTag,
 		rankingAlpha,
 		countdownLabel,
 		countdownEndAt,
@@ -187,6 +193,12 @@
 		save: (value) => postAppConfig({ siteName: value }),
 	});
 
+	// The signed-out /turfs page's sign-up button. Blank hides the button.
+	const publicJoinUrlSave = createFieldAutosave<string>({
+		initial: publicJoinUrl,
+		save: (value) => postAppConfig({ publicJoinUrl: value }),
+	});
+
 	const contactNameSave = createFieldAutosave<string>({
 		initial: mobilizeContactName,
 		save: (value) => postAppConfig({ mobilizeContactName: value }),
@@ -198,6 +210,13 @@
 	const contactPhoneSave = createFieldAutosave<string>({
 		initial: mobilizeContactPhone,
 		save: (value) => postAppConfig({ mobilizeContactPhone: value }),
+	});
+
+	// Partner-org import. Blank turns the import off, so clearing the field is
+	// the off switch.
+	const importTagSave = createFieldAutosave<string>({
+		initial: mobilizeImportTag,
+		save: (value) => postAppConfig({ mobilizeImportTag: value }),
 	});
 
 	const contactSaves = $derived([contactNameSave, contactEmailSave, contactPhoneSave]);
@@ -281,6 +300,8 @@
 
 	$effect(() => () => {
 		siteNameSave.destroy();
+		publicJoinUrlSave.destroy();
+		importTagSave.destroy();
 		alphaSave.destroy();
 		tickerSpeedSave.destroy();
 		countdownLabelSave.destroy();
@@ -425,6 +446,27 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.publicJoinUrl}
+		label="Public “Join our chat” link"
+		status={publicJoinUrlSave.status}
+		error={publicJoinUrlSave.error}
+		onRetry={publicJoinUrlSave.status === 'error' ? publicJoinUrlSave.retry : undefined}
+	>
+		<input
+			class="site-name-input"
+			type="url"
+			inputmode="url"
+			placeholder="https://"
+			value={publicJoinUrlSave.value}
+			oninput={publicJoinUrlSave.oninput}
+		/>
+		<p class="site-name-note">
+			Where the "Want to get involved? Join our chat" button goes on the turf page people see before
+			signing in, usually the Solidarity sign-up page. Leave blank to hide the button.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
 		id={APP_CONFIG_ROW_IDS.trackingChannel}
 		label="Volunteer-help tracking channel"
 		status={tracking.status}
@@ -559,6 +601,30 @@
 			>
 			(or in <code>MOBILIZE_CONTACT_EMAIL</code>). Clearing a field falls back to its
 			<code>MOBILIZE_CONTACT_*</code> environment variable.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.mobilizeImportTag}
+		label="Partner Mobilize import tag"
+		status={importTagSave.status}
+		error={importTagSave.error}
+		onRetry={importTagSave.status === 'error' ? importTagSave.retry : undefined}
+	>
+		<input
+			class="site-name-input"
+			type="text"
+			maxlength="100"
+			placeholder="Import off"
+			value={importTagSave.value}
+			oninput={importTagSave.oninput}
+		/>
+		<p class="site-name-note">
+			Public events in the partner campaign's Mobilize org that carry this tag are copied into
+			Solidarity every hour, with their description and image, under the chapter their zip belongs
+			to. Each is copied once; later changes in Mobilize are not. Leave blank to turn the import
+			off. The partner org is set by <code>MOBILIZE_IMPORT_ORG_ID</code> and
+			<code>MOBILIZE_IMPORT_API_KEY</code>.
 		</p>
 	</SettingsRow>
 

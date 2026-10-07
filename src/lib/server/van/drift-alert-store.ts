@@ -15,20 +15,26 @@
 // Never throws. The sync's rows are already written by the time this runs, and a
 // Slack outage must not turn a good sync into a failed workflow run.
 
-import { inArray, isNotNull } from 'drizzle-orm';
+import { and, inArray, isNotNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { postAlert } from '../slack.js';
 import { errMessage } from '../../err-message.js';
 import { driftReport, type DriftKind } from '../../van/turf-drift.js';
+import { badgeShown, loadTurfCampaigns, type CampaignBadges } from './campaigns.js';
 import {
 	newDriftAlerts,
 	renderDriftAlert,
 	staleDriftStamps,
 	type AlertableDrift,
 } from '../../van/drift-alert.js';
-import { loadDriftClaims, loadDriftTurfs, loadDriftVisibility } from './drift-store.js';
+import {
+	exportsVisibleFilter,
+	loadDriftClaims,
+	loadDriftTurfs,
+	loadDriftVisibility,
+} from './drift-store.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -45,11 +51,14 @@ export interface DriftAlertResult {
 	/** Why nothing was posted, when nothing was. Distinguishes "checked, all
 	 *  agreed" from "could not check" — the same trap `DriftVisibility` exists for
 	 *  one layer down. */
-	skipped?: 'van-side-unavailable' | 'no-channel' | 'nothing-new';
+	skipped?: 'van-side-unavailable' | 'exports-unused' | 'no-channel' | 'nothing-new';
 }
 
 function isDriftKind(value: string | null): value is DriftKind {
-	return value === 'claimed-not-in-minivan' || value === 'in-minivan-not-claimed';
+	// Only the kind that still exists. `in-minivan-not-claimed` stamps from before
+	// that direction was dropped (turf-drift.ts) fail this on purpose, so the
+	// stale sweep clears them.
+	return value === 'claimed-not-in-minivan';
 }
 
 interface Stamps {
@@ -75,14 +84,17 @@ interface Stamps {
  */
 async function loadStamps(db: Db): Promise<Stamps> {
 	const rows = await db
-		.select({ mapRouteId: vanTurfs.mapRouteId, kind: vanTurfs.driftAlertedKind })
+		.select({ turfId: vanTurfs.turfId, kind: vanTurfs.driftAlertedKind })
 		.from(vanTurfs)
-		.where(isNotNull(vanTurfs.driftAlertedKind));
+		// Only the campaigns the report can see. A stamp on another campaign's
+		// turf is absent from the report because we could not look, not because
+		// the drift ended, so it must not be swept as stale.
+		.where(and(isNotNull(vanTurfs.driftAlertedKind), exportsVisibleFilter()));
 	const kinds = new Map<number, DriftKind>();
 	for (const row of rows) {
-		if (isDriftKind(row.kind)) kinds.set(row.mapRouteId, row.kind);
+		if (isDriftKind(row.kind)) kinds.set(row.turfId, row.kind);
 	}
-	return { kinds, routeIds: rows.map((r) => r.mapRouteId) };
+	return { kinds, routeIds: rows.map((r) => r.turfId) };
 }
 
 /** Stamp the routes named in a message that landed. */
@@ -96,7 +108,7 @@ async function markAlerted(
 		await db
 			.update(vanTurfs)
 			.set({ driftAlertedAt: at, driftAlertedKind: kind })
-			.where(inArray(vanTurfs.mapRouteId, batch));
+			.where(inArray(vanTurfs.turfId, batch));
 	}
 }
 
@@ -106,7 +118,7 @@ async function clearStamps(db: Db, routeIds: readonly number[]): Promise<void> {
 		await db
 			.update(vanTurfs)
 			.set({ driftAlertedAt: null, driftAlertedKind: null })
-			.where(inArray(vanTurfs.mapRouteId, batch));
+			.where(inArray(vanTurfs.turfId, batch));
 	}
 }
 
@@ -138,6 +150,7 @@ export async function sendDriftAlerts(
 
 	let items: AlertableDrift[];
 	let stampedRouteIds: number[];
+	let exportsUnused: boolean;
 	try {
 		const query = { chapterId: null };
 		const [turfs, claims, visibility, stamps] = await Promise.all([
@@ -155,9 +168,19 @@ export async function sendDriftAlerts(
 			return { ...empty, skipped: 'van-side-unavailable' };
 		}
 
-		items = driftReport(turfs, claims, now, visibility).items.map((item) => ({
+		// Nothing in the catalog has ever been exported, so the comparison has no
+		// side to compare against and the report comes back empty. Deliberately
+		// NOT an early return, unlike the branch above: there the stamps have to
+		// survive because we cannot see VAN and every one of them merely LOOKS
+		// stale. Here we can see VAN fine — we know this drift is no longer being
+		// reported — so the stale sweep below should clear the stamps it left
+		// behind rather than leave markers for a check that no longer runs.
+		const report = driftReport(turfs, claims, now, visibility);
+		exportsUnused = report.visibility === 'exports-unused';
+
+		items = report.items.map((item) => ({
 			...item,
-			alertedKind: stamps.kinds.get(item.mapRouteId) ?? null,
+			alertedKind: stamps.kinds.get(item.turfId) ?? null,
 		}));
 		stampedRouteIds = stamps.routeIds;
 	} catch (err) {
@@ -183,10 +206,30 @@ export async function sendDriftAlerts(
 	}
 
 	const fresh = newDriftAlerts(items);
-	const text = renderDriftAlert(fresh, appUrl);
+	// Named by campaign under the same rule as the turf and the organizer page.
+	let badges: CampaignBadges = {};
+	if (fresh.length > 0) {
+		try {
+			const campaigns = await loadTurfCampaigns(db);
+			badges = Object.fromEntries(
+				Object.entries(campaigns.badges).filter(([id]) => badgeShown(campaigns, Number(id))),
+			);
+		} catch (err) {
+			// The alert matters more than its labels.
+			console.error(`${LOG} could not read campaign badges:`, errMessage(err));
+		}
+	}
+	const text = renderDriftAlert(fresh, appUrl, { badges });
 	if (text === null) {
 		if (cleared > 0) console.log(`${LOG} drift alerts: cleared=${cleared}`);
-		return { announced: 0, cleared, failed: false, skipped: 'nothing-new' };
+		// Say WHICH kind of quiet this is. "Nothing new" means the two sides
+		// agree; "exports unused" means half the comparison was never possible.
+		return {
+			announced: 0,
+			cleared,
+			failed: false,
+			skipped: exportsUnused ? 'exports-unused' : 'nothing-new',
+		};
 	}
 
 	if (!(await postAlert(channelId, text, LOG))) {
@@ -200,8 +243,8 @@ export async function sendDriftAlerts(
 		const byKind = new Map<DriftKind, number[]>();
 		for (const item of fresh) {
 			const list = byKind.get(item.kind);
-			if (list) list.push(item.mapRouteId);
-			else byKind.set(item.kind, [item.mapRouteId]);
+			if (list) list.push(item.turfId);
+			else byKind.set(item.kind, [item.turfId]);
 		}
 		const at = now.toISOString();
 		for (const [kind, routeIds] of byKind) await markAlerted(db, routeIds, kind, at);

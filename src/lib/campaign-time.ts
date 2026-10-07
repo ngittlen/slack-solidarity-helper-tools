@@ -4,10 +4,17 @@
 // for reading: a canvass that ran Saturday evening should say Saturday, not
 // Sunday, and a knock at 9pm belongs to the day the volunteer was out.
 //
-// `America/Detroit` is the campaign's timezone, already the assumption in the
-// canvassing board and the doors projection, which pin their day buckets to it.
-// Those keep it private because they only bucket; this module exists because
-// the activity history needs to *display* it.
+// The campaign's timezone is `CAMPAIGN_TIME_ZONE` — an IANA name, e.g.
+// `America/Chicago`. Unset, it is the default below, which is where every
+// deployment of this app started. It is one clock for the whole campaign, not a
+// per-chapter one: the canvassing board, the doors projection and the activity
+// history all bucket by it, and two chapters an hour apart comparing a day's
+// numbers need those buckets to mean the same thing.
+//
+// Read from `process.env` rather than `$env/dynamic/private`, deliberately: the
+// pure modules under $lib/van import this, scripts/ runs those under tsx, and
+// the `$env` modules only exist inside the Vite bundle (see the note on
+// ChapterFolders in server/van/sync.ts, which was written after that bit).
 //
 // Formatting happens on the SERVER and ships as strings in the payload. Doing
 // it in the browser would render each row in whatever zone the reader's laptop
@@ -15,7 +22,41 @@
 // the same event — and would risk an SSR/client hydration mismatch on every
 // row. One clock, decided once.
 
-export const CAMPAIGN_TIME_ZONE = 'America/Detroit';
+/** Where this app started, and the value every existing deployment had baked
+ *  in before the variable existed. */
+export const DEFAULT_CAMPAIGN_TIME_ZONE = 'America/Detroit';
+
+/** True when the runtime knows this zone. A typo here would otherwise throw on
+ *  the first `Intl.DateTimeFormat` call, i.e. while rendering a page, rather
+ *  than at the point somebody could still fix it. */
+function isValidTimeZone(zone: string): boolean {
+	try {
+		new Intl.DateTimeFormat('en-US', { timeZone: zone });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function resolveTimeZone(): string {
+	// `process` is absent in a browser bundle; nothing here is meant to run
+	// there, and the default keeps an accidental import rendering rather than
+	// crashing.
+	const raw =
+		typeof process === 'undefined' ? '' : (process.env?.['CAMPAIGN_TIME_ZONE'] ?? '').trim();
+	if (!raw) return DEFAULT_CAMPAIGN_TIME_ZONE;
+	if (!isValidTimeZone(raw)) {
+		// Warn rather than throw: a mistyped zone should not take the app down,
+		// and a silent fallback would have every timestamp quietly wrong.
+		console.warn(
+			`[campaign-time] CAMPAIGN_TIME_ZONE is not a known IANA time zone: "${raw}" — using ${DEFAULT_CAMPAIGN_TIME_ZONE}`,
+		);
+		return DEFAULT_CAMPAIGN_TIME_ZONE;
+	}
+	return raw;
+}
+
+export const CAMPAIGN_TIME_ZONE = resolveTimeZone();
 
 /** `en-CA` gives ISO-ordered `YYYY-MM-DD`, which sorts and compares as a
  *  string. */
@@ -66,6 +107,37 @@ export function campaignDayLabel(iso: string): string {
 export function campaignTimeLabel(iso: string): string {
 	const date = parse(iso);
 	return date ? TIME_LABEL.format(date) : '';
+}
+
+/** `en-CA` again for ISO order, with a 24-hour clock so the string sorts. */
+const SHEET_STAMP = new Intl.DateTimeFormat('en-CA', {
+	timeZone: CAMPAIGN_TIME_ZONE,
+	year: 'numeric',
+	month: '2-digit',
+	day: '2-digit',
+	hour: '2-digit',
+	minute: '2-digit',
+	hourCycle: 'h23',
+});
+
+/**
+ * Campaign-local timestamp for a spreadsheet cell: `2026-09-19 14:07`.
+ *
+ * Its own formatter rather than `campaignDayKey` + `campaignTimeLabel` because
+ * those compose to "2026-09-19 2:07 PM", which sorts wrongly in a column people
+ * sort — 10 AM lands above 2 PM. The spec says readers sort by this column, so
+ * the 24-hour form is the requirement rather than a preference.
+ *
+ * Returns '' for an unparseable timestamp, matching campaignDayKey: a blank
+ * cell reads as "unknown" to anyone scanning the sheet, where a fabricated date
+ * would not.
+ */
+export function campaignSheetStamp(iso: string): string {
+	const date = parse(iso);
+	if (!date) return '';
+	// Intl renders this as "2026-09-19, 14:07"; the comma helps nobody in a
+	// spreadsheet cell and stops Sheets reading it as a datetime.
+	return SHEET_STAMP.format(date).replace(', ', ' ');
 }
 
 const HOUR = new Intl.DateTimeFormat('en-GB', {
@@ -129,4 +201,63 @@ export function campaignWeekStart(now: Date): Date {
 	const back = daysBackToMonday[get('weekday')] ?? 0;
 	const midnight = Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day')));
 	return new Date(midnight - back * 86_400_000);
+}
+
+const WALL_CLOCK = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3})\d*)?Z?$/;
+
+const ZONE_PARTS = new Intl.DateTimeFormat('en-US', {
+	timeZone: CAMPAIGN_TIME_ZONE,
+	hourCycle: 'h23',
+	year: 'numeric',
+	month: '2-digit',
+	day: '2-digit',
+	hour: '2-digit',
+	minute: '2-digit',
+	second: '2-digit',
+});
+
+/** How far the campaign's clock is ahead of UTC at `ms` (negative in the US). */
+function zoneOffsetMs(ms: number): number {
+	const parts = ZONE_PARTS.formatToParts(new Date(ms));
+	const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+	const asUtc = Date.UTC(
+		get('year'),
+		get('month') - 1,
+		get('day'),
+		get('hour'),
+		get('minute'),
+		get('second'),
+	);
+	return asUtc - Math.floor(ms / 1000) * 1000;
+}
+
+/**
+ * A campaign-local wall-clock time, as the UTC instant it names.
+ *
+ * For timestamps that carry a `Z` they have not earned. VAN's
+ * `/minivanExports` `dateCreated` is one: verified 2026-09-23, its newest
+ * records ran hours behind the real UTC time, and exports that follow a claim
+ * in this app line up only once shifted by the Eastern offset. The `Z` is
+ * ignored and the digits are read as campaign-local time.
+ *
+ * The offset is taken twice — once at the naive guess, once at the result — so
+ * a time in the hour either side of a daylight-saving change lands on the right
+ * side of it. Returns null for anything that is not `YYYY-MM-DDTHH:MM:SS`.
+ */
+export function campaignWallClockToUtc(wallClock: string): Date | null {
+	const match = WALL_CLOCK.exec(wallClock.trim());
+	if (!match) return null;
+	const [, y, mo, d, h, mi, s, frac] = match;
+	const naive = Date.UTC(
+		Number(y),
+		Number(mo) - 1,
+		Number(d),
+		Number(h),
+		Number(mi),
+		Number(s),
+		Number((frac ?? '0').padEnd(3, '0')),
+	);
+	if (Number.isNaN(naive)) return null;
+	const guess = naive - zoneOffsetMs(naive);
+	return new Date(naive - zoneOffsetMs(guess));
 }

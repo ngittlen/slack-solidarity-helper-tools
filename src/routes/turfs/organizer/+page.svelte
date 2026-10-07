@@ -1,6 +1,7 @@
 <script lang="ts">
 	import './organizer.css';
 	import { resolve } from '$app/paths';
+	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
 
 	const { data } = $props();
@@ -17,7 +18,22 @@
 		return hours === 1 ? '1 hour left' : `${hours} hours left`;
 	}
 
-	const scope = $derived(data.chapter ? data.chapter.name : 'all chapters');
+	// Read inside "… in {scope}" sentences: "Washtenaw County", "all chapters",
+	// or with a campaign picked, "all chapters (Partner)".
+	const scope = $derived(
+		(data.chapter?.name ?? 'all chapters') + (data.campaign ? ` (${data.campaign.name})` : ''),
+	);
+
+	/** " · <badge>" after a row's chapter, while its campaign shows a badge
+	 *  (more than one campaign enabled, or this one disabled). */
+	function campaignSuffix(campaignId: number): string {
+		const badge = data.campaignBadges[campaignId];
+		return badge ? ` · ${badge}` : '';
+	}
+
+	/** "A", "A and B", "A, B and C". */
+	const listNames = (names: string[]) =>
+		new Intl.ListFormat('en-US', { style: 'long', type: 'conjunction' }).format(names);
 </script>
 
 <main>
@@ -38,6 +54,23 @@
 				{/each}
 			</select>
 		</div>
+		{#if data.campaigns.length > 1}
+			<div class="filter">
+				<label for="campaign">Campaign</label>
+				<select
+					id="campaign"
+					name="campaign"
+					onchange={(e) => e.currentTarget.form?.requestSubmit()}
+				>
+					<option value="" selected={data.campaign === null}>All campaigns</option>
+					{#each data.campaigns as campaign (campaign.id)}
+						<option value={campaign.id} selected={data.campaign?.id === campaign.id}>
+							{campaign.name}
+						</option>
+					{/each}
+				</select>
+			</div>
+		{/if}
 		<button type="submit" class="filter-go">Show</button>
 		<a class="cross-link" href={resolve('/turfs/activity')}>See what already happened →</a>
 	</form>
@@ -63,6 +96,13 @@
 			</li>
 		{/if}
 	</ul>
+
+	{#if data.geometry.pending > 0 || data.geometry.failed > 0}
+		<!-- Turf shapes are derived one export job per turf, so after a big
+		     catalog sync the map is honestly half pins for a while. Shown only
+		     while that is true, so it does not become furniture. -->
+		<p class="callout is-quiet">Turf shapes: {data.geometry.label}</p>
+	{/if}
 
 	{#if data.summary.expiringUnwarned > 0}
 		<!-- The one line that means someone has to act personally: about to lapse
@@ -101,10 +141,12 @@
 										<span class="turf-sub">{held.regionName}</span>
 									{/if}
 									<span class="turf-sub">
-										{held.doorCount.toLocaleString('en-US')} doors · {held.chapterName}
+										{held.doorCount.toLocaleString('en-US')} doors · {held.chapterName}{campaignSuffix(
+											held.campaignId,
+										)}
 									</span>
 								</td>
-								<td>{held.slackUserName}</td>
+								<td><HolderName name={held.slackUserName} account={held.account} /></td>
 								<td class="col-num">
 									{held.hoursHeld}h
 									<span class="turf-sub">{held.claimedAgoLabel}</span>
@@ -136,10 +178,22 @@
 			<!-- Not "all clear". Nothing has been measured, and saying otherwise
 			     would report a check that has never run as a passing one. -->
 			<p class="empty">
-				Not checked yet. After a volunteer marks turf done, VAN is refreshed and the door count
-				compared — a count that didn't move means MiniVAN was never synced and the results are still
-				on their phone. That check needs VAN API access, which isn't configured yet, so nothing here
-				has been verified either way.
+				Not checked yet. After a volunteer marks turf done, the next time VAN re-cuts that region
+				the new door count is compared with the count when they claimed it — a count that didn't
+				move usually means MiniVAN was never synced and the results are still on their phone.
+				{#if data.regionRefresh.off.length === 0}
+					The sync asks VAN to re-cut a region once turf in it is finished, so this normally fills
+					in within a day.
+				{:else if data.regionRefresh.on.length === 0}
+					Automatic re-cuts are off (each campaign's page under Settings → VAN campaigns), so this
+					only happens when an organizer re-cuts a region in VAN by hand.
+				{:else}
+					For {listNames(data.regionRefresh.on)}, the sync asks VAN to re-cut a region once turf in
+					it is finished, so this normally fills in within a day. Automatic re-cuts are off for
+					{listNames(data.regionRefresh.off)} (each campaign's page under Settings → VAN campaigns), so
+					for that turf this only happens when an organizer re-cuts a region in VAN by hand.
+				{/if}
+				Nothing here has been verified either way.
 				{#if data.completionsExamined > 0}
 					<br />
 					{data.completionsExamined.toLocaleString('en-US')} recent
@@ -172,9 +226,11 @@
 									{#if suspect.regionName}
 										<span class="turf-sub">{suspect.regionName}</span>
 									{/if}
-									<span class="turf-sub">{suspect.chapterName}</span>
+									<span class="turf-sub"
+										>{suspect.chapterName}{campaignSuffix(suspect.campaignId)}</span
+									>
 								</td>
-								<td>{suspect.slackUserName}</td>
+								<td><HolderName name={suspect.slackUserName} account={suspect.account} /></td>
 								<td class="col-num">
 									{suspect.completedLabel}
 									<span class="turf-sub">{suspect.completedAgoLabel}</span>
@@ -190,26 +246,39 @@
 	<section class="board">
 		<h2>Out of step with VAN</h2>
 		{#if data.drift.visibility === 'van-side-unavailable'}
-			<!-- Not "no drift". The sync writes van_distributed_to = NULL both when
-			     VAN reports nothing and when the tier that reads exports is not
-			     granted, so an empty list here would be reassurance drawn from a
-			     question nobody asked. -->
+			<!-- Not "no drift". van_distributed_to is incomplete both when the
+			     tier that reads exports is not granted and while the sync is still
+			     backfilling them, so an empty list here would be reassurance drawn
+			     from a question nobody asked. -->
 			<p class="empty">
-				Can't check. Comparing our checkout list against MiniVAN needs VAN's
-				<code>/minivanExports</code>, which the current API key can't read — so turf assigned by
-				hand in VAN is invisible to the app and nothing here has been compared either way.
+				Can't check right now. Comparing our checkout list against MiniVAN needs VAN's
+				<code>/minivanExports</code>, and the last sync couldn't finish reading it — either the API
+				key can't read it, VAN failed, or the app is still loading the last 30 days of exports.
+				Nothing here has been compared either way.
+			</p>
+		{:else if data.drift.visibility === 'exports-unused'}
+			<!-- Also not "no drift". Nothing in this catalog has ever appeared in a
+			     MiniVAN export, which means the campaign hands out printed list
+			     NUMBERS rather than assigning lists to named canvassers in VAN. A
+			     list number loads in MiniVAN without an export record existing, so
+			     "claimed here, not in MiniVAN" would be true of every claim ever
+			     made and would mean nothing. -->
+			<p class="empty">
+				Not checked. No turf in {scope} appears in any MiniVAN export, so there is nothing to compare
+				against — this campaign hands out printed list numbers rather than assigning lists to canvassers
+				inside VAN. A list number loads in MiniVAN either way. This check switches itself back on as soon
+				as one export matches.
 			</p>
 		{:else if data.drift.items.length === 0}
 			<p class="empty">
-				Our checkout list and MiniVAN agree in {scope}. Nothing is claimed here without being
-				exported, and nothing is out in MiniVAN that the app thinks is free.
+				Our checkout list and MiniVAN agree in {scope}. Nothing is claimed here without being in
+				MiniVAN.
 			</p>
 		{:else}
 			<p class="section-note">
 				The app and VAN disagree about {data.drift.items.length}
-				{data.drift.items.length === 1 ? 'turf' : 'turfs'}. Turf out in MiniVAN but free here can be
-				claimed by a second person; turf claimed here but never exported gives its holder a list
-				number that loads nothing.
+				{data.drift.items.length === 1 ? 'turf' : 'turfs'}: claimed here, but the volunteer hasn't
+				loaded the list in MiniVAN yet.
 			</p>
 			<div class="table-wrap">
 				<table>
@@ -222,7 +291,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each data.drift.items as item (item.kind + ':' + item.mapRouteId)}
+						{#each data.drift.items as item (item.kind + ':' + item.turfId)}
 							<tr class="drift-{item.kind}">
 								<td class="col-flag">
 									<span class="badge badge-{item.kind}">{driftLabel(item.kind)}</span>
@@ -233,11 +302,13 @@
 										<span class="turf-sub">{item.regionName}</span>
 									{/if}
 									<span class="turf-sub">
-										{item.doorCount.toLocaleString('en-US')} doors · {item.chapterName}
+										{item.doorCount.toLocaleString('en-US')} doors · {item.chapterName}{campaignSuffix(
+											item.campaignId,
+										)}
 									</span>
 								</td>
 								<td>
-									{item.heldBy ?? item.distributedTo ?? '—'}
+									<HolderName name={item.heldBy} account={item.account} />
 									{#if !item.hasListNumber}
 										<span class="turf-sub">no MiniVAN list number</span>
 									{/if}

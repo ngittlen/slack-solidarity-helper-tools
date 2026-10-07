@@ -20,6 +20,16 @@
 // a strictly stronger check than an Origin header — an attacker forging a
 // cross-site form post cannot produce it.
 //
+// And one more: `POST /auth/apple/callback`, exactly. Sign in with Apple
+// returns by a form post from https://appleid.apple.com (response_mode=
+// form_post, which Apple requires when asking for name and email), so a
+// cross-site form post is the only way that callback is ever reached. What
+// authenticates it is not an Origin header but the flow itself: a state
+// signed by us whose nonce must match this browser's cookie, an id-token
+// nonce that must match a second cookie, and a code that only becomes a
+// session after Apple accepts it with our client secret. A forged post has
+// none of those. See routes/auth/apple/callback/+server.ts.
+//
 // Net protection is unchanged for the rest of the app: the only same-origin
 // form POST is /auth/logout, and every other mutation is a JSON `fetch`, which
 // Kit's original check already exempted (JSON is not a form content type).
@@ -36,6 +46,9 @@ const PROTECTED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /** Path prefix exempted because it is signature-verified instead. */
 const SIGNATURE_VERIFIED_PREFIX = '/api/slack/';
+
+/** The one exact path exempted because the OAuth flow authenticates it. */
+const APPLE_CALLBACK_PATH = '/auth/apple/callback';
 
 function isFormContentType(request: Request): boolean {
 	// Strip parameters (`; charset=utf-8`, `; boundary=…`) and normalize.
@@ -55,5 +68,7 @@ export function isCrossSiteFormPost(request: Request, url: URL): boolean {
 	if (!isFormContentType(request)) return false;
 	// Slack requests carry no Origin but do carry a verified signature.
 	if (url.pathname.startsWith(SIGNATURE_VERIFIED_PREFIX)) return false;
+	// Apple's sign-in result, posted from appleid.apple.com.
+	if (request.method === 'POST' && url.pathname === APPLE_CALLBACK_PATH) return false;
 	return request.headers.get('origin') !== url.origin;
 }

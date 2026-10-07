@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -47,8 +47,8 @@ beforeEach(async () => {
 		[300, 'Turf 03'],
 	] as const) {
 		await client.execute(
-			`INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
-			 VALUES (${id}, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', '${name}', 250, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
+			`INSERT INTO van_turfs (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+			 VALUES (${id}, ${id}, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', '${name}', 250, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
 		);
 	}
 });
@@ -57,7 +57,7 @@ beforeEach(async () => {
  *  six-hour lead window — held by an unwarned volunteer. */
 async function checkout(over: Record<string, string | number | null> = {}) {
 	const row = {
-		map_route_id: 100,
+		turf_id: 100,
 		slack_user_id: 'U_VOL',
 		slack_user_name: 'Dana',
 		claimed_at: iso(NOW.getTime() - 20 * HOUR),
@@ -69,8 +69,8 @@ async function checkout(over: Record<string, string | number | null> = {}) {
 	};
 	const q = (v: string | number | null) => (v === null ? 'NULL' : `'${v}'`);
 	await client.execute(
-		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, expiry_warned_at)
-		 VALUES (${row.map_route_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}', ${q(row.released_at)}, ${q(row.completed_at)}, ${q(row.expiry_warned_at)})`,
+		`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, expiry_warned_at)
+		 VALUES (${row.turf_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}', ${q(row.released_at)}, ${q(row.completed_at)}, ${q(row.expiry_warned_at)})`,
 	);
 }
 
@@ -78,6 +78,16 @@ async function warnedStamps(): Promise<(string | null)[]> {
 	const res = await client.execute('SELECT expiry_warned_at FROM van_turf_checkouts ORDER BY id');
 	return res.rows.map((r) => r.expiry_warned_at as string | null);
 }
+
+// Each test opens its own in-memory client and replaces console. Both leak for
+// the life of the worker otherwise — `clearAllMocks` resets a spy's recorded
+// calls but leaves it installed. Neither is visible while this file is run on
+// its own, which is the shape of a test that fails once in a full suite and
+// passes every time you go looking for it.
+afterEach(() => {
+	client.close();
+	vi.restoreAllMocks();
+});
 
 describe('sendExpiryWarnings', () => {
 	it('DMs the holder of turf inside the lead window', async () => {
@@ -118,6 +128,35 @@ describe('sendExpiryWarnings', () => {
 			failed: 0,
 		});
 		expect(mockSendDm).toHaveBeenCalledTimes(1);
+	});
+
+	// A Google holder has no Slack: the same warning is kept for /turfs
+	// instead (spec 013, User Story 5), and counts as delivered — once.
+	it('keeps the warning for a Google holder instead of DMing', async () => {
+		await checkout({ slack_user_id: 'google:1093', slack_user_name: 'Ana' });
+		expect(await sendExpiryWarnings(db, NOW)).toEqual({ sent: 1, failed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+
+		const notices = await client.execute('SELECT user_id, kind, text FROM turf_notices');
+		expect(notices.rows).toHaveLength(1);
+		expect(notices.rows[0]).toMatchObject({ user_id: 'google:1093', kind: 'expiry' });
+		expect(notices.rows[0]!.text).toContain('Turf 01');
+		expect(await warnedStamps()).toEqual([NOW.toISOString()]);
+
+		await sendExpiryWarnings(db, new Date(NOW.getTime() + 30 * 60_000));
+		const again = await client.execute('SELECT count(*) AS n FROM turf_notices');
+		expect(Number(again.rows[0]!.n)).toBe(1);
+	});
+
+	// Spec 014, User Story 5: an Apple holder is treated the same way.
+	it('keeps the warning for an Apple holder instead of DMing', async () => {
+		await checkout({ slack_user_id: 'apple:001.abc', slack_user_name: 'Bo' });
+		expect(await sendExpiryWarnings(db, NOW)).toEqual({ sent: 1, failed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+		const notices = await client.execute('SELECT user_id, kind FROM turf_notices');
+		expect(notices.rows).toEqual([
+			expect.objectContaining({ user_id: 'apple:001.abc', kind: 'expiry' }),
+		]);
 	});
 
 	it('stamps the row when the DM lands', async () => {
@@ -178,7 +217,7 @@ describe('sendExpiryWarnings', () => {
 
 		it('skips a checkout whose turf row is missing', async () => {
 			await client.execute(
-				`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+				`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
 				 VALUES (999, 'U_GHOST', 'Ghost', '${iso(NOW.getTime() - HOUR)}', '${iso(NOW.getTime() + HOUR)}')`,
 			);
 			expect(await sendExpiryWarnings(db, NOW)).toEqual({ sent: 0, failed: 0 });
@@ -186,10 +225,10 @@ describe('sendExpiryWarnings', () => {
 	});
 
 	it('warns several holders in one sweep', async () => {
-		await checkout({ map_route_id: 100, slack_user_id: 'U_A', slack_user_name: 'A' });
-		await checkout({ map_route_id: 200, slack_user_id: 'U_B', slack_user_name: 'B' });
+		await checkout({ turf_id: 100, slack_user_id: 'U_A', slack_user_name: 'A' });
+		await checkout({ turf_id: 200, slack_user_id: 'U_B', slack_user_name: 'B' });
 		await checkout({
-			map_route_id: 300,
+			turf_id: 300,
 			slack_user_id: 'U_C',
 			slack_user_name: 'C',
 			expires_at: iso(NOW.getTime() + 30 * HOUR),
@@ -200,8 +239,8 @@ describe('sendExpiryWarnings', () => {
 	});
 
 	it('reports sent and failed separately in a mixed sweep', async () => {
-		await checkout({ map_route_id: 100, slack_user_id: 'U_A', slack_user_name: 'A' });
-		await checkout({ map_route_id: 200, slack_user_id: 'U_B', slack_user_name: 'B' });
+		await checkout({ turf_id: 100, slack_user_id: 'U_A', slack_user_name: 'A' });
+		await checkout({ turf_id: 200, slack_user_id: 'U_B', slack_user_name: 'B' });
 		mockSendDm.mockImplementation(async (userId: string) => userId !== 'U_B');
 
 		expect(await sendExpiryWarnings(db, NOW)).toEqual({ sent: 1, failed: 1 });

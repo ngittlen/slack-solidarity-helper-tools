@@ -23,8 +23,10 @@ import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '..
 import {
 	MAX_CLAIM_TTL_HOURS,
 	MAX_CONCURRENT_CLAIMS,
+	MAX_VAN_ASSIGNMENT_TTL_HOURS,
 	MIN_CLAIM_TTL_HOURS,
 	MIN_CONCURRENT_CLAIMS,
+	MIN_VAN_ASSIGNMENT_TTL_HOURS,
 } from '../van/checkout.js';
 import { parseOverrides } from '$lib/styles/theme-css.js';
 import { SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
@@ -106,6 +108,67 @@ function numberInRangeField(label: string, min: number, max: number): FieldValid
 	};
 }
 
+/** A real boolean. Strict on purpose: `"false"` is truthy, and a switch that a
+ *  stringly-typed client turns ON by sending "false" is the worst way to fail.
+ *  Exported for the per-campaign switches (/api/settings/van-campaigns). */
+export function checkBoolean(label: string, value: unknown): FieldResult<boolean> {
+	if (typeof value !== 'boolean') return fail(`${label} must be true or false`);
+	return { ok: true, value };
+}
+
+/**
+ * A Google Sheets tab name. `''` restores the built-in default.
+ *
+ * Tighter than a plain bounded text field because this string is interpolated
+ * into an A1 range (`'Packet Tracker'`). Apostrophes are what end the
+ * quoting early, and while sheets.ts doubles them on the way out, a name
+ * carrying one is far more likely to be a mis-paste than a deliberate choice.
+ * Newlines and brackets are rejected for the same reason: Sheets will not
+ * accept them in a tab name, so taking one here only moves the failure to the
+ * first sync, where nobody is watching.
+ */
+/** A Packet Tracker tab name; '' means the default. Exported for the
+ *  per-campaign setting (/api/settings/van-campaigns), which is where the tab
+ *  name lives. */
+export function checkSheetTabName(label: string, value: unknown): FieldResult<string> {
+	if (typeof value !== 'string') return fail(`${label} must be a string`);
+	const trimmed = value.trim();
+	if (trimmed === '') return { ok: true, value: '' };
+	if (trimmed.length > SHEET_TAB_NAME_MAX_LENGTH) {
+		return fail(`${label} must be ${SHEET_TAB_NAME_MAX_LENGTH} characters or fewer`);
+	}
+	if (/['[\]:\\/?*\n\r]/.test(trimmed)) {
+		return fail(`${label} cannot contain ' [ ] : \\ / ? * or a line break`);
+	}
+	return { ok: true, value: trimmed };
+}
+
+/**
+ * A link shown to the public. `''` clears it.
+ *
+ * https only: this is rendered as a button on a page anyone can open, and a
+ * `javascript:` or `data:` URL there would run in our origin for every visitor.
+ * Plain http is refused too — a sign-up page should not be sent in the clear.
+ */
+function publicUrlField(label: string, maxLength: number): FieldValidator<string> {
+	return (value) => {
+		if (typeof value !== 'string') return fail(`${label} must be a string`);
+		const trimmed = value.trim();
+		if (trimmed === '') return { ok: true, value: '' };
+		if (trimmed.length > maxLength) {
+			return fail(`${label} must be ${maxLength} characters or fewer`);
+		}
+		let parsed: URL;
+		try {
+			parsed = new URL(trimmed);
+		} catch {
+			return fail(`${label} must be a full link, starting with https://`);
+		}
+		if (parsed.protocol !== 'https:') return fail(`${label} must start with https://`);
+		return { ok: true, value: parsed.toString() };
+	};
+}
+
 /** ISO datetime, re-serialized to canonical form so every reader gets the same
  *  format. `''` clears the countdown. */
 function isoDateTimeField(label: string): FieldValidator<string> {
@@ -170,9 +233,14 @@ function dmTemplateField(
 
 const COUNTDOWN_LABEL_MAX_LENGTH = 80;
 const CONTACT_FIELD_MAX_LENGTH = 200;
+// Generous for a tag name; the bound only keeps junk out of the column.
+const MOBILIZE_TAG_MAX_LENGTH = 100;
+// Google's own limit on a sheet name is 100 characters.
+const SHEET_TAB_NAME_MAX_LENGTH = 100;
 // Slack renders a section block's text up to 3000 chars; keep the stored
 // template within that so a saved message can never be rejected at send time.
 const DM_TEMPLATE_MAX_LENGTH = 3000;
+const PUBLIC_URL_MAX_LENGTH = 500;
 
 // AppConfigPatch is a Partial, so Required<> recovers the full field set with
 // each value's real type — which is what the table is keyed against.
@@ -234,6 +302,8 @@ export const APP_CONFIG_FIELDS: {
 	mobilizeContactName: boundedTextField('mobilizeContactName', CONTACT_FIELD_MAX_LENGTH),
 	mobilizeContactEmail: emailField('mobilizeContactEmail', CONTACT_FIELD_MAX_LENGTH),
 	mobilizeContactPhone: boundedTextField('mobilizeContactPhone', CONTACT_FIELD_MAX_LENGTH),
+	// '' turns the partner-org import off.
+	mobilizeImportTag: boundedTextField('mobilizeImportTag', MOBILIZE_TAG_MAX_LENGTH),
 
 	// [0, 1] is the range the /settings slider offers and the span of meaningful
 	// power-law exponents for the growth score.
@@ -260,8 +330,15 @@ export const APP_CONFIG_FIELDS: {
 		MIN_CONCURRENT_CLAIMS,
 		MAX_CONCURRENT_CLAIMS,
 	),
+	vanAssignmentTtlHours: numberInRangeField(
+		'vanAssignmentTtlHours',
+		MIN_VAN_ASSIGNMENT_TTL_HOURS,
+		MAX_VAN_ASSIGNMENT_TTL_HOURS,
+	),
 
 	themeTokens: themeTokensField('themeTokens'),
+
+	publicJoinUrl: publicUrlField('publicJoinUrl', PUBLIC_URL_MAX_LENGTH),
 
 	siteName: boundedTextField('siteName', SITE_NAME_MAX_LENGTH),
 	countdownLabel: boundedTextField('countdownLabel', COUNTDOWN_LABEL_MAX_LENGTH),

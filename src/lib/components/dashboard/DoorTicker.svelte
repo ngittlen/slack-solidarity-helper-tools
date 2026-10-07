@@ -75,15 +75,19 @@
 	     list twice for the seamless loop, and the sr-only list below carries
 	     the same information in a readable form. -->
 	{#snippet cells()}
-		{#each entries as entry (entry.canvasser)}
+		<!-- Keyed by rank, not name: entries are per account, and two accounts
+		     can share a name — one person signed in with Slack and Google or
+		     Apple, or two outside volunteers with the same name. A duplicate key
+		     throws, even in production, and takes the dashboard down with it. -->
+		{#each entries as entry (entry.rank)}
 			<div class="cell" class:cell--lead={entry.rank === 1}>
 				<span class="cell__name">{entry.canvasser}</span>
 				<!-- No separators between count, unit and region: colour does that
 				     job, and a punctuation glyph would just eat LED columns. -->
-				<!-- Doors when VAN has counted them, turfs when it has not. The two
-				     clocks again: a completion is known instantly and its doors are
-				     not, so someone who finished half an hour ago would otherwise
-				     scroll past as a zero. -->
+				<!-- Doors knocked once ContactHistory has them, turfs until then: a
+				     completion is known instantly and its doors only after MiniVAN
+				     syncs, so someone who just finished would otherwise scroll past
+				     as a zero. -->
 				<span class="cell__doors"
 					><span class="cell__count"
 						>{(entry.doors > 0 ? entry.doors : entry.turfs).toLocaleString('en-US')}</span
@@ -95,7 +99,7 @@
 	{/snippet}
 
 	<div class="ticker" style={trackStyle} aria-hidden="true">
-		<p class="ticker__header">Most doors cleared today:</p>
+		<p class="ticker__header">Most doors knocked today:</p>
 		<div class="ticker__track">
 			<!-- Only the first copy is measured; the second exists to cover the
 			     seam and is identical by construction. -->
@@ -104,11 +108,11 @@
 		</div>
 	</div>
 
-	<ol class="ticker__sr" aria-label="Most doors cleared today">
-		{#each entries as entry (entry.canvasser)}
+	<ol class="ticker__sr" aria-label="Most doors knocked today">
+		{#each entries as entry (entry.rank)}
 			<li>
 				{entry.canvasser}: {entry.doors > 0
-					? `${entry.doors} doors cleared`
+					? `${entry.doors} doors knocked`
 					: `${entry.turfs} ${entry.turfs === 1 ? 'turf' : 'turfs'} walked, doors not counted yet`}{entry.chapter
 					? ` in ${entry.chapter}`
 					: ''}

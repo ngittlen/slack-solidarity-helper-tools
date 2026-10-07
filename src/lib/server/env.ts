@@ -2,8 +2,14 @@
 // Uses $env/dynamic/private so Vite's .env/.env.local loading works in dev.
 // Call validateEnv() from hooks.server.ts init() — never at module level.
 
+import { createPrivateKey } from 'node:crypto';
 import { env } from '$env/dynamic/private';
 import { parseEncryptionKey } from './token-crypto.js';
+import {
+	parseLegacyExportJobTypeId,
+	parseVanCampaigns,
+	type VanCampaignCredentials,
+} from './van/campaign-credentials.js';
 
 const get = (key: string) => (env as Record<string, string | undefined>)[key] ?? '';
 
@@ -43,16 +49,13 @@ export const SLACK_BOT_TOKEN = get('SLACK_BOT_TOKEN');
 export const SLACK_CLIENT_ID = get('SLACK_CLIENT_ID');
 export const SLACK_CLIENT_SECRET = get('SLACK_CLIENT_SECRET');
 export const SLACK_SIGNING_SECRET = get('SLACK_SIGNING_SECRET');
-export const SLACK_ALLOWED_USER_IDS = new Set(
-	get('SLACK_ALLOWED_USER_IDS')
-		.split(',')
-		.map((id) => id.trim())
-		.filter(Boolean),
-);
 // Slack user id that is ALWAYS granted admin, regardless of the DB-backed
-// allowed_slack_users list (or its SLACK_ALLOWED_USER_IDS fallback) — even
-// when that list is empty or unreadable. Escape hatch so a mis-edited allowed
-// list can never lock every admin out of /pending and /settings.
+// allowed_slack_users list — even when that list is empty or unreadable.
+//
+// Admins live only in that table, edited on /settings. This is the one way in
+// that does not consult it: the bootstrap for a fresh install, where the table
+// starts empty and somebody has to grant the first admin, and the recovery
+// path if a database outage makes the list unreadable.
 export const SLACK_SUPERUSER_ID = get('SLACK_SUPERUSER_ID');
 export const SLACK_TRACKING_CHANNEL_ID = get('SLACK_TRACKING_CHANNEL_ID');
 export const SLACK_GROWTH_REPORT_CHANNEL_ID = get('SLACK_GROWTH_REPORT_CHANNEL_ID');
@@ -98,6 +101,13 @@ export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
 
 export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
 
+// USPS state codes the campaign's turf is in, comma-separated (`MI`, or
+// `MI,OH`). Optional: it only scopes the county lookup that places VAN regions
+// on the folder map, and with it unset the page infers the states from the
+// region names themselves. Set it when a county name is ambiguous enough to be
+// worth pinning — there are 31 Washington Counties.
+export const CAMPAIGN_STATES = get('CAMPAIGN_STATES');
+
 // Mobilize v1 API credentials, shared by both syncs (events out, attendees back).
 //
 // The key must have write ("restricted") access granted by Mobilize — creating
@@ -119,6 +129,18 @@ export const MOBILIZE_CONTACT_PHONE = get('MOBILIZE_CONTACT_PHONE');
 // sync creates nothing and alerts instead. A flood means dedup or the source
 // data broke, and these events are publicly visible once created.
 export const MOBILIZE_SYNC_MAX_CREATES = intEnv('MOBILIZE_SYNC_MAX_CREATES', 25);
+
+// Partner-org import (their tagged Mobilize events -> our Solidarity). A
+// separate key and org from ours above: the partner's key only needs read
+// access, and mixing the two up would read — or write — the wrong org. The tag
+// that selects events is a /settings field, not an env var. The import stays
+// off until the key, the org and the tag are all set.
+export const MOBILIZE_IMPORT_API_KEY = get('MOBILIZE_IMPORT_API_KEY');
+export const MOBILIZE_IMPORT_ORG_ID = parseInt(get('MOBILIZE_IMPORT_ORG_ID'), 10);
+// Blast-radius guard, as for the outbound sync: more new imports than this in
+// one run and nothing is created. Imported events are public once they exist,
+// and the API cannot delete them.
+export const MOBILIZE_IMPORT_MAX_CREATES = intEnv('MOBILIZE_IMPORT_MAX_CREATES', 10);
 
 // Attendee sync (Mobilize signups -> Solidarity RSVPs).
 // Last-resort chapter for a new profile when the person's zip isn't in the
@@ -172,8 +194,117 @@ export const VAN_DATABASE_MODE = get('VAN_DATABASE_MODE').trim();
 // Export job type id for the coordinates-only export that feeds hull geometry.
 // EveryAction issues these per developer, so the `101` in VAN's docs is an
 // example — discover the real one with `npm run van:check`. Unset is fine:
-// the catalog sync runs without it and only geometry is skipped.
-export const VAN_EXPORT_JOB_TYPE_ID = intEnv('VAN_EXPORT_JOB_TYPE_ID', 0);
+// the catalog sync runs without it and only geometry is skipped. 0 means unset.
+// Parsed strictly, by the same rule the scripts use (parseLegacyExportJobTypeId),
+// so a value the app takes is a value `van:drain` takes too.
+export const VAN_EXPORT_JOB_TYPE_ID = (() => {
+	const raw = get('VAN_EXPORT_JOB_TYPE_ID');
+	const parsed = parseLegacyExportJobTypeId(raw);
+	if (parsed === null && raw.trim() !== '') {
+		console.warn(`[env] VAN_EXPORT_JOB_TYPE_ID is not a job type id: "${raw}" — ignoring it`);
+	}
+	return parsed ?? 0;
+})();
+// Key for the HMAC digests of VanIDs and addresses behind the uncontacted-door
+// count (van/person-hash.ts). Any long random string:
+//   openssl rand -base64 32
+// Unset turns the count off — no roster is built and VanID is never read.
+// Rotating it orphans every stored digest; see person-hash.ts for the reset.
+export const VAN_ID_HASH_SECRET = get('VAN_ID_HASH_SECRET');
+
+// Every VAN campaign's credentials: one `VAN_CAMPAIGN_<KEY>` secret each, plus
+// the legacy VAN_APP_NAME/VAN_API_KEY/VAN_DATABASE_MODE above standing in for
+// the `primary` campaign. See van/campaign-credentials.ts for the format.
+//
+// Computed once: secrets only change when Fly restarts the machine.
+let vanCampaignCredentialsCache: VanCampaignCredentials | null = null;
+export function vanCampaignCredentials(): VanCampaignCredentials {
+	vanCampaignCredentialsCache ??= parseVanCampaigns(env as Record<string, string | undefined>);
+	return vanCampaignCredentialsCache;
+}
+
+// The service-account key the Packet Tracker sync signs in to Google Sheets with
+// (see src/lib/server/google-env.ts and specs/011-turf-checkout-sheet/spec.md).
+// The whole JSON key file, as one value.
+//
+// A credential, so it is a deployment secret rather than a /settings field —
+// unlike which spreadsheets it writes to, which an admin edits without a
+// deploy. Optional: with it unset the Packet Tracker sync does nothing and says nothing,
+// which is what an unconfigured integration should do.
+export const GOOGLE_SHEETS_SERVICE_ACCOUNT = get('GOOGLE_SHEETS_SERVICE_ACCOUNT');
+
+// Sign in with Google, for volunteers who use turf checkout without joining the
+// Slack (see server/google-signin.ts and specs/013-google-sso-login/spec.md).
+// An OAuth "Web application" client from Google Cloud — nothing to do with the
+// Sheets service account above. Optional: with either half unset the Google
+// option is hidden everywhere and sign-in is Slack-only, as it always was.
+export const GOOGLE_OAUTH_CLIENT_ID = get('GOOGLE_OAUTH_CLIENT_ID');
+export const GOOGLE_OAUTH_CLIENT_SECRET = get('GOOGLE_OAUTH_CLIENT_SECRET');
+export const GOOGLE_REDIRECT_URI = `${APP_URL}/auth/google/callback`;
+
+/** True when both halves of the Google OAuth client are set. */
+export function googleSignInConfigured(): boolean {
+	return GOOGLE_OAUTH_CLIENT_ID !== '' && GOOGLE_OAUTH_CLIENT_SECRET !== '';
+}
+
+// Sign in with Apple, the same turf-checkout-only way in for volunteers whose
+// account is an Apple ID (see server/apple-signin.ts and
+// specs/014-apple-sso-login/spec.md). All four come from an Apple Developer
+// account: the Services ID is the OAuth client id, and the Team ID, Key ID
+// and `.p8` private key sign the short-lived client secret Apple wants on
+// every token exchange — minted per request, so nothing here ever expires.
+// Optional: with any of them unset the Apple option is hidden everywhere.
+export const APPLE_SIGNIN_SERVICES_ID = get('APPLE_SIGNIN_SERVICES_ID');
+export const APPLE_SIGNIN_TEAM_ID = get('APPLE_SIGNIN_TEAM_ID');
+export const APPLE_SIGNIN_KEY_ID = get('APPLE_SIGNIN_KEY_ID');
+/** The `.p8` file's PEM. A secret set on one line with literal `\n`s is put
+ *  back on its lines, so either way of pasting it works. */
+export const APPLE_SIGNIN_PRIVATE_KEY = get('APPLE_SIGNIN_PRIVATE_KEY').replace(/\\n/g, '\n');
+export const APPLE_REDIRECT_URI = `${APP_URL}/auth/apple/callback`;
+
+/**
+ * Why the Apple private key cannot sign, or null when it can. Only a P-256 EC
+ * key signs ES256, which is what Apple's `.p8` holds. Checked once: a pasted
+ * secret with a mangled header or newlines would otherwise show the Apple
+ * button and fail every sign-in with a bare "Sign-in failed".
+ */
+export function applePrivateKeyProblem(pem: string): string | null {
+	try {
+		const key = createPrivateKey(pem);
+		if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') {
+			return 'it is not a P-256 EC key (the .p8 file from Apple)';
+		}
+		return null;
+	} catch {
+		return 'it does not parse as a PEM private key — check the BEGIN/END lines and newlines';
+	}
+}
+
+let appleKeyChecked: boolean | undefined;
+
+/**
+ * True when every part of the Apple sign-in configuration is set and the key
+ * can sign. A key that cannot is reported once, without its value, and Apple
+ * sign-in stays hidden as if unconfigured.
+ */
+export function appleSignInConfigured(): boolean {
+	if (
+		APPLE_SIGNIN_SERVICES_ID === '' ||
+		APPLE_SIGNIN_TEAM_ID === '' ||
+		APPLE_SIGNIN_KEY_ID === '' ||
+		APPLE_SIGNIN_PRIVATE_KEY === ''
+	) {
+		return false;
+	}
+	if (appleKeyChecked === undefined) {
+		const problem = applePrivateKeyProblem(APPLE_SIGNIN_PRIVATE_KEY);
+		if (problem) {
+			console.error(`[env] APPLE_SIGNIN_PRIVATE_KEY is set but ${problem}; Apple sign-in is off.`);
+		}
+		appleKeyChecked = problem === null;
+	}
+	return appleKeyChecked;
+}
 
 // Basemap tiles for the turf map. Defaults to CARTO's keyless Positron
 // endpoint, which is what the demo has always used.
@@ -194,6 +325,11 @@ export const MAP_TILE_ATTRIBUTION = get('MAP_TILE_ATTRIBUTION');
 // somewhere else; and public by construction, because the browser is what
 // fetches the tiles. Restrict it by domain in the CARTO dashboard.
 export const MAP_TILE_API_KEY = get('MAP_TILE_API_KEY');
+
+// Set by Fly on every machine. Read here only to decide whether the
+// Fly-Client-IP header can be trusted (see server/visitor-address.ts): Fly's
+// proxy overwrites it, but anywhere else it is whatever the client sent.
+export const FLY_APP_NAME = get('FLY_APP_NAME');
 
 export interface ChapterEntry {
 	chapterId: number;
@@ -220,7 +356,6 @@ const REQUIRED_VARS = [
 	'SLACK_CLIENT_ID',
 	'SLACK_CLIENT_SECRET',
 	'SLACK_SIGNING_SECRET',
-	'SLACK_ALLOWED_USER_IDS',
 	'SLACK_TRACKING_CHANNEL_ID',
 	'TOKEN_ENCRYPTION_KEY',
 	'TURSO_DATABASE_URL',
@@ -253,4 +388,13 @@ export function validateEnv(): void {
 			'[env] SOLIDARITY_API_TOKEN is not set — the team_join welcome flow will be disabled (every lookup returns null).',
 		);
 	}
+	// Warnings, not exits: VAN is optional, and one campaign's malformed secret
+	// must not take down the app — or the campaigns whose secrets are fine.
+	// The messages name the secret and never carry its value. An install with
+	// no VAN vars at all has no errors here, so it boots silently.
+	const van = vanCampaignCredentials();
+	for (const error of van.errors.values()) console.warn(`[env] ${error}`);
+	for (const warning of van.warnings) console.warn(`[env] ${warning}`);
+	// Logs a bad Apple key at boot rather than on the first sign-in page view.
+	appleSignInConfigured();
 }

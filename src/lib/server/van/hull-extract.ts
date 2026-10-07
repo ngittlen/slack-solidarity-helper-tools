@@ -23,6 +23,14 @@
 // impossible to read another. `FORBIDDEN_COLUMNS` below names what must never
 // be admitted, and the tests assert it against the real 43-column header.
 //
+// One exception, deliberately narrow: when the caller supplies a roster hasher,
+// `VanID` and the address line are admitted so each row can be reduced to a
+// keyed digest of the person and of the door (person-hash.ts). That is what
+// lets the uncontacted-door count join VAN's ContactHistory to a turf. The raw
+// values live only between two delimiters and one HMAC call; what leaves this
+// file is 16 opaque bytes per column. `HASHED_COLUMNS` names them, and the
+// tests assert neither raw value survives into anything returned.
+//
 // Memory: coordinates accumulate, rows do not. `dropOutliers` is a two-pass
 // statistic (it needs the centroid and sigma over every point before it can
 // reject any), so a single-pass hull accumulator cannot also reject outliers,
@@ -40,6 +48,7 @@ import {
 	type LatLng,
 } from '../../van/geometry.js';
 import type { AddressLookup } from './geocode-batch.js';
+import type { PersonHasher } from './person-hash.js';
 
 /** VAN's column names for address coordinates, exactly as they appear in the
  *  type-5 header. Matched case-insensitively — VAN's casing has drifted
@@ -59,6 +68,10 @@ export const LNG_COLUMN = 'VAddressLongitude';
  *  decision rather than a refactor — see the header of geocode-batch.ts. */
 export const ADDRESS_COLUMNS = ['Address', 'City', 'State', 'ZipCode'] as const;
 
+/** Columns read ONLY to be hashed, and only when a roster hasher is supplied.
+ *  Never returned, logged or sent anywhere in raw form. */
+export const HASHED_COLUMNS = ['VanID', 'Address', 'ZipCode'] as const;
+
 /** Identity columns that must NEVER be read, whatever else changes here.
  *  Asserted in the tests against the real 43-column header, so widening the
  *  mask to include one of these fails the build rather than quietly shipping. */
@@ -73,7 +86,6 @@ export const FORBIDDEN_COLUMNS = [
 	'Phone',
 	'Party',
 	'Sex',
-	'VanID',
 	'VoterVANID',
 	'StateFileID',
 	'MyCampaignID',
@@ -165,6 +177,17 @@ export interface HullExtractResult {
 	 *  turf someone walks. Advisory: the hull is still returned and stored, and
 	 *  the caller warns rather than discarding it. */
 	hullTooLarge: boolean;
+	/** One entry per person, as keyed digests — present only when a roster
+	 *  hasher was supplied. The raw VanID and address never appear here. */
+	roster: RosterEntry[] | null;
+	/** Why a roster was asked for and not built (the export has no VanID
+	 *  column), or null. The hull is unaffected. */
+	rosterUnavailable: string | null;
+}
+
+export interface RosterEntry {
+	personHash: Buffer;
+	doorHash: Buffer;
 }
 
 export class HullExtractError extends Error {
@@ -187,6 +210,9 @@ export interface ExtractOptions {
 	 *  omitting it here is a testing affordance rather than the production
 	 *  path. */
 	geocode?: GeocodeFn | null;
+	/** When present, each row is also reduced to (person digest, door digest)
+	 *  for the uncontacted-door count. Omitted, `VanID` is never read. */
+	roster?: PersonHasher | null;
 }
 
 /** Build the lookup for one ungeocoded row.
@@ -331,8 +357,14 @@ export async function extractHull(
 	let latIndex = -1;
 	let lngIndex = -1;
 	let addressIndexes: number[] = [];
+	let vanIdIndex = -1;
+	let addressLineIndex = -1;
+	let zipIndex = -1;
 	let header: string[] | null = null;
 	const geocode = options.geocode ?? null;
+	const hasher = options.roster ?? null;
+	let roster: RosterEntry[] | null = hasher ? [] : null;
+	let rosterUnavailable: string | null = null;
 
 	// Row 0 is read in full to locate the columns; every later row is masked to
 	// the ones we found. Returning the set lazily per row is what lets the mask
@@ -380,11 +412,42 @@ export async function extractHull(
 			addressIndexes = geocode
 				? ADDRESS_COLUMNS.map((name) => columnIndex(header!, name)).filter((i) => i >= 0)
 				: [];
-			dataRowKeep = new Set([latIndex, lngIndex, ...addressIndexes]);
+			// A roster without VanID is not a roster at all — it is the wrong
+			// export type. Reported rather than thrown: the hull does not need
+			// VanID, and one misconfigured env var should not cost every turf
+			// its shape. The caller surfaces the reason.
+			if (hasher) {
+				vanIdIndex = columnIndex(header, 'VanID');
+				addressLineIndex = columnIndex(header, 'Address');
+				zipIndex = columnIndex(header, 'ZipCode');
+				if (vanIdIndex < 0) {
+					roster = null;
+					rosterUnavailable =
+						'export CSV has no VanID column — the uncontacted-door count needs export job ' +
+						'type 5 (VoterCircle)';
+				}
+			}
+			const hashed =
+				hasher && roster ? [vanIdIndex, addressLineIndex, zipIndex].filter((i) => i >= 0) : [];
+			dataRowKeep = new Set([latIndex, lngIndex, ...addressIndexes, ...hashed]);
 			continue;
 		}
 
 		rowCount++;
+		if (hasher && roster) {
+			const vanId = (row[vanIdIndex] ?? '').trim();
+			if (vanId) {
+				const address = addressLineIndex >= 0 ? (row[addressLineIndex] ?? '').trim() : '';
+				const zip = zipIndex >= 0 ? (row[zipIndex] ?? '') : '';
+				roster.push({
+					personHash: hasher.person(vanId),
+					// No address means no way to tell whom they share a door
+					// with, so they are their own door rather than being folded
+					// into every other address-less row as one.
+					doorHash: address ? hasher.door(address, zip) : hasher.door(`person:${vanId}`, ''),
+				});
+			}
+		}
 		const lat = Number(row[latIndex]);
 		const lng = Number(row[lngIndex]);
 		// VAN leaves both columns empty for an address it never geocoded, and
@@ -456,6 +519,8 @@ export async function extractHull(
 		geocodedFromAddress,
 		hullExtentMeters: hullExtentMeters === null ? null : Math.round(hullExtentMeters),
 		hullTooLarge,
+		roster,
+		rosterUnavailable,
 	};
 }
 

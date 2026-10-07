@@ -25,6 +25,8 @@ import {
 	type ActivityRange,
 	type ActivityRow,
 } from '../../van/turf-activity.js';
+import { visibleToChapter } from './chapter-visibility.js';
+import { inCampaign } from './campaigns.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -37,6 +39,8 @@ export interface ActivityQuery {
 	/** Null means every chapter. Admin-only page, so an unscoped read is the
 	 *  intended default rather than a leak — see the route's header. */
 	chapterId: number | null;
+	/** One VAN campaign's turf; null or omitted means every campaign. */
+	campaignId?: number | null;
 	range: ActivityRange;
 }
 
@@ -56,9 +60,7 @@ function scopeWhere(query: ActivityQuery): SQL {
 		stampInRange(vanTurfCheckouts.completedAt, query.range),
 	) as SQL;
 
-	return (
-		query.chapterId === null ? touched : and(eq(vanTurfs.chapterId, query.chapterId), touched)
-	) as SQL;
+	return and(visibleToChapter(query.chapterId), inCampaign(query.campaignId), touched) as SQL;
 }
 
 /** `sum(case when … then 1 else 0 end)`, which counts events rather than rows —
@@ -98,7 +100,7 @@ export async function loadActivityCounts(db: Db, query: ActivityQuery): Promise<
 			walkedOut: countWhen(sql`${released} and ${vanTurfCheckouts.releaseReason} = 'walked-out'`),
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(scopeWhere(query));
 
 	// `sum()` over no rows is NULL, not 0.
@@ -139,7 +141,7 @@ export async function loadActivityRows(
 	return db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			claimedAt: vanTurfCheckouts.claimedAt,
@@ -147,6 +149,7 @@ export async function loadActivityRows(
 			completedAt: vanTurfCheckouts.completedAt,
 			releaseReason: vanTurfCheckouts.releaseReason,
 			confirmedDoorDelta: vanTurfCheckouts.confirmedDoorDelta,
+			reportedPercent: vanTurfCheckouts.reportedPercent,
 			// From the turf row. Note what is NOT selected: printedListNumber is
 			// the holder's credential and an admin is not the holder, so it never
 			// enters the payload in the first place.
@@ -154,10 +157,11 @@ export async function loadActivityRows(
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
+			campaignId: vanTurfs.campaignId,
 			doorCount: vanTurfs.doorCount,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(scopeWhere(query))
 		.orderBy(desc(newest))
 		.limit(limit);
@@ -167,6 +171,6 @@ export async function loadActivityRows(
  *  week" apart from "no turf has ever been loaded" — which, with no VAN key
  *  yet, is the state anyone actually hits today. */
 export async function hasAnyTurf(db: Db): Promise<boolean> {
-	const rows = await db.select({ mapRouteId: vanTurfs.mapRouteId }).from(vanTurfs).limit(1);
+	const rows = await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs).limit(1);
 	return rows.length > 0;
 }

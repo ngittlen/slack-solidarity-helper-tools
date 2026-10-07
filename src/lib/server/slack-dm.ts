@@ -19,8 +19,18 @@
 
 import { slack } from './slack.js';
 import { errMessage } from '../err-message.js';
+import { isOutsideUserId } from './identity.js';
 
 export async function sendDm(slackUserId: string, text: string, logTag: string): Promise<boolean> {
+	// A Google or Apple sign-in holds turf under a `google:` / `apple:` id Slack
+	// has never heard of (see identity.ts), and there is no Slack account to
+	// reach. The turf sweeps
+	// route those holders to /turfs through van/holder-notices.ts before they
+	// get here; this is the backstop for any other caller. Reported as
+	// delivered rather than failed, so a caller that retries on failure does
+	// not re-attempt the same impossible DM forever.
+	if (isOutsideUserId(slackUserId)) return true;
+
 	try {
 		const dm = await slack.conversations.open({ users: slackUserId });
 		const dmChannelId = (dm as { channel?: { id?: string } }).channel?.id;

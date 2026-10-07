@@ -105,6 +105,8 @@ interface Envelope<T> {
 /** Documented limits are 15 req/s read and 5 req/s write, answered with 429. */
 const MAX_ATTEMPTS = 6;
 const BACKOFF_MS = 2_000;
+/** Upper bound on an honored Retry-After. */
+const MAX_RETRY_AFTER_MS = 60_000;
 
 /**
  * Statuses worth a second attempt on a READ.
@@ -150,11 +152,14 @@ async function request(
 	for (let attempt = 0; ; attempt++) {
 		const res = await fetch(url, { ...init, headers });
 		if (!retryable.has(res.status) || attempt >= MAX_ATTEMPTS - 1) return res;
-		// Mobilize sends Retry-After on some 429s; prefer it over guessing.
+		// Mobilize sends Retry-After on some 429s; prefer it over guessing, but
+		// cap it — an upstream answering `Retry-After: 3600` would otherwise
+		// park the sync for an hour per attempt. Both sibling clients bound it
+		// the same way (van/client.ts, solidarity-paginate.ts).
 		const retryAfter = Number(res.headers.get('retry-after'));
 		await sleep(
 			Number.isFinite(retryAfter) && retryAfter > 0
-				? retryAfter * 1000
+				? Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS)
 				: BACKOFF_MS * (attempt + 1),
 		);
 	}
@@ -221,14 +226,42 @@ async function callJson<T>(
 	return body;
 }
 
-/** Follow `next` to the end of a list endpoint. */
+/**
+ * Follow `next` to the end of a list endpoint.
+ *
+ * Bounded two ways, mirroring the VAN client's paginator. `next` is a URL the
+ * server chooses, and this file already documents an edge layer that injects
+ * content of its own into these responses — a `next` pointing at the page that
+ * produced it, or at any page already read, loops until the process runs out of
+ * memory. The page cap catches a cycle too long for the visited set to be worth
+ * reading as one.
+ *
+ * Both exits throw rather than returning what was read, because a short list
+ * and a complete one are indistinguishable to the caller: the syncs diff
+ * Mobilize against Solidarity, and a partial read of the Mobilize side looks
+ * exactly like events that need creating.
+ */
+const MAX_PAGES = 200;
+
 async function collect<T>(config: MobilizeApiConfig, firstUrl: string): Promise<T[]> {
 	const all: T[] = [];
+	const visited = new Set<string>();
 	let url: string | null = firstUrl;
-	while (url) {
+	for (let page = 0; page < MAX_PAGES && url; page++) {
+		if (visited.has(url)) {
+			throw new MobilizeError(`pagination cycled back to ${url}`, 0, '');
+		}
+		visited.add(url);
 		const body: Envelope<T[]> = await callJson<T[]>(config, url);
 		all.push(...(body.data ?? []));
 		url = body.next ?? null;
+	}
+	if (url) {
+		throw new MobilizeError(
+			`${firstUrl.replace(BASE, '')} paginated past ${MAX_PAGES} pages`,
+			0,
+			'',
+		);
 	}
 	return all;
 }
@@ -272,7 +305,20 @@ export interface MobilizeEvent {
 		region?: string | null;
 		postal_code?: string | null;
 		address_lines?: string[] | null;
+		location?: { latitude?: number | null; longitude?: number | null } | null;
 	} | null;
+	// Read by the partner-org import (import-transform.ts) only. Optional
+	// because the outbound sync never needed them and its fixtures omit them.
+	tags?: { id: number; name: string }[] | null;
+	/** The org that OWNS the event. An org's event list also carries events
+	 *  it merely promotes, which belong to someone else. */
+	sponsor?: { id: number; name?: string } | null;
+	/** Separate from `visibility`: a public event can hide its address until
+	 *  someone registers. `PUBLIC` | `PRIVATE`. */
+	address_visibility?: string | null;
+	is_virtual?: boolean;
+	/** Where an unshifted virtual event sends people. Otherwise null. */
+	virtual_action_url?: string | null;
 }
 
 /** Every upcoming event for the org — the duplicate-detection corpus, and the

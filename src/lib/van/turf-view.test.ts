@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { toTurfView, parseHull, mappableTurfs, type TurfRowInput } from './turf-view.js';
+import {
+	toTurfView,
+	parseHull,
+	mappableTurfs,
+	doorsLeft,
+	vanAssignmentBlocks,
+	regionRefreshKey,
+	type TurfRowInput,
+} from './turf-view.js';
 import type { ClaimSnapshot } from './checkout.js';
 
 const NOW = new Date('2026-08-22T12:00:00.000Z');
@@ -15,7 +23,8 @@ const HULL = JSON.stringify([
 
 function row(over: Partial<TurfRowInput> = {}): TurfRowInput {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
+		campaignId: 1,
 		mapRegionId: 10,
 		chapterId: 71,
 		name: 'Turf 01',
@@ -35,7 +44,7 @@ function row(over: Partial<TurfRowInput> = {}): TurfRowInput {
 
 function claim(over: Partial<ClaimSnapshot> = {}): ClaimSnapshot {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana Ruiz',
 		claimedAt: '2026-08-22T09:00:00.000Z',
@@ -113,8 +122,9 @@ describe('toTurfView — what reaches the browser', () => {
 				'doorsRemaining',
 				'expiresInHours',
 				'heldBy',
+				'heldByAccount',
 				'hull',
-				'mapRouteId',
+				'turfId',
 				'name',
 				'printedListNumber',
 				'refreshedMinutesAgo',
@@ -123,6 +133,27 @@ describe('toTurfView — what reaches the browser', () => {
 				'status',
 			].sort(),
 		);
+	});
+
+	// The Slack/Google/Apple mark and an outside holder's email ride on `heldBy`, so
+	// they reach exactly the viewers `heldBy` does: admins.
+	it('marks the holder’s account for an admin, and for nobody else', () => {
+		const held = [claim({ slackUserId: 'google:7', slackUserName: 'Ana Ruiz' })];
+		const holderAccounts = new Map([
+			[
+				'google:7',
+				{ provider: 'google' as const, email: 'ana@example.com', isPrivateEmail: false },
+			],
+		]);
+
+		expect(toTurfView(row(), held, ADMIN, NOW, { holderAccounts }).heldByAccount).toEqual({
+			provider: 'google',
+			email: 'ana@example.com',
+			isPrivateEmail: false,
+		});
+		expect(toTurfView(row(), held, VOLUNTEER, NOW, { holderAccounts }).heldByAccount).toBeNull();
+		// No claim — nothing held, or held in VAN — means no account to mark.
+		expect(toTurfView(row(), [], ADMIN, NOW, { holderAccounts }).heldByAccount).toBeNull();
 	});
 
 	it('hides the holder’s name from a volunteer but shows it to an admin', () => {
@@ -170,15 +201,34 @@ describe('toTurfView — geometry', () => {
 
 	it('mappableTurfs keeps only what can be drawn', () => {
 		const withHull = toTurfView(row(), [], VOLUNTEER, NOW);
-		const without = toTurfView(row({ mapRouteId: 101, hullJson: null }), [], VOLUNTEER, NOW);
+		const without = toTurfView(row({ turfId: 101, hullJson: null }), [], VOLUNTEER, NOW);
 		const mappable = mappableTurfs([withHull, without]);
-		expect(mappable.map((t) => t.mapRouteId)).toEqual([100]);
+		expect(mappable.map((t) => t.turfId)).toEqual([100]);
 	});
 });
 
 describe('toTurfView — freshness and claimability', () => {
 	it('reports staleness in minutes from VAN’s refresh time', () => {
 		expect(toTurfView(row(), [], VOLUNTEER, NOW).refreshedMinutesAgo).toBe(360);
+	});
+
+	// Recomputes run even while the pull is failing, so their timestamp would
+	// call old data fresh; how far ContactHistory was read is the honest age.
+	it('ages a turf showing its count by the contact cursor, not the recompute', () => {
+		const counted = row({
+			savedListId: 900,
+			rosterSavedListId: 900,
+			uncontactedDoors: 5,
+			uncontactedDoorsAt: NOW.toISOString(),
+		});
+		const through = new Date(NOW.getTime() - 90 * 60 * 1000).toISOString();
+		expect(
+			toTurfView(counted, [], VOLUNTEER, NOW, { contactsThrough: through }).refreshedMinutesAgo,
+		).toBe(90);
+		// No count: still VAN's own refresh time.
+		expect(
+			toTurfView(row(), [], VOLUNTEER, NOW, { contactsThrough: through }).refreshedMinutesAgo,
+		).toBe(360);
 	});
 
 	it('reports null staleness when VAN never gave a refresh time', () => {
@@ -194,7 +244,7 @@ describe('toTurfView — freshness and claimability', () => {
 
 	it('marks turf whose region VAN is re-cutting, without making it unclaimable', () => {
 		const view = toTurfView(row(), [], VOLUNTEER, NOW, {
-			refreshingRegions: new Set([10]),
+			refreshingRegions: new Set([regionRefreshKey(1, 10)]),
 		});
 		expect(view.updating).toBe(true);
 		// Story 4.5: an "updating" turf is still turf you can take. Blocking
@@ -206,9 +256,31 @@ describe('toTurfView — freshness and claimability', () => {
 
 	it('omits the updating flag entirely for every other region', () => {
 		const view = toTurfView(row(), [], VOLUNTEER, NOW, {
-			refreshingRegions: new Set([999]),
+			refreshingRegions: new Set([regionRefreshKey(1, 999)]),
 		});
 		expect('updating' in view).toBe(false);
+	});
+
+	// Region ids are VAN's, unique only within one committee: another
+	// campaign's region 10 being re-cut says nothing about this one.
+	it("does not mark turf updating for another campaign's region with the same id", () => {
+		const view = toTurfView(row(), [], VOLUNTEER, NOW, {
+			refreshingRegions: new Set([regionRefreshKey(2, 10)]),
+		});
+		expect('updating' in view).toBe(false);
+	});
+
+	it('flags available turf that has no list number, and says who to ask', () => {
+		const view = toTurfView(row({ printedListNumber: null }), [], VOLUNTEER, NOW);
+		expect(view.noListNumber).toBe(true);
+		expect(view.claimable).toBe(false);
+		expect(view.claimBlockedReason).toMatch(/organizer/);
+	});
+
+	it('omits the no-list-number flag on turf that has one, or that is taken', () => {
+		expect('noListNumber' in toTurfView(row(), [], VOLUNTEER, NOW)).toBe(false);
+		const taken = row({ printedListNumber: null, vanDistributedTo: 'Sam Ito' });
+		expect('noListNumber' in toTurfView(taken, [], VOLUNTEER, NOW)).toBe(false);
 	});
 
 	it('is claimable when available with a list number and doors left', () => {
@@ -268,5 +340,113 @@ describe('parseHull', () => {
 		['a NaN point', '[{"lat":null,"lng":2}]'],
 	])('degrades to no shape for %s', (_label, input) => {
 		expect(parseHull(input)).toEqual([]);
+	});
+});
+
+describe('doorsLeft', () => {
+	const base = { doorCount: 40, uncontactedDoors: 12, savedListId: 900 };
+
+	it('uses the count when its roster is from the current saved list', () => {
+		expect(doorsLeft({ ...base, rosterSavedListId: 900 })).toBe(12);
+	});
+
+	// Between a re-cut and the next recompute, or after the feature is
+	// switched off, the stored count is not this turf's.
+	it("falls back to VAN's doorCount when the count is from another cut", () => {
+		expect(doorsLeft({ ...base, rosterSavedListId: 899 })).toBe(40);
+		expect(doorsLeft({ ...base, rosterSavedListId: null })).toBe(40);
+		expect(doorsLeft({ ...base, savedListId: null, rosterSavedListId: null })).toBe(40);
+	});
+
+	it("falls back to VAN's doorCount when there is no count", () => {
+		expect(doorsLeft({ ...base, uncontactedDoors: null, rosterSavedListId: 900 })).toBe(40);
+	});
+});
+
+describe('vanAssignmentBlocks', () => {
+	const HOUR = 3_600_000;
+	const ago = (hours: number) => new Date(NOW.getTime() - hours * HOUR).toISOString();
+	const counted = { savedListId: 900, rosterSavedListId: 900, uncontactedDoors: 12 };
+
+	it('blocks for 48 hours after the hand-out', () => {
+		const handedOut = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(47) });
+		expect(vanAssignmentBlocks(handedOut, NOW)).toBe(true);
+	});
+
+	it('lets go once 48 hours have passed and the count shows what is left', () => {
+		const handedOut = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(48) });
+		expect(vanAssignmentBlocks(handedOut, NOW)).toBe(false);
+	});
+
+	// Without a count the turf would come back at VAN's full doorCount.
+	it('keeps holding a lapsed hand-out when there is no current count', () => {
+		const lapsed = { vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(72) };
+		expect(vanAssignmentBlocks(row(lapsed), NOW)).toBe(true);
+		expect(vanAssignmentBlocks(row({ ...lapsed, ...counted, rosterSavedListId: 899 }), NOW)).toBe(
+			true,
+		);
+	});
+
+	it('uses the configured hold instead of 48 hours', () => {
+		const handedOut = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(60) });
+		expect(vanAssignmentBlocks(handedOut, NOW, 72)).toBe(true);
+		expect(vanAssignmentBlocks(handedOut, NOW, 24)).toBe(false);
+		expect(toTurfView(handedOut, [], VOLUNTEER, NOW, { vanAssignmentTtlHours: 72 }).status).toBe(
+			'checked-out',
+		);
+		expect(toTurfView(handedOut, [], VOLUNTEER, NOW, { vanAssignmentTtlHours: 24 }).status).toBe(
+			'available',
+		);
+	});
+
+	it('never lets go when the hold is set to 0', () => {
+		const old = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(10_000) });
+		expect(vanAssignmentBlocks(old, NOW, 0)).toBe(true);
+		expect(toTurfView(old, [], VOLUNTEER, NOW, { vanAssignmentTtlHours: 0 }).status).toBe(
+			'checked-out',
+		);
+		// 0 is "never", not "no hold": turf nobody was handed is unaffected.
+		expect(vanAssignmentBlocks(row(counted), NOW, 0)).toBe(false);
+	});
+
+	it('keeps holding a hand-out with no date', () => {
+		expect(
+			vanAssignmentBlocks(
+				row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: null }),
+				NOW,
+			),
+		).toBe(true);
+	});
+
+	it('never blocks turf nobody was handed', () => {
+		expect(vanAssignmentBlocks(row({ ...counted, vanAssignedAt: ago(1) }), NOW)).toBe(false);
+	});
+
+	it('shows a lapsed hand-out as available and claimable, with no holder', () => {
+		const lapsed = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(72) });
+		const view = toTurfView(lapsed, [], ADMIN, NOW);
+		expect(view.status).toBe('available');
+		expect(view.heldBy).toBeNull();
+		expect(view.claimable).toBe(true);
+	});
+
+	it('still shows a live hand-out as checked out', () => {
+		const live = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(2) });
+		const view = toTurfView(live, [], VOLUNTEER, NOW);
+		expect(view.status).toBe('checked-out');
+		expect(view.claimable).toBe(false);
+	});
+
+	// A lapsed VAN hand-out must not unmask a Packet Tracker row that still
+	// blocks on its own terms.
+	it('falls through to the Packet Tracker when the VAN hold has lapsed', () => {
+		const lapsed = row({
+			...counted,
+			uncontactedDoors: 0,
+			vanDistributedTo: 'Sam Ito',
+			vanAssignedAt: ago(72),
+			sheetAssignedTo: 'Jo Park',
+		});
+		expect(toTurfView(lapsed, [], ADMIN, NOW).heldBy).toBe('Jo Park');
 	});
 });

@@ -281,6 +281,188 @@
       "when": 1789338410349,
       "tag": "0039_true_roland_deschain",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1789832115227,
+      "tag": "0040_cooing_cobalt_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1789832926207,
+      "tag": "0041_clear_vindicator",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1789880527808,
+      "tag": "0042_soft_sphinx",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1790197491436,
+      "tag": "0043_naive_captain_cross",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1790216393947,
+      "tag": "0044_flippant_puppet_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1790304054588,
+      "tag": "0045_packet_tracker",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1790304069630,
+      "tag": "0046_drop_sheet_log_stamps",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1790314819783,
+      "tag": "0047_reopen_taken_packets",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1790392841362,
+      "tag": "0048_public_join_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1790623815409,
+      "tag": "0049_uncontacted_doors",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1790639964000,
+      "tag": "0050_contact_sync_resilience",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "6",
+      "when": 1790643577467,
+      "tag": "0051_doors_knocked",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "6",
+      "when": 1790647842701,
+      "tag": "0052_contact_sync_incremental",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "6",
+      "when": 1790737139904,
+      "tag": "0053_van_assignment_ttl",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1790906293500,
+      "tag": "0054_van_campaigns",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "6",
+      "when": 1790908158182,
+      "tag": "0055_rename_turf_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1790909720175,
+      "tag": "0056_multi_campaign_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1790916325408,
+      "tag": "0057_campaign_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1790987209114,
+      "tag": "0058_campaign_badge",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1791006457714,
+      "tag": "0059_drop_unscoped_locks",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "6",
+      "when": 1791009493581,
+      "tag": "0060_turf_hidden_chapters",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "6",
+      "when": 1791085282980,
+      "tag": "0061_google_volunteers",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "6",
+      "when": 1791087122790,
+      "tag": "0062_turf_notices",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "6",
+      "when": 1791171496405,
+      "tag": "0063_outside_volunteers",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "6",
+      "when": 1791253773276,
+      "tag": "0064_mobilize_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "6",
+      "when": 1791334060266,
+      "tag": "0065_walk_in_state",
+      "breakpoints": true
     }
   ]
 }

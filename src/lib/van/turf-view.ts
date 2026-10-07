@@ -22,15 +22,23 @@ import {
 	hoursRemaining,
 	turfStatus,
 	activeClaimFor,
+	DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
+	VAN_ASSIGNMENT_NEVER_RELEASED,
 	type ClaimOptions,
 	type ClaimSnapshot,
+	type TurfSnapshot,
 } from './checkout.js';
 import { visibleTurfState, type VolunteerStatus } from './turf-status.js';
+import { campaignDayLabel } from '../campaign-time.js';
+import type { HolderAccount } from '../holder-account.js';
 
 /** The van_turfs columns this module reads. Narrow on purpose: the row type
  *  can grow without widening what the browser can be shown. */
 export interface TurfRowInput {
-	mapRouteId: number;
+	turfId: number;
+	/** Which campaign the turf was read from. Region ids are VAN's, so a
+	 *  region is only identified by the pair (see regionRefreshKey). */
+	campaignId: number;
 	mapRegionId: number;
 	chapterId: number;
 	name: string;
@@ -42,12 +50,100 @@ export interface TurfRowInput {
 	centroidLng: number | null;
 	hullJson: string | null;
 	vanDistributedTo: string | null;
+	/** When `vanDistributedTo` was last handed the list. Optional so fixtures
+	 *  predating the expiry need not name it. */
+	vanAssignedAt?: string | null;
+	/** Who the campaign's Packet Tracker says has it. Optional so fixtures
+	 *  predating the tracker need not name it. */
+	sheetAssignedTo?: string | null;
 	retiredAt: string | null;
 	lastRefreshedAt: string | null;
+	/** Doors with no in-person contact since the cut, from ContactHistory
+	 *  (van/contact-sync.ts). Optional so fixtures predating it need not name
+	 *  it; null until the turf has a roster. */
+	uncontactedDoors?: number | null;
+	uncontactedDoorsAt?: string | null;
+	/** The saved list VAN cut this route from, and the one its roster was
+	 *  built from. The count only describes this cut when the two agree. */
+	savedListId?: number | null;
+	rosterSavedListId?: number | null;
+}
+
+type CountedRow = Pick<
+	TurfRowInput,
+	'doorCount' | 'uncontactedDoors' | 'savedListId' | 'rosterSavedListId'
+>;
+
+/**
+ * The ContactHistory count, or null when there is none or it describes some
+ * other cut. Checked here as well as by the recompute, because the recompute
+ * only runs on the sync's schedule: between a re-cut and the next run, or
+ * after the feature is switched off, the stored number is not this turf's.
+ */
+export function currentUncontacted(row: CountedRow): number | null {
+	if (row.uncontactedDoors == null || row.savedListId == null) return null;
+	return row.rosterSavedListId === row.savedListId ? row.uncontactedDoors : null;
+}
+
+/**
+ * Whether a filled-in Packet Tracker row still keeps this turf from being
+ * claimed. Only while we cannot see what is left: once the ContactHistory count
+ * says doors remain uncontacted, a name in the campaign's sheet does not mean
+ * the doors are being knocked, and the turf goes back in the pool. (VAN's own
+ * record of an outside hand-out, `vanDistributedTo`, still blocks.)
+ */
+export function sheetBlocksClaim(row: CountedRow): boolean {
+	const left = currentUncontacted(row);
+	return left === null || left <= 0;
+}
+
+/**
+ * Whether a hand-out outside this app still keeps the turf from being claimed.
+ *
+ * For `ttlHours` after the last export, always (the admin setting, resolved by
+ * resolveClaimOptions), and for good when that is
+ * VAN_ASSIGNMENT_NEVER_RELEASED. After that, only
+ * while we cannot see what is left: once there is an uncontacted count, the
+ * turf goes back in the pool showing just the doors its holder did not reach,
+ * so the next volunteer is not sent to re-knock theirs. Without a count it
+ * would come back at VAN's full doorCount, so it stays out as before. So does
+ * a hand-out with no date, which there is no clock to run on.
+ */
+export function vanAssignmentBlocks(
+	row: CountedRow & Pick<TurfRowInput, 'vanDistributedTo' | 'vanAssignedAt'>,
+	now: Date,
+	ttlHours = DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
+): boolean {
+	if (!row.vanDistributedTo) return false;
+	if (ttlHours === VAN_ASSIGNMENT_NEVER_RELEASED) return true;
+	if (!row.vanAssignedAt || currentUncontacted(row) === null) return true;
+	return now.getTime() - Date.parse(row.vanAssignedAt) < ttlHours * 3_600_000;
+}
+
+/**
+ * Doors still to knock: our own ContactHistory count when there is a current
+ * one, VAN's doorCount when not. VAN's number only shrinks when a region is
+ * re-cut with a "not yet contacted" filter, so the count is the fresher of the
+ * two whenever it exists.
+ */
+export function doorsLeft(row: CountedRow): number {
+	return currentUncontacted(row) ?? row.doorCount;
+}
+
+/**
+ * When `doorsLeft` was last true. For the count, how far ContactHistory has
+ * been read (`contactsThrough`) — not when it was last recomputed, which runs
+ * even when the pull is failing and would call days-old data fresh. VAN's own
+ * refresh time otherwise.
+ */
+function doorsLeftAsOf(row: TurfRowInput, contactsThrough: string | null): string | null {
+	return currentUncontacted(row) != null
+		? (contactsThrough ?? row.lastRefreshedAt)
+		: row.lastRefreshedAt;
 }
 
 export interface TurfView {
-	mapRouteId: number;
+	turfId: number;
 	chapterId: number;
 	name: string;
 	regionName: string;
@@ -65,7 +161,8 @@ export interface TurfView {
 	printedListNumber: string | null;
 	/** People in the list. */
 	routeSize: number;
-	/** Doors VAN still shows as uncontacted, as of `refreshedMinutesAgo`. */
+	/** Doors with no in-person contact since the cut (see `doorsLeft`), as of
+	 *  `refreshedMinutesAgo`. */
 	doorsRemaining: number;
 	/** Hull vertices, or [] when geometry is missing or was degenerate. */
 	hull: LatLng[];
@@ -76,6 +173,10 @@ export interface TurfView {
 	status: VolunteerStatus;
 	/** Non-null only for admins. */
 	heldBy: string | null;
+	/** The account behind `heldBy` — the Slack, Google or Apple mark, and a
+	 *  Google or Apple holder's email. Admins only, like `heldBy`, and null too when the holder
+	 *  is VAN's (an outside assignment names a person, not an account here). */
+	heldByAccount: HolderAccount | null;
 	/** Hours until the claim lapses — yours, or any claim if you're an admin. */
 	expiresInHours: number | null;
 	/** How stale the door count is, from VAN's own region refresh timestamp.
@@ -113,6 +214,18 @@ export interface TurfView {
 	 */
 	updating?: true;
 	/**
+	 * True when the turf looks available but has no MiniVAN list number, so
+	 * nobody can take it until an organizer generates one.
+	 *
+	 * Says only that the number is missing, never what it is, so it sits
+	 * outside the access rule on `printedListNumber`. The list sinks these
+	 * below turf that can be claimed and paints them as an alert, because a
+	 * volunteer who opens one needs to go to an organizer rather than walk.
+	 *
+	 * Omitted rather than false when it does not apply, like `updating`.
+	 */
+	noListNumber?: true;
+	/**
 	 * True when VAN no longer has this route — an organizer re-cut the area.
 	 *
 	 * Retired turf is normally filtered out of the payload entirely. It reaches
@@ -127,14 +240,86 @@ export interface TurfView {
 	 * not pay for it on every row.
 	 */
 	retired?: true;
+	/**
+	 * What MiniVAN showed as done the last time a volunteer marked this turf
+	 * walked, and on which campaign day — e.g. 70 and "Tue 23 Sep".
+	 *
+	 * VAN has no progress figure the app can read, and its door count only
+	 * moves on a re-cut, so without this a walked turf looks untouched. Belongs
+	 * to this route id, so a re-cut starts it over. Omitted when nobody has
+	 * reported, for the same payload reason as `claimBlockedReason`.
+	 */
+	walkReport?: { percent: number; dayLabel: string };
+	/**
+	 * The turf's VAN campaign, for its badge — looked up in the payload's
+	 * `campaignBadges` rather than repeated as text on every row. Present only
+	 * when the badge is shown: while more than one campaign is enabled, and on
+	 * turf from a disabled campaign. Omitted otherwise, like `updating`.
+	 */
+	campaignId?: number;
+	/**
+	 * True when the turf's campaign has been disabled. Such turf only reaches
+	 * the volunteer still holding it: their claim runs to its end, but the
+	 * campaign is no longer handing turf out, and they should hear that from
+	 * the card. Omitted when it does not apply.
+	 */
+	campaignDisabled?: true;
 }
 
-/** Claim rules, plus the one piece of state that is about the turf rather than
- *  about the viewer: which regions VAN is currently re-cutting. */
+/** A walk report as the view needs it: the percentage, and when. `percent`
+ *  is null until contact-sync derives it — or for good, on a turf with no
+ *  count. */
+export interface WalkReportInput {
+	percent: number | null;
+	at: string;
+	/** The count has not caught up with this completion yet; see WalkReport
+	 *  in checkout-store.ts. Optional so fixtures predating it need not name it. */
+	awaitingCount?: boolean;
+}
+
+/** Claim rules, plus the state that is about the turf rather than about the
+ *  viewer: which regions VAN is currently re-cutting, and what volunteers last
+ *  reported walking. */
 export type TurfViewOptions = ClaimOptions & {
-	/** Map region ids with a refresh in flight. See `TurfView.updating`. */
-	refreshingRegions?: ReadonlySet<number>;
+	/** Regions with a refresh in flight, as `regionRefreshKey`s. See
+	 *  `TurfView.updating`. */
+	refreshingRegions?: ReadonlySet<string>;
+	/** Latest walk report per route id. See `TurfView.walkReport`. */
+	walkReports?: ReadonlyMap<number, WalkReportInput>;
+	/** How far ContactHistory has been read: the "as of" for any turf showing
+	 *  its uncontacted count. Null or omitted when the pull has never run. */
+	contactsThrough?: string | null;
+	/** Whether this row carries `campaignId` for a badge. See `TurfView.campaignId`. */
+	showCampaign?: boolean;
+	/** Disabled campaigns. See `TurfView.campaignDisabled`. */
+	disabledCampaigns?: ReadonlySet<number>;
+	/** Holder id → account, for `TurfView.heldByAccount`. Only ever loaded for
+	 *  an admin viewer; and even if passed for anyone else it is not used,
+	 *  because it rides on `heldBy`, which only admins get. */
+	holderAccounts?: ReadonlyMap<string, HolderAccount>;
 };
+
+/** Campaign id → the badge text volunteers see beside its turf. Sent once per
+ *  payload alongside the turf, which carry only `campaignId`. */
+export type CampaignBadges = Record<number, string>;
+
+/** What the holder of a disabled campaign's turf is told, on their turf card
+ *  and in Slack alike (`TurfView.campaignDisabled`). One sentence for both, so
+ *  the two places a volunteer checks their turf cannot tell them different
+ *  things. */
+export function campaignStoppedNote(badge: string | null): string {
+	return (
+		`${badge ?? 'This campaign'} has stopped handing out turf here. ` +
+		'Your claim still runs until it ends — walk it, or give it back, as usual.'
+	);
+}
+
+/** A map region's identity across campaigns. VAN region ids are unique only
+ *  within one committee, so a refresh in flight in one campaign's region 10
+ *  must not mark another campaign's region 10 as updating. */
+export function regionRefreshKey(campaignId: number, mapRegionId: number): string {
+	return `${campaignId}:${mapRegionId}`;
+}
 
 /** A turf that can actually be drawn. */
 export type MappableTurf = TurfView & { centre: LatLng; bounds: BoundingBox };
@@ -199,6 +384,41 @@ function geometryFor(
 	return { centre: null, bounds: null };
 }
 
+/** What the claim rules need to know about a row: its own state plus the last
+ *  walk report. Shared with turf-query.ts, which judges claimability before
+ *  deciding which rows become views. */
+export function turfSnapshot(
+	row: TurfRowInput,
+	now: Date,
+	options: {
+		walkReports?: ReadonlyMap<number, WalkReportInput>;
+		vanAssignmentTtlHours?: number;
+	} = {},
+): TurfSnapshot {
+	const { walkReports, vanAssignmentTtlHours } = options;
+	return {
+		turfId: row.turfId,
+		printedListNumber: row.printedListNumber,
+		retiredAt: row.retiredAt,
+		// Handed out outside this app — through VAN, or written into the
+		// campaign's Packet Tracker by an organizer. VAN's lapses after the
+		// admin's hand-out TTL and the sheet only counts while no uncontacted
+		// doors are known to remain, both once there is a count; see
+		// vanAssignmentBlocks and sheetBlocksClaim.
+		vanDistributedTo:
+			(vanAssignmentBlocks(row, now, vanAssignmentTtlHours) ? row.vanDistributedTo : null) ??
+			(sheetBlocksClaim(row) ? row.sheetAssignedTo : null) ??
+			null,
+		// The claim gate's "no doors left" reads the same number the volunteer
+		// sees, so a turf never shows doors it will then refuse to hand out.
+		doorCount: doorsLeft(row),
+		uncontactedDoors: currentUncontacted(row),
+		reportedPercent: walkReports?.get(row.turfId)?.percent ?? null,
+		walked: walkReports?.has(row.turfId) ?? false,
+		walkAwaitingCount: walkReports?.get(row.turfId)?.awaitingCount ?? false,
+	};
+}
+
 /**
  * Build the browser-visible view of one turf.
  *
@@ -213,20 +433,15 @@ export function toTurfView(
 	now: Date,
 	options: TurfViewOptions = {},
 ): TurfView {
-	const snapshot = {
-		mapRouteId: row.mapRouteId,
-		printedListNumber: row.printedListNumber,
-		retiredAt: row.retiredAt,
-		vanDistributedTo: row.vanDistributedTo,
-		doorCount: row.doorCount,
-	};
+	const report = options.walkReports?.get(row.turfId) ?? null;
+	const snapshot = turfSnapshot(row, now, options);
 
 	const rawStatus = turfStatus(snapshot, claims, viewer.slackUserId, now);
-	const active = activeClaimFor(row.mapRouteId, claims, now);
+	const active = activeClaimFor(row.turfId, claims, now);
 	const visible = visibleTurfState(
 		{
 			status: rawStatus,
-			heldBy: active?.slackUserName ?? row.vanDistributedTo,
+			heldBy: active?.slackUserName ?? snapshot.vanDistributedTo ?? null,
 			expiresInHours: active ? hoursRemaining(active, now) : null,
 		},
 		viewer,
@@ -237,26 +452,40 @@ export function toTurfView(
 	const { centre, bounds } = geometryFor(row, hull);
 
 	return {
-		mapRouteId: row.mapRouteId,
+		turfId: row.turfId,
 		chapterId: row.chapterId,
 		name: row.name,
 		regionName: row.regionName,
 		// Issued only while you hold it — see the field's own note.
 		printedListNumber: visible.status === 'held-by-you' ? row.printedListNumber : null,
 		routeSize: row.routeSize,
-		doorsRemaining: row.doorCount,
+		doorsRemaining: doorsLeft(row),
 		hull,
 		centre,
 		bounds,
 		status: visible.status,
 		heldBy: visible.heldBy,
+		heldByAccount:
+			visible.heldBy !== null && active
+				? (options.holderAccounts?.get(active.slackUserId) ?? null)
+				: null,
 		expiresInHours: visible.expiresInHours,
-		refreshedMinutesAgo: minutesSince(row.lastRefreshedAt, now),
+		refreshedMinutesAgo: minutesSince(doorsLeftAsOf(row, options.contactsThrough ?? null), now),
 		claimable: decision.ok,
 		...(decision.ok || visible.status !== 'available'
 			? {}
 			: { claimBlockedReason: decision.message }),
-		...(options.refreshingRegions?.has(row.mapRegionId) ? { updating: true as const } : {}),
+		...(options.refreshingRegions?.has(regionRefreshKey(row.campaignId, row.mapRegionId))
+			? { updating: true as const }
+			: {}),
+		...(visible.status === 'available' && !decision.ok && decision.reason === 'no-list-number'
+			? { noListNumber: true as const }
+			: {}),
 		...(row.retiredAt ? { retired: true as const } : {}),
+		...(report && report.percent !== null
+			? { walkReport: { percent: report.percent, dayLabel: campaignDayLabel(report.at) } }
+			: {}),
+		...(options.showCampaign ? { campaignId: row.campaignId } : {}),
+		...(options.disabledCampaigns?.has(row.campaignId) ? { campaignDisabled: true as const } : {}),
 	};
 }

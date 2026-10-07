@@ -9,37 +9,47 @@
 // Two things this module is responsible for, both of which are the reason it is
 // one module rather than inlined into the two routes that call it:
 //
-//   1. The MiniVAN list number appears in exactly ONE builder —
-//      buildClaimedBlocks — and never in the list. It is the credential: it is
-//      what pulls the doors down in MiniVAN, so putting it on a browsable list
-//      would let anyone load any turf regardless of who holds it. toTurfView
-//      already nulls it on turf you don't hold; this file must not reintroduce
-//      it by reading a raw row.
+//   1. The MiniVAN list number appears in exactly TWO builders here —
+//      buildClaimedBlocks and buildMineBlocks — and never in the browsable
+//      list. It is the credential: it is what pulls the doors down in MiniVAN,
+//      so putting it on a list of turf you do not hold would let anyone load
+//      any turf regardless of who has it. toTurfView already nulls it on turf
+//      you don't hold; this file must not reintroduce it by reading a raw row.
+//
+//      The rule, wherever the number is sent: it goes to the person holding
+//      the turf and nobody else. Here that is an ephemeral reply
+//      (slack-response-url.ts hardcodes response_type), which has exactly one
+//      recipient, built from rows scoped to that same person — the claim they
+//      just made, or `loadHoldingsFor(theirUserId)`. The only other sender is
+//      reconcile-store.ts, which DMs the holder a replacement number when VAN
+//      changes it under them. Never a channel, never a message anyone else can
+//      read.
 //   2. Button values round-trip through Slack, which makes them untrusted
 //      input on the way back. decodeTurfAction validates rather than trusts,
 //      and the caller re-checks the chapter against settings anyway.
 
 import { formatDistance, haversineMeters, type LatLng } from '../../van/geometry.js';
-import { escapeMrkdwn } from '../slack-mrkdwn.js';
+import { escapeMrkdwn } from '../../slack-mrkdwn.js';
 import { statusLabel } from '../../van/turf-status.js';
 import { describeAge, oldestRefreshMinutes } from '../../van/turf-freshness.js';
-import type { TurfView } from '../../van/turf-view.js';
+import { campaignStoppedNote, type CampaignBadges, type TurfView } from '../../van/turf-view.js';
 import { normalizeZip } from './zip-centroid.js';
+import { TURFS_PER_PAYLOAD } from '../../van/turf-paging.js';
 
 /**
  * Turfs per Slack page.
  *
- * Five, not the web page's 150. A slash command reply is read on a phone in a
+ * Five, not the web page's TURFS_PER_PAYLOAD. A slash command reply is read on a phone in a
  * channel, and the useful question is "what's the closest thing I can take
  * right now", not "show me the county". Anyone who wants the county has the
  * map, which every reply links to.
  */
 export const SLACK_TURF_LIMIT = 5;
 
-/** Hard ceiling on how far the "Show next 5" button can walk. Matches the web
- *  payload budget, so a hand-crafted button value cannot page further through a
- *  chapter than the map itself would hand over. */
-export const MAX_SLACK_OFFSET = 150;
+/** Hard ceiling on how far the "Show next 5" button can walk. The web payload
+ *  budget, so a hand-crafted button value cannot page further through a chapter
+ *  than the map itself would hand over. */
+export const MAX_SLACK_OFFSET = TURFS_PER_PAYLOAD;
 
 /** Longest location argument we will pass to a geocoder. A street address is
  *  well under this; anything longer is a paste or an attack, and neither
@@ -49,6 +59,22 @@ export const MAX_LOCATION_LENGTH = 120;
 export const TURF_CLAIM_ACTION_ID = 'van_turf_claim';
 export const TURF_RELEASE_ACTION_ID = 'van_turf_release';
 export const TURF_PAGE_ACTION_ID = 'van_turf_page';
+// The two buttons on /turfs-mine. Release gets its OWN id rather than reusing
+// TURF_RELEASE_ACTION_ID so the handler knows which list to redraw: giving turf
+// back from the nearby list should show the nearby list again, and giving it
+// back from "my turf" should show what you still hold. Same action, two places
+// to return to.
+export const TURF_RELEASE_MINE_ACTION_ID = 'van_turf_release_mine';
+export const TURF_COMPLETE_ACTION_ID = 'van_turf_complete';
+/**
+ * The "Open the map" link buttons.
+ *
+ * A link button still sends Slack's interactivity payload when tapped, so it
+ * needs an id nothing acts on. Giving it TURF_PAGE_ACTION_ID — as /turfs-mine
+ * once did — sent that payload to the pager, which found no value and replaced
+ * the volunteer's list numbers with "That button has expired".
+ */
+export const TURF_OPEN_MAP_ACTION_ID = 'van_turf_open_map';
 
 export type TurfArgument =
 	{ kind: 'none' } | { kind: 'zip'; zip: string } | { kind: 'address'; query: string };
@@ -71,7 +97,7 @@ export function parseTurfArgument(text: string | null | undefined): TurfArgument
 
 export interface TurfActionValue {
 	/** Absent on the paging button, which acts on no particular turf. */
-	mapRouteId?: number;
+	turfId?: number;
 	chapterId: number;
 	offset: number;
 	location?: LatLng | null;
@@ -82,7 +108,7 @@ export interface TurfActionValue {
  *  message. */
 export function encodeTurfAction(value: TurfActionValue): string {
 	const payload: Record<string, number> = { c: value.chapterId, o: value.offset };
-	if (value.mapRouteId !== undefined) payload.r = value.mapRouteId;
+	if (value.turfId !== undefined) payload.r = value.turfId;
 	if (value.location) {
 		payload.lat = round3(value.location.lat);
 		payload.lng = round3(value.location.lng);
@@ -116,8 +142,8 @@ export function decodeTurfAction(raw: string | null | undefined): TurfActionValu
 		chapterId,
 		offset: clampOffset(asInt(p.o) ?? 0),
 	};
-	const mapRouteId = asInt(p.r);
-	if (mapRouteId !== null) value.mapRouteId = mapRouteId;
+	const turfId = asInt(p.r);
+	if (turfId !== null) value.turfId = turfId;
 
 	const lat = asFinite(p.lat);
 	const lng = asFinite(p.lng);
@@ -158,7 +184,10 @@ type Button = {
 	value?: string;
 	url?: string;
 	style?: 'primary' | 'danger';
+	/** Slack's own "are you sure" dialog; the action is sent only on confirm. */
+	confirm?: { title: PlainText; text: Mrkdwn; confirm: PlainText; deny: PlainText };
 };
+type PlainText = { type: 'plain_text'; text: string };
 export type Block =
 	| { type: 'section'; text: Mrkdwn; accessory?: Button }
 	| { type: 'context'; elements: Mrkdwn[] }
@@ -201,20 +230,62 @@ export interface TurfListInput {
 	turfs: readonly TurfView[];
 	chapter: ChapterRef;
 	location?: LatLng | null;
+	/** The offset this page was asked for. Carried on each turf's buttons so
+	 *  acting on one redraws the same page. */
 	offset: number;
+	/** This page's first row, zero-based — see loadChapterTurfs. */
+	start: number;
+	/** The offset for "Show next 5". */
+	nextOffset: number;
 	omitted: number;
+	/** Turf the volunteer could take, plus their own. */
 	total: number;
+	/** Turf left out because nobody can take it right now. */
+	unavailable: number;
 	appUrl: string;
 	/** Echoed into the "open the map" link so the web page opens with the same
 	 *  location the list was sorted by. */
 	zip?: string | null;
+	/** Badge text for `TurfView.campaignId`, from loadChapterTurfs. Null or
+	 *  omitted when no turf on the page shows a badge (see badgeShown). */
+	campaignBadges?: CampaignBadges | null;
 }
 
 /** The command's main reply: the nearest few turfs, each claimable in place. */
 export function buildTurfListBlocks(input: TurfListInput): SlackMessage {
-	const { turfs, chapter, location = null, offset, omitted, total, appUrl, zip = null } = input;
+	const {
+		turfs,
+		chapter,
+		location = null,
+		offset,
+		start,
+		nextOffset,
+		omitted,
+		total,
+		unavailable,
+		appUrl,
+		zip = null,
+	} = input;
 	const mapUrl = turfPageUrl(appUrl, chapter.chapterId, zip);
 	const chapterName = escapeMrkdwn(chapter.name);
+	const mapLink = `<${escapeMrkdwn(mapUrl)}|Open the map>`;
+
+	if (total === 0 && unavailable > 0) {
+		// Turf exists, none of it is free. Must not read as "nothing loaded".
+		return {
+			text: `Nothing in ${chapter.name} is free to claim right now.`,
+			blocks: [
+				{
+					type: 'section',
+					text: mrkdwn(`Nothing in *${chapterName}* is free to claim right now.`),
+				},
+				context(
+					`All ${unavailable} ${unavailable === 1 ? 'turf is' : 'turfs are'} checked out or ` +
+						`already walked. ${mapLink} to see them, or check back later.`,
+				),
+			],
+		};
+	}
 
 	if (total === 0) {
 		// Not the same as "everything is taken", and it must not read as that.
@@ -245,15 +316,20 @@ export function buildTurfListBlocks(input: TurfListInput): SlackMessage {
 		{
 			type: 'section',
 			text: mrkdwn(
-				`*Turf in ${chapterName}*\n` +
-					`Showing ${offset + 1}–${offset + turfs.length} of ${total}` +
+				`*Turf you can take in ${chapterName}*\n` +
+					`Showing ${start + 1}–${start + turfs.length} of ${total}` +
 					(location ? ', nearest first' : ''),
 			),
 		},
 	];
 
 	for (const turf of turfs) {
-		blocks.push(turfSection(turf, chapter.chapterId, offset, location));
+		const badge =
+			turf.campaignId === undefined ? null : (input.campaignBadges?.[turf.campaignId] ?? null);
+		blocks.push(turfSection(turf, chapter.chapterId, offset, location, badge));
+		// Only ever the viewer's own turf: a disabled campaign's turf reaches
+		// nobody else. Said here as on the web card.
+		if (turf.campaignDisabled) blocks.push(context(escapeMrkdwn(campaignStoppedNote(badge))));
 		if (!turf.claimable && turf.claimBlockedReason) {
 			blocks.push(context(escapeMrkdwn(turf.claimBlockedReason)));
 		}
@@ -268,17 +344,21 @@ export function buildTurfListBlocks(input: TurfListInput): SlackMessage {
 
 	blocks.push(
 		omitted > 0
-			? nextPageBlock(chapter.chapterId, offset + turfs.length, location)
+			? nextPageBlock(chapter.chapterId, nextOffset, location)
 			: startOverBlock(chapter.chapterId, location),
 	);
+	const hiddenNote =
+		unavailable === 0
+			? ''
+			: unavailable === 1
+				? ' 1 more is checked out or already walked, and is only on the map.'
+				: ` ${unavailable} more are checked out or already walked, and are only on the map.`;
 	blocks.push(
-		context(
-			`<${escapeMrkdwn(mapUrl)}|Open the map> to see these on a map, or browse the whole county.`,
-		),
+		context(`${mapLink} to see these on a map, or browse the whole county.${hiddenNote}`),
 	);
 
 	return {
-		text: `${turfs.length} turfs in ${chapter.name} (${offset + 1}–${offset + turfs.length} of ${total})`,
+		text: `${turfs.length} turf${turfs.length === 1 ? '' : 's'} in ${chapter.name} (${start + 1}–${start + turfs.length} of ${total})`,
 		blocks,
 	};
 }
@@ -288,8 +368,14 @@ function turfSection(
 	chapterId: number,
 	offset: number,
 	location: LatLng | null,
+	badge: string | null,
 ): Block {
-	const facts = [`${turf.doorsRemaining} doors`];
+	// The campaign leads the facts while there is more than one: its list
+	// number only means something in that campaign's VAN.
+	const facts = [...(badge ? [escapeMrkdwn(badge)] : []), `${turf.doorsRemaining} doors`];
+	if (turf.walkReport) {
+		facts.push(`about ${turf.walkReport.percent}% walked (${turf.walkReport.dayLabel})`);
+	}
 	const distance = distanceTo(turf, location);
 	if (distance !== null) facts.push(`${formatDistance(distance)} away`);
 	facts.push(statusLabel(turf.status));
@@ -309,14 +395,14 @@ function turfSection(
 			text: { type: 'plain_text', text: 'Claim' },
 			style: 'primary',
 			action_id: TURF_CLAIM_ACTION_ID,
-			value: encodeTurfAction({ mapRouteId: turf.mapRouteId, chapterId, offset, location }),
+			value: encodeTurfAction({ turfId: turf.turfId, chapterId, offset, location }),
 		};
 	} else if (turf.status === 'held-by-you') {
 		section.accessory = {
 			type: 'button',
 			text: { type: 'plain_text', text: 'Give back' },
 			action_id: TURF_RELEASE_ACTION_ID,
-			value: encodeTurfAction({ mapRouteId: turf.mapRouteId, chapterId, offset, location }),
+			value: encodeTurfAction({ turfId: turf.turfId, chapterId, offset, location }),
 		};
 	}
 	return section;
@@ -358,7 +444,9 @@ function distanceTo(turf: TurfView, location: LatLng | null): number | null {
 }
 
 export interface ClaimedInput {
-	turf: { mapRouteId: number; name: string; regionName: string; doorsRemaining: number };
+	turf: { turfId: number; name: string; regionName: string; doorsRemaining: number };
+	/** The turf's campaign badge, while badges are shown; null otherwise. */
+	campaignBadge?: string | null;
 	chapter: ChapterRef;
 	printedListNumber: string;
 	expiresAt: string;
@@ -368,15 +456,25 @@ export interface ClaimedInput {
 }
 
 /**
- * The one place a MiniVAN list number is rendered.
+ * One of the two places here a MiniVAN list number is rendered; see the module
+ * header for the rule both obey. The other is `buildMineBlocks`.
  *
  * Only ever posted as an ephemeral to the person who claimed the turf — an
  * ephemeral has exactly one recipient by construction, which is what makes
- * this safe to send into a channel at all. Never `in_channel`, never
- * chat.postMessage, never a DM.
+ * this safe to send into a channel at all. Never `in_channel`, and never
+ * chat.postMessage into a channel.
  */
 export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
-	const { turf, chapter, printedListNumber, expiresAt, now, appUrl, location = null } = input;
+	const {
+		turf,
+		chapter,
+		printedListNumber,
+		expiresAt,
+		now,
+		appUrl,
+		location = null,
+		campaignBadge = null,
+	} = input;
 	const hours = hoursUntil(expiresAt, now);
 
 	return {
@@ -395,19 +493,39 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 			},
 			{
 				type: 'section',
-				text: mrkdwn(`Your MiniVAN list number:\n\`\`\`${escapeMrkdwn(printedListNumber)}\`\`\``),
+				text: mrkdwn(
+					`Your ${listNumberSource(campaignBadge)}MiniVAN list number:\n` +
+						`\`\`\`${escapeMrkdwn(printedListNumber)}\`\`\``,
+				),
 			},
 			{
 				type: 'section',
 				text: mrkdwn(
-					'*1.* Open MiniVAN on your phone\n' +
-						'*2.* Enter the list number above\n' +
-						'*3.* Knock, then hit *Sync* when you finish — that is what sends your results back',
+					// Step 3 names MiniVAN rather than saying a bare "hit Sync".
+					// Read in Slack, an unqualified *Sync* invites the reader to look
+					// for a button in this message — there isn't one, and there cannot
+					// be: MiniVAN uploads canvass results to VAN itself, and the API
+					// exposes no way for this app to send them (plan.md §2 Constraint
+					// C). Someone who believes Slack synced for them has lost their
+					// morning's doors, and nothing in this app is guaranteed to
+					// catch it (door-delta.ts only can once VAN recounts the turf).
+					// The web page's steps say the same thing in the same order;
+					// these two must not drift.
+					'*1.* Open MiniVAN on your phone and sign in\n' +
+						'*2.* Choose *Enter List Number* and type the number above\n' +
+						'*3.* Knock the doors, then hit *Sync* in MiniVAN before you close the app\n\n' +
+						'Your answers only reach VAN when MiniVAN syncs. Skip it and the turf looks ' +
+						'unwalked, and someone else gets sent to the same doors.',
 				),
 			},
 			context(
 				`Yours for the next ${hours} hour${hours === 1 ? '' : 's'}. ` +
-					'If you do not get to it, give it back so someone else can.',
+					'If you do not get to it, give it back so someone else can.\n' +
+					// This message is gone as soon as it is scrolled past or replaced,
+					// and it is the only place the list number has ever appeared. Say
+					// how to get back to it.
+					'Lost this message? `/turfs-mine` brings back your list numbers ' +
+					'and lets you mark turf done.',
 			),
 			{
 				type: 'actions',
@@ -417,7 +535,7 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 						text: { type: 'plain_text', text: 'Give it back' },
 						action_id: TURF_RELEASE_ACTION_ID,
 						value: encodeTurfAction({
-							mapRouteId: turf.mapRouteId,
+							turfId: turf.turfId,
 							chapterId: chapter.chapterId,
 							offset: 0,
 							location,
@@ -426,7 +544,7 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 					{
 						type: 'button',
 						text: { type: 'plain_text', text: 'Open the map' },
-						action_id: 'van_turf_open_map',
+						action_id: TURF_OPEN_MAP_ACTION_ID,
 						url: turfPageUrl(appUrl, chapter.chapterId),
 					},
 				],
@@ -435,13 +553,174 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 	};
 }
 
+export interface MineTurf {
+	turfId: number;
+	name: string;
+	regionName: string;
+	doorCount: number;
+	expiresAt: string;
+	chapterId: number;
+	/** Null on a claim made before the column existed. Rendered as a pointer to
+	 *  the turf page rather than as an empty code block. */
+	issuedListNumber: string | null;
+	/** The turf's campaign badge, while badges are shown; null otherwise. */
+	campaignBadge?: string | null;
+	/** The turf's campaign has been disabled since the claim. */
+	campaignDisabled?: boolean;
+}
+
+export interface MineInput {
+	turfs: MineTurf[];
+	now: Date;
+	appUrl: string;
+}
+
+/**
+ * What you are holding, with the two things you can do about it.
+ *
+ * This exists because the claim message is the only place those actions lived,
+ * and a Slack message is gone the moment it is scrolled past or replaced. A
+ * volunteer who closed it had no way back to their own list number, and no way
+ * to mark turf done from Slack at all — that action was web-only.
+ *
+ * Renders the list number for the same reason buildClaimedBlocks does, under
+ * the same two conditions: an ephemeral reply, and rows scoped to the caller's
+ * own Slack id. See the module header.
+ */
+export function buildMineBlocks(input: MineInput): SlackMessage {
+	const { turfs, now, appUrl } = input;
+
+	if (turfs.length === 0) {
+		return {
+			text: 'You are not holding any turf right now.',
+			blocks: [
+				{
+					type: 'section',
+					text: mrkdwn(
+						'*You are not holding any turf right now.*\n' + 'Run `/turfs` to find some near you.',
+					),
+				},
+			],
+		};
+	}
+
+	const blocks: Block[] = [
+		{
+			type: 'section',
+			text: mrkdwn(`*Your turf* — ${turfs.length} checked out`),
+		},
+	];
+
+	for (const turf of turfs) {
+		const hours = hoursUntil(turf.expiresAt, now);
+		blocks.push({ type: 'divider' });
+		blocks.push({
+			type: 'section',
+			text: mrkdwn(
+				`*${escapeMrkdwn(turf.name)}*` +
+					(turf.regionName ? ` · ${escapeMrkdwn(turf.regionName)}` : '') +
+					`\n${turf.doorCount} doors · ` +
+					(hours === 0
+						? 'expires shortly'
+						: `yours for another ${hours} hour${hours === 1 ? '' : 's'}`),
+			),
+		});
+		if (turf.campaignDisabled) {
+			blocks.push(context(escapeMrkdwn(campaignStoppedNote(turf.campaignBadge ?? null))));
+		}
+		blocks.push({
+			type: 'section',
+			text: mrkdwn(
+				turf.issuedListNumber
+					? `${listNumberSource(turf.campaignBadge ?? null)}MiniVAN list number:\n` +
+							`\`\`\`${escapeMrkdwn(turf.issuedListNumber)}\`\`\``
+					: '_No list number was recorded for this claim — open the turf page for it._',
+			),
+		});
+		blocks.push({
+			type: 'actions',
+			elements: [
+				// Slack cannot disable a button until a box is ticked, so the
+				// confirm dialog is the checkbox: the action is only sent on
+				// "Yes, I synced". How much got walked comes from VAN afterwards.
+				{
+					type: 'button',
+					text: { type: 'plain_text', text: 'I walked this turf' },
+					style: 'primary',
+					action_id: TURF_COMPLETE_ACTION_ID,
+					value: encodeTurfAction({
+						turfId: turf.turfId,
+						chapterId: turf.chapterId,
+						offset: 0,
+					}),
+					confirm: {
+						title: { type: 'plain_text', text: 'Did you sync MiniVAN?' },
+						text: mrkdwn(
+							'Open MiniVAN and hit *Sync* before marking this walked. Your doors only reach ' +
+								'VAN from there — skip it and the turf looks unwalked.',
+						),
+						confirm: { type: 'plain_text', text: 'Yes, I synced' },
+						deny: { type: 'plain_text', text: 'Not yet' },
+					},
+				},
+				{
+					type: 'button',
+					text: { type: 'plain_text', text: 'Give it back' },
+					action_id: TURF_RELEASE_MINE_ACTION_ID,
+					value: encodeTurfAction({
+						turfId: turf.turfId,
+						chapterId: turf.chapterId,
+						offset: 0,
+					}),
+				},
+				{
+					type: 'button',
+					text: { type: 'plain_text', text: 'Open the map' },
+					action_id: TURF_OPEN_MAP_ACTION_ID,
+					url: turfPageUrl(appUrl, turf.chapterId),
+				},
+			],
+		});
+	}
+
+	// The warning that prompted this command existing. "I walked this turf" records
+	// that YOU walked it; it cannot move your answers off your phone, and a
+	// volunteer who taps it instead of syncing loses the morning, probably
+	// without being told (door-delta.ts can only nudge once VAN recounts the
+	// turf). Last block, because it is the thing to read before tapping
+	// anything above it.
+	blocks.push(
+		context(
+			'*Sync MiniVAN first.* "I walked this turf" records that you walked it — ' +
+				'it does not send your answers to VAN. Only MiniVAN can do that.',
+		),
+	);
+
+	return {
+		text: `You are holding ${turfs.length} turf${turfs.length === 1 ? '' : 's'}.`,
+		blocks,
+	};
+}
+
 function hoursUntil(iso: string, now: Date): number {
 	const ms = Date.parse(iso) - now.getTime();
 	return Number.isNaN(ms) || ms <= 0 ? 0 : Math.ceil(ms / 3_600_000);
 }
 
+/** Why a bare `/turfs` could not place the volunteer from their Solidarity
+ *  profile. Absent when the location came from anywhere else — a typed ZIP or
+ *  address that maps to no chapter, or a button naming an unknown one. */
+export type LocationPrompt = 'no-profile' | 'no-location' | 'unmatched';
+
+const PROMPT_REASON: Record<LocationPrompt, string> = {
+	'no-profile': "I couldn't find your Solidarity profile, so I don't know where you are.",
+	'no-location': "Your Solidarity profile doesn't have an address or chapter on it yet.",
+	unmatched: "I couldn't match your Solidarity profile to a county with turf checkout.",
+};
+
 /**
- * Shown when we cannot tell which county the volunteer means.
+ * Shown when we cannot tell which county the volunteer means: ask for a ZIP or
+ * an address, and link each county's map for anyone who would rather browse.
  *
  * Lists every chapter with a Slack channel, NOT the chapters that have turf —
  * the latter is a cross-chapter aggregate revealing where the field operation
@@ -451,6 +730,7 @@ function hoursUntil(iso: string, now: Date): number {
 export function buildChapterPickerBlocks(
 	chapters: readonly ChapterRef[],
 	appUrl: string,
+	prompt?: LocationPrompt,
 ): SlackMessage {
 	if (chapters.length === 0) {
 		return {
@@ -467,17 +747,19 @@ export function buildChapterPickerBlocks(
 	const links = chapters
 		.map((c) => `• <${escapeMrkdwn(turfPageUrl(appUrl, c.chapterId))}|${escapeMrkdwn(c.name)}>`)
 		.join('\n');
+	const reason = prompt ? `${PROMPT_REASON[prompt]}\n` : '';
 
 	return {
-		text: 'Which county are you canvassing in?',
+		text: 'Where are you canvassing? Add a ZIP code or address after /turfs.',
 		blocks: [
 			{
 				type: 'section',
 				text: mrkdwn(
-					"*Which county are you canvassing in?*\nRun `/turfs` in your county's channel, or " +
-						'add a ZIP or address — `/turfs 48104` or `/turfs 100 N Main St, Ann Arbor MI`.',
+					`${reason}*Where are you canvassing?* Add a ZIP code or address — ` +
+						'`/turfs 48104` or `/turfs 100 N Main St, Ann Arbor MI`.',
 				),
 			},
+			context("Or open your county's map:"),
 			{ type: 'section', text: mrkdwn(links) },
 		],
 	};
@@ -488,4 +770,10 @@ export function buildChapterPickerBlocks(
  *  rest of the command's voice. */
 export function plainMessage(text: string): SlackMessage {
 	return { text, blocks: [{ type: 'section', text: mrkdwn(text) }] };
+}
+
+/** "El-Sayed " before "MiniVAN list number", while there is more than one
+ *  campaign: a list number only loads from the campaign whose VAN cut it. */
+function listNumberSource(badge: string | null): string {
+	return badge ? `${escapeMrkdwn(badge)} ` : '';
 }

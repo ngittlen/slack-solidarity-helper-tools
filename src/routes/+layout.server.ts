@@ -21,9 +21,16 @@ export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 		// auth fact. A member whose Slack name came back empty is still signed
 		// in and still needs the log-out button.
 		signedIn: locals.session !== null,
-		userName: locals.session?.slackUserName ?? null,
+		// Not the placeholder an outside volunteer carries before giving a name.
+		userName: locals.session?.needsName ? null : (locals.session?.slackUserName ?? null),
 		isAdmin: locals.session?.isAdmin ?? false,
 		isModerator: locals.session?.isModerator ?? false,
+		// A Google or Apple sign-in, which may use turf checkout and nothing else
+		// (see server/turf-only-access.ts) — so no chrome pointing anywhere else.
+		turfOnly: locals.session?.authProvider !== undefined,
+		// The header's sign-in link for signed-out readers of the public pages,
+		// carrying the page they are on so signing in brings them back to it.
+		signInHref: locals.session ? null : loginRedirectPath(url),
 		// Same cookie hooks.server.ts used to stamp <html>, so the toggle's first
 		// render agrees with the markup already on screen.
 		themeMode: parseThemeMode(cookies.get(THEME_COOKIE)),

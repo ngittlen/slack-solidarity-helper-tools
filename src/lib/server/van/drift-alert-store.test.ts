@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -31,17 +31,18 @@ const run = (over: Partial<Parameters<typeof sendDriftAlerts>[1]> = {}) =>
 const lastText = (): string => mockPostAlert.mock.calls.at(-1)![1] as string;
 
 async function turf(
-	mapRouteId: number,
+	turfId: number,
 	over: Record<string, string | number | null> = {},
 ): Promise<void> {
 	const row: Record<string, string | number | null> = {
-		map_route_id: mapRouteId,
+		turf_id: turfId,
+		van_map_route_id: turfId,
 		map_region_id: 1,
 		folder_id: 1,
 		chapter_id: 71,
 		chapter_name: 'Washtenaw County',
 		region_name: 'Ann Arbor',
-		name: `Turf ${mapRouteId}`,
+		name: `Turf ${turfId}`,
 		printed_list_number: '35536745-88712',
 		door_count: 250,
 		van_distributed_to: null,
@@ -59,15 +60,31 @@ async function turf(
 	await client.execute(`INSERT INTO van_turfs (${cols}) VALUES (${vals})`);
 }
 
-async function claim(mapRouteId: number, over: Record<string, string | null> = {}): Promise<void> {
+/**
+ * A turf that IS in a MiniVAN export, proving this campaign uses the export
+ * workflow at all.
+ *
+ * `driftReport` returns `exports-unused` — and says nothing — when NOTHING in
+ * the catalog has ever been exported, because a campaign that hands out
+ * printed list numbers instead would otherwise have every claim flagged
+ * forever. Fixtures whose subject is the drift rules themselves need one of
+ * these present, or they are testing the suppression instead.
+ */
+async function exportedTurf(): Promise<void> {
+	await turf(999, { van_distributed_to: 'Avery Harbison' });
+	await claim(999, { loaded_in_minivan_at: iso(NOW.getTime() - HOUR) });
+}
+
+async function claim(turfId: number, over: Record<string, string | null> = {}): Promise<void> {
 	const row: Record<string, string | number | null> = {
-		map_route_id: mapRouteId,
+		turf_id: turfId,
 		slack_user_id: 'U_VOL',
 		slack_user_name: 'Dana',
 		claimed_at: iso(NOW.getTime() - 5 * HOUR),
 		expires_at: iso(NOW.getTime() + 40 * HOUR),
 		released_at: null,
 		completed_at: null,
+		loaded_in_minivan_at: null,
 		...over,
 	};
 	const cols = Object.keys(row).join(', ');
@@ -81,10 +98,10 @@ async function stampsInDb(): Promise<
 	Array<{ id: number; kind: string | null; at: string | null }>
 > {
 	const res = await client.execute(
-		'SELECT map_route_id, drift_alerted_kind, drift_alerted_at FROM van_turfs ORDER BY map_route_id',
+		'SELECT turf_id, drift_alerted_kind, drift_alerted_at FROM van_turfs ORDER BY turf_id',
 	);
 	return res.rows.map((r) => ({
-		id: Number(r.map_route_id),
+		id: Number(r.turf_id),
 		kind: (r.drift_alerted_kind as string | null) ?? null,
 		at: (r.drift_alerted_at as string | null) ?? null,
 	}));
@@ -94,9 +111,9 @@ async function stampsInDb(): Promise<
  *  half of the comparison legible. Without it every test would be a no-op. */
 async function vanSideVisible(ok = true): Promise<void> {
 	await client.execute(
-		`INSERT INTO van_sync_state (id, last_sync_at, minivan_exports_ok)
+		`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok)
 		 VALUES (1, '${iso(NOW.getTime())}', ${ok ? 1 : 0})
-		 ON CONFLICT(id) DO UPDATE SET minivan_exports_ok = ${ok ? 1 : 0}`,
+		 ON CONFLICT(campaign_id) DO UPDATE SET minivan_exports_ok = ${ok ? 1 : 0}`,
 	);
 }
 
@@ -115,32 +132,77 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 });
 
+// Each test opens its own libsql client and spies on three console methods.
+// Without this both leak for the life of the worker — fifteen clients and
+// forty-five spies by the end of the file, and `clearAllMocks` resets calls
+// without ever handing console back. Neither is visible while the file is run
+// on its own, which is exactly the shape of a test that fails once in a full
+// suite and passes every time you go looking for it.
+afterEach(() => {
+	client.close();
+	vi.restoreAllMocks();
+});
+
 describe('sendDriftAlerts', () => {
-	it('announces turf VAN has out but the ledger shows free', async () => {
+	// The dropped direction (turf-drift.ts). `canClaim` already refuses turf VAN
+	// holds, so this is the normal state of turf handed out outside the app.
+	it('does not announce turf VAN has out that nobody claimed here', async () => {
 		await vanSideVisible();
+		await exportedTurf();
 		await turf(100, { van_distributed_to: 'Sam Rivera' });
+
+		expect(await run()).toMatchObject({ announced: 0, skipped: 'nothing-new' });
+		expect(mockPostAlert).not.toHaveBeenCalled();
+	});
+
+	it('announces turf claimed here that nobody has loaded in MiniVAN', async () => {
+		await vanSideVisible();
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
 
 		const result = await run();
 
 		expect(result).toMatchObject({ announced: 1, cleared: 0, failed: false });
 		expect(mockPostAlert).toHaveBeenCalledTimes(1);
 		expect(mockPostAlert.mock.calls[0]![0]).toBe(CHANNEL);
-		expect(lastText()).toContain('VAN says Sam Rivera');
+		expect(lastText()).toContain('held by Dana');
 	});
 
-	it('announces turf claimed here that VAN never exported', async () => {
+	// specs/012-multi-van-campaigns: with two campaigns enabled, each line says
+	// whose VAN to look in; with one, none does.
+	it('names the campaign of each line while more than one is enabled', async () => {
 		await vanSideVisible();
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
+		await client.execute(`UPDATE van_campaigns SET label = 'One Team Michigan' WHERE id = 1`);
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, label, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 'El-Sayed', 1, 's', 's', 'x')`,
+		);
+
+		await run();
+
+		expect(lastText()).toContain('*Turf 100* — One Team Michigan · Ann Arbor');
+	});
+
+	it('names no campaign while only one is enabled', async () => {
+		await vanSideVisible();
+		await exportedTurf();
 		await turf(100);
 		await claim(100);
 
-		expect(await run()).toMatchObject({ announced: 1 });
-		expect(lastText()).toContain('held by Dana');
+		await run();
+
+		expect(lastText()).toContain('*Turf 100* — Ann Arbor');
 	});
 
 	it('says nothing when the two sides agree', async () => {
 		await vanSideVisible();
-		await turf(100, { van_distributed_to: 'Dana' });
-		await claim(100);
+		await exportedTurf();
+		await turf(100);
+		await claim(100, { loaded_in_minivan_at: iso(NOW.getTime() - HOUR) });
 		await turf(200);
 
 		expect(await run()).toMatchObject({ announced: 0, skipped: 'nothing-new' });
@@ -149,7 +211,9 @@ describe('sendDriftAlerts', () => {
 
 	it('announces once, not on every run', async () => {
 		await vanSideVisible();
-		await turf(100, { van_distributed_to: 'Sam Rivera' });
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
 
 		expect(await run()).toMatchObject({ announced: 1 });
 		expect(await run()).toMatchObject({ announced: 0, skipped: 'nothing-new' });
@@ -157,52 +221,75 @@ describe('sendDriftAlerts', () => {
 		expect(mockPostAlert).toHaveBeenCalledTimes(1);
 	});
 
-	it('stamps the kind it announced, so a direction change gets through', async () => {
+	it('stamps the kind it announced', async () => {
 		await vanSideVisible();
+		await exportedTurf();
 		await turf(100);
 		await claim(100);
 
 		expect(await run()).toMatchObject({ announced: 1 });
-		expect(await stampsInDb()).toEqual([
+		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
 			{ id: 100, kind: 'claimed-not-in-minivan', at: iso(NOW.getTime()) },
 		]);
+	});
 
-		// The half-fixed case: the organizer exports it to MiniVAN, the volunteer's
-		// claim lapses, and the route now drifts the dangerous way.
-		await client.execute("UPDATE van_turfs SET van_distributed_to = 'Sam Rivera'");
-		await client.execute(`UPDATE van_turf_checkouts SET released_at = '${iso(NOW.getTime())}'`);
+	// Stamps written before that direction was dropped. The kind no longer
+	// exists, the turf no longer drifts, so the sweep must take them away
+	// quietly — not re-announce, not leave them forever.
+	it('sweeps a stamp left by the dropped in-MiniVAN kind, without posting', async () => {
+		await vanSideVisible();
+		await exportedTurf();
+		await turf(100, {
+			van_distributed_to: 'Sam Rivera',
+			drift_alerted_kind: 'in-minivan-not-claimed',
+			drift_alerted_at: iso(0),
+		});
 
-		expect(await run()).toMatchObject({ announced: 1 });
-		expect(lastText()).toContain('VAN says Sam Rivera');
-		expect(await stampsInDb()).toEqual([
-			{ id: 100, kind: 'in-minivan-not-claimed', at: iso(NOW.getTime()) },
+		expect(await run()).toMatchObject({ announced: 0, cleared: 1 });
+		expect(mockPostAlert).not.toHaveBeenCalled();
+		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
+			{ id: 100, kind: null, at: null },
 		]);
 	});
 
 	it('clears the stamp when the drift is fixed, so a recurrence is audible', async () => {
 		await vanSideVisible();
-		await turf(100, { van_distributed_to: 'Sam Rivera' });
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
 
 		expect(await run()).toMatchObject({ announced: 1 });
 
-		// Somebody claims it here, so the two sides now agree.
-		await claim(100);
+		// The volunteer loads the list, so VAN now has it and the sides agree.
+		await client.execute(
+			`UPDATE van_turf_checkouts SET loaded_in_minivan_at = '${iso(NOW.getTime())}' WHERE turf_id = 100`,
+		);
 		expect(await run()).toMatchObject({ announced: 0, cleared: 1 });
-		expect(await stampsInDb()).toEqual([{ id: 100, kind: null, at: null }]);
+		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
+			{ id: 100, kind: null, at: null },
+		]);
 
-		// It drifts again months later. This must be heard, not swallowed.
-		await client.execute(`UPDATE van_turf_checkouts SET released_at = '${iso(NOW.getTime())}'`);
+		// It drifts again: the volunteer gives it back and someone new claims it
+		// without loading it. This must be heard, not swallowed.
+		await client.execute(
+			`UPDATE van_turf_checkouts SET released_at = '${iso(NOW.getTime())}' WHERE turf_id = 100`,
+		);
+		await claim(100, { slack_user_id: 'U_NEXT' });
 		expect(await run()).toMatchObject({ announced: 1 });
 		expect(mockPostAlert).toHaveBeenCalledTimes(2);
 	});
 
 	it('does not stamp when Slack rejects the post, so the alert retries', async () => {
 		await vanSideVisible();
-		await turf(100, { van_distributed_to: 'Sam Rivera' });
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
 		mockPostAlert.mockResolvedValue(false);
 
 		expect(await run()).toMatchObject({ announced: 0, failed: true });
-		expect(await stampsInDb()).toEqual([{ id: 100, kind: null, at: null }]);
+		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
+			{ id: 100, kind: null, at: null },
+		]);
 
 		mockPostAlert.mockResolvedValue(true);
 		expect(await run()).toMatchObject({ announced: 1, failed: false });
@@ -213,7 +300,7 @@ describe('sendDriftAlerts', () => {
 		// everything, which is indistinguishable from "nothing is distributed".
 		// Clearing stamps here would re-announce the lot once the tier is granted.
 		await vanSideVisible(false);
-		await turf(100, { drift_alerted_kind: 'in-minivan-not-claimed', drift_alerted_at: iso(0) });
+		await turf(100, { drift_alerted_kind: 'claimed-not-in-minivan', drift_alerted_at: iso(0) });
 
 		expect(await run()).toMatchObject({
 			announced: 0,
@@ -221,13 +308,15 @@ describe('sendDriftAlerts', () => {
 			skipped: 'van-side-unavailable',
 		});
 		expect(mockPostAlert).not.toHaveBeenCalled();
-		expect((await stampsInDb())[0]!.kind).toBe('in-minivan-not-claimed');
+		expect((await stampsInDb())[0]!.kind).toBe('claimed-not-in-minivan');
 	});
 
 	it('treats a never-synced database as unreadable rather than as agreement', async () => {
 		// No van_sync_state row at all. An empty report at this point would be
 		// reassurance drawn from an empty table.
-		await turf(100, { van_distributed_to: 'Sam Rivera' });
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
 
 		expect(await run()).toMatchObject({ skipped: 'van-side-unavailable' });
 		expect(mockPostAlert).not.toHaveBeenCalled();
@@ -235,7 +324,9 @@ describe('sendDriftAlerts', () => {
 
 	it('does nothing when no turf channel is configured', async () => {
 		await vanSideVisible();
-		await turf(100, { van_distributed_to: 'Sam Rivera' });
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
 
 		expect(await run({ channelId: '' })).toMatchObject({
 			announced: 0,
@@ -243,17 +334,18 @@ describe('sendDriftAlerts', () => {
 		});
 		expect(mockPostAlert).not.toHaveBeenCalled();
 		// Crucially unstamped: this drift must be announced once a channel is set.
-		expect((await stampsInDb())[0]!.kind).toBeNull();
+		expect((await stampsInDb()).filter((r) => r.id === 100)[0]!.kind).toBeNull();
 	});
 
 	it('ignores retired turf and clears the stamp it used to carry', async () => {
 		await vanSideVisible();
+		await exportedTurf();
 		await turf(100, {
-			van_distributed_to: 'Sam Rivera',
 			retired_at: iso(NOW.getTime() - HOUR),
-			drift_alerted_kind: 'in-minivan-not-claimed',
+			drift_alerted_kind: 'claimed-not-in-minivan',
 			drift_alerted_at: iso(NOW.getTime() - 24 * HOUR),
 		});
+		await claim(100);
 
 		expect(await run()).toMatchObject({ announced: 0, cleared: 1 });
 		expect(mockPostAlert).not.toHaveBeenCalled();
@@ -261,7 +353,9 @@ describe('sendDriftAlerts', () => {
 
 	it('batches every chapter into one message', async () => {
 		await vanSideVisible();
-		await turf(100, { van_distributed_to: 'Sam Rivera' });
+		await exportedTurf();
+		await turf(100);
+		await claim(100);
 		await turf(200, { chapter_id: 82, chapter_name: 'Wayne County', region_name: 'Detroit' });
 		await claim(200);
 
@@ -273,6 +367,7 @@ describe('sendDriftAlerts', () => {
 
 	it('ignores an expired claim, which is drift rather than a holding', async () => {
 		await vanSideVisible();
+		await exportedTurf();
 		await turf(100);
 		await claim(100, { expires_at: iso(NOW.getTime() - HOUR) });
 
@@ -283,11 +378,13 @@ describe('sendDriftAlerts', () => {
 
 	it('survives an unrecognised stamp by re-announcing rather than going mute', async () => {
 		await vanSideVisible();
-		await turf(100, { van_distributed_to: 'Sam Rivera', drift_alerted_kind: 'something-else' });
+		await exportedTurf();
+		await turf(100, { drift_alerted_kind: 'something-else' });
+		await claim(100);
 
 		expect(await run()).toMatchObject({ announced: 1 });
-		expect(await stampsInDb()).toEqual([
-			{ id: 100, kind: 'in-minivan-not-claimed', at: iso(NOW.getTime()) },
+		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
+			{ id: 100, kind: 'claimed-not-in-minivan', at: iso(NOW.getTime()) },
 		]);
 	});
 
@@ -295,9 +392,12 @@ describe('sendDriftAlerts', () => {
 		// The sweep reads every stamped row, not just the interpretable ones, so a
 		// junk value does not sit on a healthy turf forever.
 		await vanSideVisible();
+		await exportedTurf();
 		await turf(100, { drift_alerted_kind: 'something-else', drift_alerted_at: iso(0) });
 
 		expect(await run()).toMatchObject({ announced: 0, cleared: 1 });
-		expect(await stampsInDb()).toEqual([{ id: 100, kind: null, at: null }]);
+		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
+			{ id: 100, kind: null, at: null },
+		]);
 	});
 });

@@ -10,6 +10,7 @@
 
 import type { WebClient } from '@slack/web-api';
 import { fetchPaginated } from './solidarity-paginate.js';
+import { chapterIdsOf } from './solidarity-chapter-ids.js';
 import { startWalk, finishWalk } from './walk-progress.js';
 import { withSolidarityWalkLock } from './solidarity-walk-lock.js';
 
@@ -140,10 +141,21 @@ interface CacheEntry<T, C> {
 	// so a forced caller can't piggy-back on a possibly-failing refetch and
 	// receive a stale-flagged result (FR-009).
 	inFlight: { promise: Promise<AutocompleteResult<T>>; credential: C } | null;
+	/**
+	 * When the fetch whose result currently sits in `data` was STARTED.
+	 *
+	 * Completion order is not start order: a forced refresh and a background one
+	 * can be in flight together (a forced caller deliberately never joins the
+	 * in-flight slot), and whichever finishes last wins. Without this, a slow
+	 * background fetch that began before the admin clicked Refresh lands
+	 * afterwards, overwrites the fresher list with its older one, and stamps it
+	 * fresh for the whole TTL.
+	 */
+	startedAt: number;
 }
 
 function makeEntry<T, C>(): CacheEntry<T, C> {
-	return { data: null, fetchedAt: 0, credential: null, inFlight: null };
+	return { data: null, fetchedAt: 0, credential: null, inFlight: null, startedAt: 0 };
 }
 
 const channelsEntry: CacheEntry<ChannelEntry, WebClient> = makeEntry();
@@ -181,11 +193,19 @@ async function runFetch<T, C>(
 	credential: C,
 	fetcher: () => Promise<T[]>,
 ): Promise<AutocompleteResult<T>> {
+	const startedAt = Date.now();
 	try {
 		const result = await fetcher();
-		entry.data = result;
-		entry.fetchedAt = Date.now();
-		entry.credential = credential;
+		// Only if nothing newer has already landed. The loser still returns its
+		// own rows to its own caller — they are a valid read of the list, just
+		// not the one worth keeping.
+		if (startedAt >= entry.startedAt) {
+			entry.data = result;
+			entry.fetchedAt = Date.now();
+			entry.credential = credential;
+			entry.startedAt = startedAt;
+			return { items: result, stale: false, fetchedAt: entry.fetchedAt, refreshing: false };
+		}
 		return { items: result, stale: false, fetchedAt: entry.fetchedAt, refreshing: false };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
@@ -453,15 +473,6 @@ interface RawSolidarityUser {
 	chapter_ids?: number[] | null;
 }
 
-/** Same `chapter_ids ?? [chapter_id]` fallback the team_join handler,
- *  chapter-reconcile and the nightly snapshot each apply — `chapter_ids` is the
- *  modern field and `chapter_id` the legacy single-chapter one. */
-function rawChapterIds(raw: RawSolidarityUser): number[] {
-	if (raw.chapter_ids?.length) return raw.chapter_ids;
-	if (raw.chapter_id != null) return [raw.chapter_id];
-	return [];
-}
-
 function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
 	const email = (raw.email ?? '').trim().toLowerCase();
 	const full = [raw.first_name, raw.last_name]
@@ -479,7 +490,7 @@ function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
 			.filter((e): e is string => typeof e === 'string')
 			.map((e) => e.trim().toLowerCase())
 			.filter(Boolean),
-		chapterIds: rawChapterIds(raw),
+		chapterIds: chapterIdsOf(raw),
 	};
 }
 

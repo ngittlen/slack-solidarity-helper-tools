@@ -4,11 +4,13 @@ import {
 	csvRows,
 	extractHull,
 	FORBIDDEN_COLUMNS,
+	HASHED_COLUMNS,
 	HullExtractError,
 	LAT_COLUMN,
 	LNG_COLUMN,
 	MAX_HULL_EXTENT_M,
 } from './hull-extract.js';
+import { createPersonHasher } from './person-hash.js';
 
 /** Feed a string as one chunk. */
 async function* one(text: string): AsyncGenerator<string> {
@@ -439,5 +441,84 @@ describe('extractHull hull extent bound', () => {
 		expect(result.outliersDropped).toBe(1);
 		expect(result.hullTooLarge).toBe(false);
 		expect(result.hull.length).toBeGreaterThanOrEqual(3);
+	});
+});
+
+describe('extractHull roster', () => {
+	const hasher = createPersonHasher('test-secret');
+	function csv(rows: string[]): string {
+		return [LIVE_HEADER, ...rows].join('\n');
+	}
+	/** liveRow with the VanID and address line swapped out. */
+	function person(vanId: string, address: string): string {
+		return liveRow('28.5', '-81.4')
+			.replace('255849,568504,', `255849,${vanId},`)
+			.replace('"4190 S Kirkman Rd Apt 912 , Orlando, FL 32811"', `"${address}"`);
+	}
+
+	it('returns no roster and reads no VanID unless a hasher is supplied', async () => {
+		const result = await extractHull(one(csv([liveRow('28.5', '-81.4')])));
+		expect(result.roster).toBeNull();
+	});
+
+	it('reduces each row to a person digest and a door digest', async () => {
+		const result = await extractHull(
+			one(
+				csv([
+					person('111', '1 Main St , Orlando, FL 32811'),
+					person('222', '1  MAIN St, Orlando, FL 32811'),
+					person('333', '2 Main St , Orlando, FL 32811'),
+				]),
+			),
+			{ roster: hasher },
+		);
+		const roster = result.roster!;
+		expect(roster).toHaveLength(3);
+		expect(roster[0]!.personHash).toEqual(hasher.person('111'));
+		// Same door however VAN spaced or cased it; a different house is not.
+		expect(roster[0]!.doorHash).toEqual(roster[1]!.doorHash);
+		expect(roster[2]!.doorHash).not.toEqual(roster[0]!.doorHash);
+		for (const entry of roster) {
+			expect(entry.personHash).toHaveLength(16);
+			expect(entry.doorHash).toHaveLength(16);
+		}
+	});
+
+	// The security assertion for the one place VanID is admitted: nothing
+	// returned carries it, or the address, in a form anyone can read.
+	it('never returns a raw VanID, name or address', async () => {
+		const result = await extractHull(one(csv([liveRow('28.5', '-81.4')])), { roster: hasher });
+		const text = JSON.stringify(result, (_k, v: unknown) =>
+			Buffer.isBuffer(v) ? v.toString('latin1') : v,
+		);
+		for (const token of ['568504', 'Kirkman', 'Campbell', 'Ron', '1968-08-09']) {
+			expect(text, `"${token}" must not be returned`).not.toContain(token);
+		}
+	});
+
+	it('gives an address-less person a door of their own', async () => {
+		const result = await extractHull(one(csv([person('111', ''), person('222', '')])), {
+			roster: hasher,
+		});
+		expect(result.roster![0]!.doorHash).not.toEqual(result.roster![1]!.doorHash);
+	});
+
+	// The wrong export type costs the roster, not the shape: the hull never
+	// needed VanID, and the reason goes back for the caller to surface.
+	it('still extracts the hull, and says why, when the export has no VanID', async () => {
+		const header = 'VAddressLatitude,VAddressLongitude';
+		const rows = ['28.5,-81.4', '28.51,-81.4', '28.5,-81.41', '28.51,-81.41'];
+		const result = await extractHull(one(`${header}\n${rows.join('\n')}`), { roster: hasher });
+		expect(result.roster).toBeNull();
+		expect(result.rosterUnavailable).toContain('VanID');
+		expect(result.centre).not.toBeNull();
+	});
+
+	it('keeps HASHED_COLUMNS out of FORBIDDEN_COLUMNS and in the live header', () => {
+		const header = LIVE_HEADER.split(',');
+		for (const column of HASHED_COLUMNS) {
+			expect(FORBIDDEN_COLUMNS as readonly string[]).not.toContain(column);
+			expect(header).toContain(column);
+		}
 	});
 });

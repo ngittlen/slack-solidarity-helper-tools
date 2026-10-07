@@ -28,7 +28,7 @@ export interface BlockResult {
 	 *  caller looking them up afterwards: this function is the only thing that
 	 *  knows which rows it released, and by the time it returns they are no
 	 *  longer distinguishable as "the ones this block freed". */
-	released: { mapRouteId: number; name: string }[];
+	released: { turfId: number; name: string }[];
 	/** Sessions invalidated, so the block lands on their next request. */
 	sessionsRevoked: number;
 }
@@ -84,14 +84,14 @@ export async function blockFromTurfCheckout(
 	const active = await db
 		.select({
 			id: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			name: vanTurfs.name,
 		})
 		.from(vanTurfCheckouts)
 		// Inner join: a checkout whose turf row has vanished cannot be named in a
 		// DM, and a message listing a blank is worse than one turf fewer. It is
 		// still released by the update below — the loop runs over `active`.
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				eq(vanTurfCheckouts.slackUserId, target.slackUserId),
@@ -114,7 +114,7 @@ export async function blockFromTurfCheckout(
 	);
 
 	return {
-		released: active.map((r) => ({ mapRouteId: r.mapRouteId, name: r.name })),
+		released: active.map((r) => ({ turfId: r.turfId, name: r.name })),
 		sessionsRevoked,
 	};
 }

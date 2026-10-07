@@ -11,15 +11,27 @@
 	import InfoCommandsEditor from '$lib/components/settings/InfoCommandsEditor.svelte';
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
 	import ZipExcludedChaptersEditor from '$lib/components/settings/ZipExcludedChaptersEditor.svelte';
+	import TurfHiddenChaptersEditor from '$lib/components/settings/TurfHiddenChaptersEditor.svelte';
+	import { chaptersFromChannelMap } from '$lib/chapter-list.js';
 	import VanTurfCheckoutEditor from '$lib/components/settings/VanTurfCheckoutEditor.svelte';
-	import VanChapterFoldersEditor from '$lib/components/settings/VanChapterFoldersEditor.svelte';
+	import VanCampaignsList from '$lib/components/settings/VanCampaignsList.svelte';
 	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
+	import OutsideVolunteerRecords from '$lib/components/settings/OutsideVolunteerRecords.svelte';
 	import ThemeEditor from '$lib/components/settings/ThemeEditor.svelte';
 	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
 	import { SECTION_IDS } from '$lib/components/settings/sections.js';
 	import AppConfigEditor from '$lib/components/settings/AppConfigEditor.svelte';
 
 	const { data } = $props();
+
+	/** What /turfs can list — the chapter → channel map, one row per chapter —
+	 *  as the hidden-chapters picker wants it. */
+	const turfPickerChapters = $derived(
+		chaptersFromChannelMap(data.settings.chapterChannelMap).map((c) => ({
+			id: c.chapterId,
+			name: c.name,
+		})),
+	);
 
 	// "Last refreshed Nm ago" — derived from the oldest successful fetchedAt
 	// across the three live-list sources. Em-dash when every list rejected,
@@ -82,6 +94,16 @@
 			{#if data.errors.solidarityChapters}
 				<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
 			{/if}
+			{#if data.renamedChapters.length > 0}
+				<!-- Stored names that had drifted from Solidarity's, fixed by this
+				     load: they label chapters on /turfs, the dashboard and reports. -->
+				<p class="renamed-chapters" role="status">
+					Updated {data.renamedChapters.length === 1 ? 'a chapter name' : 'chapter names'} to match Solidarity:
+					{#each data.renamedChapters as rename, i (rename.chapterId)}{i > 0
+							? ', '
+							: ''}“{rename.from}” → “{rename.to}”{/each}.
+				</p>
+			{/if}
 			{#if data.slackChannels && data.solidarityChapters}
 				<ChapterChannelEditor
 					chapters={data.solidarityChapters.items}
@@ -126,6 +148,7 @@
 				<AppConfigEditor
 					channels={data.slackChannels.items}
 					siteName={data.settings.siteName}
+					publicJoinUrl={data.settings.publicJoinUrl}
 					trackingChannelId={data.settings.slackTrackingChannelId}
 					growthReportChannelId={data.settings.slackGrowthReportChannelId}
 					mobilizeSyncChannelId={data.settings.slackMobilizeSyncChannelId}
@@ -133,6 +156,7 @@
 					mobilizeContactName={data.settings.mobilizeContactName}
 					mobilizeContactEmail={data.settings.mobilizeContactEmail}
 					mobilizeContactPhone={data.settings.mobilizeContactPhone}
+					mobilizeImportTag={data.settings.mobilizeImportTag}
 					rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
 					countdownLabel={data.settings.countdownLabel}
 					countdownEndAt={data.settings.countdownEndAt}
@@ -222,27 +246,32 @@
 			<VanTurfCheckoutEditor
 				ttlHours={data.settings.vanTurfClaimTtlHours}
 				maxConcurrentClaims={data.settings.vanTurfMaxConcurrentClaims}
+				vanAssignmentTtlHours={data.settings.vanAssignmentTtlHours}
 			/>
 		</section>
 
 		<section
-			id={SECTION_IDS.vanChapterFolders}
-			data-settings-anchor={SECTION_IDS.vanChapterFolders}
+			id={SECTION_IDS.turfHiddenChapters}
+			data-settings-anchor={SECTION_IDS.turfHiddenChapters}
 			tabindex="-1"
 		>
-			<h2>Chapter → VAN folders</h2>
-			{#if data.errors.vanChapterFolders}
-				<p class="error">{data.errors.vanChapterFolders}</p>
+			<h2>Chapters on /turfs</h2>
+			<TurfHiddenChaptersEditor
+				chapters={turfPickerChapters}
+				hiddenIds={[...data.settings.turfHiddenChapterIds]}
+			/>
+		</section>
+
+		<section
+			id={SECTION_IDS.vanCampaigns}
+			data-settings-anchor={SECTION_IDS.vanCampaigns}
+			tabindex="-1"
+		>
+			<h2>VAN campaigns</h2>
+			{#if data.errors.vanCampaigns}
+				<p class="error">{data.errors.vanCampaigns}</p>
 			{/if}
-			{#if data.errors.solidarityChapters}
-				<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
-			{/if}
-			{#if data.solidarityChapters}
-				<VanChapterFoldersEditor
-					chapters={data.solidarityChapters.items}
-					mappings={data.vanChapterFolderMappings}
-				/>
-			{/if}
+			<VanCampaignsList campaigns={data.vanCampaigns} />
 		</section>
 
 		<section
@@ -257,11 +286,23 @@
 			{#if data.errors.slackUsers}
 				<p class="error">Slack users: {data.errors.slackUsers}</p>
 			{/if}
-			{#if data.slackUsers}
+			{#if data.errors.outsideVolunteers}
+				<p class="error">{data.errors.outsideVolunteers}</p>
+			{/if}
+			<!-- Shown whenever either list loaded: a Slack outage must not also take
+			     away the means to block a Google or Apple volunteer. -->
+			{#if data.slackUsers || data.outsideBlockable.length > 0}
 				<VanBlocklistEditor
-					users={data.slackUsers.items}
+					users={data.slackUsers?.items ?? []}
+					outsideVolunteers={data.outsideBlockable}
 					blockedIds={data.vanBlockedUsers.map((u) => u.slackUserId)}
+					blockedNames={Object.fromEntries(
+						data.vanBlockedUsers.map((u) => [u.slackUserId, u.displayName]),
+					)}
 				/>
+			{/if}
+			{#if data.outsideSignIn || data.outsideVolunteerCounts.google + data.outsideVolunteerCounts.apple > 0}
+				<OutsideVolunteerRecords counts={data.outsideVolunteerCounts} />
 			{/if}
 		</section>
 
@@ -273,6 +314,12 @@
 </div>
 
 <style>
+	.renamed-chapters {
+		margin: 0 0 12px;
+		font-size: 0.9em;
+		color: var(--color-text-muted);
+	}
+
 	.settings-header {
 		display: flex;
 		align-items: center;

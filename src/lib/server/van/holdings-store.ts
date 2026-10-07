@@ -15,10 +15,18 @@
 // to see all of. If a campaign ever has more live turf than fits a page, that
 // is worth knowing rather than truncating.
 
-import { and, desc, eq, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import type { CompletionRow, HoldingRow } from '../../van/turf-holdings.js';
+import { visibleToChapter } from './chapter-visibility.js';
+import { inCampaign } from './campaigns.js';
+
+/** `doorsLeft` (turf-view.ts) in SQL: the uncontacted count when there is one
+ *  built from the turf's current saved list, VAN's doorCount otherwise. */
+const doorsLeftColumn = sql<number>`case when ${vanTurfs.rosterSavedListId} = ${vanTurfs.savedListId}
+	then coalesce(${vanTurfs.uncontactedDoors}, ${vanTurfs.doorCount})
+	else ${vanTurfs.doorCount} end`;
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -31,10 +39,14 @@ export interface HoldingsQuery {
 	/** Null means every chapter. Admin-only page, so unscoped is the intended
 	 *  default rather than a leak. */
 	chapterId: number | null;
+	/** One VAN campaign's turf; null or omitted means every campaign. */
+	campaignId?: number | null;
 }
 
-function chapterFilter(chapterId: number | null): SQL | undefined {
-	return chapterId === null ? undefined : eq(vanTurfs.chapterId, chapterId);
+function scopeFilter(query: HoldingsQuery): SQL | undefined {
+	// The chapter's FOLDERS, not the label on the row: a folder mapped to
+	// several chapters is visible to all of them (chapter-visibility.ts).
+	return and(visibleToChapter(query.chapterId), inCampaign(query.campaignId));
 }
 
 /**
@@ -51,7 +63,7 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 	return db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			claimedAt: vanTurfCheckouts.claimedAt,
@@ -63,20 +75,82 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
-			doorCount: vanTurfs.doorCount,
+			campaignId: vanTurfs.campaignId,
+			doorCount: doorsLeftColumn,
 			// Not selected, deliberately: printedListNumber is the credential
 			// issued to the holder, and an organizer looking at a board is not the
 			// holder.
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
-				chapterFilter(query.chapterId),
+				scopeFilter(query),
 			),
 		);
+}
+
+/** One of the caller's own claims, as `/turfs-mine` renders it. */
+export interface MyHoldingRow {
+	turfId: number;
+	claimedAt: string;
+	expiresAt: string;
+	releasedAt: string | null;
+	completedAt: string | null;
+	turfName: string;
+	regionName: string;
+	chapterId: number;
+	/** The turf's VAN campaign, for its badge. */
+	campaignId: number;
+	doorCount: number;
+	/** The number this volunteer was issued. */
+	issuedListNumber: string | null;
+}
+
+/**
+ * The claims one volunteer is holding right now.
+ *
+ * Separate from `loadCurrentHoldings` rather than a parameter on it, because
+ * the two differ in what they are allowed to return: that one feeds an
+ * organizer board and deliberately omits the printed list number, since an
+ * organizer is not the holder. Here the caller IS the holder — the query is
+ * scoped to their own Slack id — so the number they were issued is theirs to
+ * see, exactly as it is in the claim message and on their own turf page.
+ *
+ * Folding the two together behind a flag would put that distinction one
+ * mistaken argument away from leaking a credential to a board.
+ *
+ * Expiry is NOT filtered here, matching loadCurrentHoldings: the sweep runs on
+ * a cron, so between ticks a lapsed claim is still unstamped, and `isActive` is
+ * the rule that decides. Two definitions of "live" would drift.
+ */
+export async function loadHoldingsFor(db: Db, slackUserId: string): Promise<MyHoldingRow[]> {
+	return db
+		.select({
+			turfId: vanTurfCheckouts.turfId,
+			claimedAt: vanTurfCheckouts.claimedAt,
+			expiresAt: vanTurfCheckouts.expiresAt,
+			releasedAt: vanTurfCheckouts.releasedAt,
+			completedAt: vanTurfCheckouts.completedAt,
+			issuedListNumber: vanTurfCheckouts.issuedListNumber,
+			turfName: vanTurfs.name,
+			regionName: vanTurfs.regionName,
+			chapterId: vanTurfs.chapterId,
+			campaignId: vanTurfs.campaignId,
+			doorCount: doorsLeftColumn,
+		})
+		.from(vanTurfCheckouts)
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
+		.where(
+			and(
+				eq(vanTurfCheckouts.slackUserId, slackUserId),
+				isNull(vanTurfCheckouts.releasedAt),
+				isNull(vanTurfCheckouts.completedAt),
+			),
+		)
+		.orderBy(vanTurfCheckouts.expiresAt);
 }
 
 /**
@@ -84,8 +158,8 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
  *
  * Returns rows whose delta is still null as well as measured ones, because the
  * page has to tell "nothing to worry about" apart from "nothing has been
- * checked" — and with Story 5.6 still blocked on the VAN key, every row is
- * currently the latter.
+ * checked" — and a completion stays unchecked until VAN re-cuts its region,
+ * which with region re-cuts off only happens by hand.
  */
 export async function loadRecentCompletions(
 	db: Db,
@@ -94,7 +168,7 @@ export async function loadRecentCompletions(
 	const rows = await db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			completedAt: vanTurfCheckouts.completedAt,
@@ -103,10 +177,11 @@ export async function loadRecentCompletions(
 			regionName: vanTurfs.regionName,
 			chapterId: vanTurfs.chapterId,
 			chapterName: vanTurfs.chapterName,
+			campaignId: vanTurfs.campaignId,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
-		.where(and(isNotNull(vanTurfCheckouts.completedAt), chapterFilter(query.chapterId)))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
+		.where(and(isNotNull(vanTurfCheckouts.completedAt), scopeFilter(query)))
 		.orderBy(desc(vanTurfCheckouts.completedAt))
 		.limit(query.limit ?? COMPLETION_LOOKBACK);
 

@@ -24,7 +24,7 @@
 // is picked up by the next run and POLLED rather than re-submitted, so a
 // killed worker costs one HTTP GET, not a duplicate export job.
 
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanGeometryQueue, vanTurfs } from '../schema.js';
@@ -37,6 +37,9 @@ import {
 	type GeocodeFn,
 } from './hull-extract.js';
 import { geocodeAddresses } from './geocode-batch.js';
+import { needsGeometry } from './catalog.js';
+import { recomputeUncontacted, replaceRoster } from './contact-sync.js';
+import type { PersonHasher } from './person-hash.js';
 import type { VanExportJob } from './types.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -50,7 +53,11 @@ export const MAX_ATTEMPTS = 4;
 
 /** Work items in flight. The VAN client already caps ITS OWN concurrency at 2,
  *  but the blob download goes straight to Azure and bypasses that limiter
- *  entirely, so the cap is repeated here over whole items. */
+ *  entirely, so the cap is repeated here over whole items.
+ *
+ *  The default for the scheduled sync, where politeness matters more than
+ *  speed. `options.concurrency` raises it for a one-off backlog drain run from
+ *  a script — the VAN client's own limiter still bounds calls to VAN itself. */
 const MAX_CONCURRENCY = 2;
 
 /** Whole-run budget, under the 10-minute lock in the van-sync route and well
@@ -71,7 +78,23 @@ const MAX_POLLS = 5;
  *  job id, so the next run polls rather than re-submitting. */
 const MIN_DOWNLOAD_MS = 5_000;
 
+/** How long a submitted job may go without a downloadUrl before it is given
+ *  up on and resubmitted. A turf's export normally finishes in seconds; one
+ *  still pending after this is not coming, and leaving it resumable forever
+ *  would keep it at the head of every run's queue. */
+export const STALE_JOB_MS = 60 * 60 * 1000;
+
+/** How long after submission a job reading Completed with no downloadUrl is
+ *  taken to have expired. Not zero: a job just submitted may say Completed a
+ *  moment before its link is filled in, and failing it there would spend an
+ *  attempt and a duplicate export on a job that was about to be fine. */
+export const EXPIRED_LINK_GRACE_MS = 5 * 60 * 1000;
+
 export interface GeometryWorkerOptions {
+	/** The campaign whose queue this run drains, with that campaign's client.
+	 *  Export jobs are created and read with a campaign's own key, so a run
+	 *  never touches another campaign's turf. */
+	campaignId: number;
 	/** VAN's per-developer export job type id — 5 (VoterCircle) on this key.
 	 *  Type 4 has no coordinate columns and produces a loud extract failure. */
 	exportJobTypeId: number;
@@ -81,11 +104,14 @@ export interface GeometryWorkerOptions {
 	 *  string against the job and echoes it back on every later read, so it
 	 *  carries a capability token scoped to that turf instead of a shared
 	 *  secret — see webhook-token.ts. Called immediately before each POST. */
-	webhookUrlFor: (mapRouteId: number) => string;
+	webhookUrlFor: (turfId: number) => string;
 	now?: Date;
 	timeBudgetMs?: number;
 	/** Cap on items per run. Null means "as many as the budget allows". */
 	maxItems?: number | null;
+	/** Items in flight. Defaults to MAX_CONCURRENCY; a drain script raises it.
+	 *  Clamped to at least 1, so a bad value cannot stall the run entirely. */
+	concurrency?: number;
 	/** Injected for tests, and used for the Azure download — which must NOT go
 	 *  through the VAN client, since that would attach our Basic credentials to
 	 *  a request to a different host. */
@@ -103,6 +129,9 @@ export interface GeometryWorkerOptions {
 	 *  disables it outright, which also stops the extractor reading address
 	 *  columns at all (see the mask note in hull-extract.ts). */
 	geocode?: GeocodeFn | null;
+	/** Also reduce the export to a roster of hashed people and doors for the
+	 *  uncontacted-door count. Null or omitted: VanID is never read. */
+	roster?: PersonHasher | null;
 }
 
 export interface GeometryWorkerResult {
@@ -125,6 +154,11 @@ export interface GeometryWorkerResult {
 	 *  party — so "did any address leave our servers this run" is answerable
 	 *  from the sync response rather than from the logs. */
 	geocodedFromAddress: number;
+	/** Turfs whose roster was (re)built this run. */
+	rostersStored: number;
+	/** Turfs whose roster was asked for but could not be built from the
+	 *  export (no VanID column). Their hulls are stored as normal. */
+	rostersUnavailable: number;
 	/** Rows returned to `pending` to try again later. */
 	retried: number;
 	/** Rows that hit MAX_ATTEMPTS and are now `failed`. */
@@ -146,10 +180,12 @@ export interface GeometryWorkerResult {
 }
 
 interface QueueItem {
-	mapRouteId: number;
+	turfId: number;
 	savedListId: number;
 	exportJobId: number | null;
 	attempts: number;
+	/** When the row's current export job was submitted. */
+	requestedAt: string | null;
 }
 
 function isTerminal(status: string | null, wanted: 'completed' | 'error'): boolean {
@@ -184,6 +220,8 @@ export async function runGeometryQueue(
 		hullsTooLarge: 0,
 		geocodedFromAddress: 0,
 		noGeometry: 0,
+		rostersStored: 0,
+		rostersUnavailable: 0,
 		retried: 0,
 		deadLettered: 0,
 		deadLetters,
@@ -199,23 +237,30 @@ export async function runGeometryQueue(
 	// the POST; it is indistinguishable from pending, so treat it as such.
 	const items = (await db
 		.select({
-			mapRouteId: vanGeometryQueue.mapRouteId,
+			turfId: vanGeometryQueue.turfId,
 			savedListId: vanGeometryQueue.savedListId,
 			exportJobId: vanGeometryQueue.exportJobId,
 			attempts: vanGeometryQueue.attempts,
+			requestedAt: vanGeometryQueue.requestedAt,
 		})
 		.from(vanGeometryQueue)
+		.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanGeometryQueue.turfId))
 		// `running` is included whether or not it has a job id: with one it is
 		// resumable by polling, without one it is a crash between the status
 		// write and the POST and is indistinguishable from pending. The ORDER BY
 		// below is what separates the two, not the filter.
-		.where(inArray(vanGeometryQueue.status, ['pending', 'running']))
+		.where(
+			and(
+				eq(vanTurfs.campaignId, options.campaignId),
+				inArray(vanGeometryQueue.status, ['pending', 'running']),
+			),
+		)
 		.orderBy(
 			// Resumable (has a job id) before fresh, then fewest attempts first
 			// so a poison row cannot monopolise every run.
 			sql`case when ${vanGeometryQueue.exportJobId} is null then 1 else 0 end`,
 			vanGeometryQueue.attempts,
-			vanGeometryQueue.mapRouteId,
+			vanGeometryQueue.turfId,
 		)) as QueueItem[];
 
 	const queue = options.maxItems == null ? items : items.slice(0, options.maxItems);
@@ -239,10 +284,12 @@ export async function runGeometryQueue(
 			.set({
 				status: 'running',
 				attempts,
-				requestedAt: now.toISOString(),
+				// Stamped when a job is submitted, never on a resume: it is what
+				// tells a slow job from one that is never going to finish.
+				...(item.exportJobId === null ? { requestedAt: now.toISOString() } : {}),
 				lastError: null,
 			})
-			.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+			.where(eq(vanGeometryQueue.turfId, item.turfId));
 
 		try {
 			// Resume by polling; otherwise submit. Both paths converge on a job
@@ -254,7 +301,7 @@ export async function runGeometryQueue(
 				job = await client.createExportJob({
 					savedListId: item.savedListId,
 					exportJobTypeId: options.exportJobTypeId,
-					webhookUrl: options.webhookUrlFor(item.mapRouteId),
+					webhookUrl: options.webhookUrlFor(item.turfId),
 				});
 				// Persisted before the download so a crash mid-download resumes
 				// by polling instead of submitting a second job.
@@ -262,11 +309,16 @@ export async function runGeometryQueue(
 				await db
 					.update(vanGeometryQueue)
 					.set({ exportJobId })
-					.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+					.where(eq(vanGeometryQueue.turfId, item.turfId));
 			}
 
 			// Small lists are already Completed here and skip the loop entirely.
-			for (let poll = 0; poll < MAX_POLLS && !job.downloadUrl; poll++) {
+			// Only a job submitted this pass is waited on. A resumed one has had
+			// at least a run already, so it gets the single GET above: polling
+			// it would spend the budget on rows that sort ahead of all the
+			// fresh work, and a handful of slow jobs would starve the queue.
+			const polls = item.exportJobId === null ? MAX_POLLS : 0;
+			for (let poll = 0; poll < polls && !job.downloadUrl; poll++) {
 				if (isTerminal(job.status, 'error')) break;
 				if (Date.now() >= deadline) break;
 				await sleep(POLL_INTERVAL_MS);
@@ -277,6 +329,29 @@ export async function runGeometryQueue(
 				throw new Error(`VAN reported the export job failed (${job.errorCode ?? 'no code'})`);
 			}
 
+			// Only a resumed job is judged here. One submitted this pass is never
+			// expired or stale, however it reads — and `item.requestedAt` would
+			// be the previous job's anyway. A retry clears the job id, so the
+			// next pass submits afresh.
+			if (!job.downloadUrl && item.exportJobId !== null) {
+				const age = now.getTime() - (item.requestedAt ? Date.parse(item.requestedAt) : NaN);
+				// Finished, but the link is gone: VAN drops downloadUrl once the
+				// job expires, and a finished job never grows a new one. Left
+				// "running", these were re-polled every run and, sorting first,
+				// starved the fresh rows behind them.
+				if (isTerminal(job.status, 'completed') && age >= EXPIRED_LINK_GRACE_MS) {
+					throw new Error('VAN export job completed but its download link has expired');
+				}
+				// Pending far longer than any export takes. Resubmitting costs an
+				// attempt, so a list VAN can never export still dead-letters
+				// rather than holding its place at the head of the queue forever.
+				if (age >= STALE_JOB_MS) {
+					throw new Error(
+						`VAN export job still had no download link ${Math.round(age / 60_000)} min after it was submitted`,
+					);
+				}
+			}
+
 			if (!job.downloadUrl) {
 				// Not a failure — the job is simply still running. Leave it
 				// resumable and DO NOT count the attempt against it, or a slow
@@ -284,7 +359,7 @@ export async function runGeometryQueue(
 				await db
 					.update(vanGeometryQueue)
 					.set({ status: 'running', attempts: priorAttempts })
-					.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+					.where(eq(vanGeometryQueue.turfId, item.turfId));
 				result.stillRunning++;
 				return;
 			}
@@ -297,11 +372,32 @@ export async function runGeometryQueue(
 				await db
 					.update(vanGeometryQueue)
 					.set({ status: 'running', attempts: priorAttempts })
-					.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+					.where(eq(vanGeometryQueue.turfId, item.turfId));
 				result.stillRunning++;
 				result.budgetLapsed = true;
 				return;
 			}
+
+			// Read before the download, because it decides what the download is
+			// for. A turf queued only for its roster keeps its hull, and — more
+			// to the point — sends nothing to the geocoder: re-geocoding a turf
+			// whose shape is already right would ship addresses to a third
+			// party for no reason.
+			const [turf] = await db
+				.select({
+					routeSize: vanTurfs.routeSize,
+					hullJson: vanTurfs.hullJson,
+					hullSourceRouteSize: vanTurfs.hullSourceRouteSize,
+				})
+				.from(vanTurfs)
+				.where(eq(vanTurfs.turfId, item.turfId))
+				.limit(1);
+			const wantsHull = needsGeometry({
+				hullJson: turf?.hullJson ?? null,
+				hullSourceRouteSize: turf?.hullSourceRouteSize ?? null,
+				routeSize: turf?.routeSize ?? 0,
+			});
+			const hasher = options.roster ?? null;
 
 			// Plain fetch, deliberately not client.get(): the blob host is not
 			// api.securevan.com, and the URL carries its own signature. Sending
@@ -327,47 +423,70 @@ export async function runGeometryQueue(
 			// timeout is five minutes for ONE turf, which is longer than the
 			// whole request the scheduled sync gets.
 			const extract = await extractHull(responseChunks(res), {
-				geocode:
-					options.geocode === undefined
+				geocode: !wantsHull
+					? null
+					: options.geocode === undefined
 						? (rows) => geocodeAddresses(rows, fetch, { deadline })
 						: options.geocode,
+				roster: hasher,
 			});
 
-			// routeSize is read now rather than carried from the queue row: the
-			// hull is only valid against the route as it stands at extraction
-			// time, and that is exactly what hullSourceRouteSize records.
-			const [turf] = await db
-				.select({ routeSize: vanTurfs.routeSize })
-				.from(vanTurfs)
-				.where(eq(vanTurfs.mapRouteId, item.mapRouteId))
-				.limit(1);
-
 			const hasHull = extract.hull.length >= 3;
-			await db
-				.update(vanTurfs)
-				.set({
-					hullJson: hasHull ? JSON.stringify(extract.hull) : null,
-					centroidLat: extract.centre?.lat ?? null,
-					centroidLng: extract.centre?.lng ?? null,
-					// Null when there is no geometry at all, so `needsGeometry`
-					// re-queues it rather than treating "no hull" as settled.
-					hullSourceRouteSize: extract.centre ? (turf?.routeSize ?? 0) : null,
-				})
-				.where(eq(vanTurfs.mapRouteId, item.mapRouteId));
+			if (wantsHull) {
+				// routeSize as read above, at extraction time: the hull is only
+				// valid against the route as it stood then, and that is exactly
+				// what hullSourceRouteSize records.
+				await db
+					.update(vanTurfs)
+					.set({
+						hullJson: hasHull ? JSON.stringify(extract.hull) : null,
+						centroidLat: extract.centre?.lat ?? null,
+						centroidLng: extract.centre?.lng ?? null,
+						// Null when there is no geometry at all, so `needsGeometry`
+						// re-queues it rather than treating "no hull" as settled.
+						hullSourceRouteSize: extract.centre ? (turf?.routeSize ?? 0) : null,
+					})
+					.where(eq(vanTurfs.turfId, item.turfId));
+			}
 
+			// Stamped with the QUEUE row's saved list, which is the one this
+			// export was cut from. If VAN has re-cut since, the planner sees the
+			// mismatch and queues again.
+			if (extract.roster) {
+				await replaceRoster(db, item.turfId, item.savedListId, extract.roster);
+				await recomputeUncontacted(db, {
+					now: new Date(),
+					campaignId: options.campaignId,
+					turfIds: [item.turfId],
+				});
+				result.rostersStored++;
+			}
+
+			// A roster that could not be built leaves its reason on the done
+			// row. The sync re-queues a done row for a missing roster only when
+			// it has no error — otherwise every turf would be re-exported every
+			// run for a roster the export type can never give.
+			if (extract.rosterUnavailable) result.rostersUnavailable++;
 			await db
 				.update(vanGeometryQueue)
-				.set({ status: 'done', completedAt: new Date().toISOString(), lastError: null })
-				.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+				.set({
+					status: 'done',
+					completedAt: new Date().toISOString(),
+					lastError: extract.rosterUnavailable,
+				})
+				.where(eq(vanGeometryQueue.turfId, item.turfId));
 
 			result.geocodedFromAddress += extract.geocodedFromAddress;
+			// A roster-only pass says nothing new about the shape, so it counts
+			// toward none of the geometry outcomes or their warnings.
+			if (!wantsHull) return;
 			if (hasHull) result.hullsStored++;
 			else if (extract.centre) result.centroidsOnly++;
 			else result.noGeometry++;
 
 			if (!extract.centre) {
 				warnings.push(
-					`Turf ${item.mapRouteId}: export returned ${extract.rowCount} row(s) but no usable ` +
+					`Turf ${item.turfId}: export returned ${extract.rowCount} row(s) but no usable ` +
 						`coordinates (${extract.rowsWithoutCoordinates} ungeocoded) — it will render without a pin.`,
 				);
 			} else if (extract.hullTooLarge) {
@@ -380,11 +499,11 @@ export async function runGeometryQueue(
 				// at re-cutting turf that was already correct.
 				warnings.push(
 					extract.pointCount < MIN_POINTS_FOR_SPAN_VERDICT
-						? `Turf ${item.mapRouteId}: addresses span ~${km} km across only ` +
+						? `Turf ${item.turfId}: addresses span ~${km} km across only ` +
 								`${extract.pointCount} coordinate(s) — too few to tell a mis-scoped saved list ` +
 								`from a map region that is simply sparsely populated. The shape is stored; ` +
 								`treat it as approximate rather than as a turf boundary.`
-						: `Turf ${item.mapRouteId}: addresses span ~${km} km across ` +
+						: `Turf ${item.turfId}: addresses span ~${km} km across ` +
 								`${extract.pointCount} coordinates, far past a walkable turf. The shape is ` +
 								`stored but is almost certainly not a turf boundary — the saved list is ` +
 								`probably not a cut map region.`,
@@ -420,12 +539,12 @@ export async function runGeometryQueue(
 				lastError: message.slice(0, 500),
 				completedAt: dead ? new Date().toISOString() : null,
 			})
-			.where(eq(vanGeometryQueue.mapRouteId, item.mapRouteId));
+			.where(eq(vanGeometryQueue.turfId, item.turfId));
 
 		if (dead) {
 			result.deadLettered++;
 			deadLetters.push(
-				`Turf ${item.mapRouteId} geometry gave up after ${attempts} attempt(s): ${message}`,
+				`Turf ${item.turfId} geometry gave up after ${attempts} attempt(s): ${message}`,
 			);
 		} else {
 			result.retried++;
@@ -436,7 +555,8 @@ export async function runGeometryQueue(
 	// two — a batch waits for its slowest member before starting the next pair,
 	// which on a queue of 200 with one slow export wastes most of the budget.
 	let cursor = 0;
-	const workers = Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, async () => {
+	const width = Math.max(1, Math.floor(options.concurrency ?? MAX_CONCURRENCY));
+	const workers = Array.from({ length: Math.min(width, queue.length) }, async () => {
 		while (cursor < queue.length) {
 			if (Date.now() >= deadline) {
 				result.budgetLapsed = true;
@@ -447,6 +567,16 @@ export async function runGeometryQueue(
 		}
 	});
 	await Promise.all(workers);
+
+	// Once per run, not per turf: the cause is configuration and identical
+	// for every row.
+	if (result.rostersUnavailable > 0) {
+		warnings.push(
+			`${result.rostersUnavailable} turf(s) got a hull but no roster: the export CSV has no VanID ` +
+				'column, so the uncontacted-door count needs export job type 5 (VoterCircle). Check ' +
+				'VAN_EXPORT_JOB_TYPE_ID.',
+		);
+	}
 
 	// Dead letters only. The advisory `warnings` go back to the caller, which
 	// posts them alongside the rest of the sync's notices — sending both from

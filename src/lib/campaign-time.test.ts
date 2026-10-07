@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
 	CAMPAIGN_TIME_ZONE,
+	DEFAULT_CAMPAIGN_TIME_ZONE,
 	campaignDayKey,
 	campaignDayLabel,
 	campaignTimeLabel,
+	campaignWallClockToUtc,
 	campaignWeekStart,
 } from './campaign-time.js';
 
@@ -96,9 +98,93 @@ describe('campaignWeekStart', () => {
 });
 
 describe('CAMPAIGN_TIME_ZONE', () => {
-	// Pinned so a change is a deliberate edit rather than a drifting default —
-	// van/doors-leaderboard.ts and doors-projection.ts assume the same one.
+	// The zone is resolved once, when the module loads, so each case re-imports
+	// it with the environment it is testing.
+	async function zoneWith(value: string | undefined): Promise<string> {
+		const previous = process.env.CAMPAIGN_TIME_ZONE;
+		if (value === undefined) delete process.env.CAMPAIGN_TIME_ZONE;
+		else process.env.CAMPAIGN_TIME_ZONE = value;
+		vi.resetModules();
+		try {
+			return (await import('./campaign-time.js')).CAMPAIGN_TIME_ZONE;
+		} finally {
+			if (previous === undefined) delete process.env.CAMPAIGN_TIME_ZONE;
+			else process.env.CAMPAIGN_TIME_ZONE = previous;
+			vi.resetModules();
+		}
+	}
+
+	afterEach(() => vi.restoreAllMocks());
+
+	it('defaults to the clock every deployment had before the variable existed', async () => {
+		expect(DEFAULT_CAMPAIGN_TIME_ZONE).toBe('America/Detroit');
+		expect(await zoneWith(undefined)).toBe('America/Detroit');
+		expect(await zoneWith('   ')).toBe('America/Detroit');
+	});
+
+	it('takes an IANA zone from CAMPAIGN_TIME_ZONE', async () => {
+		expect(await zoneWith('America/Chicago')).toBe('America/Chicago');
+		expect(await zoneWith('Europe/Berlin')).toBe('Europe/Berlin');
+	});
+
+	it('falls back loudly on a zone the runtime does not know', async () => {
+		// Silently wrong timestamps everywhere is the failure worth avoiding;
+		// throwing here would take the page down instead.
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		expect(await zoneWith('Mars/Olympus')).toBe('America/Detroit');
+		expect(warn.mock.calls[0]?.[0]).toContain('CAMPAIGN_TIME_ZONE');
+	});
+
+	it('buckets days in whatever zone is configured', async () => {
+		vi.resetModules();
+		const previous = process.env.CAMPAIGN_TIME_ZONE;
+		process.env.CAMPAIGN_TIME_ZONE = 'Australia/Sydney';
+		try {
+			const { campaignDayKey } = await import('./campaign-time.js');
+			// 22:00 UTC on the 23rd is already the 24th in Sydney (UTC+10).
+			expect(campaignDayKey('2026-08-23T22:00:00.000Z')).toBe('2026-08-24');
+		} finally {
+			if (previous === undefined) delete process.env.CAMPAIGN_TIME_ZONE;
+			else process.env.CAMPAIGN_TIME_ZONE = previous;
+			vi.resetModules();
+		}
+	});
+
+	// Pinned so a change to the default is a deliberate edit rather than drift —
+	// van/doors-leaderboard.ts and doors-projection.ts share this clock.
 	it('is the campaign clock the canvassing modules already assume', () => {
 		expect(CAMPAIGN_TIME_ZONE).toBe('America/Detroit');
+	});
+});
+
+describe('campaignWallClockToUtc', () => {
+	// The live case: VAN's dateCreated for a Royal Oak export, which is
+	// Detroit time wearing a Z.
+	it('reads the digits as campaign-local time, ignoring the Z', () => {
+		expect(campaignWallClockToUtc('2026-09-22T11:52:28.15Z')?.toISOString()).toBe(
+			'2026-09-22T15:52:28.150Z',
+		);
+	});
+
+	it('uses the winter offset in winter', () => {
+		expect(campaignWallClockToUtc('2026-01-15T12:00:00')?.toISOString()).toBe(
+			'2026-01-15T17:00:00.000Z',
+		);
+	});
+
+	it('lands either side of a daylight-saving change correctly', () => {
+		// 2026-11-01 02:00 EDT falls back to 01:00 EST.
+		expect(campaignWallClockToUtc('2026-11-01T00:30:00Z')?.toISOString()).toBe(
+			'2026-11-01T04:30:00.000Z',
+		);
+		expect(campaignWallClockToUtc('2026-11-01T03:00:00Z')?.toISOString()).toBe(
+			'2026-11-01T08:00:00.000Z',
+		);
+	});
+
+	it('returns null for anything that is not a timestamp', () => {
+		expect(campaignWallClockToUtc('')).toBeNull();
+		expect(campaignWallClockToUtc('2026-09-22')).toBeNull();
+		expect(campaignWallClockToUtc('yesterday')).toBeNull();
 	});
 });

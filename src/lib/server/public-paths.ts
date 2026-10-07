@@ -13,21 +13,40 @@
 // a decision to publish a page to the entire internet: nothing behind these
 // paths may read the session, and nothing may leak member data.
 //
-// It is consulted by the ROOT LAYOUT's load, so it governs pages. `/privacy`
-// and `/security` are `+server.ts` endpoints, which never run a layout load and
-// were therefore never gated by it — they are listed anyway, because this is
-// the record of what this deployment serves without a session and a list that
-// omitted two public URLs would be a worse record than a redundant one. If
-// either ever becomes a page, it is already covered.
+// It is consulted by the ROOT LAYOUT's load, so it governs pages. `/privacy`,
+// `/security` and `/terms` are `+server.ts` endpoints, which never run a layout
+// load and were therefore never gated by it — they are listed anyway, because
+// this is the record of what this deployment serves without a session and a
+// list that omitted public URLs would be a worse record than a redundant one.
+// If any of them ever becomes a page, it is already covered. `/terms` in
+// particular is the terms-of-service URL Google's and Apple's sign-in consent
+// screens link to, so it must answer anyone.
 
 /** Page routes served without a session. Prefix matches, so `/policies#x` and
  *  `/policies?print=1` are covered too. */
-const PUBLIC_PREFIXES = ['/policies', '/privacy', '/security'];
+const PUBLIC_PREFIXES = ['/policies', '/privacy', '/security', '/terms'];
+
+/**
+ * Page routes served without a session at exactly this path, and NOT below it.
+ *
+ * `/turfs` is here because its load has a signed-out branch: a teaser for
+ * people who might canvass, built from coarse aggregates only (see
+ * $lib/server/van/nearby-summary.ts). It cannot be a prefix — `/turfs/organizer`,
+ * `/turfs/activity` and the map pages under it are organizer tools, and a
+ * prefix match would publish them. The signed-in branch of the same load keeps
+ * its own session check, as every turf route does.
+ *
+ * `/signin` is the page every signed-out redirect lands on, so it is public by
+ * necessity. It reads the session only to send an already-signed-in visitor
+ * on, and shows nothing but the sign-in buttons.
+ */
+const PUBLIC_EXACT = ['/turfs', '/signin'];
 
 /** True when `path` is readable without signing in. */
 export function isPublicPath(path: string): boolean {
 	// Normalise a trailing slash so `/policies/` matches `/policies`.
 	const normalized = path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
+	if (PUBLIC_EXACT.includes(normalized)) return true;
 	return PUBLIC_PREFIXES.some(
 		(prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`),
 	);

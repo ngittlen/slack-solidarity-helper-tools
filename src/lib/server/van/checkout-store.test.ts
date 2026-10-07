@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import { claimTurf, endClaim, sweepExpiredClaims } from './checkout-store.js';
+import { claimTurf, endClaim, latestWalkReports, sweepExpiredClaims } from './checkout-store.js';
 
 // A real in-memory libsql rather than a chained-db fake, for the same reason
 // activity-store.test.ts uses one: the behaviour under test is a collaboration
@@ -26,16 +26,16 @@ beforeEach(async () => {
 
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
 		         region_name, name, printed_list_number, door_count, first_seen_at, last_seen_at)
-		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 'L-100', 250, ?, ?)`,
+		      VALUES (100, 100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 'L-100', 250, ?, ?)`,
 		args: [NOW.toISOString(), NOW.toISOString()],
 	});
 });
 
 async function insertClaim(over: Record<string, string | number | null> = {}) {
 	const row = {
-		map_route_id: 100,
+		turf_id: 100,
 		slack_user_id: 'U_FIRST',
 		slack_user_name: 'Dana',
 		claimed_at: CLAIMED,
@@ -47,11 +47,11 @@ async function insertClaim(over: Record<string, string | number | null> = {}) {
 	};
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
-		        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         released_at, completed_at, release_reason)
 		      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		args: [
-			row.map_route_id,
+			row.turf_id,
 			row.slack_user_id,
 			row.slack_user_name,
 			row.claimed_at,
@@ -75,6 +75,13 @@ async function rows() {
 	}[];
 }
 
+// Each test opens its own in-memory client. Closing it keeps one per test from
+// leaking for the life of the worker — which never shows up while this file is
+// run on its own.
+afterEach(() => {
+	client.close();
+});
+
 describe('claimTurf', () => {
 	it('lets a volunteer claim turf whose previous claim expired but was never swept', async () => {
 		// The regression this test exists for. The partial unique index is
@@ -85,7 +92,7 @@ describe('claimTurf', () => {
 		await insertClaim();
 
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SECOND',
 			slackUserName: 'Sam',
 			now: NOW,
@@ -112,7 +119,7 @@ describe('claimTurf', () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SECOND',
 			slackUserName: 'Sam',
 			now: NOW,
@@ -129,7 +136,7 @@ describe('claimTurf', () => {
 		await insertClaim({ released_at: CLAIMED, release_reason: 'volunteer' });
 
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SECOND',
 			slackUserName: 'Sam',
 			now: NOW,
@@ -148,12 +155,123 @@ describe('claimTurf', () => {
 		expect(swept).toBe(1);
 
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SECOND',
 			slackUserName: 'Sam',
 			now: NOW,
 		});
 		expect(result).toMatchObject({ ok: true });
+	});
+
+	// The page hides a disabled campaign's turf, but a page loaded before the
+	// switch — or a Slack button — can still ask for it.
+	it('refuses turf in a disabled campaign, and takes it again once re-enabled', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 1');
+		const claim = () =>
+			claimTurf(db, { turfId: 100, slackUserId: 'U_SECOND', slackUserName: 'Sam', now: NOW });
+
+		expect(await claim()).toMatchObject({
+			ok: false,
+			status: 409,
+			message: expect.stringContaining('no longer being handed out'),
+		});
+		expect(await rows()).toHaveLength(0);
+
+		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 1');
+		expect(await claim()).toMatchObject({ ok: true });
+	});
+});
+
+describe('claimTurf — the per-volunteer cap', () => {
+	/** Two more free turfs, so one volunteer can reach for several at once. */
+	async function addTurfs(...routeIds: number[]) {
+		for (const id of routeIds) {
+			await client.execute({
+				sql: `INSERT INTO van_turfs
+				        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
+				         region_name, name, printed_list_number, door_count, first_seen_at, last_seen_at)
+				      VALUES (?1, ?1, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, 250, ?, ?)`,
+				args: [id, `Turf ${id}`, `L-${id}`, NOW.toISOString(), NOW.toISOString()],
+			});
+		}
+	}
+
+	async function activeCount(slackUserId: string): Promise<number> {
+		const rows = await client.execute({
+			sql: `SELECT count(*) AS n FROM van_turf_checkouts
+			      WHERE slack_user_id = ? AND released_at IS NULL AND completed_at IS NULL
+			        AND expires_at > ?`,
+			args: [slackUserId, NOW.toISOString()],
+		});
+		return Number(rows.rows[0]!.n);
+	}
+
+	it('refuses the claim that would take a volunteer past the cap', async () => {
+		await addTurfs(101, 102);
+		const claim = (turfId: number) =>
+			claimTurf(db, {
+				turfId,
+				slackUserId: 'U_KEEN',
+				slackUserName: 'Keen',
+				now: NOW,
+				options: { maxConcurrentClaims: 2 },
+			});
+
+		expect((await claim(100)).ok).toBe(true);
+		expect((await claim(101)).ok).toBe(true);
+
+		const third = await claim(102);
+		expect(third.ok).toBe(false);
+		expect(third).toMatchObject({ status: 409, message: expect.stringContaining('2 turfs') });
+		expect(await activeCount('U_KEEN')).toBe(2);
+	});
+
+	it('holds the cap when two claims on different turf race each other', async () => {
+		// The check-then-act the storage layer has to settle: canClaim reads the
+		// claims, both requests see one free slot, and the unique index cannot
+		// object because they are different routes. Without the count inside the
+		// INSERT this volunteer ends up holding three.
+		await addTurfs(101, 102);
+		await claimTurf(db, {
+			turfId: 100,
+			slackUserId: 'U_KEEN',
+			slackUserName: 'Keen',
+			now: NOW,
+			options: { maxConcurrentClaims: 2 },
+		});
+
+		const results = await Promise.all(
+			[101, 102].map((turfId) =>
+				claimTurf(db, {
+					turfId,
+					slackUserId: 'U_KEEN',
+					slackUserName: 'Keen',
+					now: NOW,
+					options: { maxConcurrentClaims: 2 },
+				}),
+			),
+		);
+
+		expect(results.filter((r) => r.ok)).toHaveLength(1);
+		expect(await activeCount('U_KEEN')).toBe(2);
+	});
+
+	it('does not count a lapsed claim the sweep has not stamped yet', async () => {
+		// LAPSED is in the past, so this claim is invisible to isActive on every
+		// read path; the cap must not see it either, or a volunteer whose turf
+		// quietly expired is locked out until the nightly sweep runs.
+		await addTurfs(101);
+		await insertClaim({ slack_user_id: 'U_KEEN', expires_at: LAPSED });
+
+		const result = await claimTurf(db, {
+			turfId: 101,
+			slackUserId: 'U_KEEN',
+			slackUserName: 'Keen',
+			now: NOW,
+			options: { maxConcurrentClaims: 1 },
+		});
+
+		expect(result.ok).toBe(true);
 	});
 });
 
@@ -162,7 +280,7 @@ describe('endClaim', () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 
 		const result = await endClaim(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_SOMEONE_ELSE',
 			now: NOW,
 			kind: 'release',
@@ -180,10 +298,11 @@ describe('endClaim', () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
 
 		const result = await endClaim(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_FIRST',
 			now: NOW,
 			kind: 'complete',
+			syncedMinivan: true,
 		});
 
 		expect(result).toMatchObject({ ok: true });
@@ -203,10 +322,58 @@ describe('endClaim', () => {
 		]);
 	});
 
+	// Progress now comes from VAN, so doors still on the phone would read as
+	// unknocked: marking walked without saying MiniVAN synced is refused.
+	it('refuses to mark turf walked without "I synced MiniVAN"', async () => {
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+
+		for (const syncedMinivan of [undefined, false]) {
+			const result = await endClaim(db, {
+				turfId: 100,
+				slackUserId: 'U_FIRST',
+				now: NOW,
+				kind: 'complete',
+				syncedMinivan,
+			});
+			expect(result).toMatchObject({ ok: false, status: 400 });
+		}
+		const res = await client.execute('SELECT completed_at FROM van_turf_checkouts');
+		expect(res.rows[0]!.completed_at).toBeNull();
+	});
+
+	// The % is derived later from VAN's ContactHistory (contact-sync.ts).
+	it('records the completion with no % yet', async () => {
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+		await endClaim(db, {
+			turfId: 100,
+			slackUserId: 'U_FIRST',
+			now: NOW,
+			kind: 'complete',
+			syncedMinivan: true,
+		});
+		const res = await client.execute(
+			'SELECT completed_at, reported_percent FROM van_turf_checkouts',
+		);
+		expect(res.rows[0]).toMatchObject({ completed_at: NOW.toISOString(), reported_percent: null });
+	});
+
+	// Handing back unwalked is not asked for a percentage — and is not refused
+	// for lacking one.
+	it('hands turf back without asking for a %', async () => {
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+		const result = await endClaim(db, {
+			turfId: 100,
+			slackUserId: 'U_FIRST',
+			now: NOW,
+			kind: 'release',
+		});
+		expect(result).toMatchObject({ ok: true });
+	});
+
 	it('does not ask for a refresh when turf is simply handed back', async () => {
 		// Nothing was knocked, so nothing about VAN's counts has changed.
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
-		await endClaim(db, { mapRouteId: 100, slackUserId: 'U_FIRST', now: NOW, kind: 'release' });
+		await endClaim(db, { turfId: 100, slackUserId: 'U_FIRST', now: NOW, kind: 'release' });
 		const res = await client.execute('SELECT count(*) AS n FROM van_region_refreshes');
 		expect(res.rows[0].n).toBe(0);
 	});
@@ -215,7 +382,7 @@ describe('endClaim', () => {
 describe('claimTurf — what the volunteer was told', () => {
 	it('records the list number it issued, for the reconciliation to compare against', async () => {
 		const result = await claimTurf(db, {
-			mapRouteId: 100,
+			turfId: 100,
 			slackUserId: 'U_FIRST',
 			slackUserName: 'Dana',
 			now: NOW,
@@ -231,5 +398,216 @@ describe('claimTurf — what the volunteer was told', () => {
 		// And the baseline Story 5.6 measures the completion against. van_turfs
 		// holds one door count and it moves, so it has to be captured here.
 		expect(res.rows[0].claim_door_count).toBe(250);
+	});
+});
+
+describe('claimTurf — the campaign’s Packet Tracker', () => {
+	const claim = (sheetCheck?: Parameters<typeof claimTurf>[1]['sheetCheck']) =>
+		claimTurf(db, {
+			turfId: 100,
+			slackUserId: 'U_FIRST',
+			slackUserName: 'Dana',
+			now: NOW,
+			sheetCheck,
+		});
+
+	it('refuses turf the last sync saw in the tracker', async () => {
+		await client.execute(
+			"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE turf_id = 100",
+		);
+
+		expect(await claim()).toMatchObject({ ok: false, status: 409 });
+	});
+
+	it('refuses turf the live check finds in the tracker, and records no claim', async () => {
+		const result = await claim(async () => 'Organizer Olu');
+
+		expect(result).toMatchObject({ ok: false, status: 409 });
+		expect(result.ok === false && result.message).toContain('already sent this turf');
+		expect((await client.execute('SELECT count(*) AS n FROM van_turf_checkouts')).rows[0].n).toBe(
+			0,
+		);
+	});
+
+	it('asks the tracker about the turf being claimed', async () => {
+		const sheetCheck = vi.fn(async () => null);
+		await claim(sheetCheck);
+
+		expect(sheetCheck).toHaveBeenCalledWith({
+			turfId: 100,
+			regionName: 'Ann Arbor',
+			printedListNumber: 'L-100',
+		});
+	});
+
+	// Google being slow or down must not stop every claim in the campaign.
+	it('claims when the live check cannot tell', async () => {
+		expect(await claim(async () => undefined)).toMatchObject({ ok: true });
+	});
+
+	// A name in the sheet does not mean the doors are being knocked. Once the
+	// ContactHistory count says doors remain, the turf goes back in the pool.
+	describe('with uncontacted doors known to remain', () => {
+		const counted = (left: number) =>
+			client.execute(
+				`UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = 900,
+				        uncontacted_doors = ${left} WHERE turf_id = 100`,
+			);
+
+		it('claims turf the last sync saw in the tracker', async () => {
+			await counted(12);
+			await client.execute(
+				"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE turf_id = 100",
+			);
+			expect(await claim()).toMatchObject({ ok: true });
+		});
+
+		it('does not ask Google at all', async () => {
+			await counted(12);
+			const sheetCheck = vi.fn(async () => 'Organizer Olu');
+			expect(await claim(sheetCheck)).toMatchObject({ ok: true });
+			expect(sheetCheck).not.toHaveBeenCalled();
+		});
+
+		// VAN's own record of an outside hand-out is a different matter.
+		it('still refuses turf VAN says was handed out directly', async () => {
+			await counted(12);
+			await client.execute("UPDATE van_turfs SET van_distributed_to = 'Sam' WHERE turf_id = 100");
+			expect(await claim()).toMatchObject({ ok: false, status: 409 });
+		});
+
+		it('still refuses a stale count, where what is left is unknown', async () => {
+			await counted(12);
+			await client.execute(
+				"UPDATE van_turfs SET saved_list_id = 901, sheet_assigned_to = 'Organizer Olu' WHERE turf_id = 100",
+			);
+			expect(await claim()).toMatchObject({ ok: false, status: 409 });
+		});
+	});
+
+	it('does not wait on Google for a claim refused anyway', async () => {
+		await insertClaim({ slack_user_id: 'U_OTHER', expires_at: '2026-08-30T00:00:00.000Z' });
+		const sheetCheck = vi.fn(async () => null);
+
+		expect(await claim(sheetCheck)).toMatchObject({ ok: false });
+		expect(sheetCheck).not.toHaveBeenCalled();
+	});
+});
+
+describe('latestWalkReports', () => {
+	async function completed(at: string, percent: number | null) {
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts
+			        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at, reported_percent)
+			      VALUES (100, 'U_FIRST', 'Dana', ?, ?, ?, ?)`,
+			args: [CLAIMED, LAPSED, at, percent],
+		});
+	}
+
+	it('returns the newest report per route', async () => {
+		await completed('2026-08-21T12:00:00.000Z', 40);
+		await completed('2026-08-23T12:00:00.000Z', 90);
+		const reports = await latestWalkReports(db, [100, 999]);
+		expect(reports.get(100)).toEqual({
+			percent: 90,
+			at: '2026-08-23T12:00:00.000Z',
+			awaitingCount: true,
+		});
+		expect(reports.has(999)).toBe(false);
+	});
+
+	// A completion whose % is not derived yet is still the latest walk. Falling
+	// back to an older one would show its figure — and a stale 100% locks the
+	// turf out of the pool.
+	it('reports the newest completion even before its % is known', async () => {
+		await completed('2026-08-21T12:00:00.000Z', 100);
+		await completed('2026-08-23T12:00:00.000Z', null);
+		expect((await latestWalkReports(db, [100])).get(100)).toEqual({
+			percent: null,
+			at: '2026-08-23T12:00:00.000Z',
+			awaitingCount: true,
+		});
+	});
+
+	async function countedThrough(at: string) {
+		await client.execute({
+			sql: `INSERT INTO van_contact_sync_state (campaign_id, counted_through) VALUES (1, ?)
+			      ON CONFLICT(campaign_id) DO UPDATE SET counted_through = excluded.counted_through`,
+			args: [at],
+		});
+	}
+
+	it('marks a completion counted once a scheduled sync has caught up past it', async () => {
+		await completed('2026-08-23T12:00:00.000Z', 40);
+		await countedThrough('2026-08-23T12:30:00.000Z');
+		expect((await latestWalkReports(db, [100])).get(100)?.awaitingCount).toBe(false);
+		await countedThrough('2026-08-23T11:30:00.000Z');
+		expect((await latestWalkReports(db, [100])).get(100)?.awaitingCount).toBe(true);
+	});
+
+	async function claim() {
+		return claimTurf(db, {
+			turfId: 100,
+			slackUserId: 'U_NEXT',
+			slackUserName: 'Sam',
+			now: NOW,
+		});
+	}
+
+	async function withCount(uncontacted: number, rosterSavedListId = 900) {
+		await client.execute({
+			sql: `UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = ?,
+			        uncontacted_doors = ? WHERE turf_id = 100`,
+			args: [rosterSavedListId, uncontacted],
+		});
+	}
+
+	// No count to say what is left, so a walk of unknown extent keeps the turf
+	// out until VAN re-cuts it: better that volunteers knock fresh doors.
+	it('keeps a turf walked with no % out of the pool when it has no count', async () => {
+		await completed('2026-08-23T12:00:00.000Z', null);
+		expect(await claim()).toMatchObject({ ok: false, status: 409 });
+	});
+
+	// The claim gate reads the same doors-left the page shows.
+	it('refuses a turf whose current count says every door was reached', async () => {
+		await withCount(0);
+		expect(await claim()).toMatchObject({ ok: false, status: 409 });
+	});
+
+	it('hands out a turf with doors left on its count, however it was reported', async () => {
+		await completed('2026-08-23T12:00:00.000Z', 100);
+		await withCount(12);
+		await countedThrough('2026-08-23T12:30:00.000Z');
+		expect(await claim()).toMatchObject({ ok: true });
+	});
+
+	// Seconds after the tap the volunteer's doors are not in ContactHistory, so
+	// the count still reads every door open. Held until a scheduled sync.
+	it('keeps a just-walked turf out until the next scheduled sync, count or not', async () => {
+		await completed('2026-08-23T12:00:00.000Z', null);
+		await withCount(12);
+		await countedThrough('2026-08-23T11:30:00.000Z');
+		expect(await claim()).toMatchObject({ ok: false, status: 409 });
+		await countedThrough('2026-08-23T12:30:00.000Z');
+		expect(await claim()).toMatchObject({ ok: true });
+	});
+
+	it('ignores a count built from another saved list', async () => {
+		await withCount(0, 899);
+		expect(await claim()).toMatchObject({ ok: true });
+	});
+
+	// A walked-out turf leaves the pool, because VAN's door count will not
+	// move until the next re-cut.
+	it('makes a turf reported at 100% unclaimable', async () => {
+		await completed('2026-08-23T12:00:00.000Z', 100);
+		const result = await claimTurf(db, {
+			turfId: 100,
+			slackUserId: 'U_NEXT',
+			slackUserName: 'Sam',
+			now: NOW,
+		});
+		expect(result).toMatchObject({ ok: false, status: 409 });
 	});
 });

@@ -19,11 +19,12 @@ const NOW = new Date('2026-08-24T18:00:00.000Z');
 function row(over: Partial<ActivityRow> = {}): ActivityRow {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,
 		chapterName: 'Washtenaw County',
+		campaignId: 1,
 		doorCount: 250,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',
@@ -32,6 +33,7 @@ function row(over: Partial<ActivityRow> = {}): ActivityRow {
 		completedAt: null,
 		releaseReason: null,
 		confirmedDoorDelta: null,
+		reportedPercent: null,
 		...over,
 	};
 }
@@ -190,6 +192,14 @@ describe('activityEvents', () => {
 			doorCount: 250,
 			slackUserName: 'Dana',
 		});
+	});
+
+	it('carries the percentage the volunteer reported on completion', () => {
+		const events = activityEvents(
+			[row({ completedAt: '2026-08-24T15:30:00.000Z', reportedPercent: 80 })],
+			WEEK,
+		);
+		expect(events.find((e) => e.kind === 'completed')?.reportedPercent).toBe(80);
 	});
 
 	// The credential rule, asserted rather than trusted: the list number is

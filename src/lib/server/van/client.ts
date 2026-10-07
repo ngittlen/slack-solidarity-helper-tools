@@ -19,6 +19,9 @@
 // outside the Vite bundle, where the alias does not resolve.
 import { errMessage } from '../../err-message.js';
 import type {
+	VanChangedEntityExportJob,
+	VanChangeType,
+	VanContactType,
 	VanExportJob,
 	VanExportJobType,
 	VanFolder,
@@ -85,18 +88,30 @@ const MAX_CONCURRENCY = 2;
 // but this one 400s rather than clamping.
 const PRINTED_LISTS_PAGE_SIZE = 50;
 // /minivanExports caps $top at 50 too — verified: 100 and above 400 with
-// INVALID_PARAMETER. Its DEFAULT is 10, which is what made the naive forward
-// walk cost 200 requests to cover 2,000 of 30,261 records.
+// INVALID_PARAMETER. Its DEFAULT is 10.
 const MINIVAN_EXPORTS_PAGE_SIZE = 50;
-// How far back to walk from the newest export. 20 pages = the 1,000 most
-// recent, ~20 requests and a few seconds, against 606 pages and minutes for the
-// whole table. See the note on `minivanExports` for why recency is the right
-// axis rather than a bigger cap.
-const MAX_RECENT_EXPORT_PAGES = 20;
+const SAVED_LISTS_PAGE_SIZE = 100;
 // Safety cap on a paginated walk. VAN pages at 50-200 depending on endpoint,
 // so this is far above any real folder while still bounding a server that
 // hands back a self-referencing nextPageLink.
 const MAX_PAGES = 200;
+
+/**
+ * A paginated walk that could not be finished.
+ *
+ * Deliberately NOT a VanError: nothing here is an HTTP status, and it must
+ * never read as an auth failure, which callers treat as "this will never work
+ * as configured" rather than "try again next tick".
+ */
+export class VanIncompleteError extends Error {
+	readonly path: string;
+
+	constructor(path: string, reason: string) {
+		super(`VAN ${path} pagination did not complete: ${reason}`);
+		this.name = 'VanIncompleteError';
+		this.path = path;
+	}
+}
 
 export interface VanClient {
 	/** Every folder the key can see. */
@@ -107,13 +122,16 @@ export interface VanClient {
 	 *  for `mapRoutes[].printedList.number` (plan.md Story 2.3). */
 	printedLists(folderIds?: number[]): Promise<VanPrintedList[]>;
 	savedLists(folderId?: number): Promise<VanSavedList[]>;
-	/** The most recent MiniVAN exports, canvassers expanded — evidence of turf
-	 *  assigned by hand outside this app (plan.md Story 8.1). Tier 3.
+	/** MiniVAN exports generated on or after `generatedAfter` (a `YYYY-MM-DD`
+	 *  date), oldest-first, canvassers expanded — evidence of turf assigned by
+	 *  hand outside this app (plan.md Story 8.1). Tier 3.
 	 *
-	 *  Returns the newest ~1,000, oldest-first, NOT the whole table. See the
-	 *  implementation for why the full walk is neither affordable nor
-	 *  desirable. */
-	minivanExports(): Promise<VanMinivanExport[]>;
+	 *  Reads at most `maxPages` pages of 50. `complete` is false when that cap
+	 *  stopped the walk, so the caller can resume from the last date it got. */
+	minivanExportsSince(
+		generatedAfter: string,
+		maxPages: number,
+	): Promise<{ items: VanMinivanExport[]; complete: boolean }>;
 	/** Ask VAN to re-cut a region against current data. Asynchronous on VAN's
 	 *  side: counts must be re-read later, never in the same request. */
 	refreshMapRegion(folderId: number, mapRegionId?: number): Promise<void>;
@@ -130,6 +148,20 @@ export interface VanClient {
 		webhookUrl: string;
 	}): Promise<VanExportJob>;
 	exportJob(exportJobId: number): Promise<VanExportJob>;
+	/** Start a changed-entity export of one resource over a UTC window. Only
+	 *  `ContactHistory` is granted to this key. `requestedFields` is ignored by
+	 *  VAN — every column comes back — so it is not offered. */
+	createChangedEntityExportJob(input: {
+		resourceType: string;
+		dateChangedFrom: string;
+		dateChangedTo: string;
+	}): Promise<VanChangedEntityExportJob>;
+	changedEntityExportJob(exportJobId: number): Promise<VanChangedEntityExportJob>;
+	/** What each `ChangeTypeId` in a changed-entity file means for one resource
+	 *  — which is how a deletion is told from a create or update. */
+	changeTypes(resourceType: string): Promise<VanChangeType[]>;
+	/** Every contact type, with the channel each belongs to. */
+	contactTypes(): Promise<VanContactType[]>;
 	/** Escape hatch for one-off reads (scripts/van-check.ts). */
 	get<T>(path: string): Promise<T>;
 }
@@ -182,16 +214,28 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	let active = 0;
 	const waiting: Array<() => void> = [];
 
+	/**
+	 * At most MAX_CONCURRENCY calls in flight.
+	 *
+	 * The slot is TRANSFERRED to a waiter rather than released and re-taken.
+	 * Decrementing first and waking a waiter afterwards opens a gap: the woken
+	 * waiter's `active++` runs a microtask later, so a fresh caller arriving in
+	 * between sees a free slot, takes it, and the waiter then takes one too —
+	 * three in flight against a limit of two.
+	 */
 	async function withSlot<T>(run: () => Promise<T>): Promise<T> {
 		if (active >= MAX_CONCURRENCY) {
+			// Resuming here means a slot was handed over, already counted.
 			await new Promise<void>((resolve) => waiting.push(resolve));
+		} else {
+			active++;
 		}
-		active++;
 		try {
 			return await run();
 		} finally {
-			active--;
-			waiting.shift()?.();
+			const next = waiting.shift();
+			if (next) next();
+			else active--;
 		}
 	}
 
@@ -249,8 +293,19 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 		}
 	}
 
-	/** Walk `{items, nextPageLink}` pages. `nextPageLink` is an absolute URL,
-	 *  so it is passed through `request` unchanged. */
+	/**
+	 * Walk `{items, nextPageLink}` pages. `nextPageLink` is an absolute URL, so
+	 * it is passed through `request` unchanged.
+	 *
+	 * Both ways of stopping early THROW rather than returning what was read so
+	 * far, because a short array and a complete one are indistinguishable to
+	 * every caller. That ambiguity is dangerous on `mapRegions`: the catalog
+	 * sync treats a folder it read as authoritative and retires every turf it
+	 * did not see, so a truncated walk stamps `retiredAt` on live routes and
+	 * releases the claims of volunteers already out walking them. Failing is
+	 * what the sync's per-folder error path is for — it skips the folder and
+	 * leaves its turf exactly as it was.
+	 */
 	async function paginate<T>(path: string): Promise<T[]> {
 		const all: T[] = [];
 		// Cycle guard. Comparing each link to the previous one is not enough —
@@ -262,11 +317,22 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 		let next: string | null = path;
 		for (let page = 0; page < MAX_PAGES && next; page++) {
 			const absolute = next.startsWith('http') ? next : `${baseUrl}${next}`;
-			if (visited.has(absolute)) break;
+			if (visited.has(absolute)) {
+				throw new VanIncompleteError(path, `pagination cycled back to ${absolute}`);
+			}
 			visited.add(absolute);
 			const body: VanPage<T> = await getJson<VanPage<T>>(next);
-			all.push(...(body?.items ?? []));
-			next = body?.nextPageLink ?? null;
+			const items = body?.items ?? [];
+			all.push(...items);
+			// An empty page is the end, whatever nextPageLink says. Verified live:
+			// /savedLists with 89 records answers `$skip=100` with no items and a
+			// link to `$skip=150`, and so on forever — every walk of it ran into
+			// MAX_PAGES and threw. Pages are $skip offsets, so nothing can follow
+			// an empty one.
+			next = items.length > 0 ? (body?.nextPageLink ?? null) : null;
+		}
+		if (next) {
+			throw new VanIncompleteError(path, `more than ${MAX_PAGES} pages`);
 		}
 		return all;
 	}
@@ -315,76 +381,62 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 				})}`,
 			),
 
-		savedLists: (folderId) => paginate<VanSavedList>(`/savedLists${query({ folderId })}`),
+		// $top=100 is this endpoint's maximum (200 is a 400), versus a default of 50.
+		savedLists: (folderId) =>
+			paginate<VanSavedList>(`/savedLists${query({ folderId, $top: SAVED_LISTS_PAGE_SIZE })}`),
 
 		/**
-		 * Walk /minivanExports from the END of the table backwards.
+		 * Read /minivanExports forward from a date.
 		 *
-		 * The forward walk this replaces was wrong in a way that did not look
-		 * like an error. Measured against the live API: the endpoint defaults to
-		 * 10 records a page and reports `count: 30261`, so `paginate` spent 200
-		 * requests and 48 seconds to collect 2,000 records — and then stopped,
-		 * silently, on MAX_PAGES. That is 6.6% of the table, and the oldest
-		 * 6.6%: records come back oldest-first, so the forward walk returned
-		 * exports from 2010 and never reached this year's. Everything the
-		 * distribution index is for was in the part we never read, which made
-		 * `van_distributed_to` null for turf VAN really had distributed and the
-		 * drift report (Story 8.2) call it "not distributed".
+		 * `generatedAfter` is the only way to reach recent exports. The table
+		 * holds 645,000+ records and the unfiltered endpoint serves them in no
+		 * date order — verified live on 2026-09-23: page one is 2012, offset
+		 * 300,000 is late 2024, offset 600,000 is 2018, and the last page is
+		 * 2014. The walk this replaces assumed the tail was the newest and read
+		 * the last 1,000, which was an effectively random slice that moved as
+		 * rows were added, so turf flickered in and out of "assigned in VAN" from
+		 * one sync to the next.
 		 *
-		 * There is no filter to lean on. Verified: `createdAfter`,
-		 * `createdSince` and `folderId` are all accepted and then IGNORED —
-		 * `count` is unchanged and page one is identical. `$orderby` is refused
-		 * outright ("There are no valid orderby column"). `$skip` is the only
-		 * lever that works, and since the order is ascending by creation date,
-		 * skipping to `count - pageSize` lands on the newest records.
+		 * The code once concluded the date filters were ignored. It had tried
+		 * `createdAfter` and `createdSince`; VAN's parameter is `generatedAfter`
+		 * (and `generatedBefore`), and it does filter. Filtered results come back
+		 * oldest-first and page with `$skip`, so a capped walk can be resumed.
 		 *
-		 * Recency is also the right answer on the merits, not just the
-		 * affordable one. The index maps turf NAME to canvasser, and turf names
-		 * are reused across sixteen years of exports, so an export from 2010
-		 * matching a name cut last week would attribute a stranger to today's
-		 * turf. A bounded recent window is more correct than the complete
-		 * history, not a lossy approximation of it.
+		 * Date only, no time. A time with `Z` is shifted by what looks like the
+		 * campaign's UTC offset, because `dateCreated` is local time wearing a
+		 * `Z`. A bare date is compared against that same local date, so the
+		 * caller re-reads its newest day rather than reasoning about timezones.
+		 *
+		 * An empty body THROWS rather than reading as "nothing new": the caller
+		 * marks the store caught up on `complete`, and a blank 200 must not do
+		 * that.
 		 */
-		async minivanExports() {
-			const base = `/minivanExports?$expand=canvassers&$top=${MINIVAN_EXPORTS_PAGE_SIZE}`;
-			const first = await getJson<VanPage<VanMinivanExport>>(base);
-			const count = first?.count ?? 0;
-			// Small tables need no walk — one page already holds everything.
-			if (count <= MINIVAN_EXPORTS_PAGE_SIZE) return first?.items ?? [];
-
-			// Pages are collected newest-first and reversed at the end, so the
-			// result stays oldest-first like every other paginated call here.
-			const pages: VanMinivanExport[][] = [];
-			const seen = new Set<number>();
-			let skip = Math.max(0, count - MINIVAN_EXPORTS_PAGE_SIZE);
-
-			for (let page = 0; page < MAX_RECENT_EXPORT_PAGES; page++) {
-				const body = await getJson<VanPage<VanMinivanExport>>(`${base}&$skip=${skip}`);
-				const items = body?.items ?? [];
-				if (items.length === 0) break;
-				// De-duplicated because `count` can grow between requests when
-				// someone exports turf mid-sync, which shifts every later page
-				// by one and would otherwise double-count the boundary records.
-				const fresh = items.filter((item) => {
-					const id = item.minivanExportId;
-					if (typeof id !== 'number') return true;
-					if (seen.has(id)) return false;
-					seen.add(id);
-					return true;
-				});
-				pages.push(fresh);
-				if (skip === 0) break;
-				skip = Math.max(0, skip - MINIVAN_EXPORTS_PAGE_SIZE);
+		async minivanExportsSince(generatedAfter, maxPages) {
+			const path = `/minivanExports${query({
+				$expand: 'canvassers',
+				$top: MINIVAN_EXPORTS_PAGE_SIZE,
+				generatedAfter,
+			})}`;
+			const items: VanMinivanExport[] = [];
+			const visited = new Set<string>();
+			let next: string | null = path;
+			for (let page = 0; page < maxPages && next; page++) {
+				const absolute = next.startsWith('http') ? next : `${baseUrl}${next}`;
+				if (visited.has(absolute)) {
+					throw new VanIncompleteError(path, `pagination cycled back to ${absolute}`);
+				}
+				visited.add(absolute);
+				const body: VanPage<VanMinivanExport> | undefined = await getJson<
+					VanPage<VanMinivanExport> | undefined
+				>(next);
+				if (!body) throw new VanIncompleteError(path, 'empty response body');
+				const pageItems: VanMinivanExport[] = body.items ?? [];
+				items.push(...pageItems);
+				// As in `paginate`: an empty page is the end, whatever
+				// nextPageLink says.
+				next = pageItems.length > 0 ? (body.nextPageLink ?? null) : null;
 			}
-
-			const collected = pages.reverse().flat();
-			if (count > collected.length) {
-				console.warn(
-					`[van] /minivanExports: read the ${collected.length} most recent of ${count} ` +
-						`export(s); older ones are deliberately not walked`,
-				);
-			}
-			return collected;
+			return { items, complete: next === null };
 		},
 
 		async refreshMapRegion(folderId, mapRegionId) {
@@ -407,6 +459,27 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 		},
 
 		exportJob: (exportJobId) => getJson<VanExportJob>(`/exportJobs/${exportJobId}`),
+
+		async createChangedEntityExportJob({ resourceType, dateChangedFrom, dateChangedTo }) {
+			const res = await request('/changedEntityExportJobs', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ resourceType, dateChangedFrom, dateChangedTo }),
+			});
+			return (await res.json()) as VanChangedEntityExportJob;
+		},
+
+		changedEntityExportJob: (exportJobId) =>
+			getJson<VanChangedEntityExportJob>(`/changedEntityExportJobs/${exportJobId}`),
+
+		changeTypes: async (resourceType) =>
+			(await getJson<VanChangeType[]>(
+				`/changedEntityExportJobs/changeTypes/${encodeURIComponent(resourceType)}`,
+			)) ?? [],
+
+		// A bare array, not a page envelope.
+		contactTypes: async () =>
+			(await getJson<VanContactType[]>('/canvassResponses/contactTypes')) ?? [],
 
 		get: <T>(path: string) => getJson<T>(path),
 	};

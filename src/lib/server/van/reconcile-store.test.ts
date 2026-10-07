@@ -56,7 +56,7 @@ function makeDb(reads: unknown[][] = [], insertWins = true) {
 function liveClaim(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U1',
 		slackUserName: 'Dana',
 		issuedListNumber: '35536745-88712',
@@ -74,7 +74,7 @@ function liveClaim(over: Record<string, unknown> = {}) {
 function recutRow(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 2,
-		mapRouteId: 56456,
+		turfId: 56456,
 		slackUserId: 'U1',
 		slackUserName: 'Dana',
 		releasedAt: '2026-09-12T17:55:00.000Z',
@@ -88,7 +88,7 @@ function recutRow(over: Record<string, unknown> = {}) {
 
 function replacementRow(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 56502,
+		turfId: 56502,
 		mapRegionId: 508413,
 		name: 'Turf 01',
 		printedListNumber: '99999999-11111',
@@ -116,6 +116,44 @@ describe('reconcileClaims — a list number that changed', () => {
 		expect(mockSendDm.mock.calls[0][0]).toBe('U1');
 		expect(mockSendDm.mock.calls[0][1]).toContain('77777777-22222');
 		expect(updates).toEqual([{ issuedListNumber: '77777777-22222' }]);
+	});
+
+	// A Google holder has no Slack: the same message is kept for /turfs, and
+	// counts as delivered, so the new number is recorded as told.
+	it('keeps the message for a Google holder and records the number', async () => {
+		const { db, updates, inserts } = makeDb([
+			[liveClaim({ slackUserId: 'google:7', printedListNumber: '77777777-22222' })],
+			[],
+		]);
+
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
+
+		expect(result.listNumbersChanged).toBe(1);
+		expect(result.dmFailed).toBe(0);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(inserts).toEqual([
+			expect.objectContaining({
+				userId: 'google:7',
+				kind: 'list-number',
+				text: expect.stringContaining('77777777-22222'),
+			}),
+		]);
+		expect(updates).toEqual([{ issuedListNumber: '77777777-22222' }]);
+	});
+
+	it('keeps the message for an Apple holder too', async () => {
+		const { db, inserts } = makeDb([
+			[liveClaim({ slackUserId: 'apple:001.abc', printedListNumber: '77777777-22222' })],
+			[],
+		]);
+
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
+
+		expect(result.dmFailed).toBe(0);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(inserts).toEqual([
+			expect.objectContaining({ userId: 'apple:001.abc', kind: 'list-number' }),
+		]);
 	});
 
 	it('leaves the record alone when Slack would not take the message', async () => {
@@ -157,6 +195,18 @@ describe('reconcileClaims — a turf with no doors left', () => {
 		expect(mockSendDm).toHaveBeenCalledOnce();
 	});
 
+	it('tells a Google holder on /turfs instead of in Slack', async () => {
+		const { db, updates, inserts } = makeDb([
+			[liveClaim({ slackUserId: 'google:7', doorCount: 0 })],
+			[],
+		]);
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
+		expect(result.walkedOut).toBe(1);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(inserts).toEqual([expect.objectContaining({ userId: 'google:7', kind: 'walked-out' })]);
+		expect(updates).toEqual([{ releasedAt: NOW.toISOString(), releaseReason: 'walked-out' }]);
+	});
+
 	it('still releases it when the DM fails', async () => {
 		// A claim that can only be closed by a successful Slack call is one a
 		// deactivated account holds until its TTL runs out.
@@ -182,7 +232,7 @@ describe('reconcileClaims — a turf VAN re-cut', () => {
 
 		expect(result.recutReplaced).toBe(1);
 		expect(inserts[0]).toMatchObject({
-			mapRouteId: 56502,
+			turfId: 56502,
 			slackUserId: 'U1',
 			slackUserName: 'Dana',
 			issuedListNumber: '99999999-11111',
@@ -190,6 +240,27 @@ describe('reconcileClaims — a turf VAN re-cut', () => {
 		// The old row is stamped so the notice never repeats.
 		expect(updates).toEqual([{ recutNotifiedAt: NOW.toISOString() }]);
 		expect(mockSendDm.mock.calls[0][1]).toContain('99999999-11111');
+	});
+
+	it('keeps the re-cut message for a Google holder', async () => {
+		const { db, inserts } = makeDb([
+			[],
+			[recutRow({ slackUserId: 'google:7', slackUserName: 'Ana' })],
+			[replacementRow()],
+			[],
+		]);
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP, ttlHours: 48 });
+		expect(result.recutReplaced).toBe(1);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		// The moved claim, then the notice telling them about it.
+		expect(inserts).toEqual([
+			expect.objectContaining({ turfId: 56502, slackUserId: 'google:7' }),
+			expect.objectContaining({
+				userId: 'google:7',
+				kind: 'recut',
+				text: expect.stringContaining('99999999-11111'),
+			}),
+		]);
 	});
 
 	it('tells the holder it is gone when the replacement was taken in the gap', async () => {
@@ -212,7 +283,7 @@ describe('reconcileClaims — a turf VAN re-cut', () => {
 			[],
 			[recutRow()],
 			[replacementRow()],
-			[{ mapRouteId: 56502 }], // claimed
+			[{ turfId: 56502 }], // claimed
 		]);
 		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
 		expect(result.recutGone).toBe(1);

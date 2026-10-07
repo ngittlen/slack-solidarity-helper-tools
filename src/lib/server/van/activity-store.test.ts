@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -16,13 +16,15 @@ import { activityEvents, rangeFor, totalEvents } from '../../van/turf-activity.j
 // Typed as drizzle's own return so it matches the `Db` the van modules take
 // (which carries `$client`), rather than the looser LibSQLDatabase alias.
 let db: ReturnType<typeof drizzle>;
+/** Held so afterEach can close it; see the note there. */
+let client: ReturnType<typeof createClient>;
 
 const NOW = new Date('2026-08-24T18:00:00.000Z');
 const WEEK = rangeFor('7', NOW);
 const ALL = rangeFor('all', NOW);
 
 beforeEach(async () => {
-	const client = createClient({ url: ':memory:' });
+	client = createClient({ url: ':memory:' });
 	db = drizzle(client);
 	// The REAL schema from drizzle/, not a hand-copied CREATE TABLE. It carries
 	// the partial unique index that allows only one ACTIVE claim per route, so a
@@ -30,23 +32,30 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 
 	await client.execute({
-		sql: `INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
-		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?),
-		             (200, 1, 1, 72, 'Wayne County', 'Detroit East', 'Turf 02', 180, ?, ?),
-		             (300, 1, 1, 71, 'Washtenaw County', 'Ypsilanti', 'Retired turf', 90, ?, ?),
-		             (400, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 04', 200, ?, ?),
-		             (500, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 05', 210, ?, ?)`,
+		sql: `INSERT INTO van_turfs (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+		      VALUES (100, 100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?),
+		             (200, 200, 1, 2, 72, 'Wayne County', 'Detroit East', 'Turf 02', 180, ?, ?),
+		             (300, 300, 1, 1, 71, 'Washtenaw County', 'Ypsilanti', 'Retired turf', 90, ?, ?),
+		             (400, 400, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 04', 200, ?, ?),
+		             (500, 500, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 05', 210, ?, ?)`,
 		args: Array.from({ length: 10 }, () => NOW.toISOString()),
 	});
+	// Chapter 71 sees folder 1, chapter 72 sees folder 2 — visibility comes from
+	// this mapping now, not from van_turfs.chapter_id (chapter-visibility.ts).
+	await client.execute(
+		`INSERT INTO van_chapter_folders (chapter_id, folder_id, chapter_name, last_edited_by, last_edited_by_name, last_edited_at)
+		 VALUES (71, 1, 'Washtenaw County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z'),
+		        (72, 2, 'Wayne County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z')`,
+	);
 	// The third turf is retired — history about it must still read.
 	await client.execute(
-		`UPDATE van_turfs SET retired_at = '2026-08-20T00:00:00.000Z' WHERE map_route_id = 300`,
+		`UPDATE van_turfs SET retired_at = '2026-08-20T00:00:00.000Z' WHERE turf_id = 300`,
 	);
 });
 
 async function checkout(over: Record<string, string | number | null> = {}) {
 	const row = {
-		map_route_id: 100,
+		turf_id: 100,
 		slack_user_id: 'U_VOL',
 		slack_user_name: 'Dana',
 		claimed_at: '2026-08-24T13:10:00.000Z',
@@ -58,8 +67,8 @@ async function checkout(over: Record<string, string | number | null> = {}) {
 		...over,
 	};
 	await db.run(
-		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, release_reason, confirmed_door_delta)
-		 VALUES (${row.map_route_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}',
+		`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, release_reason, confirmed_door_delta)
+		 VALUES (${row.turf_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}',
 		         ${row.released_at === null ? 'NULL' : `'${row.released_at}'`},
 		         ${row.completed_at === null ? 'NULL' : `'${row.completed_at}'`},
 		         ${row.release_reason === null ? 'NULL' : `'${row.release_reason}'`},
@@ -69,12 +78,19 @@ async function checkout(over: Record<string, string | number | null> = {}) {
 
 const allChapters = { chapterId: null, range: WEEK };
 
+// Each test opens its own in-memory client. Closing it keeps one per test
+// from leaking for the life of the worker — which never shows up while this
+// file is run on its own.
+afterEach(() => {
+	client.close();
+});
+
 describe('loadActivityRows', () => {
 	it('joins the turf detail an organizer reads', async () => {
 		await checkout();
 		const [row] = await loadActivityRows(db, allChapters);
 		expect(row).toMatchObject({
-			mapRouteId: 100,
+			turfId: 100,
 			name: 'Turf 01',
 			regionName: 'Ann Arbor',
 			chapterId: 71,
@@ -88,7 +104,7 @@ describe('loadActivityRows', () => {
 	// enters the payload.
 	it('never selects the MiniVAN list number', async () => {
 		await db.run(
-			`UPDATE van_turfs SET printed_list_number = '35536745-88712' WHERE map_route_id = 100` as never,
+			`UPDATE van_turfs SET printed_list_number = '35536745-88712' WHERE turf_id = 100` as never,
 		);
 		await checkout();
 		const rows = await loadActivityRows(db, allChapters);
@@ -97,15 +113,15 @@ describe('loadActivityRows', () => {
 	});
 
 	it('filters to one chapter', async () => {
-		await checkout({ map_route_id: 100 });
-		await checkout({ map_route_id: 200 });
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 200 });
 		const rows = await loadActivityRows(db, { chapterId: 72, range: WEEK });
-		expect(rows.map((r) => r.mapRouteId)).toEqual([200]);
+		expect(rows.map((r) => r.turfId)).toEqual([200]);
 	});
 
 	it('returns every chapter when none is given', async () => {
-		await checkout({ map_route_id: 100 });
-		await checkout({ map_route_id: 200 });
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 200 });
 		const rows = await loadActivityRows(db, allChapters);
 		expect(rows).toHaveLength(2);
 	});
@@ -113,7 +129,7 @@ describe('loadActivityRows', () => {
 	// A turf VAN no longer has still happened; dropping it would rewrite the
 	// record of a canvass that really took place.
 	it('keeps history for retired turf', async () => {
-		await checkout({ map_route_id: 300 });
+		await checkout({ turf_id: 300 });
 		const rows = await loadActivityRows(db, allChapters);
 		expect(rows.map((r) => r.name)).toEqual(['Retired turf']);
 	});
@@ -124,21 +140,21 @@ describe('loadActivityRows', () => {
 		// max() would sort every live claim to one end regardless of its age.
 		it('orders by each row’s newest stamp, not by claim time', async () => {
 			// Distinct routes: only one claim per route may be active at a time.
-			await checkout({ map_route_id: 100, claimed_at: '2026-08-24T09:00:00.000Z' }); // active, oldest claim
+			await checkout({ turf_id: 100, claimed_at: '2026-08-24T09:00:00.000Z' }); // active, oldest claim
 			await checkout({
-				map_route_id: 200,
+				turf_id: 200,
 				claimed_at: '2026-08-24T08:00:00.000Z',
 				completed_at: '2026-08-24T17:00:00.000Z',
 			}); // older claim, newest activity
-			await checkout({ map_route_id: 300, claimed_at: '2026-08-24T10:00:00.000Z' });
+			await checkout({ turf_id: 300, claimed_at: '2026-08-24T10:00:00.000Z' });
 
 			const rows = await loadActivityRows(db, allChapters);
 			expect(rows.map((r) => r.checkoutId)).toEqual([2, 3, 1]);
 		});
 
 		it('sorts an active claim by its claim time', async () => {
-			await checkout({ map_route_id: 100, claimed_at: '2026-08-24T09:00:00.000Z' });
-			await checkout({ map_route_id: 200, claimed_at: '2026-08-24T16:00:00.000Z' });
+			await checkout({ turf_id: 100, claimed_at: '2026-08-24T09:00:00.000Z' });
+			await checkout({ turf_id: 200, claimed_at: '2026-08-24T16:00:00.000Z' });
 			const rows = await loadActivityRows(db, allChapters);
 			expect(rows.map((r) => r.checkoutId)).toEqual([2, 1]);
 		});
@@ -179,7 +195,7 @@ describe('loadActivityRows', () => {
 
 	it('applies the limit in SQL', async () => {
 		for (const [i, route] of [100, 200, 300, 400, 500].entries()) {
-			await checkout({ map_route_id: route, claimed_at: `2026-08-24T1${i}:00:00.000Z` });
+			await checkout({ turf_id: route, claimed_at: `2026-08-24T1${i}:00:00.000Z` });
 		}
 		const rows = await loadActivityRows(db, { ...allChapters, limit: 2 });
 		expect(rows).toHaveLength(2);
@@ -241,8 +257,8 @@ describe('loadActivityCounts', () => {
 	});
 
 	it('filters to one chapter', async () => {
-		await checkout({ map_route_id: 100 });
-		await checkout({ map_route_id: 200 });
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 200 });
 		expect((await loadActivityCounts(db, { chapterId: 71, range: WEEK })).claimed).toBe(1);
 		expect((await loadActivityCounts(db, allChapters)).claimed).toBe(2);
 	});
@@ -286,7 +302,7 @@ describe('counts agree with the expanded events', () => {
 		await checkout({ completed_at: '2026-08-24T15:30:00.000Z' });
 		await checkout({ released_at: '2026-08-24T16:00:00.000Z', release_reason: 'expired' });
 		await checkout({
-			map_route_id: 200,
+			turf_id: 200,
 			released_at: '2026-08-24T16:00:00.000Z',
 			release_reason: 'blocked',
 		});
@@ -307,5 +323,29 @@ describe('hasAnyTurf', () => {
 	it('is false on an empty catalog', async () => {
 		await db.run(`DELETE FROM van_turfs` as never);
 		expect(await hasAnyTurf(db)).toBe(false);
+	});
+});
+
+// The activity page's campaign picker (specs/012-multi-van-campaigns).
+describe('one campaign', () => {
+	beforeEach(async () => {
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 1, 's', 's', 'x')`,
+		);
+		await client.execute('UPDATE van_turfs SET campaign_id = 2 WHERE turf_id = 400');
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 400 });
+	});
+
+	it('scopes the rows and the counts to it, and says which campaign each row is', async () => {
+		const query = { chapterId: null, campaignId: 2, range: WEEK };
+		const rows = await loadActivityRows(db, query);
+		expect(rows.map((r) => [r.turfId, r.campaignId])).toEqual([[400, 2]]);
+		expect((await loadActivityCounts(db, query)).claimed).toBe(1);
+	});
+
+	it('reads every campaign when none is picked', async () => {
+		expect((await loadActivityCounts(db, allChapters)).claimed).toBe(2);
 	});
 });

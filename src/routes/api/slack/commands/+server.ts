@@ -12,27 +12,30 @@ import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { loadUserToken, type TokenLookupFailure } from '$lib/server/user-tokens.js';
 import { normalizeCommandName, renderCommandList, renderInfoMessage } from '$lib/info-command.js';
 import { postToResponseUrl, respondToSlack } from '$lib/server/slack-response-url.js';
-import { turfListMessage } from '$lib/server/van/turf-slack.js';
+import { myTurfMessage, turfListMessage } from '$lib/server/van/turf-slack.js';
 import { errMessage } from '$lib/err-message.js';
 
-// Slash commands. Four kinds:
+// Slash commands. Five kinds:
 //
 //   /member-note          — opens the note/warning modal (see slack-modal.ts)
-//   /turfs                — nearest available turf, claimable in place
+//   /turfs                — nearest claimable turf, claimable in place
+//   /turfs-mine           — what you are holding, with its list numbers
 //                           (see van/turf-slack.ts)
 //   /list-commands        — every info command and its message, shown only to
 //                           the person who ran it
 //   anything else         — looked up in `info_commands`, the admin-defined
 //                           blurbs, and posted **as the person who typed it**
 //
-// Everything but /turfs is for admins and moderators (see slack-admin.ts);
-// moderators exist precisely to use these commands without the web admin.
+// Everything but /turfs and /turfs-mine is for admins and moderators (see
+// slack-admin.ts); moderators exist precisely to use these commands without
+// the web admin.
 //
-// /turfs is the ONLY command here open to everyone, and deliberately so: it
-// serves the same data the /turfs web page serves, and that page is open to any
-// signed-in workspace member minus the turf blocklist. A Slack workspace member
-// is the same bar as a Slack-OAuth session, so this grants nothing new. Its
-// gates are van/turf-slack.ts's, not this file's.
+// /turfs and /turfs-mine are the ONLY commands here open to everyone, and
+// deliberately so: they serve the same data the /turfs web page serves, and
+// that page is open to any signed-in workspace member minus the turf
+// blocklist. A Slack workspace member is the same bar as a Slack-OAuth
+// session, so this grants nothing new. Their gates are van/turf-slack.ts's,
+// not this file's.
 //
 // Two things differ from the events route: Slack sends slash commands as
 // `application/x-www-form-urlencoded` (so the body is parsed with
@@ -63,7 +66,11 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	if (command === '/turfs') {
-		return handleTurfs({ slackUserId, channelId, commandText, responseUrl });
+		return handleTurfs({ slackUserId, commandText, responseUrl });
+	}
+
+	if (command === '/turfs-mine') {
+		return handleTurfsMine({ slackUserId, responseUrl });
 	}
 
 	if (command === '/list-commands') {
@@ -72,6 +79,39 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	return handleInfoCommand({ command, slackUserId, channelId });
 };
+
+// ---------------------------------------------------------------------------
+// /turfs-mine
+// ---------------------------------------------------------------------------
+
+/**
+ * What you are holding right now.
+ *
+ * Deferred like /turfs rather than answered inline: it is two reads plus an
+ * admin lookup, which is usually well inside Slack's three seconds and is not
+ * worth betting a timeout on when fly.toml still allows a cold boot.
+ *
+ * No argument is read. /turfs takes a ZIP or an address because it has to
+ * decide what is NEAR you; this command answers from rows that are already
+ * yours, so there is nothing for a location to change.
+ */
+function handleTurfsMine(args: { slackUserId: string; responseUrl: string | null }): Response {
+	const { slackUserId, responseUrl } = args;
+
+	void (async () => {
+		const message = await myTurfMessage(db, { slackUserId });
+		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
+	})().catch((err) => {
+		console.error(`${TURF_LOG} /turfs-mine failed for ${slackUserId}:`, errMessage(err));
+		respondToSlack(
+			responseUrl,
+			{ text: 'Could not look up your turf just now. Please try again.' },
+			{ replaceOriginal: true, logTag: TURF_LOG },
+		);
+	});
+
+	return ephemeral('Looking up your turf…');
+}
 
 // ---------------------------------------------------------------------------
 // /turfs
@@ -92,16 +132,14 @@ export const POST: RequestHandler = async ({ request }) => {
  */
 function handleTurfs(args: {
 	slackUserId: string;
-	channelId: string | null;
 	commandText: string;
 	responseUrl: string | null;
 }): Response {
-	const { slackUserId, channelId, commandText, responseUrl } = args;
+	const { slackUserId, commandText, responseUrl } = args;
 
 	void (async () => {
 		const message = await turfListMessage(db, {
 			slackUserId,
-			channelId,
 			argument: commandText,
 		});
 		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
@@ -307,24 +345,24 @@ function ephemeral(message: string): Response {
 /** All four lookup failures are fixed by logging in again, so they share a
  *  call to action and differ only in why. */
 function reauthorizeMessage(reason: TokenLookupFailure): string {
-	const authorize = `${APP_URL}/auth/slack`;
+	const authorize = `${APP_URL}/auth/slack/post-as-you`;
 	switch (reason) {
 		case 'stale-scope':
 			return (
 				'This command posts as you, and your Slack authorization predates that. ' +
-				`Sign in again at ${authorize} to grant it, then retry.`
+				`Grant it at ${authorize}, then retry.`
 			);
 		case 'unreadable':
 		case 'error':
 			return (
 				'Your stored Slack authorization could not be read. ' +
-				`Sign in again at ${authorize} to refresh it, then retry.`
+				`Grant it again at ${authorize}, then retry.`
 			);
 		case 'missing':
 		default:
 			return (
-				'This command posts as you, so it needs your authorization first. ' +
-				`Sign in at ${authorize}, then retry.`
+				'This command posts as you, so it needs your permission first. ' +
+				`Grant it at ${authorize}, then retry.`
 			);
 	}
 }
@@ -338,7 +376,7 @@ function postFailureMessage(detail: string): string {
 	if (detail.includes('token_revoked') || detail.includes('invalid_auth')) {
 		return (
 			'Slack rejected your stored authorization — it may have been revoked. ' +
-			`Sign in again at ${APP_URL}/auth/slack, then retry.`
+			`Grant it again at ${APP_URL}/auth/slack/post-as-you, then retry.`
 		);
 	}
 	return `Could not post the message: ${detail}`;

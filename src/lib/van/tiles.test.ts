@@ -12,6 +12,8 @@ import {
 	tileUrl,
 	toWorld,
 	withTileApiKey,
+	scaleBarStep,
+	SCALE_STEPS,
 } from './tiles.js';
 import type { BoundingBox } from './geometry.js';
 
@@ -126,6 +128,7 @@ describe('boundsCentre', () => {
 });
 
 describe('createMapView', () => {
+	const base = { centre: { lat: 42.37, lng: -71.11 }, width: 720, height: 520 };
 	const view = createMapView({
 		centre: { lat: 42.37, lng: -71.11 },
 		zoom: 14,
@@ -157,9 +160,9 @@ describe('createMapView', () => {
 			const covering = view.tiles.some(
 				(t) =>
 					probe.x >= t.left &&
-					probe.x < t.left + TILE_SIZE &&
+					probe.x < t.left + t.size &&
 					probe.y >= t.top &&
-					probe.y < t.top + TILE_SIZE,
+					probe.y < t.top + t.size,
 			);
 			expect(covering).toBe(true);
 		}
@@ -179,10 +182,105 @@ describe('createMapView', () => {
 		}
 	});
 
+	// --- Fractional zoom ----------------------------------------------------
+	// Between levels the projection keeps moving while the tiles stay put at a
+	// whole level and scale. These are the invariants that keeps honest.
+
+	describe('between whole levels', () => {
+		const frac = createMapView({
+			centre: { lat: 42.37, lng: -71.11 },
+			zoom: 14.4,
+			width: 720,
+			height: 520,
+		});
+
+		it('fetches the nearest whole level, not the floor', () => {
+			expect(frac.tileZoom).toBe(14);
+			expect(frac.tiles.every((t) => t.z === 14)).toBe(true);
+			// 13.6 rounds the other way, to 14 as well; 14.6 rounds up to 15.
+			expect(createMapView({ ...base, zoom: 14.6 }).tileZoom).toBe(15);
+			expect(createMapView({ ...base, zoom: 13.6 }).tileZoom).toBe(14);
+		});
+
+		it('scales the tiles by the distance from that level', () => {
+			const expected = TILE_SIZE * Math.pow(2, 0.4);
+			expect(frac.tiles.every((t) => Math.abs(t.size - expected) < 1e-9)).toBe(true);
+		});
+
+		it('never resamples by more than 1.41x in either direction', () => {
+			for (let z = MIN_ZOOM; z <= MAX_ZOOM; z += 0.1) {
+				const view = createMapView({ ...base, zoom: z });
+				const factor = view.tiles[0].size / TILE_SIZE;
+				expect(factor).toBeGreaterThan(0.7);
+				expect(factor).toBeLessThan(1.42);
+			}
+		});
+
+		it('still covers the whole viewport', () => {
+			for (const probe of [
+				{ x: 0, y: 0 },
+				{ x: 719, y: 519 },
+				{ x: 360, y: 260 },
+			]) {
+				const covering = frac.tiles.some(
+					(t) =>
+						probe.x >= t.left &&
+						probe.x < t.left + t.size &&
+						probe.y >= t.top &&
+						probe.y < t.top + t.size,
+				);
+				expect(covering).toBe(true);
+			}
+		});
+
+		it('lays the grid out without seams or overlaps', () => {
+			// Tiles in a row abut exactly: one tile's right edge is the next
+			// one's left. A grid stepped by TILE_SIZE while scaled would drift.
+			const row = frac.tiles
+				.filter((t) => t.top === frac.tiles[0].top)
+				.sort((a, b) => a.left - b.left);
+			expect(row.length).toBeGreaterThan(1);
+			for (let i = 1; i < row.length; i++) {
+				expect(row[i].left).toBeCloseTo(row[i - 1].left + row[i - 1].size, 9);
+			}
+		});
+
+		it('keeps projecting its own centre to the middle', () => {
+			const { x, y } = frac.project({ lat: 42.37, lng: -71.11 });
+			expect(x).toBeCloseTo(360, 6);
+			expect(y).toBeCloseTo(260, 6);
+		});
+
+		it('round-trips project and unproject', () => {
+			const point = { lat: 42.3755, lng: -71.1042 };
+			const back = frac.unproject(frac.project(point));
+			expect(back.lat).toBeCloseTo(point.lat, 9);
+			expect(back.lng).toBeCloseTo(point.lng, 9);
+		});
+
+		it('reuses tile keys across a fractional change within one level', () => {
+			// The whole point of keying on the tile's zoom: nudging the zoom
+			// must rescale the images already loaded, never refetch them.
+			const nudged = createMapView({ ...base, zoom: 14.45 });
+			const before = new Set(createMapView({ ...base, zoom: 14.4 }).tiles.map((t) => t.key));
+			expect(nudged.tiles.every((t) => before.has(t.key))).toBe(true);
+		});
+
+		it('clamps the tile level at the ends of the range', () => {
+			expect(createMapView({ ...base, zoom: MAX_ZOOM }).tileZoom).toBe(MAX_ZOOM);
+			expect(createMapView({ ...base, zoom: MIN_ZOOM }).tileZoom).toBe(MIN_ZOOM);
+		});
+	});
+
 	it('omits tiles past the poles rather than requesting 404s', () => {
 		const polar = createMapView({ centre: { lat: 84, lng: 0 }, zoom: 3, width: 800, height: 800 });
 		const count = Math.pow(2, 3);
 		expect(polar.tiles.every((t) => t.y >= 0 && t.y < count)).toBe(true);
+	});
+
+	it("draws whole levels at the tile's own resolution", () => {
+		expect(view.tileZoom).toBe(14);
+		expect(view.tiles.every((t) => t.size === TILE_SIZE)).toBe(true);
 	});
 
 	it('wraps tile x across the antimeridian', () => {
@@ -219,13 +317,13 @@ describe('metresPerPixel', () => {
 
 describe('tileUrl', () => {
 	it('substitutes z, x and y', () => {
-		const url = tileUrl({ z: 13, x: 2482, y: 3040, left: 0, top: 0, key: 'k' });
+		const url = tileUrl({ z: 13, x: 2482, y: 3040, left: 0, top: 0, size: TILE_SIZE, key: 'k' });
 		expect(url).toBe('https://basemaps.cartocdn.com/light_all/13/2482/3040@2x.png');
 	});
 
 	it('accepts an alternative template', () => {
 		const url = tileUrl(
-			{ z: 5, x: 1, y: 2, left: 0, top: 0, key: 'k' },
+			{ z: 5, x: 1, y: 2, left: 0, top: 0, size: TILE_SIZE, key: 'k' },
 			'https://example.test/{z}/{x}/{y}.png',
 		);
 		expect(url).toBe('https://example.test/5/1/2.png');
@@ -264,8 +362,61 @@ describe('withTileApiKey', () => {
 
 	it('produces a fetchable url once z/x/y are substituted', () => {
 		const template = withTileApiKey(TILE_URL_TEMPLATE, 'a b&c');
-		expect(tileUrl({ z: 13, x: 2482, y: 3040, left: 0, top: 0, key: 'k' }, template)).toBe(
-			'https://basemaps.cartocdn.com/light_all/13/2482/3040@2x.png?key=a%20b%26c',
-		);
+		expect(
+			tileUrl({ z: 13, x: 2482, y: 3040, left: 0, top: 0, size: TILE_SIZE, key: 'k' }, template),
+		).toBe('https://basemaps.cartocdn.com/light_all/13/2482/3040@2x.png?key=a%20b%26c');
+	});
+});
+
+describe('scaleBarStep', () => {
+	// 1 px = 1 m keeps the arithmetic readable: the rung's metres are its pixels.
+	const ONE_M_PER_PX = 1;
+
+	it('picks the longest rung that fits the target width', () => {
+		expect(scaleBarStep(ONE_M_PER_PX, 900).label).toBe('0.5 mi');
+		expect(scaleBarStep(ONE_M_PER_PX, 2000).label).toBe('1 mi');
+		expect(scaleBarStep(ONE_M_PER_PX, 200).label).toBe('500 ft');
+	});
+
+	it('returns the drawn width of the rung it chose', () => {
+		const step = scaleBarStep(ONE_M_PER_PX, 2000);
+		expect(step.px).toBeCloseTo(1609.344, 3);
+	});
+
+	// The invariant that makes the bar honest: whatever rung it settles on, the
+	// line it draws is that rung's ground distance at this zoom. A width that
+	// disagreed with its own label would misread by however much it drifted.
+	it.each([1, 3, 12.5, 400])('draws the width its label claims, at %s m/px', (mpp) => {
+		const step = scaleBarStep(mpp, 500);
+		const rung = SCALE_STEPS.find((s) => s.label === step.label)!;
+		expect(step.px).toBeCloseTo(rung.metres / mpp, 6);
+	});
+
+	it('never draws wider than the target, except on the fallback rung', () => {
+		for (const mpp of [1, 3, 12.5, 400]) {
+			const step = scaleBarStep(mpp, 500);
+			if (step.label !== SCALE_STEPS[SCALE_STEPS.length - 1]!.label) {
+				expect(step.px).toBeLessThanOrEqual(500);
+			}
+		}
+	});
+
+	// Zoomed far in on a narrow phone, even the shortest rung overhangs. A bar
+	// slightly too wide beats a map with no scale on it.
+	it('falls back to the shortest rung rather than nothing', () => {
+		expect(scaleBarStep(ONE_M_PER_PX, 1).label).toBe('100 ft');
+	});
+
+	// The point of the change: a canvasser reads distances in feet and miles
+	// everywhere else in the app, and the bar must not be the exception.
+	it('never labels a rung in metric', () => {
+		for (const step of SCALE_STEPS) {
+			expect(step.label).toMatch(/\b(ft|mi)$/);
+		}
+	});
+
+	it('is ordered longest first, which is what makes find() pick the longest', () => {
+		const metres = SCALE_STEPS.map((s) => s.metres);
+		expect([...metres].sort((a, b) => b - a)).toEqual(metres);
 	});
 });

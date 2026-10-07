@@ -1,13 +1,33 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runCatalogSync } from './sync.js';
-import { VanError, type VanClient } from './client.js';
+import { VanError, VanIncompleteError, type VanClient } from './client.js';
 import type { VanMapRegion } from './types.js';
-import { vanGeometryQueue } from '../schema.js';
+import { vanGeometryQueue, vanTurfRoster } from '../schema.js';
+import {
+	loadClaimsForExports,
+	loadMinivanExports,
+	pullMinivanExports,
+	stampClaimsLoaded,
+} from './minivan-export-store.js';
+
+// The export store runs real SQL against its own table, which the recording
+// stub below does not model; it has its own tests on in-memory libsql. Here it
+// is replaced by a pass-through to the client, so a test can still make VAN
+// refuse the endpoint and watch the sync degrade.
+vi.mock('./minivan-export-store.js', () => ({
+	pullMinivanExports: vi.fn(async (_db: unknown, client: VanClient) => {
+		const { items, complete } = await client.minivanExportsSince('2026-09-01', 150);
+		return { from: '2026-09-01', fetched: items.length, complete };
+	}),
+	loadMinivanExports: vi.fn(async () => []),
+	loadClaimsForExports: vi.fn(async () => []),
+	stampClaimsLoaded: vi.fn(async () => undefined),
+}));
 
 // A recording stub of the drizzle chains sync.ts actually uses. Enough to
 // assert what was written without standing up SQLite; the storage-level
 // guarantees (the partial unique index) are covered by their own tests.
-function makeDb(existing: unknown[] = [], deletedRows: unknown[] = [{ mapRouteId: 100 }]) {
+function makeDb(existing: unknown[] = [], deletedRows: unknown[] = [{ turfId: 100 }]) {
 	const inserted: unknown[] = [];
 	const updates: unknown[] = [];
 	/** Tables `.delete()` was called against, so a test can assert that
@@ -30,7 +50,21 @@ function makeDb(existing: unknown[] = [], deletedRows: unknown[] = [{ mapRouteId
 					}),
 			};
 		},
-		select: () => ({ from: async () => existing }),
+		// `.from()` is awaited directly (every campaign's turf ids) or narrowed
+		// with `.where()` (this campaign's rows). The narrowed read also sees
+		// the turf rows written so far, as the real table would — that is how
+		// the sync resolves a new turf's id after upserting it.
+		select: () => ({
+			from: () =>
+				Object.assign(Promise.resolve(existing), {
+					where: async () => [
+						...existing,
+						...inserted.filter(
+							(row) => typeof (row as { vanMapRouteId?: unknown }).vanMapRouteId === 'number',
+						),
+					],
+				}),
+		}),
 		insert: () => ({
 			values: (row: unknown) => {
 				inserted.push(row);
@@ -80,11 +114,15 @@ function makeClient(over: Partial<VanClient> = {}): VanClient {
 		],
 		printedLists: async () => [],
 		savedLists: async () => [],
-		minivanExports: async () => [],
+		minivanExportsSince: async () => ({ items: [], complete: true }),
 		refreshMapRegion: async () => undefined,
 		exportJobTypes: async () => [],
 		createExportJob: async () => ({}) as never,
 		exportJob: async () => ({}) as never,
+		createChangedEntityExportJob: async () => ({}) as never,
+		changedEntityExportJob: async () => ({}) as never,
+		contactTypes: async () => [],
+		changeTypes: async () => [],
 		get: async () => ({}) as never,
 		...over,
 	};
@@ -101,12 +139,41 @@ describe('runCatalogSync', () => {
 
 	it('syncs a mapped folder into turf rows', async () => {
 		const { db, inserted } = makeDb();
-		const result = await runCatalogSync(db, makeClient(), MAPPING);
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);
 
 		expect(result.foldersSynced).toBe(1);
 		expect(result.turfsUpserted).toBe(1);
 		expect(result.geometryQueued).toBe(1);
-		expect(inserted[0]).toMatchObject({ mapRouteId: 100, chapterId: 71 });
+		expect(inserted[0]).toMatchObject({ turfId: 100, chapterId: 71 });
+	});
+
+	// The bug this replaced: a folder mapped to several chapters was fetched
+	// once per chapter and upserted once per chapter, every row keyed by
+	// turfId alone — so the last chapter written silently owned the folder
+	// and the others saw none of its turf. Visibility is a query-time join on
+	// the mapping now (chapter-visibility.ts), so the catalog reads each folder
+	// exactly once and writes one row per turf.
+	it('reads a shared folder once and writes one row per turf', async () => {
+		const client = makeClient();
+		const spy = vi.spyOn(client, 'mapRegions');
+		const { db, inserted } = makeDb();
+
+		const result = await runCatalogSync(db, client, 1, [
+			{ chapterId: 71, chapterName: 'Kalamazoo', folderIds: [1152] },
+			{ chapterId: 72, chapterName: 'Allegan', folderIds: [1152] },
+			{ chapterId: 73, chapterName: 'Calhoun', folderIds: [1152] },
+		]);
+
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(result.foldersSynced).toBe(1);
+		expect(result.turfsUpserted).toBe(1);
+		// `inserted` also carries the geometry-queue and sync-state writes, so
+		// count the turf rows specifically: one, not one per chapter.
+		const turfRows = inserted.filter((row) => (row as { chapterId?: number }).chapterId);
+		expect(turfRows).toHaveLength(1);
+		// The label is the first chapter mapped to the folder; who can SEE it is
+		// every chapter in the mapping, which this row does not encode.
+		expect(turfRows[0]).toMatchObject({ turfId: 100, chapterId: 71 });
 	});
 
 	it('does nothing but warn when no chapter is mapped to a folder', async () => {
@@ -114,7 +181,7 @@ describe('runCatalogSync', () => {
 		const spy = vi.spyOn(client, 'mapRegions');
 		const { db } = makeDb();
 
-		const result = await runCatalogSync(db, client, []);
+		const result = await runCatalogSync(db, client, 1, []);
 		expect(result.turfsUpserted).toBe(0);
 		expect(result.warnings[0]).toContain('No chapters are mapped');
 		expect(spy).not.toHaveBeenCalled();
@@ -130,7 +197,8 @@ describe('runCatalogSync', () => {
 		const { db } = makeDb();
 		const result = await runCatalogSync(
 			db,
-			makeClient({ minivanExports: forbidden, printedLists: forbidden }),
+			makeClient({ minivanExportsSince: forbidden, printedLists: forbidden }),
+			1,
 			MAPPING,
 		);
 
@@ -148,6 +216,7 @@ describe('runCatalogSync', () => {
 					throw new VanError('/folders', 403, [], 'no');
 				},
 			}),
+			1,
 			MAPPING,
 		);
 		expect(result.turfsUpserted).toBe(1);
@@ -157,7 +226,8 @@ describe('runCatalogSync', () => {
 	it('skips a folder that errors without retiring its turf', async () => {
 		const existing = [
 			{
-				mapRouteId: 500,
+				turfId: 500,
+				vanMapRouteId: 500,
 				folderId: 9999,
 				retiredAt: null,
 				hullJson: null,
@@ -175,6 +245,44 @@ describe('runCatalogSync', () => {
 					return makeClient().mapRegions(folderId);
 				},
 			}),
+			1,
+			[{ chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 9999] }],
+		);
+
+		expect(result.foldersSkipped).toBe(1);
+		expect(result.turfsRetired).toBe(0);
+		expect(updates).toHaveLength(0);
+		expect(result.warnings.join(' ')).toContain('Folder 9999');
+	});
+
+	it('skips a folder whose page walk did not finish, without retiring its turf', async () => {
+		// The dangerous case: a partial read looks exactly like a folder whose
+		// turf is gone, and retiring it would release claims under volunteers
+		// who are out walking those blocks right now.
+		const existing = [
+			{
+				turfId: 500,
+				vanMapRouteId: 500,
+				folderId: 9999,
+				retiredAt: null,
+				hullJson: null,
+				hullSourceRouteSize: null,
+				routeSize: 0,
+			},
+		];
+		const { db, updates } = makeDb(existing);
+
+		const result = await runCatalogSync(
+			db,
+			makeClient({
+				mapRegions: async (folderId: number) => {
+					if (folderId === 9999) {
+						throw new VanIncompleteError('/folders/9999/mapRegions', 'more than 200 pages');
+					}
+					return makeClient().mapRegions(folderId);
+				},
+			}),
+			1,
 			[{ chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 9999] }],
 		);
 
@@ -187,7 +295,8 @@ describe('runCatalogSync', () => {
 	it('releases live claims on turf that retired', async () => {
 		const existing = [
 			{
-				mapRouteId: 500,
+				turfId: 500,
+				vanMapRouteId: 500,
 				folderId: 1152,
 				retiredAt: null,
 				hullJson: null,
@@ -196,7 +305,7 @@ describe('runCatalogSync', () => {
 			},
 		];
 		const { db, updates } = makeDb(existing);
-		const result = await runCatalogSync(db, makeClient(), MAPPING);
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);
 
 		expect(result.turfsRetired).toBe(1);
 		expect(result.claimsReleased).toBe(1);
@@ -209,7 +318,8 @@ describe('runCatalogSync', () => {
 		// goes with the turf.
 		const existing = [
 			{
-				mapRouteId: 500,
+				turfId: 500,
+				vanMapRouteId: 500,
 				folderId: 1152,
 				retiredAt: null,
 				hullJson: null,
@@ -217,19 +327,20 @@ describe('runCatalogSync', () => {
 				routeSize: 0,
 			},
 		];
-		const { db, deletedFrom } = makeDb(existing, [{ mapRouteId: 500 }]);
-		const result = await runCatalogSync(db, makeClient(), MAPPING);
+		const { db, deletedFrom } = makeDb(existing, [{ turfId: 500 }]);
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);
 
 		expect(result.turfsRetired).toBe(1);
 		expect(result.geometryQueueDropped).toBe(1);
-		// The queue, and nothing else: deleting from van_turfs here would destroy
-		// the retirement history the drift report reads.
+		// The queue, and nothing else: deleting from van_turfs here would
+		// destroy the retirement history the drift report reads. The roster
+		// outlives the route by a day (see contact-sync.ts).
 		expect(deletedFrom).toEqual([vanGeometryQueue]);
 	});
 
 	it('drops no geometry rows when nothing is retired', async () => {
 		const { db, deletedFrom } = makeDb();
-		const result = await runCatalogSync(db, makeClient(), MAPPING);
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);
 
 		expect(result.turfsRetired).toBe(0);
 		expect(result.geometryQueueDropped).toBe(0);
@@ -245,7 +356,8 @@ describe('runCatalogSync', () => {
 			{
 				// Already retired, and route 100 is the one the client still returns —
 				// so this run retires nothing.
-				mapRouteId: 900,
+				turfId: 900,
+				vanMapRouteId: 900,
 				folderId: 1152,
 				retiredAt: '2026-09-04T07:07:12.832Z',
 				hullJson: null,
@@ -253,12 +365,12 @@ describe('runCatalogSync', () => {
 				routeSize: 0,
 			},
 		];
-		const { db, deletedFrom } = makeDb(existing, [{ mapRouteId: 900 }]);
-		const result = await runCatalogSync(db, makeClient(), MAPPING);
+		const { db, deletedFrom } = makeDb(existing, [{ turfId: 900 }]);
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);
 
 		expect(result.turfsRetired).toBe(0);
 		expect(result.geometryQueueDropped).toBe(1);
-		expect(deletedFrom).toEqual([vanGeometryQueue]);
+		expect(deletedFrom).toEqual([vanGeometryQueue, vanTurfRoster]);
 	});
 
 	it('keeps the geometry row for a turf coming back from retirement', async () => {
@@ -267,7 +379,8 @@ describe('runCatalogSync', () => {
 		// race the insert that follows.
 		const existing = [
 			{
-				mapRouteId: 100,
+				turfId: 100,
+				vanMapRouteId: 100,
 				folderId: 1152,
 				retiredAt: '2026-09-04T07:07:12.832Z',
 				hullJson: null,
@@ -276,7 +389,7 @@ describe('runCatalogSync', () => {
 			},
 		];
 		const { db, deletedFrom } = makeDb(existing);
-		const result = await runCatalogSync(db, makeClient(), MAPPING);
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);
 
 		expect(result.turfsUnretired).toBe(1);
 		expect(result.geometryQueueDropped).toBe(0);
@@ -285,10 +398,123 @@ describe('runCatalogSync', () => {
 
 	it('stops fetching folders once the time budget lapses', async () => {
 		const { db } = makeDb();
-		const result = await runCatalogSync(db, makeClient(), FOUR_FOLDERS, { timeBudgetMs: -1 });
+		const result = await runCatalogSync(db, makeClient(), 1, FOUR_FOLDERS, { timeBudgetMs: -1 });
 
 		expect(result.foldersSynced).toBe(0);
 		expect(result.foldersSkipped).toBe(4);
 		expect(result.turfsUpserted).toBe(0);
+	});
+
+	describe('MiniVAN exports', () => {
+		const syncState = (inserted: unknown[]) =>
+			inserted.find(
+				(row) =>
+					(row as { campaignId?: number }).campaignId === 1 &&
+					'minivanExportsOk' in (row as object),
+			) as { minivanExportsOk: boolean } | undefined;
+
+		it('marks the drift comparison visible once the store has caught up', async () => {
+			const { db, inserted } = makeDb();
+			await runCatalogSync(db, makeClient(), 1, MAPPING);
+			expect(syncState(inserted)?.minivanExportsOk).toBe(true);
+		});
+
+		// A backfill that hit its page cap has part of VAN's picture. Reporting
+		// drift from it would call every not-yet-read export "not in MiniVAN".
+		it('keeps it unavailable while the store is still backfilling, without telling Slack', async () => {
+			vi.spyOn(console, 'log').mockImplementation(() => {});
+			const { db, inserted } = makeDb();
+			const result = await runCatalogSync(
+				db,
+				makeClient({ minivanExportsSince: async () => ({ items: [], complete: false }) }),
+				1,
+				MAPPING,
+			);
+			expect(syncState(inserted)?.minivanExportsOk).toBe(false);
+			expect(result.degraded).toEqual([]);
+		});
+
+		// The regression this store exists for: one bad read used to null
+		// van_distributed_to on every turf. Now the index comes from what is
+		// stored, and only the flag says the read failed.
+		it('still builds van_distributed_to from stored exports when VAN fails', async () => {
+			vi.mocked(loadMinivanExports).mockResolvedValueOnce([
+				{
+					minivanExportId: 1,
+					name: 'List 35536745-88712',
+					dateCreated: '2026-09-22T11:52:28.15Z',
+					createdBy: null,
+					canvassers: [{ firstName: 'Tammy', lastName: 'B' }],
+					databaseMode: null,
+				},
+			]);
+			const { db, inserted } = makeDb();
+			const result = await runCatalogSync(
+				db,
+				makeClient({
+					minivanExportsSince: async () => {
+						throw new VanError('/minivanExports', 503, [], 'down');
+					},
+				}),
+				1,
+				MAPPING,
+			);
+
+			expect(result.degraded.join(' ')).toContain('/minivanExports unavailable');
+			expect(syncState(inserted)?.minivanExportsOk).toBe(false);
+			expect(inserted[0]).toMatchObject({ turfId: 100, vanDistributedTo: 'Tammy B' });
+		});
+
+		it('looks up exports for every list number the catalog could assign', async () => {
+			const { db } = makeDb();
+			await runCatalogSync(
+				db,
+				makeClient({
+					printedLists: async () => [{ number: '11111111-22222', name: 'Turf 09' }] as never,
+				}),
+				1,
+				MAPPING,
+			);
+			expect(vi.mocked(loadMinivanExports).mock.calls.at(-1)![2]).toEqual(
+				expect.arrayContaining(['35536745-88712', '11111111-22222']),
+			);
+		});
+
+		// The export made while our own volunteer held the turf is theirs: it
+		// stamps their claim and does NOT mark the turf as handed out elsewhere.
+		it('attributes an export inside our claim to that claim', async () => {
+			vi.mocked(loadMinivanExports).mockResolvedValueOnce([
+				{
+					minivanExportId: 1,
+					name: 'List 35536745-88712',
+					dateCreated: '2026-09-22T11:52:28.15Z',
+					createdBy: null,
+					canvassers: [{ canvassserId: 5 }],
+					databaseMode: null,
+				},
+			]);
+			vi.mocked(loadClaimsForExports).mockResolvedValueOnce([
+				{
+					checkoutId: 42,
+					turfId: 100,
+					claimedAt: '2026-09-22T15:40:00.000Z',
+					endedAt: '2026-09-24T15:40:00.000Z',
+					loadedInMinivanAt: null,
+				},
+			]);
+			const { db, inserted } = makeDb();
+			await runCatalogSync(db, makeClient(), 1, MAPPING);
+			expect(inserted[0]).toMatchObject({ turfId: 100, vanAssignedAt: null });
+			expect(vi.mocked(stampClaimsLoaded).mock.calls.at(-1)![1]).toEqual([
+				{ checkoutId: 42, loadedAt: '2026-09-22T15:52:28.150Z' },
+			]);
+		});
+
+		it('reads nothing from VAN on a dry run', async () => {
+			const { db } = makeDb();
+			vi.mocked(pullMinivanExports).mockClear();
+			await runCatalogSync(db, makeClient(), 1, MAPPING, { dryRun: true });
+			expect(pullMinivanExports).not.toHaveBeenCalled();
+		});
 	});
 });

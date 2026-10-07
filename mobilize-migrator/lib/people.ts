@@ -8,6 +8,7 @@
 // Reuses the retry/rate-limit handling from the app, which is deliberately free
 // of $env imports so non-SvelteKit entry points can share it.
 import { fetchWithRetry } from '../../src/lib/server/solidarity-paginate.js';
+import { chapterIdsOf } from '../../src/lib/server/solidarity-chapter-ids.js';
 
 const API = 'https://api.solidarity.tech/v1';
 
@@ -173,13 +174,29 @@ export class SolidarityUserCreateError extends Error {
 	get phoneRejected(): boolean {
 		return this.status === 422 && this.fields.includes('phone_number');
 	}
+
+	/**
+	 * Solidarity rejected the email as undeliverable: subaddressed (user+tag@),
+	 * disposable, or a domain without MX records. Mobilize accepts all of these.
+	 */
+	get emailRejected(): boolean {
+		return this.status === 422 && this.fields.includes('email');
+	}
 }
 
-/** Field names from Solidarity's `details` array, when it sent one. */
+/**
+ * Field names from Solidarity's `details` array, when it sent one.
+ *
+ * Two shapes are live: `[{ field_name: 'phone_number', message }]` for the
+ * phone check, and bare sentences — `["email must be a deliverable address…"]`
+ * — for the email check, where the field is the sentence's first word.
+ */
 function rejectedFields(body: string): string[] {
 	try {
-		const parsed = JSON.parse(body) as { details?: { field_name?: string }[] };
-		return (parsed.details ?? []).map((d) => d.field_name).filter((f): f is string => !!f);
+		const parsed = JSON.parse(body) as { details?: ({ field_name?: string } | string)[] };
+		return (parsed.details ?? [])
+			.map((d) => (typeof d === 'string' ? /^([a-z_]+)\s/.exec(d)?.[1] : d?.field_name))
+			.filter((f): f is string => !!f);
 	} catch {
 		return [];
 	}
@@ -282,25 +299,6 @@ export function resolveChapterId(resolver: ChapterResolver, zipcode: string | nu
 export function normalizeZipKey(raw: string | null | undefined): string | null {
 	const match = /^(\d{5})(?:-\d{4})?$/.exec((raw ?? '').trim());
 	return match ? match[1] : null;
-}
-
-/**
- * Every chapter a Solidarity user belongs to.
- *
- * Same fallback as `resolveChapterIds` in chapter-reconcile.ts and the
- * team_join handler, and it has to be: those two decide which channels someone
- * is invited to, and this decides which chapter their zip resolves to. When
- * they disagreed, a member carrying `chapter_id` but an empty `chapter_ids`
- * counted everywhere in the app except here — invisible to exactly the tally
- * that places their neighbours.
- */
-function chapterIdsOf(user: {
-	chapter_id?: number | null;
-	chapter_ids?: number[] | null;
-}): number[] {
-	if (user.chapter_ids?.length) return user.chapter_ids;
-	if (user.chapter_id != null) return [user.chapter_id];
-	return [];
 }
 
 /**

@@ -18,8 +18,13 @@
 	// Not for signed-out readers: /policies is public, and an arrow pointing at
 	// a page that would bounce them to Slack OAuth is a dead end, not a way back.
 	const signedIn = $derived(data.signedIn);
-	const showBackLink = $derived(signedIn && page.url.pathname !== '/');
+	// Nor for a Google or Apple sign-in: the dashboard it points at is Slack-only, and
+	// following it would only bounce them back to /turfs.
+	const showBackLink = $derived(signedIn && !data.turfOnly && page.url.pathname !== '/');
 
+	// Moderators get the same menu, holding just the pages they can open — in
+	// the same order, so the two read as one menu with items missing rather
+	// than two different ones.
 	const menuItems = $derived<MenuItem[]>(
 		data.isAdmin
 			? [
@@ -30,28 +35,31 @@
 					{ href: '/turfs/organizer', label: 'Turf right now' },
 					{ href: '/turfs/activity', label: 'Turf activity' },
 					{ href: '/settings', label: 'Settings' },
+					{ href: '/post-as-you', label: 'Post as you' },
 				]
-			: [],
+			: data.isModerator
+				? [
+						{ href: '/members', label: 'Member lookup' },
+						{ href: '/turfs', label: 'Turf checkout' },
+						{ href: '/post-as-you', label: 'Post as you' },
+					]
+				: [],
 	);
 
 	// Turf checkout is the one page a non-admin has any reason to open, and
 	// until now nothing in the app linked them to it — the menu is admin-only,
 	// so a volunteer had to arrive via the /turfs Slack command or a pasted URL.
 	//
-	// Shown as a plain link rather than by giving non-admins the dropdown: a
+	// Shown as a plain link rather than by giving volunteers the dropdown: a
 	// menu holding exactly one item hides that item behind a click and reads as
-	// though more is being withheld. Admins keep the dropdown, which already
-	// lists this page, so nobody sees it twice.
+	// though more is being withheld. Admins and moderators have the dropdown,
+	// which already lists this page, so nobody sees it twice.
 	//
 	// Signed-in only, for the reason the back-link has: /policies is public, and
 	// a link that bounces a signed-out reader into Slack OAuth is a dead end.
 	// Blocked users still see it — access.ts redirects them to an explanation,
 	// which is friendlier than a link that silently is not there.
-	const showTurfLink = $derived(signedIn && !data.isAdmin);
-
-	// Moderators' one page besides turf checkout, as a plain link for the same
-	// reason: two links read better than a two-item menu.
-	const showMemberLink = $derived(signedIn && !data.isAdmin && data.isModerator);
+	const showTurfLink = $derived(signedIn && !data.isAdmin && !data.isModerator);
 </script>
 
 <!-- One <title> for the whole app. Individual pages used to set their own and
@@ -86,13 +94,6 @@
 		<div class="user-info">
 			<ThemeToggle mode={data.themeMode} />
 			{#if signedIn}
-				{#if showMemberLink}
-					<a
-						class="header-link"
-						href={resolve('/members')}
-						aria-current={page.url.pathname === '/members' ? 'page' : undefined}>Member lookup</a
-					>
-				{/if}
 				{#if showTurfLink}
 					<a
 						class="header-link"
@@ -107,8 +108,9 @@
 				<form method="POST" action="/auth/logout">
 					<button type="submit" class="logout-btn">Log out</button>
 				</form>
-			{:else}
-				<a class="logout-btn" href={resolve('/auth/slack')}>Sign in with Slack</a>
+			{:else if data.signInHref && page.url.pathname !== '/signin'}
+				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the sign-in page with its return path -->
+				<a class="logout-btn" href={data.signInHref}>Sign in</a>
 			{/if}
 		</div>
 	</header>
@@ -116,6 +118,8 @@
 	{@render children?.()}
 
 	<footer class="app-footer">
+		<a href="{resolve('/policies')}#terms">Terms</a>
+		<span aria-hidden="true">·</span>
 		<a href="{resolve('/policies')}#privacy">Privacy</a>
 		<span aria-hidden="true">·</span>
 		<a href="{resolve('/policies')}#security">Security</a>

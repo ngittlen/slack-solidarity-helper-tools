@@ -1,8 +1,9 @@
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
-import { eq } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 import { TURSO_DATABASE_URL, TURSO_AUTH_TOKEN } from './env.js';
 import { sessions } from './schema.js';
+import type { OutsideProvider } from './identity.js';
 
 export interface SessionData {
 	slackUserId: string;
@@ -11,6 +12,15 @@ export interface SessionData {
 	/** Slack moderator (and not an admin). Optional because sessions created
 	 *  before moderators existed lack it, and absent must read as false. */
 	isModerator?: boolean;
+	/** 'google' or 'apple' for an outside sign-in, whose `slackUserId` is
+	 *  `google:<sub>` / `apple:<sub>` — see identity.ts. Absent means Slack,
+	 *  which every older session is. */
+	authProvider?: OutsideProvider;
+	/** An outside volunteer with no usable name yet. `/turfs` asks for one and
+	 *  claims are refused until they give it; `slackUserName` holds a
+	 *  placeholder meanwhile ("Apple volunteer"), never stamped on a claim by
+	 *  this code and hidden from the page header. */
+	needsName?: true;
 }
 
 // Lazy-initialized so module import (e.g. SvelteKit's build-time analyse step,
@@ -40,7 +50,9 @@ export const db = new Proxy({} as ReturnType<typeof drizzle>, {
  * Slack OAuth — a transient blip turned into a mass logout.
  */
 export type SessionLookup =
-	{ status: 'found'; data: SessionData } | { status: 'missing' } | { status: 'unavailable' };
+	| { status: 'found'; data: SessionData; expiresAt: string }
+	| { status: 'missing' }
+	| { status: 'unavailable' };
 
 export class TursoStore {
 	async get(sid: string): Promise<SessionLookup> {
@@ -55,7 +67,11 @@ export class TursoStore {
 				await this.destroy(sid);
 				return { status: 'missing' };
 			}
-			return { status: 'found', data: JSON.parse(row.data) as SessionData };
+			return {
+				status: 'found',
+				data: JSON.parse(row.data) as SessionData,
+				expiresAt: row.expiresAt,
+			};
 		} catch (err) {
 			console.warn(
 				'[session] session lookup failed — signing this request out but KEEPING the cookie:',
@@ -72,6 +88,21 @@ export class TursoStore {
 			.insert(sessions)
 			.values({ sid, data: serialized, expiresAt })
 			.onConflictDoUpdate({ target: sessions.sid, set: { data: serialized, expiresAt } });
+	}
+
+	/**
+	 * Rewrite a live session's data, keeping its expiry. Never creates one: a
+	 * session deleted meanwhile (signed out, or revoked by a block) stays
+	 * deleted, where `set`'s upsert would bring it back. False when there was
+	 * no live row to rewrite.
+	 */
+	async update(sid: string, data: SessionData): Promise<boolean> {
+		const rows = await db
+			.update(sessions)
+			.set({ data: JSON.stringify(data) })
+			.where(and(eq(sessions.sid, sid), gt(sessions.expiresAt, new Date().toISOString())))
+			.returning({ sid: sessions.sid });
+		return rows.length > 0;
 	}
 
 	async destroy(sid: string): Promise<void> {

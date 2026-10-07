@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { load } from './+page.server.js';
+import { campaignFilter } from '$lib/server/van/campaigns.js';
 
 const mockSettings = vi.hoisted(() => vi.fn());
 const mockHoldings = vi.hoisted(() => vi.fn());
@@ -8,12 +9,27 @@ const mockDriftTurfs = vi.hoisted(() => vi.fn());
 const mockDriftClaims = vi.hoisted(() => vi.fn());
 const mockDriftVisibility = vi.hoisted(() => vi.fn());
 
+const mockGeometryProgress = vi.hoisted(() => vi.fn());
+const mockRefreshSwitches = vi.hoisted(() =>
+	vi.fn(async () => ({ on: [] as string[], off: ['One Team Michigan'] })),
+);
+
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
+vi.mock('$lib/server/van/campaigns.js', () => ({
+	campaignRefreshSwitches: mockRefreshSwitches,
+	// One campaign: no picker, no badges.
+	campaignFilter: vi.fn(async () => ({ campaigns: [], campaign: null, badges: {} })),
+}));
 vi.mock('$lib/server/van/drift-store.js', () => ({
 	loadDriftTurfs: mockDriftTurfs,
 	loadDriftClaims: mockDriftClaims,
 	loadDriftVisibility: mockDriftVisibility,
+}));
+// Campaign-wide, so it takes no query and every test gets the same quiet
+// "nothing outstanding" answer unless it says otherwise.
+vi.mock('$lib/server/van/geometry-progress-store.js', () => ({
+	loadGeometryProgress: mockGeometryProgress,
 }));
 vi.mock('$lib/server/van/holdings-store.js', () => ({
 	COMPLETION_LOOKBACK: 200,
@@ -45,7 +61,7 @@ const event = (session: unknown, query?: string) =>
 function holdingRow(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		turfName: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,
@@ -65,7 +81,7 @@ function holdingRow(over: Record<string, unknown> = {}) {
 function completionRow(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 9,
-		mapRouteId: 900,
+		turfId: 900,
 		turfName: 'Turf 09',
 		regionName: 'Ypsilanti',
 		chapterId: 71,
@@ -89,6 +105,13 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
 	mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+	mockGeometryProgress.mockResolvedValue({
+		eligible: 0,
+		shaped: 0,
+		centroidOnly: 0,
+		pending: 0,
+		failed: 0,
+	});
 	mockHoldings.mockResolvedValue([holdingRow()]);
 	mockCompletions.mockResolvedValue([completionRow()]);
 	mockDriftTurfs.mockResolvedValue([]);
@@ -118,12 +141,18 @@ describe('/turfs/organizer filters', () => {
 	it('defaults to every chapter', async () => {
 		const data = await run(event(ADMIN));
 		expect(data.chapter).toBeNull();
-		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), { chapterId: null });
+		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: null,
+			campaignId: null,
+		});
 	});
 
 	it('scopes both queries to a chosen chapter', async () => {
 		await run(event(ADMIN, 'chapter=71'));
-		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), { chapterId: 71 });
+		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: 71,
+			campaignId: null,
+		});
 		expect(mockCompletions).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ chapterId: 71 }),
@@ -136,7 +165,36 @@ describe('/turfs/organizer filters', () => {
 	])('falls back to every chapter for %s', async (_label, query) => {
 		const data = await run(event(ADMIN, query));
 		expect(data.chapter).toBeNull();
-		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), { chapterId: null });
+		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: null,
+			campaignId: null,
+		});
+	});
+
+	// specs/012-multi-van-campaigns: the picker's choice reaches every query,
+	// and the page gets the list and the badges to render.
+	it('scopes the queries to a picked campaign', async () => {
+		vi.mocked(campaignFilter).mockResolvedValueOnce({
+			campaigns: [
+				{ id: 1, name: 'One Team Michigan' },
+				{ id: 2, name: 'Partner' },
+			],
+			campaign: { id: 2, name: 'Partner' },
+			badges: { 1: 'OTM', 2: 'Partner' },
+		});
+		const data = await run(event(ADMIN, 'campaign=2'));
+		expect(vi.mocked(campaignFilter)).toHaveBeenCalledWith(expect.anything(), '2');
+		expect(data.campaign).toEqual({ id: 2, name: 'Partner' });
+		expect(data.campaigns).toHaveLength(2);
+		expect(data.campaignBadges).toEqual({ 1: 'OTM', 2: 'Partner' });
+		for (const mock of [mockHoldings, mockCompletions, mockDriftTurfs, mockDriftClaims]) {
+			expect(mock).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ campaignId: 2 }),
+			);
+		}
+		// The drift report's "can we see VAN's side" is about the same campaign.
+		expect(mockDriftVisibility).toHaveBeenCalledWith(expect.anything(), 2);
 	});
 
 	it('sorts the chapter picker by name', async () => {
@@ -201,11 +259,11 @@ describe('/turfs/organizer board', () => {
 
 	it('summarises what is out', async () => {
 		mockHoldings.mockResolvedValue([
-			holdingRow({ checkoutId: 1, mapRouteId: 1, slackUserId: 'U_A', doorCount: 100 }),
-			holdingRow({ checkoutId: 2, mapRouteId: 2, slackUserId: 'U_A', doorCount: 200 }),
+			holdingRow({ checkoutId: 1, turfId: 1, slackUserId: 'U_A', doorCount: 100 }),
+			holdingRow({ checkoutId: 2, turfId: 2, slackUserId: 'U_A', doorCount: 200 }),
 			holdingRow({
 				checkoutId: 3,
-				mapRouteId: 3,
+				turfId: 3,
 				slackUserId: 'U_B',
 				doorCount: 50,
 				expiresAt: iso(NOW.getTime() + 2 * HOUR),
@@ -246,6 +304,15 @@ describe('/turfs/organizer missed-sync pane', () => {
 		expect(data.completionsExamined).toBe(1);
 	});
 
+	// The empty state says what the check is waiting on, and that depends on
+	// whether the sync asks VAN for re-cuts or an organizer has to — which is
+	// each campaign's own switch, so the page gets them by name.
+	it('passes on which campaigns have region re-cuts switched on', async () => {
+		const switches = { on: ['One Team Michigan'], off: ['Partner'] };
+		mockRefreshSwitches.mockResolvedValue(switches);
+		expect((await run(event(ADMIN))).regionRefresh).toEqual(switches);
+	});
+
 	it('flags only a measured zero', async () => {
 		mockCompletions.mockResolvedValue([
 			completionRow({ checkoutId: 1, confirmedDoorDelta: null }),
@@ -276,7 +343,13 @@ describe('/turfs/organizer payload', () => {
 	// the template — a redaction that only exists in markup still ships in SSR.
 	it('carries no list number and nothing address-like', async () => {
 		mockCompletions.mockResolvedValue([completionRow({ confirmedDoorDelta: 0 })]);
-		const serialised = JSON.stringify(await run(event(ADMIN))).toLowerCase();
+		// `account` is the holder's own Slack/Google mark, with a Google
+		// volunteer's email for organizers by design (spec 013, FR-015). It is
+		// left out here so this keeps guarding what it is for: nothing about a
+		// voter, and no list number, reaching the payload.
+		const serialised = JSON.stringify(await run(event(ADMIN)), (key, value) =>
+			key === 'account' ? undefined : value,
+		).toLowerCase();
 		for (const field of [
 			'printedlist',
 			'35536745',
@@ -305,7 +378,7 @@ describe('/turfs/organizer payload', () => {
 describe('/turfs/organizer drift pane', () => {
 	function driftTurf(over: Record<string, unknown> = {}) {
 		return {
-			mapRouteId: 100,
+			turfId: 100,
 			name: 'Turf 01',
 			regionName: 'Ann Arbor',
 			chapterId: 71,
@@ -318,33 +391,61 @@ describe('/turfs/organizer drift pane', () => {
 		};
 	}
 	const liveClaim = {
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',
-		claimedAt: iso(NOW.getTime() - HOUR),
+		claimedAt: iso(NOW.getTime() - 3 * HOUR), // past the 2-hour grace
 		expiresAt: iso(NOW.getTime() + 40 * HOUR),
 		releasedAt: null,
 		completedAt: null,
+		loadedInMinivanAt: null,
 	};
 
 	it('flags turf claimed here but absent from MiniVAN', async () => {
-		mockDriftTurfs.mockResolvedValue([driftTurf()]);
+		// The second turf is evidence that this campaign exports to MiniVAN at
+		// all. With nothing exported anywhere in the catalog the report returns
+		// `exports-unused` and says nothing — correct, and a different test.
+		mockDriftTurfs.mockResolvedValue([
+			driftTurf(),
+			driftTurf({ turfId: 999, vanDistributedTo: 'Avery Harbison' }),
+		]);
 		mockDriftClaims.mockResolvedValue([liveClaim]);
 		const data = await run(event(ADMIN));
 		expect(data.drift.claimedNotInMinivan).toBe(1);
-		expect(data.drift.items[0]).toMatchObject({ kind: 'claimed-not-in-minivan', heldBy: 'Dana' });
+		expect(
+			data.drift.items.find((i: { kind: string }) => i.kind === 'claimed-not-in-minivan'),
+		).toMatchObject({
+			kind: 'claimed-not-in-minivan',
+			heldBy: 'Dana',
+		});
 	});
 
-	it('flags turf in MiniVAN that nobody claimed here', async () => {
+	// The workflow this campaign actually uses: printed list numbers handed out
+	// directly, nothing ever exported to named canvassers. Flagging every claim
+	// as "not in MiniVAN" there is noise, so the check reports that it did not
+	// run rather than implying agreement.
+	it('does not check at all when nothing in the catalog was ever exported', async () => {
+		mockDriftTurfs.mockResolvedValue([driftTurf()]);
+		mockDriftClaims.mockResolvedValue([liveClaim]);
+		const data = await run(event(ADMIN));
+		expect(data.drift.visibility).toBe('exports-unused');
+		expect(data.drift.items).toEqual([]);
+	});
+
+	// Dropped as drift: VAN-held turf is already unclaimable (turf-drift.ts).
+	it('does not flag turf in MiniVAN that nobody claimed here', async () => {
 		mockDriftTurfs.mockResolvedValue([driftTurf({ vanDistributedTo: 'Sam Rivera' })]);
 		const data = await run(event(ADMIN));
-		expect(data.drift.inMinivanNotClaimed).toBe(1);
-		expect(data.drift.items[0]!.distributedTo).toBe('Sam Rivera');
+		expect(data.drift.visibility).toBe('visible');
+		expect(data.drift.items).toEqual([]);
 	});
 
 	it('says nothing when the two agree', async () => {
-		mockDriftTurfs.mockResolvedValue([driftTurf({ vanDistributedTo: 'Dana' })]);
-		mockDriftClaims.mockResolvedValue([liveClaim]);
+		mockDriftTurfs.mockResolvedValue([
+			driftTurf(),
+			driftTurf({ turfId: 999, vanDistributedTo: 'Avery Harbison' }),
+		]);
+		mockDriftClaims.mockResolvedValue([{ ...liveClaim, loadedInMinivanAt: iso(NOW.getTime()) }]);
 		expect((await run(event(ADMIN))).drift.items).toEqual([]);
 	});
 
@@ -360,8 +461,14 @@ describe('/turfs/organizer drift pane', () => {
 
 	it('scopes the drift queries to the chosen chapter', async () => {
 		await run(event(ADMIN, 'chapter=71'));
-		expect(mockDriftTurfs).toHaveBeenCalledWith(expect.anything(), { chapterId: 71 });
-		expect(mockDriftClaims).toHaveBeenCalledWith(expect.anything(), { chapterId: 71 });
+		expect(mockDriftTurfs).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: 71,
+			campaignId: null,
+		});
+		expect(mockDriftClaims).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: 71,
+			campaignId: null,
+		});
 	});
 
 	// Same instant as the holdings board, or a claim expiring between the two
@@ -370,5 +477,28 @@ describe('/turfs/organizer drift pane', () => {
 		mockDriftTurfs.mockResolvedValue([driftTurf()]);
 		mockDriftClaims.mockResolvedValue([{ ...liveClaim, expiresAt: iso(NOW.getTime() - HOUR) }]);
 		expect((await run(event(ADMIN))).drift.items).toEqual([]);
+	});
+});
+
+describe('/turfs/organizer geometry line', () => {
+	it('carries the counts and a sentence about them', async () => {
+		mockGeometryProgress.mockResolvedValue({
+			eligible: 2188,
+			shaped: 1842,
+			centroidOnly: 4,
+			pending: 342,
+			failed: 0,
+		});
+		const data = await run(event(ADMIN));
+		expect(data.geometry).toMatchObject({ eligible: 2188, shaped: 1842, pending: 342 });
+		expect(data.geometry.label).toContain('1,842 of 2,188 turfs mapped as shapes');
+	});
+
+	// Campaign-wide: the queue drains in one pass for everyone, so scoping it to
+	// the selected chapter would report a denominator the worker does not use.
+	it('is not scoped to the chapter filter', async () => {
+		await run(event(ADMIN, 'chapter=71'));
+		expect(mockGeometryProgress).toHaveBeenCalledWith(expect.anything());
+		expect(mockGeometryProgress.mock.calls[0]).toHaveLength(1);
 	});
 });

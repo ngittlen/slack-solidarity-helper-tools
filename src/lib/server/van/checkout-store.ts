@@ -5,22 +5,27 @@
 // handlers because all three endpoints need the same load-decide-write shape,
 // and three copies of it would eventually disagree about one of the checks.
 //
-// The collision guarantee is NOT here. It is the partial unique index on
-// van_turf_checkouts (map_route_id) WHERE released_at IS NULL AND completed_at
-// IS NULL. `canClaim` is the friendly layer that refuses with a reason a
-// volunteer can act on; the index is what makes two simultaneous clicks
-// resolve to exactly one winner even if the friendly layer is bypassed.
+// Neither guarantee a claim rests on is enforced in JavaScript. One turf to one
+// volunteer is the partial unique index on van_turf_checkouts (turf_id)
+// WHERE released_at IS NULL AND completed_at IS NULL. The per-volunteer cap is
+// the count subquery inside the INSERT in `claimTurf` — the index cannot
+// express it, since it constrains a set of rows rather than one. `canClaim` is
+// the friendly layer that refuses with a reason a volunteer can act on; both
+// storage-level checks are what make simultaneous clicks resolve correctly even
+// when the friendly layer is bypassed or raced.
 
-import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
+import { loadContactMarks, marksFor } from './contact-sync.js';
+import { sheetBlocksClaim, turfSnapshot } from '../../van/turf-view.js';
 import {
 	canClaim,
+	DEFAULT_MAX_CONCURRENT_CLAIMS,
 	type ClaimOptions,
 	type ClaimSnapshot,
-	type TurfSnapshot,
 } from '../../van/checkout.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -29,7 +34,69 @@ export type ClaimResult =
 	| { ok: true; expiresAt: string; printedListNumber: string }
 	| { ok: false; status: 404 | 409; message: string };
 
-export type ReleaseResult = { ok: true } | { ok: false; status: 404 | 409; message: string };
+export type ReleaseResult = { ok: true } | { ok: false; status: 400 | 404 | 409; message: string };
+
+/** The last time a route was marked walked, and its % walked: typed from
+ *  MiniVAN on older rows, derived from the uncontacted count since (null until
+ *  contact-sync has derived it, and for good on a turf with no count). */
+export interface WalkReport {
+	percent: number | null;
+	at: string;
+	/** No scheduled contact sync has caught up since this completion, so the
+	 *  uncontacted count does not include its doors yet (contact-sync.ts,
+	 *  `countedThrough`). Keeps a turf with a count out of the pool meanwhile. */
+	awaitingCount: boolean;
+}
+
+/**
+ * The latest walk report for each route, from completed checkouts.
+ *
+ * Keyed by route id, which is what makes it "trusted until the next cut": a
+ * re-cut issues new route ids, and the new routes start with no report.
+ */
+export async function latestWalkReports(
+	db: Db,
+	turfIds: readonly number[],
+): Promise<Map<number, WalkReport>> {
+	const reports = new Map<number, WalkReport>();
+	if (turfIds.length === 0) return reports;
+	// Per campaign: each pulls its own ContactHistory, so whether a completion
+	// is in the count depends on how far its OWN campaign has read.
+	const marks = await loadContactMarks(db);
+	for (const batch of chunked([...new Set(turfIds)])) {
+		const rows = await db
+			.select({
+				turfId: vanTurfCheckouts.turfId,
+				campaignId: vanTurfs.campaignId,
+				percent: vanTurfCheckouts.reportedPercent,
+				at: vanTurfCheckouts.completedAt,
+			})
+			.from(vanTurfCheckouts)
+			.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
+			.where(
+				and(
+					inArray(vanTurfCheckouts.turfId, batch),
+					// Not filtered on reportedPercent: the latest completion is the
+					// report even before its % is known. Skipping it would surface an
+					// older completion's figure — a stale 100% that locks the turf.
+					isNotNull(vanTurfCheckouts.completedAt),
+				),
+			)
+			.orderBy(desc(vanTurfCheckouts.completedAt));
+		for (const row of rows) {
+			// Newest first, so the first row per route is the one that counts.
+			if (!reports.has(row.turfId) && row.at !== null) {
+				const { countedThrough } = marksFor(marks, row.campaignId);
+				reports.set(row.turfId, {
+					percent: row.percent,
+					at: row.at,
+					awaitingCount: countedThrough === null || row.at >= countedThrough,
+				});
+			}
+		}
+	}
+	return reports;
+}
 
 /** The claims `canClaim` needs to judge this request.
  *
@@ -45,7 +112,7 @@ export type ReleaseResult = { ok: true } | { ok: false; status: 404 | 409; messa
  *  for no benefit. */
 async function relevantClaims(
 	db: Db,
-	mapRouteId: number,
+	turfId: number,
 	slackUserId: string,
 ): Promise<ClaimSnapshot[]> {
 	const rows = await db
@@ -55,14 +122,11 @@ async function relevantClaims(
 			and(
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
-				or(
-					eq(vanTurfCheckouts.mapRouteId, mapRouteId),
-					eq(vanTurfCheckouts.slackUserId, slackUserId),
-				),
+				or(eq(vanTurfCheckouts.turfId, turfId), eq(vanTurfCheckouts.slackUserId, slackUserId)),
 			),
 		);
 	return rows.map((r) => ({
-		mapRouteId: r.mapRouteId,
+		turfId: r.turfId,
 		slackUserId: r.slackUserId,
 		slackUserName: r.slackUserName,
 		claimedAt: r.claimedAt,
@@ -72,33 +136,83 @@ async function relevantClaims(
 	}));
 }
 
-/** Claim `mapRouteId` for `session`. */
+/** Claim `turfId` for `session`. */
 export async function claimTurf(
 	db: Db,
 	input: {
-		mapRouteId: number;
+		turfId: number;
 		slackUserId: string;
 		slackUserName: string;
 		now: Date;
 		options?: ClaimOptions;
+		/** A live look at the campaign's Packet Tracker: who it says has this
+		 *  turf, null for nobody, undefined for "could not tell". See
+		 *  packet-tracker-live.ts. Omitted, the last sync's record stands. */
+		sheetCheck?: (turf: {
+			turfId: number;
+			regionName: string;
+			printedListNumber: string | null;
+		}) => Promise<string | null | undefined>;
 	},
 ): Promise<ClaimResult> {
-	const { mapRouteId, slackUserId, slackUserName, now } = input;
+	const { turfId, slackUserId, slackUserName, now } = input;
 
-	const [row] = await db.select().from(vanTurfs).where(eq(vanTurfs.mapRouteId, mapRouteId));
-	if (!row) return { ok: false, status: 404, message: 'That turf no longer exists.' };
+	const [found] = await db
+		.select({ turf: vanTurfs, campaignEnabled: vanCampaigns.enabled })
+		.from(vanTurfs)
+		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
+		.where(eq(vanTurfs.turfId, turfId));
+	if (!found) return { ok: false, status: 404, message: 'That turf no longer exists.' };
+	// A disabled campaign's turf is hidden from every list, so this is a page
+	// left open from before it was disabled. Its claims in progress carry on;
+	// new ones are refused.
+	if (!found.campaignEnabled) {
+		return {
+			ok: false,
+			status: 409,
+			message: 'That turf is no longer being handed out. Refresh the page for current turf.',
+		};
+	}
+	const row = found.turf;
 
-	const snapshot: TurfSnapshot = {
-		mapRouteId: row.mapRouteId,
-		printedListNumber: row.printedListNumber,
-		retiredAt: row.retiredAt,
-		vanDistributedTo: row.vanDistributedTo,
-		doorCount: row.doorCount,
-	};
+	// The same snapshot the page judged claimability from, so the server never
+	// refuses a turf the page offered (or hands out one it showed as done).
+	const snapshot = turfSnapshot(row, now, {
+		walkReports: await latestWalkReports(db, [turfId]),
+		vanAssignmentTtlHours: input.options?.vanAssignmentTtlHours,
+	});
 
-	const claims = await relevantClaims(db, mapRouteId, slackUserId);
-	const decision = canClaim(snapshot, claims, slackUserId, now, input.options ?? {});
+	const options = input.options ?? {};
+	const claims = await relevantClaims(db, turfId, slackUserId);
+	const decision = canClaim(snapshot, claims, slackUserId, now, options);
 	if (!decision.ok) return { ok: false, status: 409, message: decision.message };
+
+	// The tracker double-check, only once everything else says yes: it is a
+	// round trip to Google, and a claim refused for another reason should not
+	// wait on one. The sync reads the tracker every half hour; an organizer
+	// may have written this turf down since. Skipped outright when doors are
+	// known to remain uncontacted — the sheet no longer blocks then.
+	if (input.sheetCheck && sheetBlocksClaim(row)) {
+		const assignedTo = await input.sheetCheck({
+			turfId,
+			regionName: row.regionName,
+			printedListNumber: row.printedListNumber,
+		});
+		if (assignedTo) {
+			const refused = canClaim(
+				{ ...snapshot, vanDistributedTo: assignedTo },
+				claims,
+				slackUserId,
+				now,
+				options,
+			);
+			if (!refused.ok) return { ok: false, status: 409, message: refused.message };
+		}
+	}
+
+	// Same default canClaim destructures, so the SQL below caps at the number
+	// the volunteer was just told about rather than a second opinion.
+	const { maxConcurrentClaims = DEFAULT_MAX_CONCURRENT_CLAIMS } = options;
 
 	// Clear a lapsed claim before inserting over it.
 	//
@@ -124,13 +238,13 @@ export async function claimTurf(
 	// and every writer here uses toISOString(). A corrupt timestamp is not
 	// cleared and is left to sweepExpiredClaims, which parses in JS.
 	const nowIso = now.toISOString();
-	if (claims.some((c) => c.mapRouteId === mapRouteId)) {
+	if (claims.some((c) => c.turfId === turfId)) {
 		await db
 			.update(vanTurfCheckouts)
 			.set({ releasedAt: nowIso, releaseReason: 'expired' })
 			.where(
 				and(
-					eq(vanTurfCheckouts.mapRouteId, mapRouteId),
+					eq(vanTurfCheckouts.turfId, turfId),
 					isNull(vanTurfCheckouts.releasedAt),
 					isNull(vanTurfCheckouts.completedAt),
 					lte(vanTurfCheckouts.expiresAt, nowIso),
@@ -138,42 +252,62 @@ export async function claimTurf(
 			);
 	}
 
-	// onConflictDoNothing + returning() is the race resolver: the partial
-	// unique index rejects the second of two simultaneous inserts, and the
+	// Both race resolvers, in one statement.
+	//
+	// ON CONFLICT DO NOTHING is the turf-level one: the partial unique index
+	// rejects the second of two simultaneous inserts on the same route, and the
 	// loser gets zero rows back rather than an exception to parse.
-	const inserted = await db
-		.insert(vanTurfCheckouts)
-		.values({
-			mapRouteId,
-			slackUserId,
-			slackUserName,
-			claimedAt: nowIso,
-			expiresAt: decision.expiresAt,
-			// VAN's door count as the volunteer takes the turf on. The baseline
-			// half of the post-completion check (Story 5.6): van_turfs holds one
-			// number and it moves, so by the time the completion is verified the
-			// count they started against is gone unless it is captured here.
-			claimDoorCount: row.doorCount,
-			// What we are about to tell them, recorded at the moment we tell them.
-			// van_turfs.printed_list_number is what VAN says today; this is what
-			// the volunteer has in their hand, and Story 4.5's reconciliation is
-			// the comparison of the two. Without it a regenerated printed list is
-			// undetectable and the volunteer finds out by standing on a street
-			// with a number MiniVAN will not load.
-			issuedListNumber: row.printedListNumber,
-		})
-		.onConflictDoNothing()
-		.returning({ id: vanTurfCheckouts.id });
+	//
+	// The count subquery is the volunteer-level one. `canClaim` read the claims
+	// a moment ago and is a check-then-act: a volunteer one under the cap who
+	// fires two claims on DIFFERENT turf passes both checks, and both inserts
+	// land, because the index constrains one route and says nothing about how
+	// many a person holds. Evaluating the count inside the INSERT makes SQLite
+	// settle it — the two statements serialise, and the second sees the first's
+	// row. Repeating that is how one person takes a neighbourhood, which is the
+	// whole reason the cap exists.
+	//
+	// The `expires_at >` predicate mirrors `isActive`, so a lapsed claim the
+	// nightly sweep has not stamped yet does not count against the holder here
+	// any more than it does on the page.
+	//
+	// The column list is written out because SELECT ... WHERE is what carries
+	// the condition; SQLite needs that WHERE for a following ON CONFLICT to
+	// parse at all, which is convenient rather than a constraint here.
+	const inserted = (await db.all(sql`
+		INSERT INTO van_turf_checkouts
+			(turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+			 claim_door_count, issued_list_number)
+		SELECT ${turfId}, ${slackUserId}, ${slackUserName}, ${nowIso}, ${decision.expiresAt},
+		       ${row.doorCount}, ${row.printedListNumber}
+		WHERE (
+			SELECT count(*) FROM van_turf_checkouts
+			WHERE slack_user_id = ${slackUserId}
+			  AND released_at IS NULL
+			  AND completed_at IS NULL
+			  AND expires_at > ${nowIso}
+		) < ${maxConcurrentClaims}
+		ON CONFLICT DO NOTHING
+		RETURNING id
+	`)) as { id: number }[];
 
 	if (inserted.length === 0) {
+		// Zero rows means one of two refusals and the statement cannot say
+		// which, so re-derive it from current state. One extra read, only ever
+		// on the losing path, and the wording comes from the same `canClaim`
+		// the volunteer would have seen a moment earlier.
+		const fresh = await relevantClaims(db, turfId, slackUserId);
+		const reason = canClaim(snapshot, fresh, slackUserId, now, options);
 		return {
 			ok: false,
 			status: 409,
-			message: 'Someone claimed this turf a moment before you did. Try another nearby.',
+			message: reason.ok
+				? 'Someone claimed this turf a moment before you did. Try another nearby.'
+				: reason.message,
 		};
 	}
 
-	console.log(`[van] claim: user=${slackUserId} route=${mapRouteId} expires=${decision.expiresAt}`);
+	console.log(`[van] claim: user=${slackUserId} route=${turfId} expires=${decision.expiresAt}`);
 	// The list number is issued here and nowhere else — see the note on
 	// TurfView.printedListNumber. `canClaim` has already refused a turf without
 	// one, so this is non-null by construction.
@@ -186,17 +320,31 @@ export async function claimTurf(
 
 /** Give turf back, or mark it walked. `reason` distinguishes the two in the
  *  ledger; 'complete' stamps completedAt instead of releasedAt so the row
- *  records that the doors were actually knocked. */
+ *  records that the doors were actually knocked.
+ *
+ *  Marking walked REQUIRES `syncedMinivan`: the volunteer saying they synced,
+ *  because the progress figure is now derived from VAN's ContactHistory
+ *  (contact-sync.ts stamps `reportedPercent` afterwards), and doors that never
+ *  left the phone would read as unwalked. Handing it back unwalked does not ask. */
 export async function endClaim(
 	db: Db,
 	input: {
-		mapRouteId: number;
+		turfId: number;
 		slackUserId: string;
 		now: Date;
 		kind: 'release' | 'complete';
+		/** Must be true when `kind` is 'complete'; ignored otherwise. */
+		syncedMinivan?: boolean;
 	},
 ): Promise<ReleaseResult> {
-	const { mapRouteId, slackUserId, now, kind } = input;
+	const { turfId, slackUserId, now, kind } = input;
+	if (kind === 'complete' && input.syncedMinivan !== true) {
+		return {
+			ok: false,
+			status: 400,
+			message: 'Sync MiniVAN first, then tick "I synced MiniVAN".',
+		};
+	}
 	const stamp =
 		kind === 'complete'
 			? { completedAt: now.toISOString() }
@@ -209,7 +357,7 @@ export async function endClaim(
 		.set(stamp)
 		.where(
 			and(
-				eq(vanTurfCheckouts.mapRouteId, mapRouteId),
+				eq(vanTurfCheckouts.turfId, turfId),
 				eq(vanTurfCheckouts.slackUserId, slackUserId),
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
@@ -236,12 +384,20 @@ export async function endClaim(
 	// helper never throws, so a completion that is already written cannot fail
 	// on its bookkeeping.
 	if (kind === 'complete') {
+		// Recorded for every campaign. Whether a campaign's wants are ever SENT
+		// is the sweep's call (van-sync), so a campaign that must not be re-cut
+		// only ever accumulates wants nobody acts on.
 		const [turf] = await db
-			.select({ folderId: vanTurfs.folderId, mapRegionId: vanTurfs.mapRegionId })
+			.select({
+				campaignId: vanTurfs.campaignId,
+				folderId: vanTurfs.folderId,
+				mapRegionId: vanTurfs.mapRegionId,
+			})
 			.from(vanTurfs)
-			.where(eq(vanTurfs.mapRouteId, mapRouteId));
+			.where(eq(vanTurfs.turfId, turfId));
 		if (turf) {
 			await requestRegionRefresh(db, {
+				campaignId: turf.campaignId,
 				folderId: turf.folderId,
 				mapRegionId: turf.mapRegionId,
 				now,
@@ -249,7 +405,7 @@ export async function endClaim(
 		}
 	}
 
-	console.log(`[van] ${kind}: user=${slackUserId} route=${mapRouteId}`);
+	console.log(`[van] ${kind}: user=${slackUserId} route=${turfId}`);
 	return { ok: true };
 }
 

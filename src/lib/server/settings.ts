@@ -10,6 +10,8 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 
+import { normaliseSheetKey, orderSheetTargets, type SheetTarget } from '../van/sheet-routing.js';
+
 import {
 	chapterChannelMap,
 	coalitionChannelMap,
@@ -17,15 +19,16 @@ import {
 	slackModerators,
 	reportExcludedChapters,
 	zipExcludedChapters,
+	turfHiddenChapters,
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
 	vanChapterFolders,
 	vanBlockedUsers,
+	vanSheetTargets,
 } from './schema.js';
 import {
 	SOLIDARITY_CHAPTER_CHANNEL_MAP,
-	SLACK_ALLOWED_USER_IDS,
 	REPORT_EXCLUDED_CHAPTER_IDS,
 	SLACK_TRACKING_CHANNEL_ID,
 	SLACK_GROWTH_REPORT_CHANNEL_ID,
@@ -46,11 +49,13 @@ export {
 	slackModerators,
 	reportExcludedChapters,
 	zipExcludedChapters,
+	turfHiddenChapters,
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
 	vanChapterFolders,
 	vanBlockedUsers,
+	vanSheetTargets,
 };
 
 export type {
@@ -106,6 +111,9 @@ export interface Settings {
 	 *  report, the other decides where a zip resolves, and a superseded chapter
 	 *  routinely needs the second without the first. DB-only, no env fallback. */
 	zipExcludedChapterIds: Set<number>;
+	/** Chapters left out of the /turfs chapter pickers (turf_hidden_chapters).
+	 *  Their Slack channel mapping is untouched. DB-only; empty shows them all. */
+	turfHiddenChapterIds: Set<number>;
 	/** Channels the bot should NOT post its channel welcome message in after
 	 *  inviting a new member. Absent = welcome on (the default). DB-only. */
 	welcomeDisabledChannelIds: Set<string>;
@@ -133,6 +141,9 @@ export interface Settings {
 	mobilizeContactName: string;
 	mobilizeContactEmail: string;
 	mobilizeContactPhone: string;
+	/** Partner Mobilize events carrying this tag are imported into Solidarity.
+	 *  DB-only, no env fallback; '' means the import is off. */
+	mobilizeImportTag: string;
 	slackGrowthReportRankingAlpha: number | undefined;
 	/** Shown after each page's own name in the browser tab. DB-only with a code
 	 *  default; '' means "use DEFAULT_SITE_NAME". */
@@ -163,6 +174,12 @@ export interface Settings {
 	vanTurfClaimTtlHours: number;
 	/** Turfs one volunteer may hold at once. */
 	vanTurfMaxConcurrentClaims: number;
+	/** Hours a turf handed out in VAN stays out of the pool. Resolved and
+	 *  clamped like the claim TTL. */
+	vanAssignmentTtlHours: number;
+	/** Where the signed-out /turfs page's "Join our chat" button goes. DB-only;
+	 *  '' means "no button". */
+	publicJoinUrl: string;
 }
 
 export interface Editor {
@@ -184,6 +201,8 @@ export type AppConfigPatch = Partial<{
 	mobilizeContactName: string;
 	mobilizeContactEmail: string;
 	mobilizeContactPhone: string;
+	/** Tag selecting partner Mobilize events to import. '' turns it off. */
+	mobilizeImportTag: string;
 	slackGrowthReportRankingAlpha: number;
 	siteName: string;
 	countdownLabel: string;
@@ -193,10 +212,13 @@ export type AppConfigPatch = Partial<{
 	doorTickerColumnsPerSecond: number;
 	vanTurfClaimTtlHours: number;
 	vanTurfMaxConcurrentClaims: number;
+	vanAssignmentTtlHours: number;
 	/** Theme overrides, serialised. One JSON column rather than ~60 colour
 	 *  columns — see the comment on app_config.themeTokens in schema.ts.
 	 *  Validated by themeTokensField before it ever reaches here. */
 	themeTokens: string;
+	/** "Join our chat" link on the signed-out /turfs page. '' hides it. */
+	publicJoinUrl: string;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -221,6 +243,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		appConfigRows,
 		infoCommandRows,
 		moderatorRows,
+		turfHiddenRows,
 	] = await Promise.all([
 		db.select().from(chapterChannelMap),
 		db.select().from(coalitionChannelMap),
@@ -233,6 +256,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		// Last, so the read-order-sensitive tests' offsets for the reads above
 		// stay put.
 		db.select().from(slackModerators),
+		// After the moderators, for the same reason.
+		db.select().from(turfHiddenChapters),
 	]);
 
 	const chapterChannelMapField: ChapterEntry[] =
@@ -247,10 +272,11 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		userListId: r.userListId,
 	}));
 
-	const allowedSlackUserIds: Set<string> =
-		allowedRows.length > 0
-			? new Set(allowedRows.map((r) => r.slackUserId))
-			: SLACK_ALLOWED_USER_IDS;
+	// The table is the only source of admin access — no env fallback. An empty
+	// read means nobody is an admin, which is the truth rather than a reason to
+	// reinstate a list from the environment; SLACK_SUPERUSER_ID is the way back
+	// in, and deleteAllowedUser refuses to empty the table in the first place.
+	const allowedSlackUserIds: Set<string> = new Set(allowedRows.map((r) => r.slackUserId));
 
 	const reportExcludedChapterIds: Set<number> =
 		excludedRows.length > 0
@@ -288,6 +314,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	const mobilizeContactName = cfg?.mobilizeContactName ?? MOBILIZE_CONTACT_NAME;
 	const mobilizeContactEmail = cfg?.mobilizeContactEmail ?? MOBILIZE_CONTACT_EMAIL;
 	const mobilizeContactPhone = cfg?.mobilizeContactPhone ?? MOBILIZE_CONTACT_PHONE;
+	// No env fallback: whether to import is an organizer's call, made here.
+	const mobilizeImportTag = cfg?.mobilizeImportTag?.trim() ?? '';
 	const slackGrowthReportRankingAlpha =
 		cfg?.slackGrowthReportRankingAlpha ?? SLACK_GROWTH_REPORT_RANKING_ALPHA;
 	const siteName = cfg?.siteName ?? '';
@@ -304,6 +332,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	const claimOptions = resolveClaimOptions({
 		ttlHours: cfg?.vanTurfClaimTtlHours,
 		maxConcurrentClaims: cfg?.vanTurfMaxConcurrentClaims,
+		vanAssignmentTtlHours: cfg?.vanAssignmentTtlHours,
 	});
 
 	// Sorted here rather than in SQL so the order is part of the contract the
@@ -319,6 +348,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		moderatorSlackUserIds: new Set(moderatorRows.map((r) => r.slackUserId)),
 		reportExcludedChapterIds,
 		zipExcludedChapterIds,
+		turfHiddenChapterIds: new Set(turfHiddenRows.map((r) => r.chapterId)),
 		welcomeDisabledChannelIds,
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
@@ -328,6 +358,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
+		mobilizeImportTag,
 		slackGrowthReportRankingAlpha,
 		siteName,
 		countdownLabel,
@@ -338,6 +369,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		doorTickerColumnsPerSecond,
 		vanTurfClaimTtlHours: claimOptions.ttlHours,
 		vanTurfMaxConcurrentClaims: claimOptions.maxConcurrentClaims,
+		vanAssignmentTtlHours: claimOptions.vanAssignmentTtlHours,
+		publicJoinUrl: cfg?.publicJoinUrl?.trim() ?? '',
 	};
 }
 
@@ -379,6 +412,83 @@ export async function setChannelWelcomeFlag(
 // onConflictDoUpdate, stamps the three audit columns, and emits one [settings]
 // log line (Constitution Principle V). Errors bubble — the calling HTTP endpoint
 // (NAV-5+) owns failure logging because it has the request context.
+
+/** A stored chapter name brought up to date with Solidarity's. */
+export interface ChapterRename {
+	chapterId: number;
+	/** The stored name it replaced (the first, when rows disagreed). */
+	from: string;
+	to: string;
+}
+
+/**
+ * Bring the chapter names stored beside chapter ids up to date with
+ * Solidarity's live list.
+ *
+ * chapter_channel_map and van_chapter_folders each keep the name a chapter had
+ * when its row was saved, and Solidarity renames chapters: "Berrien for Abdul"
+ * became "Southwest Michigan for Abdul", and /turfs — which lists chapters from
+ * the stored map, not from Solidarity — went on offering the old name while
+ * /settings, which labels from the live list, showed the new one. Called from
+ * the /settings load, which already has the live list in hand.
+ *
+ * Only rows whose name differs are written, so a run with nothing to change is
+ * two reads. A chapter missing from the live list (deleted, or the list came
+ * back partial) is left alone rather than blanked. Not an edit of the mapping,
+ * so the audit columns keep the admin who last changed it; the rename is
+ * logged instead.
+ */
+export async function refreshChapterNames(
+	db: Database,
+	live: ReadonlyArray<{ id: number; name: string }>,
+): Promise<ChapterRename[]> {
+	const liveName = new Map<number, string>();
+	for (const chapter of live) {
+		const name = chapter.name.trim();
+		if (name) liveName.set(chapter.id, name);
+	}
+
+	const [mapRows, folderRows] = await Promise.all([
+		db
+			.select({ chapterId: chapterChannelMap.chapterId, name: chapterChannelMap.name })
+			.from(chapterChannelMap),
+		db
+			.select({ chapterId: vanChapterFolders.chapterId, name: vanChapterFolders.chapterName })
+			.from(vanChapterFolders),
+	]);
+
+	const renames = new Map<number, ChapterRename>();
+	for (const row of [...mapRows, ...folderRows]) {
+		const to = liveName.get(row.chapterId);
+		if (to && row.name !== to && !renames.has(row.chapterId)) {
+			renames.set(row.chapterId, { chapterId: row.chapterId, from: row.name, to });
+		}
+	}
+	if (renames.size === 0) return [];
+
+	const statements = [...renames.values()].flatMap(({ chapterId, to }) => [
+		db
+			.update(chapterChannelMap)
+			.set({ name: to })
+			.where(
+				and(eq(chapterChannelMap.chapterId, chapterId), sql`${chapterChannelMap.name} <> ${to}`),
+			),
+		db
+			.update(vanChapterFolders)
+			.set({ chapterName: to })
+			.where(
+				and(
+					eq(vanChapterFolders.chapterId, chapterId),
+					sql`${vanChapterFolders.chapterName} <> ${to}`,
+				),
+			),
+	]);
+	await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
+	for (const { chapterId, from, to } of renames.values()) {
+		console.log(`[settings] renamed chapter ${chapterId} "${from}" → "${to}" to match Solidarity`);
+	}
+	return [...renames.values()];
+}
 
 /** Upsert one channel across many chapters in a single statement — the
  *  /settings multi-editor's "add a chip while N chapters are selected". */
@@ -519,43 +629,6 @@ export async function deleteCoalitionEntry(
 	);
 }
 
-/**
- * One-time copy of the env fallback into allowed_slack_users — same rationale
- * and concurrency posture as ensureChapterChannelMapSeeded above: the table
- * shadows SLACK_ALLOWED_USER_IDS entirely once it has any row, so the first
- * interactive edit must inherit the env list instead of silently dropping
- * every admin except the one being edited. `displayNames` (from the cached
- * Slack user list, when available) makes seed rows human-readable; ids without
- * a known name fall back to the raw id.
- */
-export async function ensureAllowedUsersSeeded(
-	db: Database,
-	displayNames?: ReadonlyMap<string, string>,
-): Promise<void> {
-	const existing = await db
-		.select({ slackUserId: allowedSlackUsers.slackUserId })
-		.from(allowedSlackUsers)
-		.limit(1);
-	if (existing.length > 0 || SLACK_ALLOWED_USER_IDS.size === 0) return;
-
-	const lastEditedAt = new Date().toISOString();
-	await db
-		.insert(allowedSlackUsers)
-		.values(
-			[...SLACK_ALLOWED_USER_IDS].map((id) => ({
-				slackUserId: id,
-				displayName: displayNames?.get(id) ?? id,
-				lastEditedBy: SYSTEM_EDITOR.id,
-				lastEditedByName: SYSTEM_EDITOR.name,
-				lastEditedAt,
-			})),
-		)
-		.onConflictDoNothing();
-	console.log(
-		`[settings] seeded allowed_slack_users with ${SLACK_ALLOWED_USER_IDS.size} env entries by ${SYSTEM_EDITOR.id} (${SYSTEM_EDITOR.name})`,
-	);
-}
-
 export async function saveAllowedUser(
 	db: Database,
 	entry: { slackUserId: string; displayName: string },
@@ -586,15 +659,53 @@ export async function saveAllowedUser(
 	);
 }
 
+/** Why a removal did not happen, so the caller can say which. */
+export type DeleteAllowedUserResult = 'deleted' | 'not-found' | 'last-admin';
+
+/**
+ * Remove an admin, refusing to remove the last one.
+ *
+ * allowed_slack_users is the only source of admin access, so an empty table is
+ * a workspace with no one who can reach /settings to refill it — recoverable
+ * only through SLACK_SUPERUSER_ID, which a deployment need not have set. The
+ * count is evaluated inside the DELETE rather than read first, so two admins
+ * removing the other two rows at the same moment cannot both see a safe count
+ * and both proceed.
+ */
 export async function deleteAllowedUser(
 	db: Database,
 	slackUserId: string,
 	editor: Editor,
-): Promise<void> {
-	await db.delete(allowedSlackUsers).where(eq(allowedSlackUsers.slackUserId, slackUserId));
-	console.log(
-		`[settings] deleted allowed_slack_users slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`,
+): Promise<DeleteAllowedUserResult> {
+	const removed = await db
+		.delete(allowedSlackUsers)
+		.where(
+			and(
+				eq(allowedSlackUsers.slackUserId, slackUserId),
+				sql`(select count(*) from ${allowedSlackUsers}) > 1`,
+			),
+		)
+		.returning({ slackUserId: allowedSlackUsers.slackUserId });
+
+	if (removed.length > 0) {
+		console.log(
+			`[settings] deleted allowed_slack_users slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`,
+		);
+		return 'deleted';
+	}
+
+	// Nothing was removed: either the guard held, or the row was already gone.
+	// One extra read only on this path, so the caller can tell the admin which.
+	const survivors = await db
+		.select({ slackUserId: allowedSlackUsers.slackUserId })
+		.from(allowedSlackUsers)
+		.where(eq(allowedSlackUsers.slackUserId, slackUserId));
+	if (survivors.length === 0) return 'not-found';
+
+	console.warn(
+		`[settings] refused to remove the last admin slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`,
 	);
+	return 'last-admin';
 }
 
 export async function saveModerator(
@@ -762,6 +873,49 @@ export async function deleteZipExcludedChapter(
 	);
 }
 
+/**
+ * Hide a chapter from the /turfs chapter pickers. Its chapter_channel_map rows —
+ * the Slack channels its new members join, and its place in the reports — are
+ * untouched.
+ */
+export async function saveTurfHiddenChapter(
+	db: Database,
+	chapterId: number,
+	editor: Editor,
+): Promise<void> {
+	const row = {
+		chapterId,
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt: new Date().toISOString(),
+	};
+	await db
+		.insert(turfHiddenChapters)
+		.values(row)
+		.onConflictDoUpdate({
+			target: turfHiddenChapters.chapterId,
+			set: {
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	console.log(
+		`[settings] saved turf_hidden_chapters chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function deleteTurfHiddenChapter(
+	db: Database,
+	chapterId: number,
+	editor: Editor,
+): Promise<void> {
+	await db.delete(turfHiddenChapters).where(eq(turfHiddenChapters.chapterId, chapterId));
+	console.log(
+		`[settings] deleted turf_hidden_chapters chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
 // Write path — app-config singleton. Set-only contract: an undefined or null
 // patch value is treated as ABSENT (kept), not as a NULL write. Unspecified
 // fields are preserved across the upsert because they don't appear in the `set`
@@ -777,6 +931,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'mobilizeContactName',
 	'mobilizeContactEmail',
 	'mobilizeContactPhone',
+	'mobilizeImportTag',
 	'slackGrowthReportRankingAlpha',
 	'siteName',
 	'countdownLabel',
@@ -786,7 +941,9 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'doorTickerColumnsPerSecond',
 	'vanTurfClaimTtlHours',
 	'vanTurfMaxConcurrentClaims',
+	'vanAssignmentTtlHours',
 	'themeTokens',
+	'publicJoinUrl',
 ]);
 
 export async function saveAppConfig(
@@ -802,7 +959,7 @@ export async function saveAppConfig(
 
 	// null and undefined both mean "leave as-is" — strip both before composing
 	// the values payload and the on-conflict set clause.
-	const definedFields: Record<string, string | number> = {};
+	const definedFields: Record<string, string | number | boolean> = {};
 	for (const key of APP_CONFIG_ALLOWED_KEYS) {
 		const v = patch[key];
 		if (v !== undefined && v !== null) {
@@ -818,7 +975,7 @@ export async function saveAppConfig(
 		lastEditedByName: editor.name,
 		lastEditedAt,
 	};
-	const set: Record<string, string | number> = {
+	const set: Record<string, string | number | boolean> = {
 		...definedFields,
 		lastEditedBy: editor.id,
 		lastEditedByName: editor.name,
@@ -937,11 +1094,18 @@ export interface VanBlockedUserEntry {
 	lastEditedAt: string;
 }
 
-/** Chapter → VAN folder mapping, grouped by chapter and sorted by name so
- *  /settings renders stably. This is an INPUT to the catalog sync: a chapter
- *  absent here has no turf, and the sync is a no-op until an admin fills it in. */
-export async function loadVanChapterFolders(db: Database): Promise<VanChapterFolderEntry[]> {
-	const rows = await db.select().from(vanChapterFolders);
+/** One campaign's chapter → VAN folder mapping, grouped by chapter and sorted
+ *  by name so /settings renders stably. This is an INPUT to that campaign's
+ *  catalog sync: a chapter absent here has no turf from it, and the sync is a
+ *  no-op until an admin fills it in. */
+export async function loadVanChapterFolders(
+	db: Database,
+	campaignId: number,
+): Promise<VanChapterFolderEntry[]> {
+	const rows = await db
+		.select()
+		.from(vanChapterFolders)
+		.where(eq(vanChapterFolders.campaignId, campaignId));
 	const byChapter = new Map<number, VanChapterFolderEntry>();
 	for (const row of rows) {
 		const existing = byChapter.get(row.chapterId);
@@ -992,16 +1156,32 @@ export async function loadVanBlockedUsers(db: Database): Promise<VanBlockedUserE
  */
 export async function saveVanChapterFolders(
 	db: Database,
-	entry: { chapterId: number; chapterName: string; folderIds: readonly number[] },
+	entry: {
+		campaignId: number;
+		chapterId: number;
+		chapterName: string;
+		folderIds: readonly number[];
+	},
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
-	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, entry.chapterId));
+	// Scoped to the campaign as well as the chapter: the same chapter can have
+	// folders in several campaigns, and saving one campaign's list must not
+	// delete the others.
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(
+				eq(vanChapterFolders.campaignId, entry.campaignId),
+				eq(vanChapterFolders.chapterId, entry.chapterId),
+			),
+		);
 
 	const unique = [...new Set(entry.folderIds)];
 	if (unique.length > 0) {
 		await db.insert(vanChapterFolders).values(
 			unique.map((folderId) => ({
+				campaignId: entry.campaignId,
 				chapterId: entry.chapterId,
 				folderId,
 				chapterName: entry.chapterName,
@@ -1016,14 +1196,177 @@ export async function saveVanChapterFolders(
 	);
 }
 
+/**
+ * Replace one FOLDER's chapter list wholesale — the same table, edited from the
+ * other side.
+ *
+ * `/turfs/folder-map` asks "who should see this folder", because that is the
+ * question you can answer while looking at where a folder's turf actually is;
+ * /settings asks "which folders does this chapter get". Both write
+ * van_chapter_folders, and scoping the delete to one folder is what lets them
+ * coexist: editing folder 68299 cannot disturb a chapter's other folders.
+ */
+export async function saveVanFolderChapters(
+	db: Database,
+	entry: {
+		campaignId: number;
+		folderId: number;
+		chapters: ReadonlyArray<{ chapterId: number; chapterName: string }>;
+	},
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	// A folder id names a folder only within its campaign.
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(
+				eq(vanChapterFolders.campaignId, entry.campaignId),
+				eq(vanChapterFolders.folderId, entry.folderId),
+			),
+		);
+
+	// First spelling of a chapter id wins, so a duplicated pick cannot violate
+	// the (chapter_id, folder_id) primary key.
+	const unique = new Map(entry.chapters.map((c) => [c.chapterId, c.chapterName]));
+	if (unique.size > 0) {
+		await db.insert(vanChapterFolders).values(
+			[...unique].map(([chapterId, chapterName]) => ({
+				campaignId: entry.campaignId,
+				chapterId,
+				folderId: entry.folderId,
+				chapterName,
+				lastEditedBy: editor.id,
+				lastEditedByName: editor.name,
+				lastEditedAt,
+			})),
+		);
+	}
+	console.log(
+		`[van] saved van_chapter_folders folder_id=${entry.folderId} chapters=${[...unique.keys()].join(',') || '(none)'} by ${editor.id} (${editor.name})`,
+	);
+}
+
 export async function deleteVanChapterFolders(
 	db: Database,
+	campaignId: number,
 	chapterId: number,
 	editor: Editor,
 ): Promise<void> {
-	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, chapterId));
+	await db
+		.delete(vanChapterFolders)
+		.where(
+			and(eq(vanChapterFolders.campaignId, campaignId), eq(vanChapterFolders.chapterId, chapterId)),
+		);
 	console.log(
 		`[van] deleted van_chapter_folders chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+/**
+ * The spreadsheet routing rules, longest prefix first.
+ *
+ * Kept out of `loadSettings` for the same reason `loadVanChapterFolders` is:
+ * the sync reads this on every tick and `loadSettings` pulls nine tables for an
+ * admin page nobody visits often.
+ *
+ * Returned pre-ordered so callers cannot forget — `matchSheetTarget` does not
+ * sort, and an unordered list silently returns a shorter match over a longer
+ * one, which is a checkout row in the wrong campaign's spreadsheet.
+ */
+export async function loadVanSheetTargets(
+	db: Database,
+	campaignId: number,
+): Promise<SheetTarget[]> {
+	const rows = await db
+		.select()
+		.from(vanSheetTargets)
+		.where(eq(vanSheetTargets.campaignId, campaignId));
+	return orderSheetTargets(
+		rows.map((row) => ({
+			prefix: row.prefix,
+			prefixKey: row.prefixKey,
+			label: row.label,
+			spreadsheetId: row.spreadsheetId,
+		})),
+	);
+}
+
+/**
+ * Add or update one routing rule, keyed by its normalised prefix.
+ *
+ * The key is derived here rather than taken from the caller, so the uniqueness
+ * constraint and the matcher cannot disagree about what "the same rule" means:
+ * `R10C_Wayne` and `r10c.wayne` are one rule, and the second save edits the
+ * first rather than quietly shadowing it.
+ *
+ * `label` is the spreadsheet's name as Google reports it, resolved by the route
+ * — it is never typed. Because several rules may point at one spreadsheet, the
+ * label is written to every rule sharing that id, not just this one: two rules
+ * naming the same sheet differently would make a Slack alert about that sheet
+ * depend on which rule happened to match first.
+ */
+export async function saveVanSheetTarget(
+	db: Database,
+	entry: { campaignId: number; prefix: string; label: string; spreadsheetId: string },
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	const prefixKey = normaliseSheetKey(entry.prefix);
+	const row = {
+		campaignId: entry.campaignId,
+		prefixKey,
+		prefix: entry.prefix.trim(),
+		label: entry.label.trim(),
+		spreadsheetId: entry.spreadsheetId.trim(),
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt,
+	};
+	await db
+		.insert(vanSheetTargets)
+		.values(row)
+		.onConflictDoUpdate({
+			target: [vanSheetTargets.campaignId, vanSheetTargets.prefixKey],
+			set: {
+				prefix: row.prefix,
+				label: row.label,
+				spreadsheetId: row.spreadsheetId,
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	// Keep every rule for this spreadsheet naming it the same way — in every
+	// campaign, since a spreadsheet is one document whoever routes to it. Also
+	// what backfills a label that fell back to the bare id because Google was
+	// unreachable the first time: re-saving any rule for that sheet fixes them
+	// all at once.
+	await db
+		.update(vanSheetTargets)
+		.set({ label: row.label })
+		.where(eq(vanSheetTargets.spreadsheetId, row.spreadsheetId));
+	// The spreadsheet id is not a secret, but it is the whole address of a
+	// campaign document — logged so a mis-routed row can be traced to the edit
+	// that caused it.
+	console.log(
+		`[van] saved van_sheet_targets campaign=${row.campaignId} prefix=${row.prefix} sheet=${row.spreadsheetId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function deleteVanSheetTarget(
+	db: Database,
+	campaignId: number,
+	prefixKey: string,
+	editor: Editor,
+): Promise<void> {
+	await db
+		.delete(vanSheetTargets)
+		.where(
+			and(eq(vanSheetTargets.campaignId, campaignId), eq(vanSheetTargets.prefixKey, prefixKey)),
+		);
+	console.log(
+		`[van] deleted van_sheet_targets campaign=${campaignId} prefix_key=${prefixKey} by ${editor.id} (${editor.name})`,
 	);
 }
 

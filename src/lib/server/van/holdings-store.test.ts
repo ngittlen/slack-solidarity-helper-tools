@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import { loadCurrentHoldings, loadRecentCompletions } from './holdings-store.js';
+import { loadCurrentHoldings, loadHoldingsFor, loadRecentCompletions } from './holdings-store.js';
 import { currentHoldings, suspectCompletions } from '../../van/turf-holdings.js';
 
 // A real in-memory libsql applying the REAL migrations, as in
@@ -24,21 +24,29 @@ beforeEach(async () => {
 
 	// Several turfs, because the partial unique index allows only one ACTIVE
 	// claim per route — a fixture with three live claims needs three turfs.
-	for (const [id, chapter, chapterName, name] of [
-		[100, 71, 'Washtenaw County', 'Turf 01'],
-		[200, 71, 'Washtenaw County', 'Turf 02'],
-		[300, 72, 'Wayne County', 'Turf 03'],
+	for (const [id, folder, chapter, chapterName, name] of [
+		[100, 1, 71, 'Washtenaw County', 'Turf 01'],
+		[200, 1, 71, 'Washtenaw County', 'Turf 02'],
+		[300, 2, 72, 'Wayne County', 'Turf 03'],
 	] as const) {
 		await client.execute(
-			`INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
-			 VALUES (${id}, 1, 1, ${chapter}, '${chapterName}', 'Ann Arbor', '${name}', 250, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
+			`INSERT INTO van_turfs (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+			 VALUES (${id}, ${id}, 1, ${folder}, ${chapter}, '${chapterName}', 'Ann Arbor', '${name}', 250, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
 		);
 	}
+
+	// Chapter 71 sees folder 1, chapter 72 sees folder 2 — visibility comes from
+	// this mapping now, not from van_turfs.chapter_id (chapter-visibility.ts).
+	await client.execute(
+		`INSERT INTO van_chapter_folders (chapter_id, folder_id, chapter_name, last_edited_by, last_edited_by_name, last_edited_at)
+		 VALUES (71, 1, 'Washtenaw County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z'),
+		        (72, 2, 'Wayne County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z')`,
+	);
 });
 
 async function checkout(over: Record<string, string | number | null> = {}) {
 	const row = {
-		map_route_id: 100,
+		turf_id: 100,
 		slack_user_id: 'U_VOL',
 		slack_user_name: 'Dana',
 		claimed_at: iso(NOW.getTime() - 10 * HOUR),
@@ -52,20 +60,27 @@ async function checkout(over: Record<string, string | number | null> = {}) {
 	};
 	const q = (v: string | number | null) => (v === null ? 'NULL' : `'${v}'`);
 	await client.execute(
-		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, release_reason, confirmed_door_delta, expiry_warned_at)
-		 VALUES (${row.map_route_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}',
+		`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, completed_at, release_reason, confirmed_door_delta, expiry_warned_at)
+		 VALUES (${row.turf_id}, '${row.slack_user_id}', '${row.slack_user_name}', '${row.claimed_at}', '${row.expires_at}',
 		         ${q(row.released_at)}, ${q(row.completed_at)}, ${q(row.release_reason)}, ${q(row.confirmed_door_delta)}, ${q(row.expiry_warned_at)})`,
 	);
 }
 
 const allChapters = { chapterId: null };
 
+// Each test opens its own in-memory client. Closing it keeps one per test from
+// leaking for the life of the worker — which never shows up while this file is
+// run on its own.
+afterEach(() => {
+	client.close();
+});
+
 describe('loadCurrentHoldings', () => {
 	it('joins the turf and holder detail the board shows', async () => {
 		await checkout();
 		const [row] = await loadCurrentHoldings(db, allChapters);
 		expect(row).toMatchObject({
-			mapRouteId: 100,
+			turfId: 100,
 			turfName: 'Turf 01',
 			chapterName: 'Washtenaw County',
 			doorCount: 250,
@@ -77,7 +92,7 @@ describe('loadCurrentHoldings', () => {
 	// An organizer looking at a board is not the holder.
 	it('never selects the MiniVAN list number', async () => {
 		await client.execute(
-			`UPDATE van_turfs SET printed_list_number = '35536745-88712' WHERE map_route_id = 100`,
+			`UPDATE van_turfs SET printed_list_number = '35536745-88712' WHERE turf_id = 100`,
 		);
 		await checkout();
 		const rows = await loadCurrentHoldings(db, allChapters);
@@ -104,10 +119,10 @@ describe('loadCurrentHoldings', () => {
 	});
 
 	it('filters to one chapter', async () => {
-		await checkout({ map_route_id: 100 });
-		await checkout({ map_route_id: 300 });
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 300 });
 		const wayne = await loadCurrentHoldings(db, { chapterId: 72 });
-		expect(wayne.map((r) => r.mapRouteId)).toEqual([300]);
+		expect(wayne.map((r) => r.turfId)).toEqual([300]);
 		expect(await loadCurrentHoldings(db, allChapters)).toHaveLength(2);
 	});
 
@@ -124,29 +139,29 @@ describe('loadCurrentHoldings', () => {
 
 describe('loadRecentCompletions', () => {
 	it('returns only completed rows', async () => {
-		await checkout({ map_route_id: 100 }); // live
-		await checkout({ map_route_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 100 }); // live
+		await checkout({ turf_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
 		const rows = await loadRecentCompletions(db, allChapters);
-		expect(rows.map((r) => r.mapRouteId)).toEqual([200]);
+		expect(rows.map((r) => r.turfId)).toEqual([200]);
 	});
 
 	it('orders most recent first', async () => {
-		await checkout({ map_route_id: 100, completed_at: iso(NOW.getTime() - 5 * HOUR) });
-		await checkout({ map_route_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 100, completed_at: iso(NOW.getTime() - 5 * HOUR) });
+		await checkout({ turf_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
 		const rows = await loadRecentCompletions(db, allChapters);
-		expect(rows.map((r) => r.mapRouteId)).toEqual([200, 100]);
+		expect(rows.map((r) => r.turfId)).toEqual([200, 100]);
 	});
 
 	it('applies the limit in SQL', async () => {
 		for (const route of [100, 200, 300]) {
-			await checkout({ map_route_id: route, completed_at: iso(NOW.getTime() - route * 1000) });
+			await checkout({ turf_id: route, completed_at: iso(NOW.getTime() - route * 1000) });
 		}
 		expect(await loadRecentCompletions(db, { ...allChapters, limit: 2 })).toHaveLength(2);
 	});
 
 	it('filters to one chapter', async () => {
-		await checkout({ map_route_id: 100, completed_at: iso(NOW.getTime() - HOUR) });
-		await checkout({ map_route_id: 300, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 100, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 300, completed_at: iso(NOW.getTime() - HOUR) });
 		expect(await loadRecentCompletions(db, { chapterId: 72 })).toHaveLength(1);
 	});
 
@@ -172,5 +187,104 @@ describe('loadRecentCompletions', () => {
 
 	it('handles no completions', async () => {
 		expect(await loadRecentCompletions(db, allChapters)).toEqual([]);
+	});
+});
+
+describe('loadHoldingsFor', () => {
+	/** The claim-message path fills issued_list_number; the fixture above does
+	 *  not, so set it explicitly where the test is about the number. */
+	async function withList(turfId: number, slackUserId: string, listNumber: string | null) {
+		await checkout({ turf_id: turfId, slack_user_id: slackUserId });
+		await client.execute(
+			`UPDATE van_turf_checkouts SET issued_list_number = ${
+				listNumber === null ? 'NULL' : `'${listNumber}'`
+			} WHERE turf_id = ${turfId} AND slack_user_id = '${slackUserId}'`,
+		);
+	}
+
+	// The property the whole command rests on. A command called "mine" that
+	// returned somebody else's claim would be handing out their list number.
+	it('returns only the caller’s own claims', async () => {
+		await checkout({ turf_id: 100, slack_user_id: 'U_VOL' });
+		await checkout({ turf_id: 200, slack_user_id: 'U_OTHER' });
+
+		const mine = await loadHoldingsFor(db, 'U_VOL');
+
+		expect(mine.map((r) => r.turfId)).toEqual([100]);
+	});
+
+	it('crosses chapters, because holding turf in two counties is holding two turfs', async () => {
+		await checkout({ turf_id: 100, slack_user_id: 'U_VOL' });
+		await checkout({ turf_id: 300, slack_user_id: 'U_VOL' });
+
+		const mine = await loadHoldingsFor(db, 'U_VOL');
+
+		expect(mine.map((r) => r.chapterId).sort()).toEqual([71, 72]);
+	});
+
+	it('carries the list number the holder was issued', async () => {
+		await withList(100, 'U_VOL', '35536745-88712');
+		expect((await loadHoldingsFor(db, 'U_VOL'))[0]?.issuedListNumber).toBe('35536745-88712');
+	});
+
+	it('returns null for a claim made before list numbers were recorded', async () => {
+		await withList(100, 'U_VOL', null);
+		expect((await loadHoldingsFor(db, 'U_VOL'))[0]?.issuedListNumber).toBeNull();
+	});
+
+	it.each([
+		['released', { released_at: iso(NOW.getTime() - HOUR), release_reason: 'volunteer' }],
+		['completed', { completed_at: iso(NOW.getTime() - HOUR) }],
+	])('leaves out a claim already %s', async (_label, over) => {
+		await checkout({ turf_id: 100, slack_user_id: 'U_VOL', ...over });
+		expect(await loadHoldingsFor(db, 'U_VOL')).toEqual([]);
+	});
+
+	// Matches loadCurrentHoldings: the sweep runs on a cron, so a lapsed claim
+	// is still unstamped between ticks and `isActive` is what decides. The query
+	// must not grow a second opinion.
+	it('still returns a lapsed-but-unswept claim, leaving isActive to judge it', async () => {
+		await checkout({
+			turf_id: 100,
+			slack_user_id: 'U_VOL',
+			expires_at: iso(NOW.getTime() - HOUR),
+		});
+		expect(await loadHoldingsFor(db, 'U_VOL')).toHaveLength(1);
+	});
+
+	it('names the turf and its region so the reply needs no second read', async () => {
+		await checkout({ turf_id: 100, slack_user_id: 'U_VOL' });
+		const [row] = await loadHoldingsFor(db, 'U_VOL');
+		expect(row).toMatchObject({ turfName: 'Turf 01', regionName: 'Ann Arbor', doorCount: 250 });
+	});
+
+	it('is empty for somebody holding nothing', async () => {
+		expect(await loadHoldingsFor(db, 'U_NOBODY')).toEqual([]);
+	});
+});
+
+// The organizer page's campaign picker (specs/012-multi-van-campaigns).
+describe('one campaign', () => {
+	beforeEach(async () => {
+		await client.execute(
+			`INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (2, 'partner', 1, 's', 's', 'x')`,
+		);
+		await client.execute('UPDATE van_turfs SET campaign_id = 2 WHERE turf_id = 200');
+		await checkout({ turf_id: 100 });
+		await checkout({ turf_id: 200, completed_at: iso(NOW.getTime() - HOUR) });
+		await checkout({ turf_id: 200, slack_user_id: 'U_TWO' });
+	});
+
+	it('scopes holdings and completions to it, and says which campaign each is', async () => {
+		const held = await loadCurrentHoldings(db, { chapterId: null, campaignId: 2 });
+		expect(held.map((h) => [h.turfId, h.campaignId])).toEqual([[200, 2]]);
+		const done = await loadRecentCompletions(db, { chapterId: null, campaignId: 2 });
+		expect(done.map((c) => [c.turfId, c.campaignId])).toEqual([[200, 2]]);
+	});
+
+	it('reads every campaign when none is picked', async () => {
+		const held = await loadCurrentHoldings(db, allChapters);
+		expect(held.map((h) => h.campaignId).sort()).toEqual([1, 2]);
 	});
 });

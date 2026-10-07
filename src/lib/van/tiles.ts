@@ -13,9 +13,9 @@
 //
 // No dependency: a tile layer is a projection, a division and two loops, and
 // Principle IV says don't add ~42 KB for that. What we give up by not taking
-// Leaflet is real though — fractional zoom, tile retention during a zoom, and
-// prefetch beyond the viewport. That accounting lives in full at the top of
-// TurfMap.svelte, which is the file a swap would replace.
+// Leaflet is real though — tile retention during a zoom, and prefetch beyond
+// the viewport. That accounting lives in full at the top of TurfMap.svelte,
+// which is the file a swap would replace.
 
 import type { BoundingBox, LatLng } from './geometry.js';
 
@@ -56,11 +56,12 @@ export function fromWorld(world: { x: number; y: number }): LatLng {
 }
 
 /**
- * The largest integer zoom at which `bounds` still fits inside `width`×`height`.
+ * The largest whole zoom at which `bounds` still fits inside `width`×`height`.
  *
- * Integer rather than fractional because tiles only exist at integer zooms;
- * a fractional zoom would mean scaling tiles and taking the blur for no gain
- * at the sizes involved here.
+ * Whole, though the view will hold any fractional zoom: a framing is where a
+ * volunteer starts reading, and a whole level is the one value that draws its
+ * tiles at their own resolution. Floored rather than rounded, so the bounds
+ * always fit — rounding up would crop the turf it was asked to frame.
  */
 export function fitZoom(bounds: BoundingBox, width: number, height: number, padding = 0): number {
 	const nw = toWorld({ lat: bounds.maxLat, lng: bounds.minLng });
@@ -101,9 +102,12 @@ export interface MapView {
 	project(point: LatLng): { x: number; y: number };
 	/** Pixel coordinates within the viewport → lat/lng. */
 	unproject(pixel: { x: number; y: number }): LatLng;
-	/** The tiles covering this viewport, already positioned. */
+	/** The tiles covering this viewport, already positioned and sized. */
 	tiles: TilePlacement[];
+	/** The requested zoom, fractional between levels. */
 	zoom: number;
+	/** The integer level the tiles were fetched at. */
+	tileZoom: number;
 	width: number;
 	height: number;
 }
@@ -115,11 +119,27 @@ export interface TilePlacement {
 	/** Top-left offset within the viewport, in pixels. */
 	left: number;
 	top: number;
+	/** On-screen edge length. TILE_SIZE at a whole zoom level, and between
+	 *  0.71× and 1.41× of it in between — the tile is a bitmap at a fixed
+	 *  resolution, so a fractional zoom is drawn by scaling it. */
+	size: number;
 	/** Stable key for keyed each-blocks, so panning reuses loaded <image>
-	 *  elements instead of tearing them down and refetching. */
+	 *  elements instead of tearing them down and refetching. Keyed on the
+	 *  TILE's zoom, not the view's, so zooming within a level rescales the
+	 *  images already loaded rather than refetching every frame. */
 	key: string;
 }
 
+/**
+ * The projection and the tile grid for one viewport.
+ *
+ * `zoom` may be fractional. The projection is continuous in it, so shapes and
+ * markers land where they belong at any value. Tiles cannot be: they exist
+ * only at whole levels, so the grid is built at the nearest one and each tile
+ * is drawn at `size` rather than TILE_SIZE. Rounding rather than flooring
+ * keeps that scaling inside 0.71×–1.41×, which is the least resampling any
+ * choice of level can give.
+ */
 export function createMapView(viewport: Viewport): MapView {
 	const { centre, zoom, width, height } = viewport;
 	const scale = TILE_SIZE * Math.pow(2, zoom);
@@ -129,12 +149,16 @@ export function createMapView(viewport: Viewport): MapView {
 	const originX = centreWorld.x * scale - width / 2;
 	const originY = centreWorld.y * scale - height / 2;
 
-	const tileCount = Math.pow(2, zoom);
+	const tileZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(zoom)));
+	const tileCount = Math.pow(2, tileZoom);
+	// The grid's spacing on screen. Every tile position below is measured in
+	// this, not in TILE_SIZE, or the seams drift apart as the view scales.
+	const tileSize = TILE_SIZE * Math.pow(2, zoom - tileZoom);
 
-	const firstX = Math.floor(originX / TILE_SIZE);
-	const lastX = Math.floor((originX + width) / TILE_SIZE);
-	const firstY = Math.floor(originY / TILE_SIZE);
-	const lastY = Math.floor((originY + height) / TILE_SIZE);
+	const firstX = Math.floor(originX / tileSize);
+	const lastX = Math.floor((originX + width) / tileSize);
+	const firstY = Math.floor(originY / tileSize);
+	const lastY = Math.floor((originY + height) / tileSize);
 
 	const tiles: TilePlacement[] = [];
 	for (let ty = firstY; ty <= lastY; ty++) {
@@ -146,18 +170,20 @@ export function createMapView(viewport: Viewport): MapView {
 			// round. Modulo keeps the request valid.
 			const wrappedX = ((tx % tileCount) + tileCount) % tileCount;
 			tiles.push({
-				z: zoom,
+				z: tileZoom,
 				x: wrappedX,
 				y: ty,
-				left: tx * TILE_SIZE - originX,
-				top: ty * TILE_SIZE - originY,
-				key: `${zoom}/${wrappedX}/${ty}/${tx}`,
+				left: tx * tileSize - originX,
+				top: ty * tileSize - originY,
+				size: tileSize,
+				key: `${tileZoom}/${wrappedX}/${ty}/${tx}`,
 			});
 		}
 	}
 
 	return {
 		zoom,
+		tileZoom,
 		width,
 		height,
 		tiles,
@@ -180,6 +206,47 @@ export function metresPerPixel(lat: number, zoom: number): number {
 	return (
 		(EARTH_CIRCUMFERENCE_M * Math.cos((lat * Math.PI) / 180)) / (TILE_SIZE * Math.pow(2, zoom))
 	);
+}
+
+/**
+ * The rungs a scale bar may land on, longest first.
+ *
+ * Imperial, to match every other distance this app shows a canvasser
+ * (`formatDistance`). Metres are kept alongside because the projection works in
+ * them — the label is the only thing that is imperial, so the bar's drawn
+ * length stays exact rather than accumulating a conversion error.
+ *
+ * The rungs themselves are the ones people read without doing arithmetic: whole
+ * and half miles at the top, then round hundreds of feet. A bar labelled
+ * "0.31 mi" is technically a scale and practically useless.
+ */
+export const SCALE_STEPS: readonly { metres: number; label: string }[] = [
+	{ metres: 8046.72, label: '5 mi' },
+	{ metres: 3218.688, label: '2 mi' },
+	{ metres: 1609.344, label: '1 mi' },
+	{ metres: 804.672, label: '0.5 mi' },
+	{ metres: 304.8, label: '1000 ft' },
+	{ metres: 152.4, label: '500 ft' },
+	{ metres: 60.96, label: '200 ft' },
+	{ metres: 30.48, label: '100 ft' },
+];
+
+/**
+ * The longest rung that still fits inside `targetPx`, with its drawn width.
+ *
+ * Falls back to the shortest rung rather than returning nothing: zoomed far
+ * enough in, even 100 ft is wider than a quarter of a narrow phone screen, and
+ * a bar that overhangs slightly is a better answer than a map with no scale on
+ * it at all.
+ */
+export function scaleBarStep(
+	metresPerPixelAtCentre: number,
+	targetPx: number,
+): { px: number; label: string } {
+	const step =
+		SCALE_STEPS.find((s) => s.metres / metresPerPixelAtCentre <= targetPx) ??
+		SCALE_STEPS[SCALE_STEPS.length - 1]!;
+	return { px: step.metres / metresPerPixelAtCentre, label: step.label };
 }
 
 /**

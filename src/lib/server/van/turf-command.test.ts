@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	buildChapterPickerBlocks,
 	buildClaimedBlocks,
+	buildMineBlocks,
 	buildTurfListBlocks,
 	decodeTurfAction,
 	encodeTurfAction,
@@ -12,6 +13,9 @@ import {
 	TURF_CLAIM_ACTION_ID,
 	TURF_PAGE_ACTION_ID,
 	TURF_RELEASE_ACTION_ID,
+	TURF_RELEASE_MINE_ACTION_ID,
+	TURF_COMPLETE_ACTION_ID,
+	TURF_OPEN_MAP_ACTION_ID,
 	turfPageUrl,
 	type Block,
 } from './turf-command.js';
@@ -23,7 +27,7 @@ const HERE = { lat: 42.28, lng: -83.74 };
 
 function view(over: Partial<TurfView> = {}): TurfView {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		chapterId: 71,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
@@ -35,6 +39,7 @@ function view(over: Partial<TurfView> = {}): TurfView {
 		bounds: { minLat: 42.28, minLng: -83.75, maxLat: 42.29, maxLng: -83.73 },
 		status: 'available',
 		heldBy: null,
+		heldByAccount: null,
 		expiresInHours: null,
 		refreshedMinutesAgo: 120,
 		claimable: true,
@@ -94,9 +99,9 @@ describe('parseTurfArgument', () => {
 
 describe('turf action values', () => {
 	it('round-trips', () => {
-		const value = { mapRouteId: 100, chapterId: 71, offset: 5, location: HERE };
+		const value = { turfId: 100, chapterId: 71, offset: 5, location: HERE };
 		expect(decodeTurfAction(encodeTurfAction(value))).toEqual({
-			mapRouteId: 100,
+			turfId: 100,
 			chapterId: 71,
 			offset: 5,
 			location: { lat: 42.28, lng: -83.74 },
@@ -106,7 +111,7 @@ describe('turf action values', () => {
 	it('omits the route id for a paging button', () => {
 		const decoded = decodeTurfAction(encodeTurfAction({ chapterId: 71, offset: 5 }));
 		expect(decoded).toEqual({ chapterId: 71, offset: 5 });
-		expect(decoded).not.toHaveProperty('mapRouteId');
+		expect(decoded).not.toHaveProperty('turfId');
 	});
 
 	// ~100m. Enough to re-sort a list; not a location trace sitting in a message.
@@ -165,8 +170,11 @@ describe('buildTurfListBlocks', () => {
 	const base = {
 		chapter: CHAPTER,
 		offset: 0,
+		start: 0,
+		nextOffset: 1,
 		omitted: 0,
 		total: 1,
+		unavailable: 0,
 		appUrl: APP_URL,
 	};
 
@@ -178,6 +186,35 @@ describe('buildTurfListBlocks', () => {
 		expect(body).toContain('250 doors');
 		expect(body).toContain('Available');
 		expect(text).toContain('Washtenaw County');
+	});
+
+	// specs/012-multi-van-campaigns: while more than one campaign is enabled.
+	it('names the turf’s campaign when the payload carries a badge for it', () => {
+		const turfs = [view({ campaignId: 2 }), view({ turfId: 101, name: 'Turf 02' })];
+		const body = serialise(
+			buildTurfListBlocks({ ...base, turfs, campaignBadges: { 2: 'El-Sayed' } }).blocks,
+		);
+		expect(body).toContain('El-Sayed · 250 doors');
+		// Only on the row whose campaign shows one.
+		expect(body.match(/El-Sayed/g)).toHaveLength(1);
+	});
+
+	// The holder still has it; the campaign has stopped handing it out. Same
+	// sentence as the web card.
+	it('tells the holder when their turf’s campaign was disabled', () => {
+		const turfs = [
+			view({ status: 'held-by-you', claimable: false, campaignId: 2, campaignDisabled: true }),
+		];
+		const body = serialise(
+			buildTurfListBlocks({ ...base, turfs, campaignBadges: { 2: 'El-Sayed' } }).blocks,
+		);
+		expect(body).toContain('El-Sayed has stopped handing out turf here');
+	});
+
+	it('names no campaign while badges are off', () => {
+		const body = serialise(buildTurfListBlocks({ ...base, turfs: [view()] }).blocks);
+		// The facts line starts with the doors, as it always has.
+		expect(body).toContain('Ann Arbor\\n250 doors');
 	});
 
 	it('shows distance only when the volunteer’s location is known', () => {
@@ -223,7 +260,7 @@ describe('buildTurfListBlocks', () => {
 	it('states how stale the door counts are', () => {
 		const { blocks } = buildTurfListBlocks({
 			...base,
-			turfs: [view({ refreshedMinutesAgo: 30 }), view({ mapRouteId: 2, refreshedMinutesAgo: 360 })],
+			turfs: [view({ refreshedMinutesAgo: 30 }), view({ turfId: 2, refreshedMinutesAgo: 360 })],
 			total: 2,
 		});
 		// The oldest of the two, since one line is read as covering the whole list.
@@ -262,12 +299,29 @@ describe('buildTurfListBlocks', () => {
 		it('reports the range it is showing', () => {
 			const { blocks } = buildTurfListBlocks({
 				...base,
-				turfs: [view(), view({ mapRouteId: 2 })],
+				turfs: [view(), view({ turfId: 2 })],
 				offset: 5,
+				start: 5,
+				nextOffset: 7,
 				omitted: 27,
 				total: 34,
 			});
 			expect(serialise(blocks)).toContain('6–7 of 34');
+		});
+
+		// The next page's offset comes from the query, not from counting the
+		// rows on this one: a pinned turf rides on page one without using an
+		// offset, and counting it skipped a turf.
+		it('uses the offset the query handed back for the next page', () => {
+			const { blocks } = buildTurfListBlocks({
+				...base,
+				turfs: [view(), view({ turfId: 2 })],
+				nextOffset: 1,
+				omitted: 5,
+				total: 7,
+			});
+			const page = buttons(blocks).find((b) => b.action_id === TURF_PAGE_ACTION_ID);
+			expect(decodeTurfAction(page!.value)!.offset).toBe(1);
 		});
 
 		it('carries the location into the paging button so page 2 sorts the same', () => {
@@ -290,6 +344,26 @@ describe('buildTurfListBlocks', () => {
 				total: 10,
 			});
 			expect(serialise(blocks)).toContain("That's all 10 turfs");
+		});
+	});
+
+	describe('turf left out as unclaimable', () => {
+		it('says how many are only on the map', () => {
+			const { blocks } = buildTurfListBlocks({ ...base, turfs: [view()], unavailable: 3 });
+			expect(serialise(blocks)).toContain('3 more are checked out or already walked');
+		});
+
+		// Not the same as "nothing loaded" — the turf exists, it is all taken.
+		it('does not claim nothing is loaded when everything is taken', () => {
+			const { blocks, text } = buildTurfListBlocks({
+				...base,
+				turfs: [],
+				total: 0,
+				unavailable: 4,
+			});
+			expect(text).toContain('Nothing in Washtenaw County is free to claim');
+			expect(serialise(blocks)).toContain('All 4 turfs are checked out');
+			expect(serialise(blocks)).not.toContain('no turf loaded');
 		});
 	});
 
@@ -319,7 +393,7 @@ describe('buildTurfListBlocks', () => {
 		});
 		const { blocks, text } = buildTurfListBlocks({
 			...base,
-			turfs: [held, view({ mapRouteId: 2 })],
+			turfs: [held, view({ turfId: 2 })],
 		});
 		const body = serialise(blocks) + text;
 		expect(body).not.toContain('35536745-88712');
@@ -339,7 +413,7 @@ describe('buildTurfListBlocks', () => {
 
 describe('buildClaimedBlocks', () => {
 	const input = {
-		turf: { mapRouteId: 100, name: 'Turf 01', regionName: 'Ann Arbor', doorsRemaining: 250 },
+		turf: { turfId: 100, name: 'Turf 01', regionName: 'Ann Arbor', doorsRemaining: 250 },
 		chapter: CHAPTER,
 		printedListNumber: '35536745-88712',
 		expiresAt: '2026-08-25T06:00:00.000Z',
@@ -347,11 +421,34 @@ describe('buildClaimedBlocks', () => {
 		appUrl: APP_URL,
 	};
 
+	it('says whose list number it is while badges are shown', () => {
+		const named = serialise(buildClaimedBlocks({ ...input, campaignBadge: 'El-Sayed' }).blocks);
+		expect(named).toContain('Your El-Sayed MiniVAN list number');
+		const plain = serialise(buildClaimedBlocks(input).blocks);
+		expect(plain).toContain('Your MiniVAN list number');
+	});
+
 	it('shows the list number and the three steps', () => {
 		const body = serialise(buildClaimedBlocks(input).blocks);
 		expect(body).toContain('35536745-88712');
 		expect(body).toContain('Open MiniVAN');
 		expect(body).toContain('Sync');
+	});
+
+	// A bare "hit Sync" in a Slack message reads as an instruction to press
+	// something in that message. There is no such button and there cannot be —
+	// MiniVAN uploads to VAN itself. Someone who thinks Slack synced for them
+	// loses the doors they knocked, so the word never appears unqualified.
+	it('says where Sync is, and what happens if you skip it', () => {
+		const body = serialise(buildClaimedBlocks(input).blocks);
+		expect(body).toContain('Sync* in MiniVAN');
+		expect(body).toMatch(/only reach VAN when MiniVAN syncs/i);
+	});
+
+	it('offers no button that claims to sync', () => {
+		const actions = buildClaimedBlocks(input).blocks.filter((b) => b.type === 'actions');
+		const labels = serialise(actions).toLowerCase();
+		expect(labels).not.toContain('sync');
 	});
 
 	it('states the expiry in hours', () => {
@@ -373,7 +470,7 @@ describe('buildClaimedBlocks', () => {
 		const release = buttons(buildClaimedBlocks(input).blocks).find(
 			(b) => b.action_id === TURF_RELEASE_ACTION_ID,
 		);
-		expect(decodeTurfAction(release!.value)!.mapRouteId).toBe(100);
+		expect(decodeTurfAction(release!.value)!.turfId).toBe(100);
 	});
 });
 
@@ -387,14 +484,159 @@ describe('buildChapterPickerBlocks', () => {
 		expect(body).toContain('Wayne County');
 	});
 
-	it('explains both other ways to ask', () => {
-		const body = serialise(buildChapterPickerBlocks([CHAPTER], APP_URL).blocks);
-		expect(body).toContain('/turfs 48104');
-		expect(body).toContain("county's channel");
+	it('asks for a ZIP or an address', () => {
+		const { text, blocks } = buildChapterPickerBlocks([CHAPTER], APP_URL);
+		expect(text).toContain('ZIP code or address');
+		expect(serialise(blocks)).toContain('/turfs 48104');
+		expect(serialise(blocks)).not.toContain('channel');
+	});
+
+	it('says why the profile could not place the volunteer', () => {
+		expect(serialise(buildChapterPickerBlocks([CHAPTER], APP_URL, 'no-profile').blocks)).toContain(
+			"couldn't find your Solidarity profile",
+		);
+		expect(serialise(buildChapterPickerBlocks([CHAPTER], APP_URL, 'no-location').blocks)).toContain(
+			"doesn't have an address or chapter",
+		);
+		expect(serialise(buildChapterPickerBlocks([CHAPTER], APP_URL, 'unmatched').blocks)).toContain(
+			"couldn't match your Solidarity profile",
+		);
 	});
 
 	it('handles a workspace with no chapters configured', () => {
 		const { text } = buildChapterPickerBlocks([], APP_URL);
 		expect(text).toContain('No chapters');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// /turfs-mine
+// ---------------------------------------------------------------------------
+
+describe('buildMineBlocks', () => {
+	const turf = (over: Partial<Parameters<typeof buildMineBlocks>[0]['turfs'][number]> = {}) => ({
+		turfId: 501,
+		name: 'Turf 01',
+		regionName: 'R06B_Washtenaw_AnnArbor',
+		doorCount: 120,
+		expiresAt: '2026-08-25T06:00:00.000Z',
+		chapterId: 71,
+		issuedListNumber: '35536745-88712',
+		...over,
+	});
+
+	const input = (turfs = [turf()]) => ({
+		turfs,
+		now: new Date('2026-08-23T06:00:00.000Z'),
+		appUrl: APP_URL,
+	});
+
+	it('says whose list number each is while badges are shown', () => {
+		const body = serialise(
+			buildMineBlocks(input([turf({ campaignBadge: 'El-Sayed' }), turf({ turfId: 502 })])).blocks,
+		);
+		expect(body).toContain('El-Sayed MiniVAN list number');
+		expect(body.match(/MiniVAN list number/g)).toHaveLength(2);
+	});
+
+	it('tells the holder when a turf’s campaign was disabled', () => {
+		const body = serialise(
+			buildMineBlocks(
+				input([turf({ campaignBadge: 'El-Sayed', campaignDisabled: true }), turf({ turfId: 502 })]),
+			).blocks,
+		);
+		expect(body.match(/has stopped handing out turf here/g)).toHaveLength(1);
+		expect(body).toContain('El-Sayed has stopped');
+	});
+
+	it('names each turf, its doors and how long is left', () => {
+		const body = serialise(buildMineBlocks(input()).blocks);
+		expect(body).toContain('Turf 01');
+		expect(body).toContain('R06B_Washtenaw_AnnArbor');
+		expect(body).toContain('120 doors');
+		expect(body).toContain('48 hours');
+	});
+
+	// The reason the command exists: the claim message is gone once it scrolls
+	// away, and it was the only place this number had ever appeared.
+	// A link button still sends an interaction payload. Sharing the pager's id
+	// sent that payload to the pager, which replaced this message — list
+	// numbers and all — with "That button has expired".
+	it('gives the map link an id no handler acts on', () => {
+		const map = buttons(buildMineBlocks(input()).blocks).find((b) =>
+			JSON.stringify(b).includes('Open the map'),
+		);
+		expect(map!.action_id).toBe(TURF_OPEN_MAP_ACTION_ID);
+		expect(map!.action_id).not.toBe(TURF_PAGE_ACTION_ID);
+	});
+
+	it('shows the list number the holder was issued', () => {
+		expect(serialise(buildMineBlocks(input()).blocks)).toContain('35536745-88712');
+	});
+
+	it('says so rather than printing an empty block when no number was recorded', () => {
+		const body = serialise(buildMineBlocks(input([turf({ issuedListNumber: null })])).blocks);
+		expect(body).not.toContain('```');
+		expect(body).toMatch(/no list number/i);
+	});
+
+	// Counted as buttons, not as text: the warning block below the list also
+	// says "Mark it done", so a string match over the serialised message counts
+	// three for two turfs.
+	it('offers both actions for every turf held', () => {
+		const ids = buttons(buildMineBlocks(input([turf(), turf({ turfId: 502 })])).blocks).map(
+			(b) => b.action_id,
+		);
+		expect(ids.filter((id) => id === TURF_COMPLETE_ACTION_ID)).toHaveLength(2);
+		expect(ids.filter((id) => id === TURF_RELEASE_MINE_ACTION_ID)).toHaveLength(2);
+	});
+
+	it('carries each turf to its own action', () => {
+		const blocks = buildMineBlocks(input([turf(), turf({ turfId: 502 })])).blocks;
+		const actions = blocks.filter((b) => b.type === 'actions');
+		const ids = actions.map((b) => {
+			const first = b.type === 'actions' ? b.elements[0] : undefined;
+			return decodeTurfAction(first?.value)?.turfId;
+		});
+		expect(ids).toEqual([501, 502]);
+	});
+
+	// Slack cannot gate a button on a checkbox, so the confirm dialog asks
+	// "Did you sync MiniVAN?" and only a "Yes, I synced" sends the action.
+	it('offers "I walked this turf" behind a synced-MiniVAN confirm', () => {
+		const blocks = buildMineBlocks(input([turf()])).blocks;
+		const actions = blocks.find((b) => b.type === 'actions');
+		const button = actions?.type === 'actions' ? actions.elements[0] : undefined;
+		expect(button).toMatchObject({
+			type: 'button',
+			action_id: TURF_COMPLETE_ACTION_ID,
+			text: { text: 'I walked this turf' },
+			confirm: { title: { text: 'Did you sync MiniVAN?' }, confirm: { text: 'Yes, I synced' } },
+		});
+		expect(decodeTurfAction(button?.value)?.turfId).toBe(501);
+	});
+
+	// The whole point of the warning. Completing records that YOU walked it; it
+	// cannot move answers off the phone, and the volunteer most likely to tap it
+	// is the one who has not synced.
+	it('warns that marking done is not syncing', () => {
+		const body = serialise(buildMineBlocks(input()).blocks);
+		expect(body).toMatch(/does not send your answers to VAN/i);
+		expect(body).toMatch(/Sync MiniVAN first/i);
+	});
+
+	it('handles holding nothing without offering buttons', () => {
+		const message = buildMineBlocks(input([]));
+		expect(message.text).toMatch(/not holding any turf/i);
+		expect(message.blocks.some((b) => b.type === 'actions')).toBe(false);
+		expect(serialise(message.blocks)).toContain('/turfs');
+	});
+
+	it('says "expires shortly" rather than "0 hours"', () => {
+		const body = serialise(
+			buildMineBlocks(input([turf({ expiresAt: '2026-08-23T06:00:00.000Z' })])).blocks,
+		);
+		expect(body).toContain('expires shortly');
+		expect(body).not.toContain('0 hours');
 	});
 });

@@ -17,7 +17,10 @@ import {
 	type ActivityEvent,
 } from '$lib/van/turf-activity.js';
 import { campaignDayKey, campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
+import { campaignFilter } from '$lib/server/van/campaigns.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
+import { loadHolderAccounts } from '$lib/server/outside-volunteers.js';
+import type { HolderAccount } from '$lib/holder-account.js';
 
 // Turf checkout history, for organizers.
 //
@@ -44,6 +47,8 @@ import { relativeSince } from '$lib/components/settings/format-relative.js';
 // hydration mismatch on every row.
 
 export interface ActivityEventView extends ActivityEvent {
+	/** The Slack, Google or Apple mark beside the name, and an outside holder's email. */
+	account: HolderAccount | null;
 	/** Campaign-local grouping key, `YYYY-MM-DD`. */
 	dayKey: string;
 	/** Campaign-local time of day, e.g. "9:41 AM". */
@@ -81,7 +86,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// and a second `new Date()` would let the window and the labels disagree.
 	const now = new Date();
 	const range = rangeFor(period, now);
-	const query = { chapterId: chapter?.chapterId ?? null, range };
+	// Every campaign unless a known one is picked, like the chapter.
+	const campaigns = await campaignFilter(db, url.searchParams.get('campaign'));
+	const query = {
+		chapterId: chapter?.chapterId ?? null,
+		campaignId: campaigns.campaign?.id ?? null,
+		range,
+	};
 
 	const [counts, rows, anyTurf] = await Promise.all([
 		loadActivityCounts(db, query),
@@ -92,14 +103,19 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// The rows are already the newest EVENT_CAP rows, and each yields at least
 	// one event, so slicing here can only trim events the page was never going
 	// to show — see loadActivityRows for why fetching more would not help.
-	const events: ActivityEventView[] = activityEvents(rows, range)
-		.slice(0, EVENT_CAP)
-		.map((event) => ({
-			...event,
-			dayKey: campaignDayKey(event.at),
-			timeLabel: campaignTimeLabel(event.at),
-			agoLabel: relativeSince(event.at, now),
-		}));
+	const capped = activityEvents(rows, range).slice(0, EVENT_CAP);
+	// The Slack, Google or Apple mark beside each name, and an outside holder's email.
+	const accounts = await loadHolderAccounts(
+		db,
+		capped.map((event) => event.slackUserId),
+	);
+	const events: ActivityEventView[] = capped.map((event) => ({
+		...event,
+		account: accounts.get(event.slackUserId) ?? null,
+		dayKey: campaignDayKey(event.at),
+		timeLabel: campaignTimeLabel(event.at),
+		agoLabel: relativeSince(event.at, now),
+	}));
 
 	// Day headings come from the events themselves, so a day with no activity
 	// simply does not appear.
@@ -112,6 +128,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		pageTitle: 'Turf activity',
 		chapters,
 		chapter,
+		campaigns: campaigns.campaigns,
+		campaign: campaigns.campaign,
+		// Badge text per campaign id, for rows whose campaign shows one.
+		campaignBadges: campaigns.badges,
 		period,
 		events,
 		dayLabels,

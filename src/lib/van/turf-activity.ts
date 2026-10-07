@@ -28,12 +28,14 @@ export type ActivityKind =
  *  it is the holder's credential, and an admin is not the holder. */
 export interface ActivityRow {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	/** Turf name from van_turfs. */
 	name: string;
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	slackUserId: string;
 	slackUserName: string;
@@ -44,6 +46,10 @@ export interface ActivityRow {
 	/** Doors that left the turf between claim and the post-completion refresh.
 	 *  Null until Story 5.6 fills it in; rendered only when present. */
 	confirmedDoorDelta: number | null;
+	/** What MiniVAN showed as done, 0-100, when the volunteer marked the turf
+	 *  walked. Null on claims that have not completed and on rows from before
+	 *  it was asked. */
+	reportedPercent: number | null;
 }
 
 export interface ActivityEvent {
@@ -53,15 +59,18 @@ export interface ActivityEvent {
 	kind: ActivityKind;
 	at: string;
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	turfName: string;
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	slackUserId: string;
 	slackUserName: string;
 	confirmedDoorDelta: number | null;
+	reportedPercent: number | null;
 }
 
 /**
@@ -160,15 +169,17 @@ export function activityEvents(
 	for (const row of rows) {
 		const base = {
 			checkoutId: row.checkoutId,
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			turfName: row.name,
 			regionName: row.regionName,
 			chapterId: row.chapterId,
 			chapterName: row.chapterName,
+			campaignId: row.campaignId,
 			doorCount: row.doorCount,
 			slackUserId: row.slackUserId,
 			slackUserName: row.slackUserName,
 			confirmedDoorDelta: row.confirmedDoorDelta,
+			reportedPercent: row.reportedPercent,
 		};
 
 		if (inRange(row.claimedAt, range)) {
@@ -254,7 +265,7 @@ export function totalEvents(counts: ActivityCounts): number {
  * Group events into calendar days for rendering.
  *
  * The day key is supplied per event by the caller rather than derived here,
- * because "which day" is a campaign-local question (America/Detroit) and this
+ * because "which day" is a campaign-local question and this
  * module has no timezone of its own — deriving it from the ISO string would
  * silently bucket a 9pm knock into tomorrow.
  */

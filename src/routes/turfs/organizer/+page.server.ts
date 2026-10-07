@@ -21,9 +21,14 @@ import {
 	loadDriftTurfs,
 	loadDriftVisibility,
 } from '$lib/server/van/drift-store.js';
+import { loadGeometryProgress } from '$lib/server/van/geometry-progress-store.js';
+import { geometryProgressLabel } from '$lib/van/geometry-progress.js';
 import { driftReport } from '$lib/van/turf-drift.js';
 import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
+import { campaignFilter, campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
+import { loadHolderAccounts } from '$lib/server/outside-volunteers.js';
+import type { HolderAccount } from '$lib/holder-account.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -43,6 +48,9 @@ import { relativeSince } from '$lib/components/settings/format-relative.js';
 // selects it.
 
 export interface HoldingView extends Holding {
+	/** The Slack, Google or Apple mark beside the holder, and an outside holder's email
+	 *  so an organizer can reach someone who is not in the Slack. */
+	account: HolderAccount | null;
 	/** Campaign-local "until" stamp, formatted server-side so two organizers
 	 *  comparing notes see the same time — and so SSR and hydration agree. */
 	expiresLabel: string;
@@ -53,6 +61,8 @@ export interface HoldingView extends Holding {
 }
 
 export interface SuspectView extends SuspectCompletion {
+	/** See HoldingView.account. */
+	account: HolderAccount | null;
 	completedLabel: string;
 	/** "2 days ago", against this load's `now`. See HoldingView.claimedAgoLabel. */
 	completedAgoLabel: string;
@@ -77,53 +87,91 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// chapter" instead of erroring, because a mistyped URL should show a page.
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
-	const query = { chapterId: chapter?.chapterId ?? null };
+	// The same for the campaign: every one unless a known one is picked.
+	const campaigns = await campaignFilter(db, url.searchParams.get('campaign'));
+	const query = {
+		chapterId: chapter?.chapterId ?? null,
+		campaignId: campaigns.campaign?.id ?? null,
+	};
 
 	// One `now` for both halves, so the board and the summary above it describe
 	// the same instant even if a claim lands between the queries.
 	const now = new Date();
 
-	const [holdingRows, completionRows, driftTurfs, driftClaims, driftVisibility] = await Promise.all(
-		[
+	const [holdingRows, completionRows, driftTurfs, driftClaims, driftVisibility, geometry] =
+		await Promise.all([
 			loadCurrentHoldings(db, query),
 			loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
 			loadDriftTurfs(db, query),
 			loadDriftClaims(db, query),
-			loadDriftVisibility(db),
-		],
-	);
-
-	const holdings: HoldingView[] = currentHoldings(holdingRows, now).map((h) => ({
-		...h,
-		expiresLabel: `${campaignDayLabel(h.expiresAt)} at ${campaignTimeLabel(h.expiresAt)}`,
-		claimedAgoLabel: relativeSince(h.claimedAt, now),
-	}));
-
-	const suspects: SuspectView[] = suspectCompletions(completionRows).map((c) => ({
-		...c,
-		completedLabel: `${campaignDayLabel(c.completedAt)} at ${campaignTimeLabel(c.completedAt)}`,
-		completedAgoLabel: relativeSince(c.completedAt, now),
-	}));
+			loadDriftVisibility(db, query.campaignId),
+			// Campaign-wide rather than per chapter: the queue is drained in one
+			// pass for everyone, so scoping it to the selected chapter would
+			// report a different denominator than the work actually left.
+			loadGeometryProgress(db),
+		]);
 
 	// Story 8.2. Both sides of the comparison are our own columns — the sync
 	// lands VAN's half — so this costs two reads and no VAN call.
 	const drift = driftReport(driftTurfs, driftClaims, now, driftVisibility);
 
+	const current = currentHoldings(holdingRows, now);
+	const suspected = suspectCompletions(completionRows);
+	// Every holder this page names, in one read.
+	const accounts = await loadHolderAccounts(db, [
+		...current.map((h) => h.slackUserId),
+		...suspected.map((c) => c.slackUserId),
+		...drift.items.map((i) => i.heldByUserId),
+	]);
+
+	const holdings: HoldingView[] = current.map((h) => ({
+		...h,
+		account: accounts.get(h.slackUserId) ?? null,
+		expiresLabel: `${campaignDayLabel(h.expiresAt)} at ${campaignTimeLabel(h.expiresAt)}`,
+		claimedAgoLabel: relativeSince(h.claimedAt, now),
+	}));
+
+	const suspects: SuspectView[] = suspected.map((c) => ({
+		...c,
+		account: accounts.get(c.slackUserId) ?? null,
+		completedLabel: `${campaignDayLabel(c.completedAt)} at ${campaignTimeLabel(c.completedAt)}`,
+		completedAgoLabel: relativeSince(c.completedAt, now),
+	}));
+
 	return {
 		pageTitle: 'Turf right now',
-		drift,
+		drift: {
+			...drift,
+			items: drift.items.map((item) => ({
+				...item,
+				account: accounts.get(item.heldByUserId) ?? null,
+			})),
+		},
 		chapters,
 		chapter,
+		campaigns: campaigns.campaigns,
+		campaign: campaigns.campaign,
+		// Badge text per campaign id, for rows whose campaign shows one.
+		campaignBadges: campaigns.badges,
 		holdings,
 		summary: summarise(holdings),
 		suspects,
+		// Why the map is part shapes and part pins after a big sync — the line is
+		// only shown while there is something to explain (see the page).
+		geometry: {
+			...geometry,
+			label: geometryProgressLabel(geometry),
+		},
 		// Distinguishes "every completion checked out fine" from "no completion
 		// has been checked yet" — opposite messages that must not share an empty
-		// state. It stays false until a post-completion refresh actually lands
-		// (see door-delta-store.ts), which on a key without refresh access is
-		// forever — so the empty state has to keep saying "not checked" rather
-		// than "all clear".
+		// state. It stays false until a re-cut lands after a completion (see
+		// door-delta-store.ts) — so the empty state has to keep saying "not
+		// checked" rather than "all clear".
 		deltaChecked: anyDeltaMeasured(completionRows),
+		// What sets that re-cut off, so the empty state can say what it is
+		// waiting on: the sync asking VAN, or an organizer doing it by hand. Each
+		// campaign has its own switch, so the page names which is which.
+		regionRefresh: await campaignRefreshSwitches(db),
 		completionsExamined: completionRows.length,
 	};
 };

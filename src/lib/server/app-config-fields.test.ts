@@ -7,7 +7,12 @@ const mockGetSlackChannels = vi.hoisted(() => vi.fn());
 vi.mock('./settings-validation.js', () => ({ validateSlackChannel: mockValidateSlackChannel }));
 vi.mock('./autocomplete-sources.js', () => ({ getSlackChannels: mockGetSlackChannels }));
 
-import { APP_CONFIG_FIELDS, APP_CONFIG_FIELD_KEYS } from './app-config-fields.js';
+import {
+	APP_CONFIG_FIELDS,
+	APP_CONFIG_FIELD_KEYS,
+	checkBoolean,
+	checkSheetTabName,
+} from './app-config-fields.js';
 import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '../ticker-speed.js';
 
 const ctx = { slack: {} as WebClient };
@@ -39,9 +44,11 @@ describe('the table', () => {
 				'mobilizeContactName',
 				'mobilizeContactEmail',
 				'mobilizeContactPhone',
+				'mobilizeImportTag',
 				'slackGrowthReportRankingAlpha',
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
+				'vanAssignmentTtlHours',
 				'doorTickerColumnsPerSecond',
 				'siteName',
 				'countdownLabel',
@@ -49,9 +56,43 @@ describe('the table', () => {
 				'welcomeDmMessage',
 				'warningDmMessage',
 				'themeTokens',
+				'publicJoinUrl',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(18);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(21);
+	});
+});
+
+describe('publicJoinUrl', () => {
+	const run = (v: unknown) => APP_CONFIG_FIELDS.publicJoinUrl(v, ctx);
+
+	it('accepts an https link, trimmed', () => {
+		expect(run('  https://solidarity.example/join  ')).toEqual({
+			ok: true,
+			value: 'https://solidarity.example/join',
+		});
+	});
+
+	it('clears on an empty string', () => {
+		expect(run('')).toEqual({ ok: true, value: '' });
+		expect(run('   ')).toEqual({ ok: true, value: '' });
+	});
+
+	// Rendered as a button on a page anyone can open.
+	it('refuses anything but https', () => {
+		for (const bad of [
+			'javascript:alert(1)',
+			'data:text/html,hi',
+			'http://solidarity.example/join',
+			'solidarity.example/join',
+		]) {
+			expect(run(bad), bad).toMatchObject({ ok: false, status: 400 });
+		}
+	});
+
+	it('refuses a non-string and an overlong link', () => {
+		expect(run(42)).toMatchObject({ ok: false });
+		expect(run(`https://x.example/${'a'.repeat(500)}`)).toMatchObject({ ok: false });
 	});
 });
 
@@ -109,6 +150,15 @@ describe('contact fields', () => {
 		expect(await run('mobilizeContactPhone', 5551234)).toMatchObject({ ok: false });
 	});
 
+	it('trims the import tag and accepts blank as "import off"', async () => {
+		expect(await run('mobilizeImportTag', '  partner-shift ')).toEqual({
+			ok: true,
+			value: 'partner-shift',
+		});
+		expect(await run('mobilizeImportTag', '')).toEqual({ ok: true, value: '' });
+		expect(await run('mobilizeImportTag', 'x'.repeat(101))).toMatchObject({ ok: false });
+	});
+
 	it.each(['organizer@example.org', 'a.b+tag@sub.example.co.uk'])(
 		'accepts %s as a contact email',
 		async (value) => {
@@ -147,6 +197,28 @@ describe('numeric fields', () => {
 		expect(await run('doorTickerColumnsPerSecond', MAX_TICKER_COLUMNS_PER_SECOND)).toMatchObject({
 			ok: true,
 		});
+	});
+
+	// The per-campaign switches (refresh, sheets, enabled) — moved off app_config
+	// onto each campaign, validated by the same rule.
+	it('takes a switch only as a real boolean', () => {
+		expect(checkBoolean('refreshEnabled', true)).toEqual({ ok: true, value: true });
+		expect(checkBoolean('refreshEnabled', false)).toEqual({ ok: true, value: false });
+		// "false" is truthy — accepting strings would let it switch the sweep ON.
+		for (const value of ['false', 'true', 1, 0, null, undefined]) {
+			expect(checkBoolean('refreshEnabled', value)).toMatchObject({ ok: false });
+		}
+	});
+
+	it('takes a Packet Tracker tab name Google allows, and empty for the default', () => {
+		expect(checkSheetTabName('sheetTabName', '  Packet Tracker ')).toEqual({
+			ok: true,
+			value: 'Packet Tracker',
+		});
+		expect(checkSheetTabName('sheetTabName', '')).toEqual({ ok: true, value: '' });
+		for (const value of ["Bob's tab", 'a/b', 'a:b', 'x'.repeat(101), 7]) {
+			expect(checkSheetTabName('sheetTabName', value)).toMatchObject({ ok: false });
+		}
 	});
 
 	it('rejects a ticker rate outside the bounds', async () => {

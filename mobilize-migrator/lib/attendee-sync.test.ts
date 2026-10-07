@@ -52,6 +52,14 @@ const PHONE_REJECTED = {
 	],
 };
 
+/** The live 422 Solidarity returns for an address it will not deliver to. */
+const EMAIL_REJECTED = {
+	error: 'email is not a valid, deliverable email address',
+	details: [
+		'email must be a deliverable address: subaddressed emails (user+tag@), disposable domains, and domains without MX records are rejected',
+	],
+};
+
 /** Routes by URL: Mobilize v1 API, Solidarity RSVP list, Solidarity user search. */
 function mockApis(options: {
 	attendances: MobilizeAttendance[];
@@ -63,6 +71,8 @@ function mockApis(options: {
 	userLookupAmbiguous?: boolean;
 	/** Refuse any user create that carries a phone, the way Solidarity does. */
 	rejectPhoneOnCreate?: boolean;
+	/** Refuse any user create that carries an email, the way Solidarity does for user+tag@. */
+	rejectEmailOnCreate?: boolean;
 	/** RSVPs Solidarity already holds for the session, for the capacity tests. */
 	sessionRsvps?: { id: number; user_id: number; is_attending: string }[];
 }) {
@@ -74,14 +84,23 @@ function mockApis(options: {
 	const spy = vi.fn(async (url: string | URL, init?: RequestInit) => {
 		const href = String(url);
 		const writing = init?.method === 'POST' || init?.method === 'PUT';
-		if (options.rejectPhoneOnCreate && writing && href.includes('/v1/users')) {
-			const sent = JSON.parse(String(init?.body ?? '{}')) as { phone_number?: string | null };
-			if (sent.phone_number) {
+		if (writing && href.includes('/v1/users')) {
+			const sent = JSON.parse(String(init?.body ?? '{}')) as {
+				phone_number?: string | null;
+				email?: string | null;
+			};
+			const rejection =
+				options.rejectEmailOnCreate && sent.email
+					? EMAIL_REJECTED
+					: options.rejectPhoneOnCreate && sent.phone_number
+						? PHONE_REJECTED
+						: null;
+			if (rejection) {
 				return {
 					ok: false,
 					status: 422,
-					json: async () => PHONE_REJECTED,
-					text: async () => JSON.stringify(PHONE_REJECTED),
+					json: async () => rejection,
+					text: async () => JSON.stringify(rejection),
 					headers: new Headers(),
 				} as unknown as Response;
 			}
@@ -159,10 +178,15 @@ function ledgerWith(records: RsvpRecord[] = []): AttendeeLedger & { forgotten: n
 	};
 }
 
-function run(ledger: AttendeeLedger, apply = false, links: TimeslotLink[] = [LINK]) {
+function run(
+	ledger: AttendeeLedger,
+	apply = false,
+	links: TimeslotLink[] = [LINK],
+	over: { writeDeadline?: number } = {},
+) {
 	return runAttendeeSync(
 		links,
-		{ api: API, solidarityToken: 't', apply, maxNewProfiles: 1000, pauseMs: 0 },
+		{ api: API, solidarityToken: 't', apply, maxNewProfiles: 1000, pauseMs: 0, ...over },
 		ledger,
 		new Map(),
 		1330,
@@ -269,6 +293,68 @@ describe('runAttendeeSync phone numbers Solidarity will not accept', () => {
 		expect(report.errors).toEqual([]);
 		expect(report.profilesCreated).toBe(0);
 		expect(report.rsvpsCreated).toBe(0);
+	});
+
+	it('creates the profile without the email when Solidarity will not deliver to it', async () => {
+		const spy = mockApis({
+			attendances: [attendance()],
+			userFound: false,
+			rejectEmailOnCreate: true,
+		});
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.failed).toBe(0);
+		expect(report.errors).toEqual([]);
+		expect(report.profilesCreated).toBe(1);
+		expect(report.profilesCreatedWithoutEmail).toBe(1);
+		expect(report.profilesCreatedWithoutPhone).toBe(0);
+		expect(report.rsvpsCreated).toBe(1);
+
+		const retry = spy.mock.calls
+			.filter(([url, init]) => String(url).includes('/v1/users') && (init as RequestInit)?.body)
+			.map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+			.at(-1);
+		expect(retry).toMatchObject({ email: null, phone_number: '16165551234', first_name: 'A' });
+	});
+
+	it('skips the signup, without failing, when both the email and the phone are refused', async () => {
+		mockApis({
+			attendances: [attendance()],
+			userFound: false,
+			rejectEmailOnCreate: true,
+			rejectPhoneOnCreate: true,
+		});
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.failed).toBe(0);
+		expect(report.errors).toEqual([]);
+		expect(report.skippedInvalidEmail + report.skippedInvalidPhone).toBe(1);
+		expect(report.profilesCreated).toBe(0);
+		expect(report.rsvpsCreated).toBe(0);
+	});
+
+	it('skips the signup, without failing, when the refused email was all we had', async () => {
+		mockApis({
+			attendances: [
+				attendance({
+					person: {
+						given_name: 'No',
+						family_name: 'Phone',
+						email_addresses: [{ primary: true, address: 'a+tag@example.com' }],
+					},
+				}),
+			],
+			userFound: false,
+			rejectEmailOnCreate: true,
+		});
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.skippedInvalidEmail).toBe(1);
+		expect(report.failed).toBe(0);
+		expect(report.errors).toEqual([]);
 	});
 
 	it('still fails on a 422 that is not about the phone', async () => {
@@ -901,5 +987,43 @@ describe('runAttendeeSync seat order', () => {
 			([url, init]) => String(url).includes('/v1/users') && init?.method === 'POST',
 		);
 		expect(String(created[0]?.[1]?.body)).toContain('lower-id@example.com');
+	});
+});
+
+describe('the run stops on its time budget', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('stops between signups and reports what it did not reach', async () => {
+		// Three signups on one shift, and a deadline already in the past: the loop
+		// must refuse the first one rather than working through all three.
+		mockApis({
+			attendances: [attendance({ id: 1 }), attendance({ id: 2 }), attendance({ id: 3 })],
+			userFound: false,
+		});
+
+		const report = await run(ledgerWith(), false, [LINK], { writeDeadline: Date.now() - 1 });
+
+		expect(report.incomplete).toBe(true);
+		expect(report.pending).toBe(3);
+		// Not an abort: nothing went wrong, so the alerting path stays quiet.
+		expect(report.abortedReason).toBeUndefined();
+		expect(report.failed).toBe(0);
+	});
+
+	it('runs to the end when the budget is ample', async () => {
+		mockApis({ attendances: [attendance({ id: 1 })], userFound: false });
+
+		const report = await run(ledgerWith(), false, [LINK], { writeDeadline: Date.now() + 60_000 });
+
+		expect(report.incomplete).toBe(false);
+		expect(report.pending).toBe(0);
+	});
+
+	it('has no budget at all when none is given', async () => {
+		mockApis({ attendances: [attendance({ id: 1 })], userFound: false });
+
+		const report = await run(ledgerWith());
+
+		expect(report.incomplete).toBe(false);
 	});
 });

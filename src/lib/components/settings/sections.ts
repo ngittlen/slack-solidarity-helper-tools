@@ -34,11 +34,13 @@ export const APP_CONFIG_SECTION_ID = 'app-config';
  *  lockstep with the `app-config` children below. */
 export const APP_CONFIG_ROW_IDS = {
 	siteName: 'cfg-site-name',
+	publicJoinUrl: 'cfg-public-join-url',
 	trackingChannel: 'cfg-tracking-channel',
 	growthReportChannel: 'cfg-growth-report-channel',
 	mobilizeSyncChannel: 'cfg-mobilize-sync-channel',
 	turfChannel: 'cfg-turf-channel',
 	mobilizeContact: 'cfg-mobilize-contact',
+	mobilizeImportTag: 'cfg-mobilize-import-tag',
 	countdown: 'cfg-countdown',
 	welcomeDm: 'cfg-welcome-dm',
 	memberNotesChannel: 'cfg-member-notes-channel',
@@ -59,7 +61,8 @@ export const SECTION_IDS = {
 	excludedChapters: 'excluded-chapters',
 	zipExcludedChapters: 'zip-excluded-chapters',
 	vanTurfCheckout: 'van-turf-checkout',
-	vanChapterFolders: 'van-chapter-folders',
+	turfHiddenChapters: 'turf-hidden-chapters',
+	vanCampaigns: 'van-campaigns',
 	vanBlocklist: 'van-blocklist',
 	theme: 'theme',
 } as const;
@@ -72,11 +75,13 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 		label: 'App config',
 		children: [
 			{ id: APP_CONFIG_ROW_IDS.siteName, label: 'Site name' },
+			{ id: APP_CONFIG_ROW_IDS.publicJoinUrl, label: 'Public “Join our chat” link' },
 			{ id: APP_CONFIG_ROW_IDS.trackingChannel, label: 'Volunteer-help tracking channel' },
 			{ id: APP_CONFIG_ROW_IDS.growthReportChannel, label: 'Weekly growth report channel' },
 			{ id: APP_CONFIG_ROW_IDS.mobilizeSyncChannel, label: 'Mobilize sync channel' },
 			{ id: APP_CONFIG_ROW_IDS.turfChannel, label: 'Turf sync channel' },
 			{ id: APP_CONFIG_ROW_IDS.mobilizeContact, label: 'Mobilize event contact' },
+			{ id: APP_CONFIG_ROW_IDS.mobilizeImportTag, label: 'Partner Mobilize import tag' },
 			{ id: APP_CONFIG_ROW_IDS.countdown, label: 'Header countdown' },
 			{ id: APP_CONFIG_ROW_IDS.welcomeDm, label: 'New-member welcome DM' },
 			{ id: APP_CONFIG_ROW_IDS.memberNotesChannel, label: 'Member notes channel' },
@@ -92,7 +97,8 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 	{ id: SECTION_IDS.excludedChapters, label: 'Excluded chapters' },
 	{ id: SECTION_IDS.zipExcludedChapters, label: 'Chapters without ZIP codes' },
 	{ id: SECTION_IDS.vanTurfCheckout, label: 'Turf checkout' },
-	{ id: SECTION_IDS.vanChapterFolders, label: 'Chapter \u2192 VAN folders' },
+	{ id: SECTION_IDS.turfHiddenChapters, label: 'Chapters on /turfs' },
+	{ id: SECTION_IDS.vanCampaigns, label: 'VAN campaigns' },
 	{ id: SECTION_IDS.vanBlocklist, label: 'Blocked from turf checkout' },
 	{ id: SECTION_IDS.theme, label: 'Theme' },
 ];

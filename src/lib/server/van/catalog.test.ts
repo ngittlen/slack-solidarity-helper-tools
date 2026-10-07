@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { planCatalogSync, needsGeometry, type CatalogFolder } from './catalog.js';
+import {
+	planCatalogSync,
+	vanTimestamp,
+	needsGeometry,
+	type CatalogClaim,
+	type CatalogFolder,
+} from './catalog.js';
 import type { VanTurfRow } from '../schema.js';
-import type { VanMapRegion } from './types.js';
+import type { VanMapRegion, VanMinivanExport } from './types.js';
 
 const NOW = new Date('2026-08-21T12:00:00.000Z');
 
@@ -40,8 +46,13 @@ function folder(regions: VanMapRegion[], over: Partial<CatalogFolder> = {}): Cat
 }
 
 function existingRow(over: Partial<VanTurfRow> = {}): VanTurfRow {
+	// VAN's route id follows the turf id unless a test says otherwise, as it
+	// does for every turf that did not collide with another campaign's.
+	const turfId = over.turfId ?? 100;
 	return {
-		mapRouteId: 100,
+		turfId,
+		campaignId: 1,
+		vanMapRouteId: over.vanMapRouteId ?? turfId,
 		mapRegionId: 10,
 		folderId: 1152,
 		chapterId: 71,
@@ -59,6 +70,7 @@ function existingRow(over: Partial<VanTurfRow> = {}): VanTurfRow {
 		hullJson: '[{"lat":42.37,"lng":-71.11}]',
 		hullSourceRouteSize: 400,
 		vanDistributedTo: null,
+		vanAssignedAt: null,
 		firstSeenAt: '2026-08-01T00:00:00.000Z',
 		lastSeenAt: '2026-08-20T00:00:00.000Z',
 		lastRefreshedAt: '2026-08-20T00:00:00.000Z',
@@ -67,7 +79,7 @@ function existingRow(over: Partial<VanTurfRow> = {}): VanTurfRow {
 	} as VanTurfRow;
 }
 
-const base = { printedLists: [], existing: [], now: NOW };
+const base = { campaignId: 1, printedLists: [], existing: [], now: NOW };
 
 describe('planCatalogSync', () => {
 	it('maps a route to a turf row with its chapter and counts', () => {
@@ -75,7 +87,7 @@ describe('planCatalogSync', () => {
 
 		expect(plan.upserts).toHaveLength(1);
 		expect(plan.upserts[0]).toMatchObject({
-			mapRouteId: 100,
+			turfId: 100,
 			mapRegionId: 10,
 			folderId: 1152,
 			chapterId: 71,
@@ -124,6 +136,57 @@ describe('planCatalogSync', () => {
 			expect(plan.upserts[0]!.printedListNumber).toBe('11111111-22222');
 		});
 
+		it('records when the issued list was generated, from either source', () => {
+			const list = (number: string, dateCreated: string) => ({
+				number,
+				name: 'City of Cambridge Turf 01',
+				listSize: 400,
+				folders: [{ folderId: 1152, name: 'Middlesex Turf' }],
+				dateCreated,
+				createdBy: null,
+			});
+			// Route-level date wins when the route carries one.
+			const fromRoute = planCatalogSync({
+				...base,
+				folders: [
+					folder([
+						region([
+							route({
+								printedList: { number: '35536745-88712', dateCreated: '2026-08-01T10:00:00Z' },
+							}),
+						]),
+					]),
+				],
+			});
+			// VAN's local wall clock wearing a Z, stored as the real UTC instant.
+			expect(fromRoute.upserts[0]!.printedListCreatedAt).toBe('2026-08-01T14:00:00.000Z');
+
+			// Otherwise it comes from /printedLists, by the number being issued.
+			const fromList = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				printedLists: [list('35536745-88712', '2026-08-02T10:00:00Z')],
+			});
+			expect(fromList.upserts[0]!.printedListCreatedAt).toBe('2026-08-02T14:00:00.000Z');
+
+			// No number, no date — even when a list with another number has one.
+			const none = planCatalogSync({
+				...base,
+				folders: [folder([region([route({ printedList: null })])])],
+			});
+			expect(none.upserts[0]!.printedListCreatedAt).toBeNull();
+		});
+
+		it('never touches the expiry-warning stamp, so a sync cannot re-arm a warning', () => {
+			const plan = planCatalogSync({
+				...base,
+				existing: [existingRow({ listExpiryWarnedFor: '2026-08-01T10:00:00Z' })],
+				folders: [folder([region([route()])])],
+			});
+			// Absent from the row, so the upsert's SET leaves the column alone.
+			expect('listExpiryWarnedFor' in plan.upserts[0]!).toBe(false);
+		});
+
 		it('trusts the route and warns when the two disagree', () => {
 			const plan = planCatalogSync({
 				...base,
@@ -140,7 +203,12 @@ describe('planCatalogSync', () => {
 				],
 			});
 			expect(plan.upserts[0]!.printedListNumber).toBe('35536745-88712');
-			expect(plan.warnings.join(' ')).toMatch(/35536745-88712.*99999999-00000|99999999-00000/);
+			const warning = plan.warnings.join(' ');
+			expect(warning).toContain('City of Cambridge Turf 01');
+			// The warning is posted to a Slack channel, so neither number may
+			// appear in it — a MiniVAN list number is the credential.
+			expect(warning).not.toContain('35536745-88712');
+			expect(warning).not.toContain('99999999-00000');
 		});
 
 		it('does not borrow another folder’s identically named turf', () => {
@@ -161,6 +229,53 @@ describe('planCatalogSync', () => {
 			expect(plan.upserts[0]!.printedListNumber).toBeNull();
 		});
 
+		describe('two regions in one folder sharing a name', () => {
+			// The live case: one precinct cut twice, both cuts printed, so every
+			// turf name owns two lists and each route carries its own.
+			const list = (number: string) => ({
+				number,
+				name: 'City of Cambridge Turf 01',
+				listSize: 400,
+				folders: [{ folderId: 1152, name: 'Middlesex Turf' }],
+				dateCreated: null,
+				createdBy: null,
+			});
+			const printedLists = [list('11111111-11111'), list('22222222-22222')];
+
+			it('says the regions share a name, not that the list numbers disagree', () => {
+				const plan = planCatalogSync({
+					...base,
+					folders: [
+						folder([
+							region([route({ printedList: { number: '11111111-11111' } })]),
+							region([route({ mapRouteId: 200, printedList: { number: '22222222-22222' } })], {
+								mapRegionId: 20,
+							}),
+						]),
+					],
+					printedLists,
+				});
+
+				expect(plan.upserts.map((r) => r.printedListNumber)).toEqual([
+					'11111111-11111',
+					'22222222-22222',
+				]);
+				expect(plan.warnings).toHaveLength(1);
+				expect(plan.warnings[0]).toContain('Cambridge North (2 regions in Middlesex Turf)');
+				expect(plan.warnings[0]).not.toContain('11111111-11111');
+				expect(plan.warnings[0]).not.toContain('22222222-22222');
+			});
+
+			it('does not backfill a route from a name that owns several lists', () => {
+				const plan = planCatalogSync({
+					...base,
+					folders: [folder([region([route({ printedList: null })])])],
+					printedLists,
+				});
+				expect(plan.upserts[0]!.printedListNumber).toBeNull();
+			});
+		});
+
 		it('collects unclaimable turf into a single warning, not one per route', () => {
 			const routes = [1, 2, 3, 4, 5, 6, 7].map((n) =>
 				route({ mapRouteId: 100 + n, name: `Turf 0${n}`, printedList: null }),
@@ -179,7 +294,7 @@ describe('planCatalogSync', () => {
 			const plan = planCatalogSync({
 				...base,
 				folders: [folder([region([route()])])],
-				existing: [existingRow(), existingRow({ mapRouteId: 101, name: 'Turf 02' })],
+				existing: [existingRow(), existingRow({ turfId: 101, name: 'Turf 02' })],
 			});
 			expect(plan.retirements).toEqual([101]);
 		});
@@ -191,7 +306,7 @@ describe('planCatalogSync', () => {
 			const plan = planCatalogSync({
 				...base,
 				folders: [folder([region([route()])])],
-				existing: [existingRow(), existingRow({ mapRouteId: 500, folderId: 9999 })],
+				existing: [existingRow(), existingRow({ turfId: 500, folderId: 9999 })],
 			});
 			expect(plan.retirements).toEqual([]);
 		});
@@ -219,7 +334,7 @@ describe('planCatalogSync', () => {
 	describe('geometry', () => {
 		it('queues a turf that has never had a hull', () => {
 			const plan = planCatalogSync({ ...base, folders: [folder([region([route()])])] });
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900 }]);
+			expect(plan.geometryQueue).toEqual([{ vanMapRouteId: 100, savedListId: 900, roster: false }]);
 		});
 
 		it('does not queue a turf whose route merely shrank from canvassing', () => {
@@ -242,7 +357,7 @@ describe('planCatalogSync', () => {
 				folders: [folder([region([route({ routeSize: 460 })])])],
 				existing: [existingRow({ hullSourceRouteSize: 400 })],
 			});
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900 }]);
+			expect(plan.geometryQueue).toEqual([{ vanMapRouteId: 100, savedListId: 900, roster: false }]);
 			expect(plan.upserts[0]!.hullJson).toBeNull();
 			expect(plan.upserts[0]!.centroidLat).toBeNull();
 			expect(plan.upserts[0]!.hullSourceRouteSize).toBeNull();
@@ -254,7 +369,7 @@ describe('planCatalogSync', () => {
 				folders: [folder([region([route({ routeSize: 150 })])])],
 				existing: [existingRow({ hullSourceRouteSize: 400 })],
 			});
-			expect(plan.geometryQueue).toEqual([{ mapRouteId: 100, savedListId: 900 }]);
+			expect(plan.geometryQueue).toEqual([{ vanMapRouteId: 100, savedListId: 900, roster: false }]);
 			expect(plan.upserts[0]!.hullJson).toBeNull();
 		});
 
@@ -276,40 +391,336 @@ describe('planCatalogSync', () => {
 		});
 	});
 
+	// These fixtures are the shape the LIVE API returns, captured 2026-09-22.
+	// The previous ones were invented — an export named for the turf, with
+	// `canvassers: [{name}]` — and both details were wrong, which is how
+	// van_distributed_to came out null for every turf while these tests passed.
+	// An export is named for its printed LIST, and a canvasser has firstName
+	// and lastName and no `name` at all.
+	const exportOf = (over: Partial<VanMinivanExport> = {}): VanMinivanExport => ({
+		minivanExportId: 5,
+		name: 'List 35536745-88712',
+		dateCreated: '2026-09-22T14:10:33.83Z',
+		createdBy: { id: 1, displayName: 'Richard Williamson' },
+		canvassers: [{ canvassserId: 1, firstName: 'Dana', lastName: 'Ruiz' }],
+		databaseMode: 0,
+		...over,
+	});
+
 	it('flags turf an organizer distributed to MiniVAN by hand', () => {
 		const plan = planCatalogSync({
 			...base,
 			folders: [folder([region([route()])])],
 			minivanExports: [
-				{
-					minivanExportId: 5,
-					name: 'City of Cambridge Turf 01',
-					dateCreated: null,
-					createdBy: null,
-					canvassers: [{ name: 'Dana Ruiz' }, { name: 'Sam Ito' }],
-					databaseMode: '0',
-				},
+				exportOf({
+					canvassers: [
+						{ canvassserId: 1, firstName: 'Dana', lastName: 'Ruiz' },
+						{ canvassserId: 2, firstName: 'Sam', lastName: 'Ito' },
+					],
+				}),
 			],
 		});
 		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz, Sam Ito');
+	});
+
+	// The join is the list number, because that is what the export names. The
+	// route is called "City of Cambridge Turf 01" and matching on that found
+	// nothing.
+	it('matches the export to the turf by printed list number', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ name: 'List 35536745-88712' })],
+		});
+		expect(plan.upserts[0]!.printedListNumber).toBe('35536745-88712');
+		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz');
+	});
+
+	it('does not match an export for a different list', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ name: 'List 99999999-00000' })],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
+	});
+
+	// Hand-named exports are left unmatched on purpose: the export window spans
+	// a decade, turf names repeat across it, and matching one by name would
+	// attribute a stranger from 2014 to turf cut last week.
+	it('ignores a hand-named export rather than matching it by turf name', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ name: 'City of Cambridge Turf 01' })],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
+	});
+
+	it('still reads a canvasser that does carry a name field', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ canvassers: [{ name: 'Dana Ruiz' }] })],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz');
 	});
 
 	it('ignores a MiniVAN export with no canvassers on it', () => {
 		const plan = planCatalogSync({
 			...base,
 			folders: [folder([region([route()])])],
-			minivanExports: [
-				{
-					minivanExportId: 5,
-					name: 'City of Cambridge Turf 01',
-					dateCreated: null,
-					createdBy: null,
-					canvassers: [],
-					databaseMode: '0',
-				},
-			],
+			minivanExports: [exportOf({ canvassers: [] })],
 		});
 		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
+	});
+
+	// VAN returns some canvassers as an id with null names. They still hold the
+	// list, so the turf must not read as free.
+	it('shows a canvasser VAN names only by id as an unknown canvasser', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [
+				exportOf({ canvassers: [{ canvassserId: 7, firstName: null, lastName: null }] }),
+			],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBe('unknown canvasser');
+	});
+
+	it('names an unknown canvasser once, however many there are', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [
+				exportOf({
+					canvassers: [
+						{ canvassserId: 1, firstName: 'Dana', lastName: 'Ruiz' },
+						{ canvassserId: 7 },
+						{ canvassserId: 8 },
+					],
+				}),
+			],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz, unknown canvasser');
+	});
+
+	// Loading a list number into MiniVAN is what creates an export, so an export
+	// means SOMEONE opened the list. Inside one of our claims it is our
+	// volunteer; anywhere else the turf was handed out outside the app, and
+	// that never lets go until the route is re-cut.
+	describe('our own claims versus outside assignments', () => {
+		// 2026-09-22T11:52:28 Detroit time, which VAN writes with a Z — really
+		// 15:52:28 UTC.
+		const loaded = exportOf({ dateCreated: '2026-09-22T11:52:28.15Z' });
+		const claim = (over: Partial<CatalogClaim> = {}): CatalogClaim => ({
+			checkoutId: 7,
+			turfId: 100,
+			claimedAt: '2026-09-22T15:40:00.000Z',
+			endedAt: '2026-09-24T15:40:00.000Z',
+			loadedInMinivanAt: null,
+			...over,
+		});
+		const plan = (over: Partial<Parameters<typeof planCatalogSync>[0]> = {}) =>
+			planCatalogSync({
+				...base,
+				now: new Date('2026-09-30T12:00:00.000Z'),
+				folders: [folder([region([route()])])],
+				minivanExports: [loaded],
+				...over,
+			});
+
+		it('treats an export inside our claim as our volunteer loading the list', () => {
+			const result = plan({ claims: [claim()] });
+			expect(result.upserts[0]).toMatchObject({ vanDistributedTo: null, vanAssignedAt: null });
+			expect(result.claimsLoaded).toEqual([
+				{ checkoutId: 7, loadedAt: '2026-09-22T15:52:28.150Z' },
+			]);
+		});
+
+		it('counts an export just before the claim landed as ours too', () => {
+			const result = plan({ claims: [claim({ claimedAt: '2026-09-22T16:10:00.000Z' })] });
+			expect(result.upserts[0]!.vanAssignedAt).toBeNull();
+			expect(result.claimsLoaded).toHaveLength(1);
+		});
+
+		it('does not stamp a claim twice', () => {
+			const result = plan({
+				claims: [claim({ loadedInMinivanAt: '2026-09-22T15:52:28.150Z' })],
+			});
+			expect(result.claimsLoaded).toEqual([]);
+		});
+
+		it('marks turf loaded with no claim of ours as assigned outside the app', () => {
+			const result = plan();
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Dana Ruiz',
+				vanAssignedAt: '2026-09-22T15:52:28.150Z',
+			});
+		});
+
+		it('counts an export after our claim ended as outside', () => {
+			const result = plan({
+				claims: [
+					claim({ claimedAt: '2026-09-20T10:00:00.000Z', endedAt: '2026-09-21T10:00:00.000Z' }),
+				],
+			});
+			expect(result.upserts[0]!.vanAssignedAt).toBe('2026-09-22T15:52:28.150Z');
+		});
+
+		// Carried forward so the turf stays out until its hold lapses; the
+		// lapse itself is vanAssignmentBlocks in turf-view.ts.
+		it('keeps an outside assignment after the export is gone', () => {
+			const result = plan({
+				minivanExports: [],
+				existing: [
+					existingRow({
+						vanDistributedTo: 'Dana Ruiz',
+						vanAssignedAt: '2026-09-22T15:52:28.150Z',
+					}),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Dana Ruiz',
+				vanAssignedAt: '2026-09-22T15:52:28.150Z',
+			});
+		});
+
+		it('restarts the clock on a re-export, and names the newest outside holder', () => {
+			const result = plan({
+				folders: [folder([region([route({ printedList: { number: '11111111-22222' } })])])],
+				minivanExports: [
+					exportOf({
+						minivanExportId: 9,
+						name: 'List 11111111-22222',
+						dateCreated: '2026-09-28T09:00:00Z',
+						canvassers: [{ firstName: 'Sam', lastName: 'Ito' }],
+					}),
+				],
+				existing: [
+					existingRow({
+						vanDistributedTo: 'Dana Ruiz',
+						vanAssignedAt: '2026-09-22T15:52:28.150Z',
+					}),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Sam Ito',
+				vanAssignedAt: '2026-09-28T13:00:00.000Z',
+			});
+		});
+
+		it('dates a hand-out from the latest of several outside exports', () => {
+			const result = plan({
+				minivanExports: [
+					loaded,
+					exportOf({
+						minivanExportId: 9,
+						dateCreated: '2026-09-26T10:00:00Z',
+						canvassers: [{ firstName: 'Sam', lastName: 'Ito' }],
+					}),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Sam Ito',
+				vanAssignedAt: '2026-09-26T14:00:00.000Z',
+			});
+		});
+
+		it('never moves the date backwards to an older export still in the store', () => {
+			const result = plan({
+				existing: [
+					existingRow({ vanDistributedTo: 'Sam Ito', vanAssignedAt: '2026-09-26T14:00:00.000Z' }),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Sam Ito',
+				vanAssignedAt: '2026-09-26T14:00:00.000Z',
+			});
+		});
+
+		// Rows written before this rule carry names that may have come from our
+		// own volunteers. Only `vanAssignedAt` makes a hold sticky.
+		it('does not inherit a name written before the rule existed', () => {
+			const result = plan({
+				minivanExports: [],
+				existing: [existingRow({ vanDistributedTo: 'unknown canvasser', vanAssignedAt: null })],
+			});
+			expect(result.upserts[0]).toMatchObject({ vanDistributedTo: null, vanAssignedAt: null });
+		});
+
+		it('ignores an export it cannot date', () => {
+			const result = plan({ minivanExports: [exportOf({ dateCreated: null })] });
+			expect(result.upserts[0]!.vanAssignedAt).toBeNull();
+		});
+
+		// An export naming nobody is no evidence anyone was handed the list.
+		it('ignores an export with no canvassers', () => {
+			const result = plan({ minivanExports: [exportOf({ canvassers: [] })] });
+			expect(result.upserts[0]!.vanAssignedAt).toBeNull();
+		});
+	});
+
+	describe('when a list has been exported more than once', () => {
+		// The live case: Royal Oak 59430821-62783 went to a named canvasser on
+		// 09-22 and was re-exported on 09-23 to one VAN names only by id.
+		const first = exportOf({
+			minivanExportId: 645875,
+			dateCreated: '2026-09-22T11:52:28.15Z',
+			canvassers: [{ canvassserId: 2833309, firstName: 'Tammy', lastName: 'Banjany' }],
+		});
+		const second = exportOf({
+			minivanExportId: 646478,
+			dateCreated: '2026-09-23T11:43:55.93Z',
+			canvassers: [{ canvassserId: 132602398, firstName: null, lastName: null }],
+		});
+
+		it('takes the latest export, not every export merged', () => {
+			const plan = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				minivanExports: [first, second],
+			});
+			expect(plan.upserts[0]!.vanDistributedTo).toBe('unknown canvasser');
+		});
+
+		it('decides by date, whatever order the exports arrive in', () => {
+			const plan = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				minivanExports: [second, first],
+			});
+			expect(plan.upserts[0]!.vanDistributedTo).toBe('unknown canvasser');
+		});
+
+		it('breaks a same-second tie by export id', () => {
+			const plan = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				minivanExports: [
+					exportOf({ minivanExportId: 9, canvassers: [{ firstName: 'Sam', lastName: 'Ito' }] }),
+					exportOf({ minivanExportId: 8, canvassers: [{ firstName: 'Dana', lastName: 'Ruiz' }] }),
+				],
+			});
+			expect(plan.upserts[0]!.vanDistributedTo).toBe('Sam Ito');
+		});
+
+		// An export naming nobody is no evidence the list changed hands.
+		it('keeps the earlier canvasser when the later export has none', () => {
+			const plan = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				minivanExports: [
+					first,
+					exportOf({
+						minivanExportId: 646999,
+						dateCreated: '2026-09-23T12:00:00Z',
+						canvassers: [],
+					}),
+				],
+			});
+			expect(plan.upserts[0]!.vanDistributedTo).toBe('Tammy Banjany');
+		});
 	});
 
 	it('handles an empty catalog without throwing', () => {
@@ -319,6 +730,7 @@ describe('planCatalogSync', () => {
 			retirements: [],
 			unretirements: [],
 			geometryQueue: [],
+			claimsLoaded: [],
 			warnings: [],
 		});
 	});
@@ -328,7 +740,8 @@ describe('planCatalogSync', () => {
 			...base,
 			folders: [folder([region([route()], { dateRefreshed: '2026-08-20T20:59:00Z' })])],
 		});
-		expect(plan.upserts[0]!.lastRefreshedAt).toBe('2026-08-20T20:59:00Z');
+		// 20:59 Detroit, which VAN writes as 20:59Z — really 00:59 UTC next day.
+		expect(plan.upserts[0]!.lastRefreshedAt).toBe('2026-08-21T00:59:00.000Z');
 	});
 
 	it('keeps the prior refresh time when VAN omits one', () => {
@@ -364,5 +777,80 @@ describe('needsGeometry', () => {
 	});
 	it('is true just past it', () => {
 		expect(needsGeometry({ hullJson: '[]', hullSourceRouteSize: 100, routeSize: 49 })).toBe(true);
+	});
+});
+
+describe('planCatalogSync — uncontacted doors', () => {
+	it('queues a hulled turf that has no roster, when rosters are on', () => {
+		const plan = planCatalogSync({
+			...base,
+			roster: true,
+			existing: [existingRow()],
+			folders: [folder([region([route()])])],
+		});
+		expect(plan.geometryQueue).toEqual([{ vanMapRouteId: 100, savedListId: 900, roster: true }]);
+	});
+
+	it('queues nothing for rosters when they are off', () => {
+		const plan = planCatalogSync({
+			...base,
+			existing: [existingRow()],
+			folders: [folder([region([route()])])],
+		});
+		expect(plan.geometryQueue).toEqual([]);
+	});
+
+	it('leaves a turf alone once its roster matches the saved list, and re-queues a re-cut', () => {
+		const current = planCatalogSync({
+			...base,
+			roster: true,
+			existing: [existingRow({ rosterSavedListId: 900 })],
+			folders: [folder([region([route()])])],
+		});
+		expect(current.geometryQueue).toEqual([]);
+
+		const recut = planCatalogSync({
+			...base,
+			roster: true,
+			existing: [existingRow({ rosterSavedListId: 900 })],
+			folders: [folder([region([route({ savedListId: 901 })])])],
+		});
+		expect(recut.geometryQueue).toEqual([{ vanMapRouteId: 100, savedListId: 901, roster: true }]);
+	});
+
+	// The upsert is `set: row`, so a key present here would be overwritten on
+	// every sync.
+	it('never writes the count or the roster marker', () => {
+		const plan = planCatalogSync({
+			...base,
+			existing: [existingRow({ uncontactedDoors: 12, rosterSavedListId: 900 })],
+			folders: [folder([region([route()])])],
+		});
+		const row = plan.upserts[0]!;
+		expect(row).not.toHaveProperty('uncontactedDoors');
+		expect(row).not.toHaveProperty('uncontactedDoorsAt');
+		expect(row).not.toHaveProperty('rosterSavedListId');
+	});
+
+	it('takes the cut date from the refresh, else the region’s creation', () => {
+		const created = planCatalogSync({
+			...base,
+			folders: [folder([region([route()], { dateCreated: '2026-09-14T09:00:00Z' })])],
+		});
+		// VAN's clock is campaign-local wearing a Z; converted like every other.
+		expect(created.upserts[0]!.cutAt).toBe(vanTimestamp('2026-09-14T09:00:00Z'));
+
+		const refreshed = planCatalogSync({
+			...base,
+			folders: [
+				folder([
+					region([route()], {
+						dateCreated: '2026-09-14T09:00:00Z',
+						dateRefreshed: '2026-09-20T09:00:00Z',
+					}),
+				]),
+			],
+		});
+		expect(refreshed.upserts[0]!.cutAt).toBe(vanTimestamp('2026-09-20T09:00:00Z'));
 	});
 });

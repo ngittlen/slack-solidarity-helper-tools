@@ -1,13 +1,16 @@
 import type { Handle } from '@sveltejs/kit';
-import { text } from '@sveltejs/kit';
+import { json, redirect, text } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { db, sessionStore } from '$lib/server/db.js';
 import { getTheme } from '$lib/server/theme.js';
 import { parseThemeMode, themeAttribute, THEME_COOKIE } from '$lib/theme-mode.js';
 import { errMessage } from '$lib/err-message.js';
-import { validateEnv } from '$lib/server/env.js';
+import { INTERNAL_CRON_SECRET, validateEnv } from '$lib/server/env.js';
+import { localCaller, startScheduler } from '$lib/server/scheduler.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
+import { applyDevViewAs, parseDevViewAs } from '$lib/server/dev-view-as.js';
+import { gateTurfOnlySession } from '$lib/server/turf-only-access.js';
 
 export async function init() {
 	validateEnv();
@@ -19,6 +22,30 @@ export async function init() {
 			'DEV_SLACK_USER_ID must not be set in production — it enables the dev-login auth bypass.',
 		);
 		process.exit(1);
+	}
+	// DEV_VIEW_AS demotes every session so you can see the app as a moderator or
+	// a plain member. It can only take permissions away, so a leak is not an
+	// escalation — but in production it would lock the real admins out of their
+	// own settings page, and silently. Same treatment as above: refuse to boot.
+	if (!dev && (env as Record<string, string | undefined>)['DEV_VIEW_AS']) {
+		console.error(
+			'DEV_VIEW_AS must not be set in production — it demotes every signed-in session.',
+		);
+		process.exit(1);
+	}
+	// The scheduled syncs, on Fly only: a local `npm run preview` must not
+	// start calling VAN and Mobilize on its own. IN_APP_SCHEDULER=off leaves
+	// them to the GitHub workflows. See src/lib/server/scheduler.ts.
+	const vars = env as Record<string, string | undefined>;
+	if (!dev && vars['FLY_APP_NAME'] && vars['IN_APP_SCHEDULER'] !== 'off') {
+		if (!INTERNAL_CRON_SECRET) {
+			console.error('[scheduler] INTERNAL_CRON_SECRET is not set — not scheduling the syncs');
+		} else {
+			startScheduler({
+				db,
+				call: localCaller(Number(vars['PORT']) || 3000, INTERNAL_CRON_SECRET),
+			});
+		}
 	}
 }
 
@@ -39,13 +66,21 @@ export const handle: Handle = async ({ event, resolve }) => {
 		const lookup = await sessionStore.get(sid);
 		if (lookup.status === 'found') {
 			event.locals.session = lookup.data;
-			event.cookies.set('session', sid, {
-				path: '/',
-				httpOnly: true,
-				secure: !dev,
-				sameSite: 'lax',
-				maxAge: 8 * 60 * 60,
-			});
+			// Re-issued with the life the SESSION actually has left, not a fresh
+			// eight hours. The row's expiry is never extended on read, so a fixed
+			// maxAge here promises a sliding window that does not exist: the
+			// cookie outlives the row and the last stretch of it reads as signed
+			// out with a cookie still in the jar.
+			const remainingSeconds = Math.floor((Date.parse(lookup.expiresAt) - Date.now()) / 1000);
+			if (remainingSeconds > 0) {
+				event.cookies.set('session', sid, {
+					path: '/',
+					httpOnly: true,
+					secure: !dev,
+					sameSite: 'lax',
+					maxAge: remainingSeconds,
+				});
+			}
 		} else {
 			event.locals.session = null;
 			// Only clear the cookie when the session is genuinely gone. On
@@ -61,6 +96,44 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	} else {
 		event.locals.session = null;
+	}
+
+	// Borrowed permissions, for looking at the app the way a volunteer does.
+	//
+	// Applied here, once, rather than at each of the places that branch on a
+	// role: this is the single seam every request's session passes through, so
+	// there is no page that can forget to honour it and no second definition of
+	// what "a moderator" sees. Gated on `dev` in addition to the boot check, so
+	// the bundle that runs in production cannot reach it at all.
+	if (dev) {
+		const viewAs = parseDevViewAs((env as Record<string, string | undefined>)['DEV_VIEW_AS']);
+		if (viewAs) event.locals.session = applyDevViewAs(event.locals.session, viewAs);
+	}
+
+	// A Google or Apple sign-in is for turf checkout and nothing else. Enforced here,
+	// where every request passes, rather than in the root layout — form actions
+	// and endpoints never run layout loads. Deny-by-default; the allow-list and
+	// the reasoning are in server/turf-only-access.ts.
+	if (event.locals.session?.authProvider !== undefined) {
+		const gate = gateTurfOnlySession({
+			routeId: event.route.id,
+			isDataRequest: event.isDataRequest,
+			isRemoteRequest: event.isRemoteRequest,
+			method: event.request.method,
+			accept: event.request.headers.get('accept'),
+			url: event.url,
+		});
+		// Kit turns a redirect thrown from handle into its JSON redirect for a
+		// data request, so client-side navigation lands on /turfs too.
+		if (gate.action === 'redirect') redirect(302, gate.location);
+		if (gate.action === 'forbid') {
+			const response = json(
+				{ error: 'Turf checkout only. This needs a Slack sign-in.' },
+				{ status: 403 },
+			);
+			setSecurityHeaders(response.headers);
+			return response;
+		}
 	}
 
 	// Inject the theme's custom properties into <head>. Done here rather than in

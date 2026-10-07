@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { loadChapterTurfs } from './turf-query.js';
+import { latestWalkReports } from './checkout-store.js';
+
+// Walk reports have their own tests on real SQLite (checkout-store.test.ts);
+// the stubbed db below answers only the select chains this module scripts.
+vi.mock('./checkout-store.js', () => ({ latestWalkReports: vi.fn(async () => new Map()) }));
+vi.mock('./contact-sync.js', async (importOriginal) => ({
+	// The real lookup, over no marks: no campaign's pull has run.
+	marksFor: (await importOriginal<typeof import('./contact-sync.js')>()).marksFor,
+	loadContactMarks: vi.fn(async () => new Map()),
+}));
 
 function turfRow(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
+		campaignId: 1,
 		mapRegionId: 10,
 		chapterId: 71,
 		name: 'Turf 01',
@@ -25,7 +36,7 @@ function turfRow(over: Record<string, unknown> = {}) {
 
 function claimRow(over: Record<string, unknown> = {}) {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U_OTHER',
 		slackUserName: 'Sam',
 		claimedAt: '2026-08-23T00:00:00.000Z',
@@ -45,7 +56,12 @@ function makeDb(results: unknown[][]) {
 	const db = {
 		select: (...args: unknown[]) => {
 			calls.push(args);
-			return { from: () => ({ where: async () => results[call++] ?? [] }) };
+			// `.from()` awaited directly is the contact-pull marks read: empty,
+			// and not one of the scripted results.
+			return {
+				from: () =>
+					Object.assign(Promise.resolve([]), { where: async () => results[call++] ?? [] }),
+			};
 		},
 	} as never;
 	return { db, calls, queryCount: () => call };
@@ -56,6 +72,19 @@ const HERE = { lat: 42.28, lng: -83.74 };
 
 describe('loadChapterTurfs', () => {
 	beforeEach(() => vi.clearAllMocks());
+
+	// The only progress figure there is. A turf finished at 100% must not be
+	// offered again just because VAN's door count never moved.
+	it('carries the latest walk report onto the view, and blocks a walked-out turf', async () => {
+		vi.mocked(latestWalkReports).mockResolvedValueOnce(
+			new Map([[100, { percent: 100, at: '2026-09-23T18:00:00.000Z', awaitingCount: false }]]),
+		);
+		const { db } = makeDb([[turfRow()], []]);
+		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
+		expect(turfs[0]!.walkReport).toEqual({ percent: 100, dayLabel: expect.any(String) });
+		expect(turfs[0]!.claimable).toBe(false);
+		expect(turfs[0]!.claimBlockedReason).toContain('finished every door');
+	});
 
 	it('builds views for the chapter’s turf', async () => {
 		const { db } = makeDb([[turfRow()], []]);
@@ -76,7 +105,7 @@ describe('loadChapterTurfs', () => {
 		// Turf rows, then claims, then the regions VAN is re-cutting.
 		expect(without.queryCount()).toBe(3);
 
-		const withHeld = makeDb([[{ mapRouteId: 100 }], [turfRow()], [claimRow()]]);
+		const withHeld = makeDb([[{ turfId: 100 }], [turfRow()], [claimRow()]]);
 		await loadChapterTurfs(withHeld.db, {
 			chapterId: 71,
 			viewer: VIEWER,
@@ -91,7 +120,7 @@ describe('loadChapterTurfs', () => {
 	// are built. Observable here as the claim query being scoped to the page.
 	it('cuts rows before building views', async () => {
 		const rows = Array.from({ length: 10 }, (_, i) =>
-			turfRow({ mapRouteId: 100 + i, name: `Turf ${String(i).padStart(2, '0')}` }),
+			turfRow({ turfId: 100 + i, name: `Turf ${String(i).padStart(2, '0')}` }),
 		);
 		const { db } = makeDb([rows, []]);
 		const { turfs, total, omitted } = await loadChapterTurfs(db, {
@@ -106,7 +135,7 @@ describe('loadChapterTurfs', () => {
 
 	it('pages by offset', async () => {
 		const rows = Array.from({ length: 10 }, (_, i) =>
-			turfRow({ mapRouteId: 100 + i, name: `Turf ${String(i).padStart(2, '0')}` }),
+			turfRow({ turfId: 100 + i, name: `Turf ${String(i).padStart(2, '0')}` }),
 		);
 		const { db } = makeDb([rows, []]);
 		const { turfs, omitted } = await loadChapterTurfs(db, {
@@ -121,8 +150,8 @@ describe('loadChapterTurfs', () => {
 
 	it('orders by distance when a location is known', async () => {
 		const rows = [
-			turfRow({ mapRouteId: 1, name: 'Far', centroidLat: 42.6, centroidLng: -83.2 }),
-			turfRow({ mapRouteId: 2, name: 'Near', centroidLat: 42.281, centroidLng: -83.741 }),
+			turfRow({ turfId: 1, name: 'Far', centroidLat: 42.6, centroidLng: -83.2 }),
+			turfRow({ turfId: 2, name: 'Near', centroidLat: 42.281, centroidLng: -83.741 }),
 		];
 		const { db } = makeDb([rows, []]);
 		const { turfs } = await loadChapterTurfs(db, {
@@ -135,8 +164,8 @@ describe('loadChapterTurfs', () => {
 
 	it('restricts to the viewport when bounds are given', async () => {
 		const rows = [
-			turfRow({ mapRouteId: 1, name: 'Inside', centroidLat: 42.28, centroidLng: -83.74 }),
-			turfRow({ mapRouteId: 2, name: 'Outside', centroidLat: 45, centroidLng: -80 }),
+			turfRow({ turfId: 1, name: 'Inside', centroidLat: 42.28, centroidLng: -83.74 }),
+			turfRow({ turfId: 2, name: 'Outside', centroidLat: 45, centroidLng: -80 }),
 		];
 		const { db } = makeDb([rows, []]);
 		const { turfs, total } = await loadChapterTurfs(db, {
@@ -170,9 +199,9 @@ describe('loadChapterTurfs', () => {
 		expect(turfs[0]).not.toHaveProperty('folderId');
 	});
 
-	describe('mapRouteIds', () => {
+	describe('turfIds', () => {
 		it('restricts the query to the named routes', async () => {
-			const rows = [turfRow({ mapRouteId: 100 }), turfRow({ mapRouteId: 101, name: 'Turf 02' })];
+			const rows = [turfRow({ turfId: 100 }), turfRow({ turfId: 101, name: 'Turf 02' })];
 			const { db } = makeDb([rows, []]);
 			// The stub cannot filter, so this asserts the contract the caller
 			// depends on: asking for one route and a limit of 1 must not silently
@@ -180,10 +209,10 @@ describe('loadChapterTurfs', () => {
 			const { turfs } = await loadChapterTurfs(db, {
 				chapterId: 71,
 				viewer: VIEWER,
-				mapRouteIds: [101],
+				turfIds: [101],
 				limit: 2,
 			});
-			expect(turfs.map((t) => t.mapRouteId)).toContain(101);
+			expect(turfs.map((t) => t.turfId)).toContain(101);
 		});
 
 		// An empty list is a request for nothing. `inArray` with no values is
@@ -194,10 +223,112 @@ describe('loadChapterTurfs', () => {
 			const result = await loadChapterTurfs(db, {
 				chapterId: 71,
 				viewer: VIEWER,
-				mapRouteIds: [],
+				turfIds: [],
 			});
-			expect(result).toEqual({ turfs: [], total: 0, omitted: 0 });
+			expect(result).toEqual({
+				turfs: [],
+				total: 0,
+				omitted: 0,
+				start: 0,
+				nextOffset: 0,
+				unavailable: 0,
+				campaignBadges: null,
+			});
 			expect(queryCount()).toBe(0);
+		});
+	});
+
+	// The web page and the map endpoint read through here too, so a volunteer
+	// holding turf in another chapter is counted against their limit on every
+	// surface — not shown turf as claimable that the click then refuses.
+	it('counts the viewer’s claims in other chapters against their limit', async () => {
+		const elsewhere = [
+			claimRow({ turfId: 900, slackUserId: 'U_VOL' }),
+			claimRow({ turfId: 901, slackUserId: 'U_VOL' }),
+		];
+		const { db } = makeDb([[turfRow()], elsewhere]);
+		const { turfs } = await loadChapterTurfs(db, {
+			chapterId: 71,
+			viewer: VIEWER,
+			claimOptions: { maxConcurrentClaims: 2 },
+		});
+		expect(turfs[0]!.claimable).toBe(false);
+		expect(turfs[0]!.claimBlockedReason).toContain('You can hold 2');
+	});
+
+	it('marks turf in a region VAN is re-cutting as updating', async () => {
+		const { db } = makeDb([
+			[turfRow({ mapRegionId: 10 })],
+			[],
+			[{ campaignId: 1, mapRegionId: 10 }],
+		]);
+		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
+		expect(turfs[0]!.updating).toBe(true);
+	});
+
+	it("does not mark turf updating for another campaign's region with the same id", async () => {
+		const { db } = makeDb([
+			[turfRow({ mapRegionId: 10 })],
+			[],
+			[{ campaignId: 2, mapRegionId: 10 }],
+		]);
+		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
+		expect('updating' in turfs[0]!).toBe(false);
+	});
+
+	describe('claimableOnly', () => {
+		const rows = () => [
+			turfRow({ turfId: 1, name: 'Free' }),
+			turfRow({ turfId: 2, name: 'Taken' }),
+			turfRow({ turfId: 3, name: 'Assigned', vanDistributedTo: 'Pat' }),
+			turfRow({ turfId: 4, name: 'Unprinted', printedListNumber: null }),
+			turfRow({ turfId: 5, name: 'Mine' }),
+		];
+		const claims = () => [
+			claimRow({ turfId: 2, slackUserId: 'U_OTHER' }),
+			claimRow({ turfId: 5, slackUserId: 'U_VOL' }),
+		];
+
+		it('leaves out turf nobody can take, and keeps the viewer’s own', async () => {
+			const { db } = makeDb([rows(), claims()]);
+			const result = await loadChapterTurfs(db, {
+				chapterId: 71,
+				viewer: VIEWER,
+				claimableOnly: true,
+			});
+			expect(result.turfs.map((t) => t.name).sort()).toEqual(['Free', 'Mine']);
+			expect(result.total).toBe(2);
+			expect(result.unavailable).toBe(3);
+		});
+
+		// Hiding everything from someone at their limit would read as "no turf
+		// here" rather than "give one back first".
+		it('does not hide turf just because the viewer is at their limit', async () => {
+			const { db } = makeDb([rows(), claims()]);
+			const { turfs } = await loadChapterTurfs(db, {
+				chapterId: 71,
+				viewer: VIEWER,
+				claimableOnly: true,
+				claimOptions: { maxConcurrentClaims: 1 },
+			});
+			const free = turfs.find((t) => t.name === 'Free');
+			expect(free).toBeDefined();
+			expect(free!.claimable).toBe(false);
+			expect(free!.claimBlockedReason).toContain('You can hold 1');
+		});
+
+		it('leaves out turf walked to 100%', async () => {
+			vi.mocked(latestWalkReports).mockResolvedValueOnce(
+				new Map([[1, { percent: 100, at: '2026-09-23T18:00:00.000Z', awaitingCount: false }]]),
+			);
+			const { db } = makeDb([[turfRow({ turfId: 1 })], []]);
+			const result = await loadChapterTurfs(db, {
+				chapterId: 71,
+				viewer: VIEWER,
+				claimableOnly: true,
+			});
+			expect(result.turfs).toEqual([]);
+			expect(result.unavailable).toBe(1);
 		});
 	});
 

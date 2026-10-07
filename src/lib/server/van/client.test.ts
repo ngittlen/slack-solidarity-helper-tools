@@ -77,15 +77,51 @@ describe('createVanClient', () => {
 		expect(fetchFn.mock.calls[1]![0]).toBe(`${VAN_BASE_URL}/folders?$skip=1`);
 	});
 
-	it('stops rather than looping when nextPageLink points at itself', async () => {
+	it('stops at an empty page even when nextPageLink keeps going', async () => {
+		// /savedLists does this live: past the last record it serves empty
+		// pages whose nextPageLink advances $skip without end.
+		let skip = 0;
+		const fetchFn = vi.fn(async () => {
+			skip += 1;
+			return res(200, {
+				items: skip <= 2 ? [{ folderId: skip, name: `F${skip}` }] : [],
+				nextPageLink: `${VAN_BASE_URL}/folders?$skip=${skip}`,
+			});
+		});
+
+		const folders = await createVanClient(config, fetchFn as never).folders();
+		expect(folders.map((f) => f.folderId)).toEqual([1, 2]);
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+	});
+
+	it('fails rather than looping when nextPageLink points at itself', async () => {
 		const fetchFn = vi
 			.fn()
 			.mockResolvedValue(
 				res(200, { items: [{ folderId: 1, name: 'A' }], nextPageLink: `${VAN_BASE_URL}/folders` }),
 			);
-		const folders = await createVanClient(config, fetchFn as never).folders();
-		expect(folders).toHaveLength(1);
+
+		// Returning the one page it managed to read would be indistinguishable
+		// from that being the whole folder list.
+		await expect(createVanClient(config, fetchFn as never).folders()).rejects.toThrow(
+			/pagination did not complete: pagination cycled back/,
+		);
 		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
+	it('fails rather than truncating when a walk runs past the page cap', async () => {
+		// Every page points at a new link, so the walk only ever ends on the cap.
+		let page = 0;
+		const fetchFn = vi.fn(async () =>
+			res(200, {
+				items: [{ folderId: ++page, name: `F${page}` }],
+				nextPageLink: `${VAN_BASE_URL}/folders?$skip=${page}`,
+			}),
+		);
+
+		await expect(createVanClient(config, fetchFn as never).folders()).rejects.toThrow(
+			/pagination did not complete: more than 200 pages/,
+		);
 	});
 
 	it('parses the {errors:[...]} envelope into VanError codes and message', async () => {
@@ -207,79 +243,84 @@ describe('createVanClient', () => {
 		});
 	});
 
-	describe('minivanExports', () => {
-		/** A fake table of `total` exports, served oldest-first, honouring
-		 *  $top/$skip the way the live endpoint does. */
-		function tableOf(total: number) {
+	describe('minivanExportsSince', () => {
+		/** A fake table of `total` exports on or after the filter date, served
+		 *  oldest-first and paged by $skip with an absolute nextPageLink, the
+		 *  way the live endpoint answers a `generatedAfter` query. */
+		function filteredTable(total: number) {
 			return vi.fn(async (url: string) => {
 				const parsed = new URL(url);
 				const top = Number(parsed.searchParams.get('$top') ?? 10);
 				const skip = Number(parsed.searchParams.get('$skip') ?? 0);
 				const items = Array.from({ length: Math.max(0, Math.min(top, total - skip)) }, (_, i) => ({
 					minivanExportId: skip + i,
-					name: `Turf ${skip + i}`,
-					dateCreated: new Date(2010, 0, 1 + skip + i).toISOString(),
-					canvassers: [{ name: `Canvasser ${skip + i}` }],
-					createdBy: null,
-					databaseMode: 'MyVoters',
+					name: `List ${skip + i}`,
+					dateCreated: '2026-09-22T11:52:28.15Z',
+					canvassers: [{ canvassserId: 1, firstName: 'Tammy', lastName: 'B' }],
 				}));
-				return res(200, { items, count: total, nextPageLink: null });
+				const nextSkip = skip + top;
+				parsed.searchParams.set('$skip', String(nextSkip));
+				return res(200, {
+					items,
+					count: total,
+					nextPageLink: nextSkip < total ? parsed.toString() : null,
+				});
 			});
 		}
 
-		it('asks for the maximum page size, not the default of 10', async () => {
-			const fetchFn = tableOf(20);
-			await createVanClient(config, fetchFn as never).minivanExports();
-			expect(String(fetchFn.mock.calls[0]![0])).toContain('$top=50');
+		// `createdAfter` and `createdSince` are accepted and ignored — the name
+		// VAN filters on is `generatedAfter`, and getting it wrong reads the
+		// whole unordered table without any error.
+		it('filters with generatedAfter at the maximum page size', async () => {
+			const fetchFn = filteredTable(20);
+			await createVanClient(config, fetchFn as never).minivanExportsSince('2026-09-22', 5);
+			const url = new URL(String(fetchFn.mock.calls[0]![0]));
+			expect(url.searchParams.get('generatedAfter')).toBe('2026-09-22');
+			expect(url.searchParams.get('$top')).toBe('50');
+			expect(url.searchParams.get('$expand')).toBe('canvassers');
 		});
 
-		it('returns a single page without skipping when the table is small', async () => {
-			const fetchFn = tableOf(20);
-			const exports = await createVanClient(config, fetchFn as never).minivanExports();
-			expect(exports).toHaveLength(20);
-			expect(fetchFn).toHaveBeenCalledTimes(1);
-			expect(String(fetchFn.mock.calls[0]![0])).not.toContain('$skip');
+		it('follows nextPageLink to the end and reports the walk complete', async () => {
+			const fetchFn = filteredTable(120);
+			const { items, complete } = await createVanClient(
+				config,
+				fetchFn as never,
+			).minivanExportsSince('2026-09-22', 5);
+			expect(fetchFn).toHaveBeenCalledTimes(3);
+			expect(items).toHaveLength(120);
+			expect(items[0]!.minivanExportId).toBe(0);
+			expect(complete).toBe(true);
 		});
 
-		it('skips to the tail and walks backwards, returning the NEWEST records', async () => {
-			const fetchFn = tableOf(30_261);
-			const exports = await createVanClient(config, fetchFn as never).minivanExports();
-
-			// One probe for `count`, then 20 pages of 50.
-			expect(fetchFn).toHaveBeenCalledTimes(21);
-			expect(exports).toHaveLength(1000);
-
-			// The last record of the table, which the forward walk never reached.
-			expect(exports.at(-1)!.minivanExportId).toBe(30_260);
-			// Oldest-first within the result, like every other paginated call.
-			expect(exports[0]!.minivanExportId).toBe(29_261);
-
-			const skips = fetchFn.mock.calls
-				.slice(1)
-				.map((c) => Number(new URL(String(c[0])).searchParams.get('$skip')));
-			expect(skips[0]).toBe(30_211);
-			expect(skips[1]).toBe(30_161);
+		// The cap is what lets a 30-day backfill spread over several syncs. It
+		// must say it stopped early, or the store would call itself current.
+		it('stops at the page cap and says the walk is incomplete', async () => {
+			const fetchFn = filteredTable(500);
+			const { items, complete } = await createVanClient(
+				config,
+				fetchFn as never,
+			).minivanExportsSince('2026-09-01', 2);
+			expect(fetchFn).toHaveBeenCalledTimes(2);
+			expect(items).toHaveLength(100);
+			expect(complete).toBe(false);
 		});
 
-		it('stops at the start of the table rather than skipping past zero', async () => {
-			const fetchFn = tableOf(120);
-			const exports = await createVanClient(config, fetchFn as never).minivanExports();
-			expect(exports).toHaveLength(120);
-			expect(exports[0]!.minivanExportId).toBe(0);
-			const skips = fetchFn.mock.calls
-				.slice(1)
-				.map((c) => Number(new URL(String(c[0])).searchParams.get('$skip')));
-			expect(skips).toEqual([70, 20, 0]);
+		it('is complete with nothing new', async () => {
+			const fetchFn = filteredTable(0);
+			const result = await createVanClient(config, fetchFn as never).minivanExportsSince(
+				'2026-09-23',
+				5,
+			);
+			expect(result).toEqual({ items: [], complete: true });
 		});
 
-		// `count` grows when someone exports turf mid-walk, which shifts every
-		// later page by one and re-serves records already collected.
-		it('de-duplicates records that a growing table serves twice', async () => {
-			const fetchFn = tableOf(200);
-			const client = createVanClient(config, fetchFn as never);
-			const exports = await client.minivanExports();
-			const ids = exports.map((e) => e.minivanExportId);
-			expect(new Set(ids).size).toBe(ids.length);
+		// A blank 200 must not read as "nothing new" — that would mark the store
+		// current on a response that said nothing at all.
+		it('throws on an empty response body', async () => {
+			const fetchFn = vi.fn().mockResolvedValue(res(200, ''));
+			await expect(
+				createVanClient(config, fetchFn as never).minivanExportsSince('2026-09-23', 5),
+			).rejects.toThrow(/empty response body/);
 		});
 	});
 

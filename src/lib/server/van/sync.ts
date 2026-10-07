@@ -12,22 +12,41 @@
 // we skipped — a partial sync is safe because retirement is scoped to the
 // folders actually fetched (see planCatalogSync).
 
-import { and, inArray, isNull, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 // Relative, not `$lib/...`: scripts/van-sync-once.ts runs this under tsx,
 // outside the Vite bundle, where the alias does not resolve.
 import { errMessage } from '../../err-message.js';
-import { vanGeometryQueue, vanTurfs, vanTurfCheckouts, vanSyncState } from '../schema.js';
-import { planCatalogSync, type CatalogFolder, type CatalogPlan } from './catalog.js';
+import {
+	vanGeometryQueue,
+	vanTurfs,
+	vanTurfCheckouts,
+	vanSyncState,
+	vanTurfRoster,
+} from '../schema.js';
+import { planCatalogSync, vanTimestamp, type CatalogFolder, type CatalogPlan } from './catalog.js';
 import { chunked } from './sql-chunk.js';
+import { RETIRED_ROSTER_KEEP_MS } from './contact-sync.js';
 import { VanError, type VanClient } from './client.js';
-import type { VanMinivanExport, VanPrintedList } from './types.js';
+import {
+	loadClaimsForExports,
+	loadMinivanExports,
+	pullMinivanExports,
+	stampClaimsLoaded,
+} from './minivan-export-store.js';
+import type { VanPrintedList } from './types.js';
 
 // Matches the alias in settings.ts, which this file calls into — the
 // narrower LibSQLDatabase<...> lacks the $client those helpers require.
 type Db = ReturnType<typeof drizzle>;
 
 const DEFAULT_TIME_BUDGET_MS = 4 * 60 * 1000;
+
+/** Statements per libsql batch on the catalog's two hot write paths. Big enough
+ *  that a statewide sync is tens of round trips rather than thousands, small
+ *  enough that one request stays a sane size — a batch is held in memory whole
+ *  at both ends. */
+const WRITE_BATCH_SIZE = 100;
 
 export interface CatalogSyncResult {
 	foldersSynced: number;
@@ -77,10 +96,34 @@ export interface CatalogSyncOptions {
 	 *  WOULD have happened, so an operator can see the blast radius of a first
 	 *  run — particularly the retirements — before committing to it. */
 	dryRun?: boolean;
+	/** Queue turfs for a roster export too (see CatalogInput.roster). */
+	roster?: boolean;
+}
+
+/** Every printed list number this run's catalog could assign a turf: the
+ *  route's own, and every number /printedLists offered as a backfill. A
+ *  superset of what the planner picks, which is all the export lookup needs. */
+function candidateListNumbers(folders: CatalogFolder[], printedLists: VanPrintedList[]): string[] {
+	const numbers: string[] = [];
+	for (const folder of folders) {
+		for (const region of folder.regions) {
+			for (const route of region.mapRoutes ?? []) {
+				if (route.printedList?.number) numbers.push(route.printedList.number);
+			}
+		}
+	}
+	for (const list of printedLists) if (list.number) numbers.push(list.number);
+	return numbers;
 }
 
 /**
- * Pull the turf catalog for every chapter that has a folder mapping.
+ * Pull one campaign's turf catalog: every folder its chapters are mapped to,
+ * read with that campaign's key.
+ *
+ * Everything read and written is scoped to `campaignId`. Another campaign's
+ * turf is neither matched nor retired here — the folder ids in `mappings` are
+ * this campaign's, and VAN's ids mean nothing outside the committee that
+ * issued them.
  *
  * Optional-tier endpoints degrade instead of failing: a demo or sandbox key
  * without Tier 3 gets no /minivanExports and no /printedLists backfill, but
@@ -90,6 +133,7 @@ export interface CatalogSyncOptions {
 export async function runCatalogSync(
 	db: Db,
 	client: VanClient,
+	campaignId: number,
 	mappings: ChapterFolders[],
 	options: CatalogSyncOptions = {},
 ): Promise<CatalogSyncResult> {
@@ -112,7 +156,7 @@ export async function runCatalogSync(
 			regionsRead: [],
 			degraded,
 			warnings: [
-				'No chapters are mapped to VAN folders — add them under Settings → Chapter → VAN folders.',
+				'No chapters are mapped to VAN folders — add them on the campaign’s page under Settings → VAN campaigns.',
 			],
 		};
 	}
@@ -132,32 +176,53 @@ export async function runCatalogSync(
 	let foldersSkipped = 0;
 	const warnings: string[] = [];
 
+	// One entry per FOLDER, not per chapter-folder pair.
+	//
+	// A folder mapped to eleven chapters used to be fetched eleven times and to
+	// produce eleven upserts per route — all keyed by `turfId` alone, so the
+	// last chapter written won and the other ten saw none of that folder's turf.
+	// Visibility now comes from the mapping at query time (chapter-visibility.ts),
+	// so the catalog reads each folder once and stores one row per turf.
+	//
+	// The chapter carried here is the first one mapped to the folder, in mapping
+	// order. It is the row's display label — who can SEE the turf is every
+	// chapter in `chapters`, which this loop no longer has to care about.
+	const folderOwners = new Map<number, { chapterId: number; chapterName: string }>();
 	for (const mapping of mappings) {
 		for (const folderId of mapping.folderIds) {
-			if (Date.now() > deadline) {
-				foldersSkipped++;
-				continue;
-			}
-			try {
-				const regions = await client.mapRegions(folderId);
-				folders.push({
-					folderId,
-					folderName: folderNames.get(folderId) ?? '',
+			if (!folderOwners.has(folderId)) {
+				folderOwners.set(folderId, {
 					chapterId: mapping.chapterId,
 					chapterName: mapping.chapterName,
-					regions,
 				});
-			} catch (err) {
-				// One unreadable folder must not retire another chapter's turf,
-				// so it is skipped rather than contributing an empty region list.
-				foldersSkipped++;
-				const detail =
-					err instanceof VanError && err.isAuthFailure
-						? `${err.message} — check the key's tier for this folder`
-						: errMessage(err);
-				warnings.push(`Folder ${folderId} (${mapping.chapterName}) failed to sync: ${detail}`);
-				console.error(`[van] folder ${folderId} sync failed:`, detail);
 			}
+		}
+	}
+
+	for (const [folderId, owner] of folderOwners) {
+		if (Date.now() > deadline) {
+			foldersSkipped++;
+			continue;
+		}
+		try {
+			const regions = await client.mapRegions(folderId);
+			folders.push({
+				folderId,
+				folderName: folderNames.get(folderId) ?? '',
+				chapterId: owner.chapterId,
+				chapterName: owner.chapterName,
+				regions,
+			});
+		} catch (err) {
+			// One unreadable folder must not retire another chapter's turf,
+			// so it is skipped rather than contributing an empty region list.
+			foldersSkipped++;
+			const detail =
+				err instanceof VanError && err.isAuthFailure
+					? `${err.message} — check the key's tier for this folder`
+					: errMessage(err);
+			warnings.push(`Folder ${folderId} (${owner.chapterName}) failed to sync: ${detail}`);
+			console.error(`[van] folder ${folderId} sync failed:`, detail);
 		}
 	}
 
@@ -172,30 +237,75 @@ export async function runCatalogSync(
 		}
 	}
 
-	let minivanExports: VanMinivanExport[] = [];
-	// Recorded, not just logged: when this fails the plan below writes
-	// van_distributed_to = NULL for every turf, so afterwards the column cannot
-	// say whether VAN reported nothing or was never asked. The drift report
+	// Top up the stored exports, then read the ones this catalog could match.
+	//
+	// Recorded, not just logged: when the store is not current —
+	// /minivanExports refused, or still backfilling — van_distributed_to is
+	// incomplete for reasons that say nothing about VAN, and the column alone
+	// cannot tell that apart from "nothing is distributed". The drift report
 	// (Story 8.2) needs that difference, and this is the only moment anyone
 	// knows it.
-	let minivanExportsOk = true;
-	try {
-		minivanExports = await client.minivanExports();
-	} catch (err) {
-		minivanExportsOk = false;
-		degraded.push(
-			`/minivanExports unavailable (${errMessage(err)}) — turf assigned by hand in VAN will not be flagged`,
-		);
+	//
+	// The index is built from the STORE whether or not this run's read worked.
+	// One failed read used to write NULL over every turf VAN had distributed;
+	// now it leaves what the last good read established, and the flag above
+	// keeps the drift report from trusting it.
+	//
+	// Skipped on a dry run, which must write nothing — it plans against what is
+	// already stored.
+	let minivanExportsOk = false;
+	if (!options.dryRun) {
+		try {
+			const pulled = await pullMinivanExports(db, client, { campaignId, now });
+			minivanExportsOk = pulled.complete;
+			if (!pulled.complete) {
+				// Logged rather than reported as `degraded`: that list goes to the
+				// turf channel on every sync, and a backfill that finishes by
+				// itself within a few runs is not something anyone needs to act on.
+				console.log(
+					`[van] /minivanExports: still catching up — read ${pulled.fetched} from ${pulled.from}; drift is not checked until the store is current`,
+				);
+			}
+		} catch (err) {
+			degraded.push(
+				`/minivanExports unavailable (${errMessage(err)}) — turf assigned by hand in VAN will not be flagged`,
+			);
+		}
 	}
+	const minivanExports = await loadMinivanExports(
+		db,
+		campaignId,
+		candidateListNumbers(folders, printedLists),
+	);
+	// Our own claims, so an export made while one of our volunteers held the
+	// turf reads as them loading it rather than as the turf being handed out
+	// elsewhere (catalog.ts, outsideAssignment).
+	const claims = await loadClaimsForExports(db, campaignId, now);
 
-	const existing = await db.select().from(vanTurfs);
-	const plan = planCatalogSync({ folders, printedLists, existing, minivanExports, now });
+	const existing = await db.select().from(vanTurfs).where(eq(vanTurfs.campaignId, campaignId));
+	// Every campaign's ids, so a new turf never takes an id another one holds.
+	const takenTurfIds = new Set(
+		(await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs)).map((r) => r.turfId),
+	);
+	const plan = planCatalogSync({
+		campaignId,
+		takenTurfIds,
+		folders,
+		printedLists,
+		existing,
+		minivanExports,
+		claims,
+		roster: options.roster === true,
+		now,
+	});
 
 	const regionsRead = folders.flatMap((folder) =>
 		folder.regions.map((region) => ({
 			folderId: folder.folderId,
 			mapRegionId: region.mapRegionId,
-			dateRefreshed: region.dateRefreshed ?? null,
+			// Real UTC, not VAN's local clock: settleRefreshes compares it with
+			// the time WE sent the request (see vanTimestamp).
+			dateRefreshed: vanTimestamp(region.dateRefreshed),
 		})),
 	);
 
@@ -218,11 +328,35 @@ export async function runCatalogSync(
 		};
 	}
 
-	for (const row of plan.upserts) {
-		await db
-			.insert(vanTurfs)
-			.values(row)
-			.onConflictDoUpdate({ target: vanTurfs.mapRouteId, set: row });
+	// Written in batches, not one statement at a time.
+	//
+	// A statewide catalog is a couple of thousand routes, and the database is
+	// remote: one round trip per row spent the endpoint's whole request budget
+	// before geometry got a turn, which showed up as a queue that stopped
+	// draining ("skipping geometry this run — the catalog used the request
+	// budget") and, on the worst runs, as folders skipped entirely. libsql sends
+	// a batch as one round trip, so the same writes cost tens of trips instead
+	// of thousands.
+	//
+	// Batched in chunks rather than all at once: a batch is an implicit
+	// transaction and the whole thing is held in memory on both ends, so one
+	// statement per route across 2,000+ routes is a multi-megabyte request. The
+	// exposure a chunk boundary creates is unchanged from before — a reader can
+	// see some turfs' new door counts beside others' old ones, which the UI
+	// already labels with the timestamp those counts came from.
+	for (const rows of chunked(plan.upserts, WRITE_BATCH_SIZE)) {
+		// Matched on VAN's id within the campaign, never on turfId: that is the
+		// route's identity, and a colliding turf's turfId is not VAN's. Two
+		// campaigns' syncs planning the same free id at the same instant fail one
+		// batch on the primary key; that sync errors, and its next run, seeing
+		// the id taken, plans another.
+		const statements = rows.map((row) =>
+			db
+				.insert(vanTurfs)
+				.values(row)
+				.onConflictDoUpdate({ target: [vanTurfs.campaignId, vanTurfs.vanMapRouteId], set: row }),
+		);
+		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
 
 	// The retirement group, written as ONE atomic batch.
@@ -273,13 +407,13 @@ export async function runCatalogSync(
 		...new Set([
 			...plan.retirements,
 			...existing
-				.filter((row) => row.retiredAt !== null && !unretired.has(row.mapRouteId))
-				.map((row) => row.mapRouteId),
+				.filter((row) => row.retiredAt !== null && !unretired.has(row.turfId))
+				.map((row) => row.turfId),
 		]),
 	];
 
 	const retireStatements = chunked(plan.retirements).map((batch) =>
-		db.update(vanTurfs).set({ retiredAt }).where(inArray(vanTurfs.mapRouteId, batch)),
+		db.update(vanTurfs).set({ retiredAt }).where(inArray(vanTurfs.turfId, batch)),
 	);
 
 	// Retirement releases live claims: a volunteer holding turf that no longer
@@ -293,7 +427,7 @@ export async function runCatalogSync(
 			.set({ releasedAt: retiredAt, releaseReason: 'retired' })
 			.where(
 				and(
-					inArray(vanTurfCheckouts.mapRouteId, batch),
+					inArray(vanTurfCheckouts.turfId, batch),
 					isNull(vanTurfCheckouts.releasedAt),
 					isNull(vanTurfCheckouts.completedAt),
 				),
@@ -304,13 +438,34 @@ export async function runCatalogSync(
 	const dropStatements = chunked(retiredRouteIds).map((batch) =>
 		db
 			.delete(vanGeometryQueue)
-			.where(inArray(vanGeometryQueue.mapRouteId, batch))
-			.returning({ mapRouteId: vanGeometryQueue.mapRouteId }),
+			.where(inArray(vanGeometryQueue.turfId, batch))
+			.returning({ turfId: vanGeometryQueue.turfId }),
+	);
+	// A retired route's people are a cut nobody can walk any more — but not
+	// straight away: a completion on it still derives its % walked from its
+	// count for RETIRED_ROSTER_KEEP_MS (see contact-sync.ts), and marking walked
+	// is itself what asks VAN for the re-cut that retires it. So only routes
+	// retired longer ago than that; one retired on this run keeps its roster.
+	// Last in the batch, and not counted, so the result indexes above are
+	// unchanged.
+	const rosterCutoff = new Date(now.getTime() - RETIRED_ROSTER_KEEP_MS).toISOString();
+	const rosterExpired = existing
+		.filter(
+			(row) => row.retiredAt !== null && row.retiredAt < rosterCutoff && !unretired.has(row.turfId),
+		)
+		.map((row) => row.turfId);
+	const rosterStatements = chunked(rosterExpired).map((batch) =>
+		db.delete(vanTurfRoster).where(inArray(vanTurfRoster.turfId, batch)),
 	);
 
 	let claimsReleased = 0;
 	let geometryQueueDropped = 0;
-	const statements = [...retireStatements, ...releaseStatements, ...dropStatements];
+	const statements = [
+		...retireStatements,
+		...releaseStatements,
+		...dropStatements,
+		...rosterStatements,
+	];
 	if (statements.length > 0) {
 		const results = (await db.batch(
 			statements as unknown as Parameters<typeof db.batch>[0],
@@ -318,7 +473,8 @@ export async function runCatalogSync(
 		const releaseFrom = retireStatements.length;
 		const dropFrom = releaseFrom + releaseStatements.length;
 		for (let i = releaseFrom; i < dropFrom; i++) claimsReleased += results[i]?.length ?? 0;
-		for (let i = dropFrom; i < results.length; i++) geometryQueueDropped += results[i]?.length ?? 0;
+		const dropTo = dropFrom + dropStatements.length;
+		for (let i = dropFrom; i < dropTo; i++) geometryQueueDropped += results[i]?.length ?? 0;
 	}
 
 	// plan.unretirements needs no write of its own — the upsert above already
@@ -330,8 +486,8 @@ export async function runCatalogSync(
 	// This was `onConflictDoNothing`, to keep a turf that is queued or
 	// mid-flight from being reset to pending under the worker's feet. That
 	// protected the right thing and broke re-cut detection while doing it: the
-	// row is keyed by mapRouteId, so once a turf had ANY queue row, a later
-	// sync could never correct it. A re-cut turf keeps its mapRouteId and gets
+	// row is keyed by turfId, so once a turf had ANY queue row, a later
+	// sync could never correct it. A re-cut turf keeps its VAN route id and gets
 	// a NEW savedListId (observed live: "Orlando Turf 01" moved from 585052 to
 	// 585484 when the demo region was re-cut), so the stale row kept pointing
 	// at a saved list VAN now rejects with `'savedListId' must be a valid saved
@@ -351,43 +507,80 @@ export async function runCatalogSync(
 	//
 	// A settled row therefore stays settled until VAN re-cuts the turf, and
 	// clearing a `failed` row by hand is the deliberate way to force a retry.
-	for (const item of plan.geometryQueue) {
-		await db
-			.insert(vanGeometryQueue)
-			.values({
-				mapRouteId: item.mapRouteId,
-				savedListId: item.savedListId,
-				status: 'pending',
-				attempts: 0,
-			})
-			.onConflictDoUpdate({
-				target: vanGeometryQueue.mapRouteId,
-				set: {
+	//
+	// The one other re-arm: a `done` row whose turf has no roster for its
+	// current saved list (the uncontacted-door count's first pass, or a turf
+	// hulled before rosters existed). Only `done` — a `failed` row stays failed
+	// for the reason above, and a pending or running one will build the roster
+	// anyway. Once the worker writes the roster the planner stops asking. And
+	// only a `done` row with no error: one that says why no roster could be
+	// built (the wrong export type) would fail the same way every run.
+	// Batched for the same reason as the upserts above: one queue row per turf
+	// is another round trip per turf, on the same hot path.
+	// The plan names turf by VAN id; the upserts above have written each
+	// one's turfId.
+	const turfIdByRoute = new Map(
+		(
+			await db
+				.select({ turfId: vanTurfs.turfId, vanMapRouteId: vanTurfs.vanMapRouteId })
+				.from(vanTurfs)
+				.where(eq(vanTurfs.campaignId, campaignId))
+		).map((r) => [r.vanMapRouteId, r.turfId]),
+	);
+	const queueItems = plan.geometryQueue.flatMap((item) => {
+		const turfId = turfIdByRoute.get(item.vanMapRouteId);
+		return turfId === undefined ? [] : [{ ...item, turfId }];
+	});
+	for (const items of chunked(queueItems, WRITE_BATCH_SIZE)) {
+		const statements = items.map((item) =>
+			db
+				.insert(vanGeometryQueue)
+				.values({
+					turfId: item.turfId,
 					savedListId: item.savedListId,
 					status: 'pending',
 					attempts: 0,
-					// Cleared together: a job id, error or timestamp from the
-					// previous saved list describes work that no longer exists.
-					exportJobId: null,
-					lastError: null,
-					requestedAt: null,
-					completedAt: null,
-				},
-				// Refers to the EXISTING row, so this is "the stored saved list
-				// differs from the one VAN just reported".
-				where: ne(vanGeometryQueue.savedListId, item.savedListId),
-			});
+				})
+				.onConflictDoUpdate({
+					target: vanGeometryQueue.turfId,
+					set: {
+						savedListId: item.savedListId,
+						status: 'pending',
+						attempts: 0,
+						// Cleared together: a job id, error or timestamp from the
+						// previous saved list describes work that no longer exists.
+						exportJobId: null,
+						lastError: null,
+						requestedAt: null,
+						completedAt: null,
+					},
+					// Refers to the EXISTING row, so this is "the stored saved list
+					// differs from the one VAN just reported".
+					where: item.roster
+						? or(
+								ne(vanGeometryQueue.savedListId, item.savedListId),
+								and(eq(vanGeometryQueue.status, 'done'), isNull(vanGeometryQueue.lastError)),
+							)
+						: ne(vanGeometryQueue.savedListId, item.savedListId),
+				}),
+		);
+		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
+
+	await stampClaimsLoaded(db, plan.claimsLoaded);
 
 	// Written last, and only on a real run: a dry run reports what WOULD happen,
 	// so recording it as what the catalog now reflects would make the drift
 	// report trust a comparison that never took place.
+	//
+	// A completed sync also clears this campaign's recorded failure, so the
+	// next one is announced afresh rather than taken for the old one.
 	await db
 		.insert(vanSyncState)
-		.values({ id: 1, lastSyncAt: now.toISOString(), minivanExportsOk })
+		.values({ campaignId, lastSyncAt: now.toISOString(), minivanExportsOk })
 		.onConflictDoUpdate({
-			target: vanSyncState.id,
-			set: { lastSyncAt: now.toISOString(), minivanExportsOk },
+			target: vanSyncState.campaignId,
+			set: { lastSyncAt: now.toISOString(), minivanExportsOk, lastError: null, alertedError: null },
 		});
 
 	return {

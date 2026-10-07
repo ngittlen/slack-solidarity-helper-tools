@@ -15,7 +15,7 @@ const APP = 'https://example.test';
 
 function turf(over: Partial<ReconcileTurf> = {}): ReconcileTurf {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		mapRegionId: 10,
 		chapterId: 7,
 		name: 'Turf 01',
@@ -30,7 +30,7 @@ function turf(over: Partial<ReconcileTurf> = {}): ReconcileTurf {
 function claim(over: Partial<ReconcileClaim> = {}): ReconcileClaim {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		slackUserId: 'U1',
 		slackUserName: 'Dana',
 		issuedListNumber: '35536745-88712',
@@ -42,18 +42,25 @@ function claim(over: Partial<ReconcileClaim> = {}): ReconcileClaim {
 function recutClaim(over: Partial<RecutClaim> = {}): RecutClaim {
 	return {
 		checkoutId: 2,
-		mapRouteId: 56456,
+		turfId: 56456,
 		slackUserId: 'U1',
 		slackUserName: 'Dana',
 		releasedAt: new Date(NOW.getTime() - 10 * 60_000).toISOString(),
-		turf: { mapRegionId: 508413, chapterId: 7, name: 'Turf 01', regionName: 'Cambridge North' },
+		turf: {
+			campaignId: 1,
+			mapRegionId: 508413,
+			chapterId: 7,
+			name: 'Turf 01',
+			regionName: 'Cambridge North',
+		},
 		...over,
 	};
 }
 
 function replacement(over: Partial<ReplacementTurf> = {}): ReplacementTurf {
 	return {
-		mapRouteId: 56502,
+		turfId: 56502,
+		campaignId: 1,
 		mapRegionId: 508413,
 		name: 'Turf 01',
 		printedListNumber: '99999999-11111',
@@ -133,7 +140,7 @@ describe('planReconciliation — re-cut claims', () => {
 		expect(actions).toHaveLength(1);
 		const [action] = actions;
 		if (action.kind !== 'recut-replaced') throw new Error('wrong action');
-		expect(action.replacement.mapRouteId).toBe(56502);
+		expect(action.replacement.turfId).toBe(56502);
 		expect(action.slackUserName).toBe('Dana');
 		expect(action.text).toContain('99999999-11111');
 	});
@@ -149,7 +156,7 @@ describe('planReconciliation — re-cut claims', () => {
 		// one block.
 		const actions = plan({
 			recut: [recutClaim()],
-			replacements: [replacement(), replacement({ mapRouteId: 56503 })],
+			replacements: [replacement(), replacement({ turfId: 56503 })],
 		});
 		expect(actions.map((a) => a.kind)).toEqual(['recut-gone']);
 	});
@@ -169,10 +176,19 @@ describe('planReconciliation — re-cut claims', () => {
 });
 
 describe('findReplacement', () => {
+	// Region ids are VAN's and unique only within one campaign. Another
+	// campaign's re-cut of ITS region 508413 is not this turf's replacement,
+	// however well the names match.
+	it("never pairs with another campaign's turf in a region with the same id", () => {
+		expect(findReplacement(recutClaim(), [replacement({ campaignId: 2 })])).toBeNull();
+		// And with the right campaign the same replacement is found.
+		expect(findReplacement(recutClaim(), [replacement({ campaignId: 1 })])?.turfId).toBe(56502);
+	});
+
 	const target = recutClaim();
 
 	it('matches across casing and inner whitespace', () => {
-		expect(findReplacement(target, [replacement({ name: 'turf  01' })])?.mapRouteId).toBe(56502);
+		expect(findReplacement(target, [replacement({ name: 'turf  01' })])?.turfId).toBe(56502);
 	});
 
 	it('will not cross regions', () => {
@@ -190,7 +206,7 @@ describe('findReplacement', () => {
 	});
 
 	it('never pairs a route to itself', () => {
-		expect(findReplacement(target, [replacement({ mapRouteId: target.mapRouteId })])).toBeNull();
+		expect(findReplacement(target, [replacement({ turfId: target.turfId })])).toBeNull();
 	});
 });
 

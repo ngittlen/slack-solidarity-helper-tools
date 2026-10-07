@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
+import { migrate } from 'drizzle-orm/libsql/migrator';
 import { runCatalogSync } from './sync.js';
 import type { VanClient } from './client.js';
 import type { VanMapRegion } from './types.js';
@@ -11,8 +12,9 @@ import type { VanMapRegion } from './types.js';
 // certain way — which would keep passing if the WHERE stopped matching.
 //
 // What this protects is Story 2.5's re-cut path end to end. A re-cut turf keeps
-// its mapRouteId and gets a new savedListId, so a queue keyed by mapRouteId has
-// to notice the saved list changed or the turf never gets fresh geometry.
+// its VAN route id, and so its turfId, but gets a new savedListId, so a queue
+// keyed by turfId has to notice the saved list changed or the turf never gets
+// fresh geometry.
 
 // Inferred rather than annotated as LibSQLDatabase<...>: runCatalogSync takes
 // the wider `ReturnType<typeof drizzle>`, which also carries `$client`.
@@ -21,30 +23,10 @@ let client: Client;
 
 beforeEach(async () => {
 	client = createClient({ url: ':memory:' });
-	for (const ddl of [
-		`CREATE TABLE van_turfs (
-			map_route_id integer PRIMARY KEY NOT NULL, map_region_id integer, folder_id integer,
-			chapter_id integer, chapter_name text DEFAULT '' NOT NULL, region_name text DEFAULT '' NOT NULL,
-			name text NOT NULL, saved_list_id integer, printed_list_number text, route_number integer,
-			route_size integer DEFAULT 0 NOT NULL, door_count integer DEFAULT 0 NOT NULL,
-			phone_count integer DEFAULT 0 NOT NULL, centroid_lat real, centroid_lng real, hull_json text,
-			hull_source_route_size integer, van_distributed_to text, drift_alerted_at text,
-			drift_alerted_kind text, first_seen_at text NOT NULL,
-			last_seen_at text NOT NULL, last_refreshed_at text, retired_at text)`,
-		`CREATE TABLE van_geometry_queue (
-			map_route_id integer PRIMARY KEY NOT NULL, saved_list_id integer NOT NULL,
-			export_job_id integer, status text DEFAULT 'pending' NOT NULL,
-			attempts integer DEFAULT 0 NOT NULL, requested_at text, completed_at text, last_error text)`,
-		`CREATE TABLE van_turf_checkouts (
-			id integer PRIMARY KEY AUTOINCREMENT NOT NULL, map_route_id integer NOT NULL,
-			slack_user_id text NOT NULL, slack_user_name text NOT NULL, claimed_at text NOT NULL,
-			expires_at text NOT NULL, released_at text, release_reason text)`,
-		`CREATE TABLE van_sync_state (
-			id integer PRIMARY KEY NOT NULL, last_sync_at text NOT NULL, minivan_exports_ok integer)`,
-	]) {
-		await client.execute(ddl);
-	}
 	db = drizzle(client);
+	// The real migrations rather than hand-written tables, so this test cannot
+	// drift from the schema the sync actually writes to.
+	await migrate(db, { migrationsFolder: 'drizzle' });
 });
 
 /** One folder, one region, one route — with the saved list id under test. */
@@ -73,11 +55,15 @@ function vanClientWith(savedListId: number, routeSize = 76): VanClient {
 		mapRegions: async () => regions,
 		printedLists: async () => [],
 		savedLists: async () => [],
-		minivanExports: async () => [],
+		minivanExportsSince: async () => ({ items: [], complete: true }),
 		refreshMapRegion: async () => undefined,
 		exportJobTypes: async () => [],
 		createExportJob: async () => ({}) as never,
 		exportJob: async () => ({}) as never,
+		createChangedEntityExportJob: async () => ({}) as never,
+		changedEntityExportJob: async () => ({}) as never,
+		contactTypes: async () => [],
+		changeTypes: async () => [],
 		get: async () => undefined as never,
 	};
 }
@@ -85,21 +71,28 @@ function vanClientWith(savedListId: number, routeSize = 76): VanClient {
 const MAPPINGS = [{ chapterId: 71, chapterName: 'Orange County', folderIds: [2731] }];
 
 async function queueRow() {
-	const res = await client.execute('SELECT * FROM van_geometry_queue WHERE map_route_id = 56456');
+	const res = await client.execute('SELECT * FROM van_geometry_queue WHERE turf_id = 56456');
 	return res.rows[0] ?? null;
 }
 
 /** Mark the row the way a successful worker run would. */
 async function markDone(savedListId: number) {
 	await client.execute({
-		sql: `UPDATE van_geometry_queue SET status='done', attempts=1, export_job_id=?, completed_at='2026-09-01T00:00:00Z' WHERE map_route_id=56456`,
+		sql: `UPDATE van_geometry_queue SET status='done', attempts=1, export_job_id=?, completed_at='2026-09-01T00:00:00Z' WHERE turf_id=56456`,
 		args: [savedListId],
 	});
 }
 
+// Each test opens its own in-memory client. Closing it keeps one per test from
+// leaking for the life of the worker — which never shows up while this file is
+// run on its own.
+afterEach(() => {
+	client.close();
+});
+
 describe('geometry queue re-arming', () => {
 	it('queues a turf that has no hull', async () => {
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 		const row = await queueRow();
 		expect(row!.saved_list_id).toBe(585052);
 		expect(row!.status).toBe('pending');
@@ -110,10 +103,10 @@ describe('geometry queue re-arming', () => {
 	// 585484, after which POST /exportJobs answered `'savedListId' must be a
 	// valid saved list ID in this context` for as long as the stale row stood.
 	it('re-arms a settled row when the turf is re-cut onto a new saved list', async () => {
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 		await markDone(585052);
 
-		await runCatalogSync(db, vanClientWith(585484), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585484), 1, MAPPINGS);
 
 		const row = await queueRow();
 		expect(row!.saved_list_id).toBe(585484);
@@ -130,11 +123,11 @@ describe('geometry queue re-arming', () => {
 	// runs a day from becoming 37 export jobs a day per turf. A turf with no
 	// hull is re-queued by `needsGeometry` on every single sync.
 	it('leaves a settled row alone when the saved list is unchanged', async () => {
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 		await markDone(585052);
 
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 
 		const row = await queueRow();
 		expect(row!.status).toBe('done');
@@ -143,12 +136,12 @@ describe('geometry queue re-arming', () => {
 	});
 
 	it('does not resurrect a dead-lettered row on an unchanged saved list', async () => {
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 		await client.execute(
-			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE map_route_id=56456`,
+			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE turf_id=56456`,
 		);
 
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 
 		const row = await queueRow();
 		expect(row!.status).toBe('failed');
@@ -158,12 +151,12 @@ describe('geometry queue re-arming', () => {
 	// A re-cut is exactly when a dead letter deserves another go: the saved
 	// list that failed is gone, so the reason it failed may be gone too.
 	it('does resurrect a dead-lettered row when the saved list changes', async () => {
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 		await client.execute(
-			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE map_route_id=56456`,
+			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE turf_id=56456`,
 		);
 
-		await runCatalogSync(db, vanClientWith(585484), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585484), 1, MAPPINGS);
 
 		const row = await queueRow();
 		expect(row!.status).toBe('pending');
@@ -174,15 +167,101 @@ describe('geometry queue re-arming', () => {
 	// The original reason for onConflictDoNothing, which must still hold: a row
 	// the worker is mid-flight on is not reset under its feet.
 	it('does not disturb a running row on an unchanged saved list', async () => {
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 		await client.execute(
-			`UPDATE van_geometry_queue SET status='running', attempts=1, export_job_id=900 WHERE map_route_id=56456`,
+			`UPDATE van_geometry_queue SET status='running', attempts=1, export_job_id=900 WHERE turf_id=56456`,
 		);
 
-		await runCatalogSync(db, vanClientWith(585052), MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 
 		const row = await queueRow();
 		expect(row!.status).toBe('running');
 		expect(row!.export_job_id).toBe(900);
+	});
+});
+
+describe('geometry queue roster re-arming', () => {
+	const ROSTER = { roster: true };
+
+	// The uncontacted-door count's first pass: every turf already hulled has a
+	// `done` row and no roster, and must get one more export.
+	it('re-arms a settled row whose turf has no roster', async () => {
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
+		await markDone(585052);
+
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS, ROSTER);
+
+		const row = await queueRow();
+		expect(row!.status).toBe('pending');
+		expect(row!.export_job_id).toBeNull();
+	});
+
+	// Otherwise every sync would re-submit an export per turf, forever.
+	it('stops asking once the roster matches the saved list', async () => {
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
+		await markDone(585052);
+		await client.execute(
+			`UPDATE van_turfs SET roster_saved_list_id = 585052 WHERE turf_id = 56456`,
+		);
+
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS, ROSTER);
+
+		expect((await queueRow())!.status).toBe('done');
+	});
+
+	it('does not resurrect a dead-lettered row just for a roster', async () => {
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
+		await client.execute(
+			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE turf_id=56456`,
+		);
+
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS, ROSTER);
+
+		expect((await queueRow())!.status).toBe('failed');
+	});
+
+	// The worker leaves why on the row (an export with no VanID); asking again
+	// would fail the same way on every turf, every run.
+	it('does not re-arm a done row that says why it has no roster', async () => {
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
+		await markDone(585052);
+		await client.execute(
+			`UPDATE van_geometry_queue SET last_error='export CSV has no VanID column' WHERE turf_id=56456`,
+		);
+
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS, ROSTER);
+
+		expect((await queueRow())!.status).toBe('done');
+	});
+
+	it('queues nothing for rosters when the feature is off', async () => {
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
+		await markDone(585052);
+
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
+
+		expect((await queueRow())!.status).toBe('done');
+	});
+
+	// Kept a day first: marking walked is what triggers the re-cut that
+	// retires the route, and that completion's % walked is derived from its
+	// roster afterwards.
+	it('drops a retired turf’s roster a day after it retires', async () => {
+		const t0 = new Date('2026-09-28T12:00:00.000Z');
+		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS, { now: t0 });
+		await client.execute(
+			`INSERT INTO van_turf_roster (turf_id, person_hash, door_hash) VALUES (56456, x'01', x'02')`,
+		);
+		const empty: VanClient = { ...vanClientWith(585052), mapRegions: async () => [] };
+		const rosterRows = async () =>
+			Number((await client.execute('SELECT count(*) AS n FROM van_turf_roster')).rows[0]!.n);
+
+		await runCatalogSync(db, empty, 1, MAPPINGS, { now: t0 });
+		expect(await rosterRows()).toBe(1);
+
+		await runCatalogSync(db, empty, 1, MAPPINGS, {
+			now: new Date(t0.getTime() + 25 * 3600 * 1000),
+		});
+		expect(await rosterRows()).toBe(0);
 	});
 });
