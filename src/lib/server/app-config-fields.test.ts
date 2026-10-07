@@ -44,6 +44,7 @@ describe('the table', () => {
 				'mobilizeContactName',
 				'mobilizeContactEmail',
 				'mobilizeContactPhone',
+				'mobilizeImportTag',
 				'slackGrowthReportRankingAlpha',
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
@@ -58,7 +59,7 @@ describe('the table', () => {
 				'publicJoinUrl',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(20);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(21);
 	});
 });
 
@@ -147,6 +148,15 @@ describe('contact fields', () => {
 
 	it('rejects a non-string', async () => {
 		expect(await run('mobilizeContactPhone', 5551234)).toMatchObject({ ok: false });
+	});
+
+	it('trims the import tag and accepts blank as "import off"', async () => {
+		expect(await run('mobilizeImportTag', '  partner-shift ')).toEqual({
+			ok: true,
+			value: 'partner-shift',
+		});
+		expect(await run('mobilizeImportTag', '')).toEqual({ ok: true, value: '' });
+		expect(await run('mobilizeImportTag', 'x'.repeat(101))).toMatchObject({ ok: false });
 	});
 
 	it.each(['organizer@example.org', 'a.b+tag@sub.example.co.uk'])(

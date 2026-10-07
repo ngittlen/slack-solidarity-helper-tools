@@ -323,6 +323,10 @@ export const appConfig = sqliteTable(
 		mobilizeContactName: text('mobilize_contact_name'),
 		mobilizeContactEmail: text('mobilize_contact_email'),
 		mobilizeContactPhone: text('mobilize_contact_phone'),
+		// Partner-org import: events in the partner's Mobilize org carrying this
+		// tag are copied into Solidarity. NULL / '' means the import is off. No
+		// env fallback — it is the switch an organizer flips, not deploy config.
+		mobilizeImportTag: text('mobilize_import_tag'),
 		// Header countdown (label + ISO end datetime). DB-only, no env fallback;
 		// '' means "not configured" (the set-only save contract reserves NULL for
 		// "use the fallback", so clearing writes '' rather than NULL).
@@ -549,6 +553,44 @@ export type NewMobilizeSyncedRsvpRow = typeof mobilizeSyncedRsvps.$inferInsert;
 
 export type ZipChapterRow = typeof zipChapterMap.$inferSelect;
 export type NewZipChapterRow = typeof zipChapterMap.$inferInsert;
+
+// --- Partner Mobilize org -> Solidarity event import ---------------------------
+
+// One row per partner Mobilize event the import has acted on. Written the
+// moment the Solidarity event exists — before its sessions and page — so a
+// crashed run resumes it rather than creating it twice. Mobilize event ids are
+// global across organizations, so the id alone is the key.
+export const mobilizeImportedEvents = sqliteTable('mobilize_imported_events', {
+	mobilizeEventId: integer('mobilize_event_id').primaryKey(),
+	sourceOrgId: integer('source_org_id').notNull(),
+	// NULL unless the Solidarity event exists ('created' / 'complete').
+	solidarityEventId: integer('solidarity_event_id'),
+	// See ImportStatus in mobilize-migrator/lib/import.ts.
+	status: text('status').notNull(),
+	title: text('title').notNull(),
+	solidarityPageUrl: text('solidarity_page_url'),
+	// Permanent refusals (4xx) since the last state change. At
+	// MAX_PERMANENT_FAILURES the row becomes 'rejected' and stops retrying.
+	failedAttempts: integer('failed_attempts').notNull().default(0),
+	// When a 'created' row whose event left the plan was announced, so a
+	// stalled import is reported once rather than every hour.
+	stalledReportedAt: text('stalled_reported_at'),
+	createdAt: text('created_at').notNull(),
+	updatedAt: text('updated_at').notNull(),
+});
+
+// Partner timeslot -> the Solidarity session made for it. The session id is
+// NULL for the first timeslot when the event-create response didn't name the
+// session it made; the row still stops that timeslot being created twice.
+export const mobilizeImportedTimeslots = sqliteTable('mobilize_imported_timeslots', {
+	mobilizeTimeslotId: integer('mobilize_timeslot_id').primaryKey(),
+	mobilizeEventId: integer('mobilize_event_id').notNull(),
+	solidaritySessionId: integer('solidarity_session_id'),
+	createdAt: text('created_at').notNull(),
+});
+
+export type MobilizeImportedEventRow = typeof mobilizeImportedEvents.$inferSelect;
+export type MobilizeImportedTimeslotRow = typeof mobilizeImportedTimeslots.$inferSelect;
 
 // ---------------------------------------------------------------------------
 // Member lookup + moderation notes

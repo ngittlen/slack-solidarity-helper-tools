@@ -9,6 +9,7 @@
 // events and uploading images both require it. A 403 means the key is rejected
 // or lost that grant, and the sync reports authFailed and posts a Slack alert.
 
+import { isNotNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 
 import { findDuplicate } from '../../../mobilize-migrator/lib/dedupe.js';
@@ -21,6 +22,7 @@ import { countSeats, type SeatCount } from '../../../mobilize-migrator/lib/seats
 import { runSync, type SyncReport } from '../../../mobilize-migrator/lib/sync.js';
 import { planMigration } from '../../../mobilize-migrator/lib/transform.js';
 import { loadSettings } from './settings.js';
+import { mobilizeImportedEvents } from './schema.js';
 import { MOBILIZE_SYNC_MAX_CREATES, SOLIDARITY_API_TOKEN } from './env.js';
 
 // The full drizzle type rather than LibSQLDatabase: loadSettings needs $client.
@@ -98,6 +100,15 @@ export interface MobilizeSyncResult extends SyncReport {
 	dryRun: boolean;
 }
 
+/** Solidarity events the partner-org import created. */
+export async function importedSolidarityEventIds(db: Db): Promise<Set<number>> {
+	const rows = await db
+		.select({ id: mobilizeImportedEvents.solidarityEventId })
+		.from(mobilizeImportedEvents)
+		.where(isNotNull(mobilizeImportedEvents.solidarityEventId));
+	return new Set(rows.map((r) => r.id!));
+}
+
 export async function runMobilizeSync(
 	db: Db,
 	options: MobilizeSyncOptions = {},
@@ -117,11 +128,25 @@ export async function runMobilizeSync(
 
 	// Both reads are independent; the pages call is what recovers the formatted
 	// descriptions the events endpoint flattens.
-	const [events, pageDescriptions, settings] = await Promise.all([
+	const [allEvents, pageDescriptions, settings, importedIds] = await Promise.all([
 		fetchAllEvents(SOLIDARITY_API_TOKEN),
 		fetchPageDescriptions(SOLIDARITY_API_TOKEN),
 		loadSettings(db),
+		importedSolidarityEventIds(db),
 	]);
+	// Events the partner-org import created came FROM a Mobilize org; pushing
+	// them into ours would publish a copy of a copy, and the API can't take it
+	// back. The import also tags them mobilize-exclude, but that relies on
+	// Solidarity keeping a field sent on create — and both APIs have silently
+	// dropped fields before (README: "Event API traps"). This check needs only
+	// our own ledger.
+	const events = allEvents.filter((event) => !importedIds.has(event.id));
+	const excludedImports = allEvents.length - events.length;
+	if (excludedImports > 0) {
+		console.log(
+			`[mobilize-sync] left out ${excludedImports} event(s) imported from the partner org`,
+		);
+	}
 	const { planned, skipped, excludedByTag, duplicateSessions } = planMigration(
 		events,
 		Date.now(),

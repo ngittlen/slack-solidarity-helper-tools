@@ -156,6 +156,7 @@
 					mobilizeContactName={data.settings.mobilizeContactName}
 					mobilizeContactEmail={data.settings.mobilizeContactEmail}
 					mobilizeContactPhone={data.settings.mobilizeContactPhone}
+					mobilizeImportTag={data.settings.mobilizeImportTag}
 					rankingAlpha={data.settings.slackGrowthReportRankingAlpha}
 					countdownLabel={data.settings.countdownLabel}
 					countdownEndAt={data.settings.countdownEndAt}

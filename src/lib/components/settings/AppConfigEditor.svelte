@@ -50,6 +50,8 @@
 		mobilizeContactName: string;
 		mobilizeContactEmail: string;
 		mobilizeContactPhone: string;
+		/** Tag selecting partner Mobilize events to import ('' = import off). */
+		mobilizeImportTag: string;
 		rankingAlpha: number | undefined;
 		/** Header countdown config ('' when unset). */
 		countdownLabel: string;
@@ -80,6 +82,7 @@
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
+		mobilizeImportTag,
 		rankingAlpha,
 		countdownLabel,
 		countdownEndAt,
@@ -209,6 +212,13 @@
 		save: (value) => postAppConfig({ mobilizeContactPhone: value }),
 	});
 
+	// Partner-org import. Blank turns the import off, so clearing the field is
+	// the off switch.
+	const importTagSave = createFieldAutosave<string>({
+		initial: mobilizeImportTag,
+		save: (value) => postAppConfig({ mobilizeImportTag: value }),
+	});
+
 	const contactSaves = $derived([contactNameSave, contactEmailSave, contactPhoneSave]);
 	const contactStatus = $derived(contactSaves.find((f) => f.status !== 'idle')?.status ?? 'idle');
 	const contactError = $derived(contactSaves.find((f) => f.error)?.error ?? null);
@@ -291,6 +301,7 @@
 	$effect(() => () => {
 		siteNameSave.destroy();
 		publicJoinUrlSave.destroy();
+		importTagSave.destroy();
 		alphaSave.destroy();
 		tickerSpeedSave.destroy();
 		countdownLabelSave.destroy();
@@ -590,6 +601,30 @@
 			>
 			(or in <code>MOBILIZE_CONTACT_EMAIL</code>). Clearing a field falls back to its
 			<code>MOBILIZE_CONTACT_*</code> environment variable.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.mobilizeImportTag}
+		label="Partner Mobilize import tag"
+		status={importTagSave.status}
+		error={importTagSave.error}
+		onRetry={importTagSave.status === 'error' ? importTagSave.retry : undefined}
+	>
+		<input
+			class="site-name-input"
+			type="text"
+			maxlength="100"
+			placeholder="Import off"
+			value={importTagSave.value}
+			oninput={importTagSave.oninput}
+		/>
+		<p class="site-name-note">
+			Public events in the partner campaign's Mobilize org that carry this tag are copied into
+			Solidarity every hour, with their description and image, under the chapter their zip belongs
+			to. Each is copied once; later changes in Mobilize are not. Leave blank to turn the import
+			off. The partner org is set by <code>MOBILIZE_IMPORT_ORG_ID</code> and
+			<code>MOBILIZE_IMPORT_API_KEY</code>.
 		</p>
 	</SettingsRow>
 

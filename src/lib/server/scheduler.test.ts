@@ -331,6 +331,37 @@ describe('the Mobilize job', () => {
 	});
 });
 
+describe('the partner Mobilize import job', () => {
+	const run = (call: Caller) => job('mobilize-import').run(at('11:15'), call, db);
+
+	it('runs hourly at :15, clear of the other syncs', () => {
+		expect(day(job('mobilize-import'))).toEqual(
+			Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:15`),
+		);
+	});
+
+	it('re-posts until the import is complete', async () => {
+		const { calls, call } = recorder((_path, n) => ({ incomplete: n < 2 }));
+		await run(call);
+		expect(calls).toEqual([
+			{ path: '/api/internal/mobilize-import', params: {} },
+			{ path: '/api/internal/mobilize-import', params: {} },
+		]);
+	});
+
+	it('stops at a skip — locked or not configured', async () => {
+		const { calls, call } = recorder(() => ({ skipped: true, incomplete: true }));
+		await run(call);
+		expect(calls).toHaveLength(1);
+	});
+
+	it('gives up on an import that never completes', async () => {
+		const { calls, call } = recorder(() => ({ incomplete: true }));
+		await expect(run(call)).rejects.toThrow('still incomplete after 6 requests');
+		expect(calls).toHaveLength(6);
+	});
+});
+
 describe('localCaller', () => {
 	let server: http.Server;
 	let port: number;

@@ -171,6 +171,26 @@ const mobilizeSync: Job = {
 	},
 };
 
+/** Requests one import run may take before it is treated as stuck. */
+const MOBILIZE_IMPORT_MAX_CHUNKS = 6;
+
+/** Mirrors mobilize-import.yml. Partner events are copied once and nothing
+ *  downstream waits on them, so hourly is plenty; :15 keeps it clear of the
+ *  outbound sync at :00/:30 and the VAN sync at :07/:37. */
+const mobilizeImport: Job = {
+	name: 'mobilize-import',
+	schedule: [{ hours: EVERY_HOUR, minutes: [15] }],
+	run: async (_slot, call) => {
+		for (let chunk = 1; ; chunk++) {
+			const res = await call('/api/internal/mobilize-import', {}, 5 * MINUTE);
+			if (res.skipped || res.incomplete !== true) break;
+			if (chunk === MOBILIZE_IMPORT_MAX_CHUNKS) {
+				throw new Error(`still incomplete after ${MOBILIZE_IMPORT_MAX_CHUNKS} requests`);
+			}
+		}
+	},
+};
+
 /** Mirrors slack-invite-audit.yml. */
 const slackInviteAudit: Job = {
 	name: 'slack-invite-audit',
@@ -180,7 +200,7 @@ const slackInviteAudit: Job = {
 	},
 };
 
-export const JOBS: readonly Job[] = [vanSync, mobilizeSync, slackInviteAudit];
+export const JOBS: readonly Job[] = [vanSync, mobilizeSync, mobilizeImport, slackInviteAudit];
 
 /**
  * Calls this machine's own server. `node:http` rather than fetch: fetch gives

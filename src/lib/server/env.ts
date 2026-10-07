@@ -130,6 +130,18 @@ export const MOBILIZE_CONTACT_PHONE = get('MOBILIZE_CONTACT_PHONE');
 // data broke, and these events are publicly visible once created.
 export const MOBILIZE_SYNC_MAX_CREATES = intEnv('MOBILIZE_SYNC_MAX_CREATES', 25);
 
+// Partner-org import (their tagged Mobilize events -> our Solidarity). A
+// separate key and org from ours above: the partner's key only needs read
+// access, and mixing the two up would read — or write — the wrong org. The tag
+// that selects events is a /settings field, not an env var. The import stays
+// off until the key, the org and the tag are all set.
+export const MOBILIZE_IMPORT_API_KEY = get('MOBILIZE_IMPORT_API_KEY');
+export const MOBILIZE_IMPORT_ORG_ID = parseInt(get('MOBILIZE_IMPORT_ORG_ID'), 10);
+// Blast-radius guard, as for the outbound sync: more new imports than this in
+// one run and nothing is created. Imported events are public once they exist,
+// and the API cannot delete them.
+export const MOBILIZE_IMPORT_MAX_CREATES = intEnv('MOBILIZE_IMPORT_MAX_CREATES', 10);
+
 // Attendee sync (Mobilize signups -> Solidarity RSVPs).
 // Last-resort chapter for a new profile when the person's zip isn't in the
 // derived zip->chapter map and the event isn't chapter-scoped. Leave unset to

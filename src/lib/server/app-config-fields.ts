@@ -233,6 +233,8 @@ function dmTemplateField(
 
 const COUNTDOWN_LABEL_MAX_LENGTH = 80;
 const CONTACT_FIELD_MAX_LENGTH = 200;
+// Generous for a tag name; the bound only keeps junk out of the column.
+const MOBILIZE_TAG_MAX_LENGTH = 100;
 // Google's own limit on a sheet name is 100 characters.
 const SHEET_TAB_NAME_MAX_LENGTH = 100;
 // Slack renders a section block's text up to 3000 chars; keep the stored
@@ -300,6 +302,8 @@ export const APP_CONFIG_FIELDS: {
 	mobilizeContactName: boundedTextField('mobilizeContactName', CONTACT_FIELD_MAX_LENGTH),
 	mobilizeContactEmail: emailField('mobilizeContactEmail', CONTACT_FIELD_MAX_LENGTH),
 	mobilizeContactPhone: boundedTextField('mobilizeContactPhone', CONTACT_FIELD_MAX_LENGTH),
+	// '' turns the partner-org import off.
+	mobilizeImportTag: boundedTextField('mobilizeImportTag', MOBILIZE_TAG_MAX_LENGTH),
 
 	// [0, 1] is the range the /settings slider offers and the span of meaningful
 	// power-law exponents for the growth score.
