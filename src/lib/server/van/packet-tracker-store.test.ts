@@ -653,6 +653,25 @@ describe('packets the tracker does not list', () => {
 		expect(third.filled).toBe(1);
 	});
 
+	it('finds the packet by its name when the tracker has an old list number', async () => {
+		await turf({ name: 'R10C_034_Wayne_Taylor Turf 06' });
+		await checkout();
+		const stale = packet('111-1');
+		stale[col('Packet Name')] = 'R10C_034_Wayne_Taylor Turf 06';
+		const other = packet('222-2');
+		const fake = fakeSheets({ 'sheet-downriver': tracker(other, stale) });
+
+		const result = await run(fake.api);
+
+		expect(result.warnings).toEqual([]);
+		expect(result.filled).toBe(1);
+		const sheet = fake.sheet('sheet-downriver');
+		expect(sheet[3]![col('Canvasser')]).toBe('*Dana');
+		// The campaign's List Number is protected, and left as they have it.
+		expect(sheet[3]![col('List Number')]).toBe('111-1');
+		expect(sheet[2]).toEqual(other);
+	});
+
 	it('writes to neither row when the packet is listed twice', async () => {
 		await turf();
 		await checkout();
