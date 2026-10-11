@@ -6,6 +6,7 @@ import {
 	clearedCells,
 	desiredCells,
 	findLayout,
+	isPacketRow,
 	isUnfilled,
 	priorCells,
 	packetRows,
@@ -213,19 +214,56 @@ describe('findLayout', () => {
 });
 
 describe('packetRows', () => {
+	const key = (listNumber: string | null, turfName = 'Turf 01') => ({ listNumber, turfName });
+
 	it('finds the packet by list number, forgiving stray spaces', () => {
-		expect(packetRows(SHEET, LAYOUT, '35536745-88712')).toEqual([3]);
-		expect(packetRows(SHEET, LAYOUT, ' 35536745 - 88712 ')).toEqual([3]);
+		expect(packetRows(SHEET, LAYOUT, key('35536745-88712'))).toEqual([3]);
+		expect(packetRows(SHEET, LAYOUT, key(' 35536745 - 88712 '))).toEqual([3]);
 	});
 
 	it('returns every row listing it, and none for an unlisted one', () => {
 		const doubled = [...SHEET, packet('111-1')];
-		expect(packetRows(doubled, LAYOUT, '111-1')).toEqual([2, 4]);
-		expect(packetRows(SHEET, LAYOUT, '999-9')).toEqual([]);
+		expect(packetRows(doubled, LAYOUT, key('111-1'))).toEqual([2, 4]);
+		expect(packetRows(SHEET, LAYOUT, key('999-9'))).toEqual([]);
 	});
 
 	it('never matches the header or anything above it', () => {
-		expect(packetRows(SHEET, LAYOUT, 'List Number')).toEqual([]);
+		expect(packetRows(SHEET, LAYOUT, key('List Number'))).toEqual([]);
+		expect(packetRows(SHEET, LAYOUT, key('999-9', 'Packet Name'))).toEqual([]);
+	});
+
+	it('falls back to the Packet Name when the tracker has an old list number', () => {
+		expect(packetRows(SHEET, LAYOUT, key('999-9', 'Taylor 004'))).toEqual([2, 3]);
+		const named = [...SHEET];
+		named[3] = packet('35536745-88712');
+		named[3][col('Packet Name')] = 'R10C_Wayne_TaylorCity004 Turf 06';
+		expect(packetRows(named, LAYOUT, key('999-9', ' r10c_wayne_taylorcity004  turf 06 '))).toEqual([
+			3,
+		]);
+	});
+
+	it('prefers the list number to a name that matches another row', () => {
+		expect(packetRows(SHEET, LAYOUT, key('111-1', 'Taylor 004'))).toEqual([2]);
+	});
+
+	it('goes by list number alone in a tab with no Packet Name column', () => {
+		const header = HEADER.filter((h) => h !== 'Packet Name');
+		const row = header.map((h) => (h === 'List Number' ? '111-1' : ''));
+		const sheet = [header, row];
+		const layout = layoutOf(sheet);
+		expect(layout.packetName).toBeNull();
+		expect(packetRows(sheet, layout, key('111-1'))).toEqual([1]);
+		expect(packetRows(sheet, layout, key('999-9', ''))).toEqual([]);
+	});
+});
+
+describe('isPacketRow', () => {
+	it('accepts a row by its list number or its name, and nothing else', () => {
+		const row = packet('111-1');
+		expect(isPacketRow(row, LAYOUT, { listNumber: '111-1', turfName: 'Other' })).toBe(true);
+		expect(isPacketRow(row, LAYOUT, { listNumber: '999-9', turfName: 'taylor 004' })).toBe(true);
+		expect(isPacketRow(row, LAYOUT, { listNumber: '999-9', turfName: 'Other' })).toBe(false);
+		expect(isPacketRow(row, LAYOUT, { listNumber: null, turfName: '' })).toBe(false);
 	});
 });
 

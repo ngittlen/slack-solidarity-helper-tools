@@ -42,6 +42,7 @@ import {
 	clearedCells,
 	desiredCells,
 	findLayout,
+	isPacketRow,
 	isUnfilled,
 	markedName,
 	priorCells,
@@ -52,6 +53,7 @@ import {
 	type ColumnLayout,
 	type PacketCells,
 	type PacketCheckout,
+	type PacketKey,
 } from '../../van/packet-tracker.js';
 import { matchSheetTarget, orderSheetTargets, type SheetTarget } from '../../van/sheet-routing.js';
 import {
@@ -547,9 +549,8 @@ async function syncCheckout(
 	const label = escapeMrkdwn(`${candidate.turfName} (${candidate.slackUserName})`);
 	const base: SheetState = { ...state, spreadsheetId: tab.spreadsheetId };
 
-	const rows = candidate.issuedListNumber
-		? packetRows(tab.values, tab.layout, candidate.issuedListNumber)
-		: [];
+	const key = { listNumber: candidate.issuedListNumber, turfName: candidate.turfName };
+	const rows = candidate.issuedListNumber ? packetRows(tab.values, tab.layout, key) : [];
 	const wanted = desiredCells(candidate, sheetDoors(tab.values[rows[0] ?? -1], tab.layout));
 
 	if (rows.length !== 1) {
@@ -586,15 +587,7 @@ async function syncCheckout(
 	if (state.cells === null) {
 		if (wanted === null) {
 			if (state.yellow && candidate.issuedListNumber) {
-				return unhighlightFreed(
-					client,
-					tab,
-					rowIndex,
-					candidate.issuedListNumber,
-					base,
-					save,
-					deadline,
-				);
+				return unhighlightFreed(client, tab, rowIndex, key, base, save, deadline);
 			}
 			await save(base);
 			return 'unchanged';
@@ -647,9 +640,7 @@ async function syncCheckout(
 		deadline,
 	});
 	if (!fresh.ok) return { error: fresh.error, status: fresh.status };
-	const samePacket =
-		normaliseListNumber(fresh.value[tab.layout.columns['List Number']] ?? '') ===
-		normaliseListNumber(candidate.issuedListNumber ?? '');
+	const samePacket = isPacketRow(fresh.value, tab.layout, key);
 	const stillFree =
 		state.cells === null
 			? isUnfilled(fresh.value, tab.layout)
@@ -703,7 +694,7 @@ async function unhighlightFreed(
 	client: SheetsClient,
 	tab: OpenTab,
 	rowIndex: number,
-	listNumber: string,
+	key: PacketKey,
 	base: SheetState,
 	save: (next: SheetState) => Promise<void>,
 	deadline: number,
@@ -718,10 +709,7 @@ async function unhighlightFreed(
 		deadline,
 	});
 	if (!fresh.ok) return { error: fresh.error, status: fresh.status };
-	const samePacket =
-		normaliseListNumber(fresh.value[tab.layout.columns['List Number']] ?? '') ===
-		normaliseListNumber(listNumber);
-	if (!samePacket) return 'moved';
+	if (!isPacketRow(fresh.value, tab.layout, key)) return 'moved';
 	if (isUnfilled(fresh.value, tab.layout)) {
 		const off = await highlight(
 			client,

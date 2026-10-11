@@ -6,8 +6,9 @@
 // List Number, in protected columns — alongside formula columns of its own
 // (`shift_key`, `Today?`, `Knocked %`). Handing a packet out means filling in
 // the canvasser columns on that packet's EXISTING row. So the app never adds,
-// deletes or moves a row; it finds the packet by List Number and fills in, or
-// clears, the columns a canvasser would:
+// deletes or moves a row; it finds the packet by List Number — or, when VAN
+// has issued a list number the tracker does not have yet, by Packet Name —
+// and fills in, or clears, the columns a canvasser would:
 //
 //   claimed                  → Canvasser, Shift Time, Date Sent Out,
 //                              Walk Mode filled, Status Unwalked
@@ -199,11 +200,16 @@ export function desiredCells(
 	};
 }
 
+/** Not required: without it, packets are found by List Number alone. */
+const PACKET_NAME_COLUMN = 'Packet Name';
+
 /** Where each column sits in the tab, and which row is the header. */
 export interface ColumnLayout {
 	headerRowIndex: number;
 	/** 0-based column index per column. */
 	columns: Record<PacketColumn, number>;
+	/** 0-based index of Packet Name, or null when the tab has none. */
+	packetName: number | null;
 }
 
 /** Header text as compared: case, spacing and punctuation ignored. */
@@ -224,7 +230,7 @@ export const HEADER_SEARCH_ROWS = 10;
 export function findLayout(
 	values: readonly (readonly string[])[],
 ): { ok: true; layout: ColumnLayout } | { ok: false; missing: PacketColumn[] } {
-	let best: { row: number; found: Map<PacketColumn, number> } | null = null;
+	let best: { row: number; found: Map<PacketColumn, number>; name: number | null } | null = null;
 	for (let row = 0; row < Math.min(values.length, HEADER_SEARCH_ROWS); row++) {
 		const byName = new Map<string, number>();
 		(values[row] ?? []).forEach((cell, i) => {
@@ -236,7 +242,9 @@ export function findLayout(
 			const index = byName.get(normaliseHeader(column));
 			if (index !== undefined) found.set(column, index);
 		}
-		if (!best || found.size > best.found.size) best = { row, found };
+		if (!best || found.size > best.found.size) {
+			best = { row, found, name: byName.get(normaliseHeader(PACKET_NAME_COLUMN)) ?? null };
+		}
 	}
 
 	const missing = PACKET_COLUMNS.filter((c) => !best?.found.has(c));
@@ -246,6 +254,7 @@ export function findLayout(
 		layout: {
 			headerRowIndex: best.row,
 			columns: Object.fromEntries(best.found) as Record<PacketColumn, number>,
+			packetName: best.name,
 		},
 	};
 }
@@ -255,21 +264,69 @@ export function normaliseListNumber(value: string): string {
 	return value.replace(/\s+/g, '');
 }
 
-/** The rows listing this packet, by List Number. More than one is the
- *  campaign's duplicate, and the caller writes to neither. */
+/** Packet names as compared: case and runs of spaces ignored. */
+export function normalisePacketName(value: string): string {
+	return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/** Which packet a checkout is: the list number VAN issued, and the turf's
+ *  name, which the campaign uses as its Packet Name. */
+export interface PacketKey {
+	listNumber: string | null;
+	turfName: string;
+}
+
+function matchesList(row: readonly string[] | undefined, layout: ColumnLayout, wanted: string) {
+	return (
+		wanted !== '' && normaliseListNumber(row?.[layout.columns['List Number']] ?? '') === wanted
+	);
+}
+
+function matchesName(row: readonly string[] | undefined, layout: ColumnLayout, wanted: string) {
+	return (
+		wanted !== '' &&
+		layout.packetName !== null &&
+		normalisePacketName(row?.[layout.packetName] ?? '') === wanted
+	);
+}
+
+/**
+ * The rows listing this packet. More than one is the campaign's duplicate,
+ * and the caller writes to neither.
+ *
+ * By List Number first. VAN issues a new list number when a turf's list is
+ * regenerated, and the campaign's tracker can lag behind it (seen
+ * 2026-10-11), so a packet no row has the number for is looked for by its
+ * Packet Name instead.
+ */
 export function packetRows(
 	values: readonly (readonly string[])[],
 	layout: ColumnLayout,
-	listNumber: string,
+	key: PacketKey,
 ): number[] {
-	const wanted = normaliseListNumber(listNumber);
-	if (!wanted) return [];
-	const rows: number[] = [];
-	for (let i = layout.headerRowIndex + 1; i < values.length; i++) {
-		const cell = values[i]?.[layout.columns['List Number']] ?? '';
-		if (normaliseListNumber(cell) === wanted) rows.push(i);
-	}
-	return rows;
+	const list = normaliseListNumber(key.listNumber ?? '');
+	const name = normalisePacketName(key.turfName);
+	const find = (match: (row: readonly string[] | undefined) => boolean) => {
+		const rows: number[] = [];
+		for (let i = layout.headerRowIndex + 1; i < values.length; i++) {
+			if (match(values[i])) rows.push(i);
+		}
+		return rows;
+	};
+	const byList = find((row) => matchesList(row, layout, list));
+	return byList.length > 0 ? byList : find((row) => matchesName(row, layout, name));
+}
+
+/** Whether a row, re-read just before a write, is still this packet's. */
+export function isPacketRow(
+	row: readonly string[] | undefined,
+	layout: ColumnLayout,
+	key: PacketKey,
+): boolean {
+	return (
+		matchesList(row, layout, normaliseListNumber(key.listNumber ?? '')) ||
+		matchesName(row, layout, normalisePacketName(key.turfName))
+	);
 }
 
 /** The packet's Doors, when the cell holds a number. */
