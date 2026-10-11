@@ -315,9 +315,11 @@
 
 	// Yours first, then available, then turf still waiting on a list number,
 	// then everything else — checked out by someone, or with no doors left to
-	// knock; within a band, nearest first when we know where you are, or
-	// densest first when that's the sort chosen. A volunteer opening this wants
-	// the closest thing they can actually take.
+	// knock; within a band, turf nobody has knocked recently before turf someone
+	// has (a re-cut makes walked turf look untouched — `contactHistory`), then
+	// nearest first when we know where you are, or densest first when that's
+	// the sort chosen. A volunteer opening this wants the closest fresh turf
+	// they can actually take.
 	const sortedTurfs = $derived(
 		[...turfs].sort((a, b) => {
 			const rank = (t: TurfView) =>
@@ -330,6 +332,7 @@
 							: 1;
 			return (
 				rank(a) - rank(b) ||
+				Number(a.contactHistory ?? false) - Number(b.contactHistory ?? false) ||
 				(sortMode === 'densest'
 					? (densities[b.turfId] ?? -Infinity) - (densities[a.turfId] ?? -Infinity)
 					: 0) ||
@@ -709,6 +712,7 @@
 							Doors left
 						</li>
 						<li><span class="swatch swatch-cleared"></span> None left</li>
+						<li><span class="swatch swatch-knocked"></span> Knocked recently</li>
 						<li><span class="swatch swatch-no-list"></span> No list number</li>
 						<li><span class="swatch swatch-mine"></span> Yours</li>
 						<li><span class="swatch swatch-other"></span> Checked out</li>

@@ -108,6 +108,11 @@ function pointOf(row: Locatable): LatLng | null {
  * name order — stable and predictable, which matters more than clever when the
  * volunteer is going to scan the list anyway.
  *
+ * With `sink`, the rows it picks go after every row it does not, whatever
+ * the other keys say: turf knocked recently (`hasContactHistory`), which a
+ * campaign's re-cut makes look untouched. Before the payload cut, so a chapter
+ * larger than one payload fills it with turf nobody has been to first.
+ *
  * Turf with no centroid sorts last rather than being dropped. It cannot be
  * mapped and its distance is unknowable, but it is real, claimable turf, and
  * on a key without export-job access it is *all* the turf there is.
@@ -137,6 +142,7 @@ export function selectNearest<T extends Locatable>(
 		offset?: number;
 		alwaysInclude?: Iterable<number>;
 		density?: (row: T) => number | null;
+		sink?: (row: T) => boolean;
 	} = {},
 ): Selection<T> {
 	const { location = null, limit = TURFS_PER_PAYLOAD } = options;
@@ -158,6 +164,10 @@ export function selectNearest<T extends Locatable>(
 			density.set(row.turfId, options.density(row) ?? -Infinity);
 		}
 	}
+	const sunk = new Set<number>();
+	if (options.sink) {
+		for (const row of ordered) if (options.sink(row)) sunk.add(row.turfId);
+	}
 	const distance = new Map<number, number>();
 	if (location) {
 		for (const row of ordered) {
@@ -170,6 +180,7 @@ export function selectNearest<T extends Locatable>(
 	// next key the same way.
 	ordered.sort(
 		(a, b) =>
+			Number(sunk.has(a.turfId)) - Number(sunk.has(b.turfId)) ||
 			(density.get(b.turfId) ?? 0) - (density.get(a.turfId) ?? 0) ||
 			(distance.get(a.turfId) ?? 0) - (distance.get(b.turfId) ?? 0) ||
 			a.name.localeCompare(b.name),

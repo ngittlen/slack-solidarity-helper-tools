@@ -123,3 +123,38 @@ export function shadeLabel(shade: TurfShade): string {
 			return 'untouched';
 	}
 }
+
+/**
+ * The spoken shade for the map's label, given whether the turf was knocked
+ * lately (`TurfView.contactHistory`). A re-cut lists every door as untouched,
+ * so the full band alone would tell a screen reader "untouched" about a turf
+ * walked last week — the exact mistake the stripes are there to correct.
+ */
+export function spokenShade(shade: TurfShade, knocked: boolean): string {
+	if (!knocked) return shadeLabel(shade);
+	return shade === 'full' ? 'listed as untouched' : shadeLabel(shade);
+}
+
+/** What the stripes on a knocked turf say, for the same label. */
+export const KNOCKED_LABEL = 'doors knocked in the last 30 days';
+
+/** Pixels between repeats of the knocked-turf stripe tile, both ways. */
+export const STRIPE_PERIOD_PX = 11;
+
+/**
+ * How far to shift the stripe tile so the stripes stay fixed to the ground.
+ *
+ * The map re-projects every hull into screen pixels each frame, but an SVG
+ * pattern repeats from the screen's origin, so without this the stripes stay
+ * put on screen while the turf slides under them. `anchor` is one fixed point
+ * on the ground, projected with the current view; the tile is moved to it,
+ * modulo one repeat so the transform stays small at any zoom. Rounded so the
+ * attribute is stable across renders.
+ */
+export function stripeOffset(
+	anchor: { x: number; y: number },
+	period = STRIPE_PERIOD_PX,
+): { x: number; y: number } {
+	const wrap = (v: number) => Math.round((((v % period) + period) % period) * 100) / 100;
+	return { x: wrap(anchor.x), y: wrap(anchor.y) };
+}

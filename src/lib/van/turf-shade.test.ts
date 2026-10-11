@@ -4,6 +4,9 @@ import {
 	rampStyle,
 	turfShade,
 	shadeLabel,
+	spokenShade,
+	stripeOffset,
+	STRIPE_PERIOD_PX,
 	DOOR_BANDS,
 	RAMP_FULL_DOORS,
 	type TurfShade,
@@ -123,5 +126,45 @@ describe('doorRamp', () => {
 	it('carries the value to CSS as --turf-t', () => {
 		expect(rampStyle(RAMP_FULL_DOORS)).toBe('--turf-t: 1.000');
 		expect(rampStyle(1)).toBe('--turf-t: 0.000');
+	});
+});
+
+describe('spokenShade', () => {
+	it('is the band label for turf nobody has knocked', () => {
+		expect(spokenShade('full', false)).toBe('untouched');
+		expect(spokenShade('low', false)).toBe('nearly finished');
+	});
+
+	// A re-cut lists a walked turf as full again; "untouched" would be false.
+	it('does not call knocked turf untouched', () => {
+		expect(spokenShade('full', true)).toBe('listed as untouched');
+		expect(spokenShade('medium', true)).toBe('part walked');
+	});
+});
+
+describe('stripeOffset', () => {
+	it('wraps into one repeat of the tile', () => {
+		expect(stripeOffset({ x: 25, y: 3 })).toEqual({ x: 25 % STRIPE_PERIOD_PX, y: 3 });
+	});
+
+	it('wraps negative positions forwards, not into negatives', () => {
+		const { x, y } = stripeOffset({ x: -1, y: -STRIPE_PERIOD_PX * 3 - 2 });
+		expect(x).toBe(STRIPE_PERIOD_PX - 1);
+		expect(y).toBe(STRIPE_PERIOD_PX - 2);
+	});
+
+	// The point of it: pan by any amount and the tile moves by the same.
+	it('moves with the map, a whole repeat being no move at all', () => {
+		const a = stripeOffset({ x: 1000.5, y: -40.25 });
+		const b = stripeOffset({ x: 1000.5 + 3 + STRIPE_PERIOD_PX * 7, y: -40.25 });
+		expect(b.x).toBeCloseTo((a.x + 3) % STRIPE_PERIOD_PX);
+		expect(b.y).toBe(a.y);
+	});
+
+	it('stays small and finite at deep zoom', () => {
+		const { x, y } = stripeOffset({ x: 2 ** 30 + 0.123, y: 2 ** 29 });
+		expect(x).toBeGreaterThanOrEqual(0);
+		expect(x).toBeLessThan(STRIPE_PERIOD_PX);
+		expect(Number.isFinite(y)).toBe(true);
 	});
 });

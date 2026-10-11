@@ -66,6 +66,10 @@ export interface TurfRowInput {
 	 *  it; null until the turf has a roster. */
 	uncontactedDoors?: number | null;
 	uncontactedDoorsAt?: string | null;
+	/** Doors with an in-person contact in the last 30 days, before the cut as
+	 *  well as after it (van/contact-sync.ts). Optional so fixtures predating
+	 *  it need not name it; null until the turf has a roster. */
+	contactedDoors?: number | null;
 	/** The saved list VAN cut this route from, and the one its roster was
 	 *  built from. The count only describes this cut when the two agree. */
 	savedListId?: number | null;
@@ -86,6 +90,23 @@ type CountedRow = Pick<
 export function currentUncontacted(row: CountedRow): number | null {
 	if (row.uncontactedDoors == null || row.savedListId == null) return null;
 	return row.rosterSavedListId === row.savedListId ? row.uncontactedDoors : null;
+}
+
+/**
+ * Whether anyone has knocked on a door in this turf recently — a not-home
+ * counts — including before VAN last cut it.
+ *
+ * The campaign re-cuts walked turf and every door comes back uncontacted, so
+ * `doorsLeft` alone shows a turf walked yesterday as untouched. This is what
+ * marks it on the map and sinks it below turf nobody has been to, on the web
+ * list and in Slack alike. Like `currentUncontacted`, only for a roster from
+ * this cut: one from an older cut describes different doors.
+ */
+export function hasContactHistory(
+	row: Pick<TurfRowInput, 'contactedDoors' | 'savedListId' | 'rosterSavedListId'>,
+): boolean {
+	if (row.contactedDoors == null || row.savedListId == null) return false;
+	return row.rosterSavedListId === row.savedListId && row.contactedDoors > 0;
 }
 
 /**
@@ -253,6 +274,14 @@ export interface TurfView {
 	 * reported, for the same payload reason as `claimBlockedReason`.
 	 */
 	walkReport?: { percent: number; dayLabel: string };
+	/**
+	 * True when doors in this turf have been knocked in the last 30 days, a
+	 * not-home included — even before VAN last re-cut it, which puts every
+	 * door back as uncontacted. Striped on the map and sorted below turf
+	 * nobody has been to. See `hasContactHistory`. Omitted when false, like
+	 * `updating`.
+	 */
+	contactHistory?: true;
 	/**
 	 * The turf's VAN campaign, for its badge — looked up in the payload's
 	 * `campaignBadges` rather than repeated as text on every row. Present only
@@ -528,6 +557,7 @@ export function toTurfView(
 		...(report && report.percent !== null
 			? { walkReport: { percent: report.percent, dayLabel: campaignDayLabel(report.at) } }
 			: {}),
+		...(hasContactHistory(row) ? { contactHistory: true as const } : {}),
 		...(options.showCampaign ? { campaignId: row.campaignId } : {}),
 		...(options.disabledCampaigns?.has(row.campaignId) ? { campaignDisabled: true as const } : {}),
 		...(viewer.isAdmin && row.hiddenAt != null ? { hidden: true as const } : {}),

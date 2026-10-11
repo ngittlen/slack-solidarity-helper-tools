@@ -162,6 +162,31 @@ describe('loadChapterTurfs', () => {
 		expect(turfs.map((t) => t.name)).toEqual(['Near', 'Far']);
 	});
 
+	// A campaign re-cut lists walked turf as untouched. The web list and the
+	// Slack command both page through here, so both put it last.
+	it('puts turf knocked recently after turf nobody has been to, before cutting', async () => {
+		const rows = [
+			turfRow({ turfId: 1, name: 'Far', centroidLat: 42.6, centroidLng: -83.2 }),
+			turfRow({
+				turfId: 2,
+				name: 'Near but knocked',
+				centroidLat: 42.281,
+				centroidLng: -83.741,
+				contactedDoors: 4,
+				rosterSavedListId: 585052,
+			}),
+		];
+		const { db } = makeDb([rows, []]);
+		const { turfs, omitted } = await loadChapterTurfs(db, {
+			chapterId: 71,
+			viewer: VIEWER,
+			location: HERE,
+			limit: 1,
+		});
+		expect(turfs.map((t) => t.name)).toEqual(['Far']);
+		expect(omitted).toBe(1);
+	});
+
 	// The reason densest is sorted here and not only in the browser: in a
 	// chapter larger than the payload, the densest turf can be past the cut by
 	// name and by distance alike.

@@ -1108,6 +1108,12 @@ export const vanTurfs = sqliteTable(
 		 *  the catalog upsert, which would otherwise clobber it every sync. */
 		uncontactedDoors: integer('uncontacted_doors'),
 		uncontactedDoorsAt: text('uncontacted_doors_at'),
+		/** Doors with an in-person contact attempt in the last
+		 *  CONTACT_HISTORY_MS, BEFORE the cut as well as after it. A campaign
+		 *  that re-cuts walked turf puts every door back as uncontacted; this is
+		 *  what still says somebody knocked there. Computed alongside
+		 *  `uncontactedDoors`, and null whenever it is. */
+		contactedDoors: integer('contacted_doors'),
 		/** The savedListId van_turf_roster was built from. Differs from
 		 *  `savedListId` (or is null) when the roster is missing or describes an
 		 *  older cut, which is what queues a fresh export. Written only by the

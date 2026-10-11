@@ -5,6 +5,7 @@ import {
 	mappableTurfs,
 	doorsLeft,
 	doorDensity,
+	hasContactHistory,
 	vanAssignmentBlocks,
 	regionRefreshKey,
 	type TurfRowInput,
@@ -361,6 +362,33 @@ describe('doorsLeft', () => {
 
 	it("falls back to VAN's doorCount when there is no count", () => {
 		expect(doorsLeft({ ...base, uncontactedDoors: null, rosterSavedListId: 900 })).toBe(40);
+	});
+});
+
+describe('hasContactHistory', () => {
+	const base = { contactedDoors: 3, savedListId: 900, rosterSavedListId: 900 };
+
+	it('is true once any door has been knocked', () => {
+		expect(hasContactHistory(base)).toBe(true);
+	});
+
+	it('is false when nobody has knocked, or there is no count', () => {
+		expect(hasContactHistory({ ...base, contactedDoors: 0 })).toBe(false);
+		expect(hasContactHistory({ ...base, contactedDoors: null })).toBe(false);
+		expect(hasContactHistory({ savedListId: 900, rosterSavedListId: 900 })).toBe(false);
+	});
+
+	// A roster from an older cut describes different doors.
+	it('is false when the count is from another cut', () => {
+		expect(hasContactHistory({ ...base, rosterSavedListId: 899 })).toBe(false);
+		expect(hasContactHistory({ ...base, savedListId: null })).toBe(false);
+	});
+
+	it('rides on the view only when true', () => {
+		const knocked = toTurfView(row(base), [], VOLUNTEER, NOW);
+		expect(knocked.contactHistory).toBe(true);
+		const fresh = toTurfView(row({ ...base, contactedDoors: 0 }), [], VOLUNTEER, NOW);
+		expect('contactHistory' in fresh).toBe(false);
 	});
 });
 
