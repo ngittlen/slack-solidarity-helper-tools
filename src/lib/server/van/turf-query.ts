@@ -51,6 +51,7 @@ import {
 import {
 	doorDensity,
 	doorsLeft,
+	hasContactHistory,
 	parseHull,
 	toTurfView,
 	turfSnapshot,
@@ -247,6 +248,8 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 			sort === 'densest'
 				? (row) => doorDensity({ hull: parseHull(row.hullJson), doorsRemaining: doorsLeft(row) })
 				: undefined,
+		// Turf knocked recently goes after turf nobody has been to, whichever sort.
+		sink: hasContactHistory,
 	});
 
 	const selectedIds = selected.map((r) => r.turfId);

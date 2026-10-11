@@ -17,7 +17,11 @@
 // Every in-person contact is stored, not only those of people already on a
 // roster. Rosters arrive turf by turf over hours during the first pass, and a
 // contact filtered out because its turf's roster had not landed yet would never
-// be pulled again. Contacts older than the oldest live turf's cut are pruned.
+// be pulled again. Contacts are kept for CONTACT_HISTORY_MS whatever the cuts:
+// a campaign that re-cuts walked turf starts every door over as uncontacted,
+// and the contacts from before the re-cut are the only record that the doors
+// were knocked (`contactedDoors`). The pull itself still starts at the
+// earliest live cut, so this keeps what was read rather than reading further.
 //
 // The pull never reaches back more than MAX_BACKFILL_MS: a turf VAN has not
 // re-cut in months would otherwise cost one export job per day of its age.
@@ -56,6 +60,12 @@ export const WINDOW_MS = 24 * 60 * 60 * 1000;
 const MIN_WINDOW_MS = 60 * 1000;
 /** How far back the pull ever starts. Older contacts are not read or kept. */
 export const MAX_BACKFILL_MS = 30 * 24 * 60 * 60 * 1000;
+/** How long a contact is kept, and so the furthest back `contactedDoors`
+ *  looks — before a turf's cut as well as after. Only as far as the pull has
+ *  read, though: the pull starts at the earliest live cut (pullFloor), so
+ *  contacts from before that are never fetched, only kept once fetched. A
+ *  newly mapped folder's turf starts with no history from before its cut. */
+export const CONTACT_HISTORY_MS = MAX_BACKFILL_MS;
 /** Each window starts this far before the cursor. A contact VAN surfaces in
  *  the changed-entity data some time after its DateChanged would otherwise
  *  fall in a window already applied and never be read. Re-reading is free:
@@ -205,8 +215,8 @@ export async function pullFloor(db: Db, campaignId: number, now: Date): Promise<
 export async function clearUncontacted(db: Db): Promise<void> {
 	await db
 		.update(vanTurfs)
-		.set({ uncontactedDoors: null, uncontactedDoorsAt: null })
-		.where(isNotNull(vanTurfs.uncontactedDoors));
+		.set({ uncontactedDoors: null, uncontactedDoorsAt: null, contactedDoors: null })
+		.where(or(isNotNull(vanTurfs.uncontactedDoors), isNotNull(vanTurfs.contactedDoors)));
 	// Switched back on later, every turf needs its count again, not only the
 	// ones the next pull happens to touch.
 	await db
@@ -249,6 +259,32 @@ export function marksFor(
 	return marks.get(campaignId) ?? { cursor: null, countedThrough: null };
 }
 
+/**
+ * Whether some turf has its uncontacted count but not `contactedDoors`, which
+ * the recount always writes together. Only a recount by code from before
+ * `contactedDoors` existed leaves that — the deployed app running between
+ * migration 0070 and the release that reads it — and a turf like that is
+ * never recounted again unless one of its people is pulled. So a scheduled
+ * run recounts every turf, once: afterwards no such turf is left.
+ *
+ * In code rather than a migration resetting `fullRecomputeAt`, because the
+ * old code would consume that reset itself if it ran first.
+ */
+async function needsFullRecompute(db: Db, campaignId: number): Promise<boolean> {
+	const [row] = await db
+		.select({ turfId: vanTurfs.turfId })
+		.from(vanTurfs)
+		.where(
+			and(
+				eq(vanTurfs.campaignId, campaignId),
+				isNotNull(vanTurfs.uncontactedDoors),
+				isNull(vanTurfs.contactedDoors),
+			),
+		)
+		.limit(1);
+	return row !== undefined;
+}
+
 /** Turfs with a roster row for any of these people — the only counts a pull of
  *  their contacts can move. Retired rosters included; recomputing one is
  *  harmless and its completion may still need its % walked. */
@@ -272,11 +308,13 @@ async function turfsWithPeople(
 }
 
 /**
- * Recompute `uncontactedDoors` for the given turfs, or every counted turf
- * (live, or retired within RETIRED_ROSTER_KEEP_MS).
+ * Recompute `uncontactedDoors` and `contactedDoors` for the given turfs, or
+ * every counted turf (live, or retired within RETIRED_ROSTER_KEEP_MS).
  *
  * distinct doors − distinct doors with any resident contacted since the cut,
- * in one pass over the turf's roster rows rather than a per-door subquery.
+ * in one pass over the turf's roster rows rather than a per-door subquery;
+ * and distinct doors with any resident contacted at all — every stored
+ * contact is within CONTACT_HISTORY_MS.
  * A turf whose roster is missing or from an older saved list gets NULL: a
  * count from the wrong cut is worse than none, and the UI falls back to VAN's
  * own doorCount.
@@ -307,18 +345,27 @@ export async function recomputeUncontacted(
  *  fewer. */
 export function recountStatement(db: Db, turfIds: readonly number[], now: Date) {
 	const nowIso = now.toISOString();
+	// The prune keeps to this too, but runs once per pull; between pulls a
+	// contact can sit a little past it.
+	const historyFloor = new Date(now.getTime() - CONTACT_HISTORY_MS).toISOString();
 	const current = sql`(van_turfs.roster_saved_list_id IS NOT NULL AND van_turfs.roster_saved_list_id = van_turfs.saved_list_id)`;
+	// Both counts from one pass over the roster: a row-value SET, because two
+	// subqueries would join the roster to the contacts twice per turf.
 	return db.run(sql`
 			UPDATE van_turfs SET
-				uncontacted_doors = CASE WHEN ${current} THEN (
-					SELECT count(DISTINCT r.door_hash) - count(DISTINCT CASE
-						WHEN c.last_in_person_at >= coalesce(van_turfs.cut_at, van_turfs.first_seen_at)
-						THEN r.door_hash END)
+				(uncontacted_doors, contacted_doors) = (
+					SELECT
+						CASE WHEN ${current} THEN count(DISTINCT r.door_hash) - count(DISTINCT CASE
+							WHEN c.last_in_person_at >= coalesce(van_turfs.cut_at, van_turfs.first_seen_at)
+							THEN r.door_hash END) END,
+						CASE WHEN ${current} THEN count(DISTINCT CASE
+							WHEN c.last_in_person_at >= ${historyFloor}
+							THEN r.door_hash END) END
 					FROM van_turf_roster r
 					LEFT JOIN van_person_contacts c
 						ON c.campaign_id = van_turfs.campaign_id AND c.person_hash = r.person_hash
 					WHERE r.turf_id = van_turfs.turf_id
-				) ELSE NULL END,
+				),
 				uncontacted_doors_at = CASE WHEN ${current} THEN ${nowIso} ELSE NULL END
 			WHERE van_turfs.turf_id IN (${sql.join(
 				turfIds.map((id) => sql`${id}`),
@@ -507,9 +554,9 @@ export interface ContactSyncOptions {
 	now?: Date;
 	timeBudgetMs?: number;
 	/** A completion nudge: recompute these turfs as well as the ones the pull
-	 *  touched. Omitted means a scheduled run — the only kind that recomputes
-	 *  every turf (the first time), stamps doors knocked, and moves
-	 *  `countedThrough`. */
+	 *  touched — whoever it pulled or pruned. Omitted means a scheduled run —
+	 *  the only kind that recomputes every turf (see `needsFullRecompute`),
+	 *  stamps doors knocked, and moves `countedThrough`. */
 	recomputeTurfIds?: readonly number[];
 	/** For the blob download — never the VAN client, which would send our
 	 *  Basic credentials to a different host. */
@@ -646,10 +693,11 @@ function isDeadDownload(status: number): boolean {
  * recompute uncontacted doors.
  *
  * Which turfs are recomputed: every counted turf on the first scheduled run
- * (or the first after the feature is switched back on), and after that only
- * those with a person in the contacts this run pulled, plus the nudge's own.
- * Nothing else moves a count: a new roster is recomputed by the geometry
- * worker that wrote it, and the prune only drops contacts below every cut.
+ * (or the first after the feature is switched back on, or whenever a count
+ * is missing — needsFullRecompute), and after that only
+ * those with a person in the contacts this run pulled or pruned, plus the
+ * nudge's own. Nothing else moves a count: a new roster is recomputed by the
+ * geometry worker that wrote it.
  *
  * Never throws for a VAN failure: the error is recorded on the state row and
  * returned, and the recompute still runs over whatever is stored — a stale
@@ -696,7 +744,7 @@ export async function runContactSync(
 	let jobFailures = state?.exportJobFailures ?? 0;
 	let windowTo = state?.windowTo ?? null;
 	const scheduled = options.recomputeTurfIds === undefined;
-	/** Everyone whose contact this run stored, keyed by hex digest. */
+	/** Everyone whose contact this run stored or pruned, keyed by hex digest. */
 	const touched = new Map<string, Buffer>();
 
 	const saveState = (patch: Partial<typeof vanContactSyncState.$inferInsert>) =>
@@ -867,17 +915,23 @@ export async function runContactSync(
 			}
 		}
 
-		// Nothing below the floor can count against any turf.
+		// Kept for CONTACT_HISTORY_MS, not only back to the earliest cut: a
+		// contact from before a re-cut no longer counts against the new route's
+		// uncontacted doors, but it still says the door was knocked. Whoever is
+		// pruned is recomputed like whoever was pulled, so a turf's
+		// `contactedDoors` drops as its contacts age out.
 		if (floor) {
+			const historyFloor = new Date(now.getTime() - CONTACT_HISTORY_MS).toISOString();
 			const pruned = await db
 				.delete(vanPersonContacts)
 				.where(
 					and(
 						eq(vanPersonContacts.campaignId, campaignId),
-						lt(vanPersonContacts.lastInPersonAt, floor),
+						lt(vanPersonContacts.lastInPersonAt, historyFloor),
 					),
 				)
-				.returning({ at: vanPersonContacts.lastInPersonAt });
+				.returning({ personHash: vanPersonContacts.personHash });
+			for (const { personHash } of pruned) touched.set(personHash.toString('hex'), personHash);
 			result.contactsPruned = pruned.length;
 		}
 	} catch (err) {
@@ -886,7 +940,7 @@ export async function runContactSync(
 	}
 
 	result.cursor = cursor;
-	const full = scheduled && !state?.fullRecomputeAt;
+	const full = scheduled && (!state?.fullRecomputeAt || (await needsFullRecompute(db, campaignId)));
 	const recomputeIds = full
 		? undefined
 		: [

@@ -42,7 +42,14 @@
 		tileUrl,
 	} from '$lib/van/tiles.js';
 	import { statusLabel, type VolunteerStatus } from '$lib/van/turf-status.js';
-	import { rampStyle, shadeLabel, turfShade } from '$lib/van/turf-shade.js';
+	import {
+		KNOCKED_LABEL,
+		rampStyle,
+		spokenShade,
+		STRIPE_PERIOD_PX,
+		stripeOffset,
+		turfShade,
+	} from '$lib/van/turf-shade.js';
 	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
 	import { focusZoom, isBoxVisible } from '$lib/van/map-focus.js';
 	import { untrack } from 'svelte';
@@ -223,6 +230,11 @@
 	});
 
 	const me = $derived(location ? view.project(location) : null);
+
+	/** Where the knocked-turf stripe tile starts, so the stripes stay on the
+	 *  ground while the map pans. Any fixed point does; this one is simply
+	 *  easy to name. See stripeOffset. */
+	const stripeShift = $derived(stripeOffset(view.project({ lat: 0, lng: 0 })));
 
 	// Report the visible area after it settles, so the page can fetch turf
 	// outside the rows it was handed. The debounce lives here rather than in
@@ -712,7 +724,8 @@
 		const shade = turfShade(turf.status, turf.doorsRemaining);
 		const selected = turf.turfId === selectedId ? ' is-selected' : '';
 		const noList = turf.noListNumber ? ' is-no-list' : '';
-		return `turf turf-${turf.status} shade-${shade}${noList}${selected}`;
+		const knocked = turf.contactHistory ? ' is-knocked' : '';
+		return `turf turf-${turf.status} shade-${shade}${noList}${knocked}${selected}`;
 	}
 
 	function ariaLabelFor(turf: MappableTurf): string {
@@ -722,12 +735,13 @@
 		const status = turf.status as VolunteerStatus;
 		const doors =
 			status === 'available'
-				? `, ${turf.doorsRemaining} doors remaining, ${shadeLabel(turfShade(status, turf.doorsRemaining))}`
+				? `, ${turf.doorsRemaining} doors remaining, ${spokenShade(turfShade(status, turf.doorsRemaining), turf.contactHistory ?? false)}`
 				: '';
 		const noList = turf.noListNumber ? ', no list number yet' : '';
+		const knocked = turf.contactHistory ? `, ${KNOCKED_LABEL}` : '';
 		const badge = turf.campaignId === undefined ? undefined : campaignBadges[turf.campaignId];
 		const campaign = badge ? `, ${badge}` : '';
-		return `${turf.name}${campaign}, ${statusLabel(status)}${noList}${doors}`;
+		return `${turf.name}${campaign}, ${statusLabel(status)}${noList}${doors}${knocked}`;
 	}
 </script>
 
@@ -766,6 +780,25 @@
 						fill="none"
 						stroke="var(--color-border-subtle)"
 						stroke-width="1"
+					/>
+				</pattern>
+				<!-- Over turf knocked recently (`contactHistory`). Pixel-sized, so the
+				     stripes keep their spacing at every zoom, and shifted with the
+				     map (stripeShift) so they stay on the ground as it pans. The
+				     diagonal is drawn into the tile rather than rotating the tile,
+				     which keeps the repeat square and the shift a plain modulo. The
+				     two corner stubs close the gaps where tiles meet. -->
+				<pattern
+					id="knocked-stripes"
+					width={STRIPE_PERIOD_PX}
+					height={STRIPE_PERIOD_PX}
+					patternUnits="userSpaceOnUse"
+					patternTransform="translate({stripeShift.x} {stripeShift.y})"
+				>
+					<path
+						class="knocked-stripe"
+						d="M-1 1 L1 -1 M0 {STRIPE_PERIOD_PX} L{STRIPE_PERIOD_PX} 0 M{STRIPE_PERIOD_PX -
+							1} {STRIPE_PERIOD_PX + 1} L{STRIPE_PERIOD_PX + 1} {STRIPE_PERIOD_PX - 1}"
 					/>
 				</pattern>
 				<clipPath id="map-clip">
@@ -830,6 +863,12 @@
 								{/each}
 							</mask>
 							<polygon points={item.points} mask="url(#turf-band-{item.turf.turfId})" />
+							{#if item.turf.contactHistory}
+								<!-- Across the whole interior, not the band: a re-cut lists
+								     these doors as untouched, and the stripes are what says
+								     otherwise. A path, so no .turf polygon rule reaches it. -->
+								<path class="knocked-fill" d="M{item.points}Z" fill="url(#knocked-stripes)" />
+							{/if}
 						{:else}
 							<!-- Too small to read as a shape, or a degenerate hull
 							     (collinear doors, or too few). Either way: a pin, never a
@@ -1322,6 +1361,25 @@
 	.turf.is-no-list:not(.is-selected):not(:focus-visible) circle {
 		stroke: var(--color-error);
 		stroke-width: 3;
+	}
+
+	/* Knocked in the last 30 days, a not-home included, though VAN's re-cut
+	   lists every door as untouched. Dashed and striped rather than recoloured:
+	   the hue still says whether you can take it and the ramp how many doors
+	   it lists, and the pattern reads without colour vision. */
+	.turf.is-knocked polygon,
+	.turf.is-knocked circle {
+		stroke-dasharray: 6 4;
+	}
+
+	.knocked-fill {
+		pointer-events: none;
+	}
+
+	.knocked-stripe {
+		stroke: var(--color-near-black);
+		stroke-opacity: 0.4;
+		stroke-width: 2;
 	}
 
 	.me-dot {

@@ -467,6 +467,19 @@ main {
 	border: 1px dashed var(--color-warm-dark);
 }
 
+/* Matching the map: dashed and striped, for turf whose doors were knocked in
+   the last 30 days even though VAN's re-cut lists them as uncontacted. */
+.swatch-knocked {
+	background:
+		repeating-linear-gradient(
+			-45deg,
+			color-mix(in srgb, var(--color-near-black) 45%, transparent) 0 1.5px,
+			transparent 1.5px 4px
+		),
+		color-mix(in srgb, var(--color-blue) 42%, transparent);
+	border: 1px dashed var(--color-navy-mid);
+}
+
 /* Matching the map's red outline on turf with no list number yet. */
 .swatch-no-list {
 	background: color-mix(in srgb, var(--color-blue) 42%, transparent);

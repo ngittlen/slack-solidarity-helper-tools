@@ -75,6 +75,30 @@ describe('selectNearest', () => {
 		});
 	});
 
+	describe('sink', () => {
+		const knocked = new Set([2]);
+		const sink = (row: Locatable) => knocked.has(row.turfId);
+
+		it('puts sunk turf after the rest, however near', () => {
+			const rows = [turf(1, 'Far', 42.6, -83.2), turf(2, 'Near but knocked', 42.281, -83.741)];
+			const { selected } = selectNearest(rows, { location: HERE, sink });
+			expect(selected.map((t) => t.name)).toEqual(['Far', 'Near but knocked']);
+		});
+
+		it('outranks density', () => {
+			const density = (row: Locatable) => (row.turfId === 2 ? 900 : 50);
+			const rows = [turf(1, 'Sparse', 1, 1), turf(2, 'Dense but knocked', 2, 2)];
+			const { selected } = selectNearest(rows, { density, sink });
+			expect(selected.map((t) => t.name)).toEqual(['Sparse', 'Dense but knocked']);
+		});
+
+		it('ranks before the cut, not after it', () => {
+			const rows = [turf(2, 'Alpha', 1, 1), turf(1, 'Bravo', 2, 2)];
+			const { selected } = selectNearest(rows, { sink, limit: 1 });
+			expect(selected.map((t) => t.name)).toEqual(['Bravo']);
+		});
+	});
+
 	it('caps the payload and reports what it left out', () => {
 		const rows = Array.from({ length: 400 }, (_, i) =>
 			turf(i, `Turf ${String(i).padStart(3, '0')}`, 42 + i / 1000, -83),

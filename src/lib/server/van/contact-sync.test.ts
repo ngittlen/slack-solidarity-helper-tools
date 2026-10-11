@@ -5,6 +5,7 @@ import { migrate } from 'drizzle-orm/libsql/migrator';
 import type { VanClient } from './client.js';
 import {
 	clearUncontacted,
+	CONTACT_HISTORY_MS,
 	contactPullDone,
 	contactTimestamp,
 	JOB_STALE_MS,
@@ -75,7 +76,7 @@ async function contact(vanId: string, at: string) {
 
 async function counts(turfId: number) {
 	const res = await client.execute({
-		sql: 'SELECT uncontacted_doors, uncontacted_doors_at FROM van_turfs WHERE turf_id = ?',
+		sql: 'SELECT uncontacted_doors, uncontacted_doors_at, contacted_doors FROM van_turfs WHERE turf_id = ?',
 		args: [turfId],
 	});
 	return res.rows[0]!;
@@ -179,6 +180,41 @@ describe('recomputeUncontacted', () => {
 		await client.execute('UPDATE van_turfs SET saved_list_id = 901');
 		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		expect(await counts(1)).toMatchObject({ uncontacted_doors: null, uncontacted_doors_at: null });
+	});
+
+	// A campaign that re-cuts walked turf lists every door as uncontacted
+	// again; this is what still says somebody knocked.
+	it('counts doors knocked before the cut as well as after it', async () => {
+		await contact('a', '2026-09-10T15:00:00.000Z');
+		await contact('c', '2026-09-20T15:00:00.000Z');
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect(await counts(1)).toMatchObject({ uncontacted_doors: 1, contacted_doors: 2 });
+	});
+
+	it('counts a door with two residents contacted once', async () => {
+		await contact('a', '2026-09-10T15:00:00.000Z');
+		await contact('b', '2026-09-11T15:00:00.000Z');
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect((await counts(1)).contacted_doors).toBe(1);
+	});
+
+	it('records zero, not null, for a rostered turf nobody has knocked', async () => {
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect((await counts(1)).contacted_doors).toBe(0);
+	});
+
+	it('leaves out a contact older than the history kept', async () => {
+		await contact('a', new Date(NOW.getTime() - CONTACT_HISTORY_MS - 60_000).toISOString());
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect((await counts(1)).contacted_doors).toBe(0);
+	});
+
+	it('clears the knocked count with the roster from an older saved list', async () => {
+		await contact('a', '2026-09-20T15:00:00.000Z');
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		await client.execute('UPDATE van_turfs SET saved_list_id = 901');
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect((await counts(1)).contacted_doors).toBeNull();
 	});
 
 	it('touches only the turfs asked for', async () => {
@@ -475,7 +511,9 @@ describe('runContactSync', () => {
 		expect((await counts(1)).uncontacted_doors).toBe(2);
 	});
 
-	it('prunes contacts older than every live cut', async () => {
+	// Before every live cut, but kept: after a re-cut it is the only record
+	// that the doors were knocked.
+	it('keeps contacts from before every live cut for the history kept', async () => {
 		await contact('old', '2026-09-01T00:00:00.000Z');
 		const { van, fetchFn } = fakeVan(() => []);
 		const result = await runContactSync(db, van.client, {
@@ -485,7 +523,39 @@ describe('runContactSync', () => {
 			fetchFn,
 			sleep: noSleep,
 		});
+		expect(result.contactsPruned).toBe(0);
+	});
+
+	it('prunes contacts older than the history kept', async () => {
+		await contact('old', '2026-08-20T00:00:00.000Z');
+		const { van, fetchFn } = fakeVan(() => []);
+		const result = await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
 		expect(result.contactsPruned).toBe(1);
+	});
+
+	it('recomputes a turf whose contact aged out, so it stops reading as knocked', async () => {
+		await contact('111', '2026-08-20T00:00:00.000Z');
+		await client.execute('UPDATE van_turfs SET contacted_doors = 1');
+		// A recompute already done, so this run recomputes only what it touched.
+		await client.execute(
+			`INSERT INTO van_contact_sync_state (campaign_id, full_recompute_at)
+			 VALUES (1, '2026-09-01T00:00:00.000Z')`,
+		);
+		const { van, fetchFn } = fakeVan(() => []);
+		await runContactSync(db, van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
+		expect((await counts(1)).contacted_doors).toBe(0);
 	});
 
 	it('does nothing but recompute when there is no turf to count for', async () => {
@@ -670,7 +740,11 @@ describe('clearUncontacted', () => {
 		expect((await counts(1)).uncontacted_doors).toBe(1);
 
 		await clearUncontacted(db);
-		expect(await counts(1)).toMatchObject({ uncontacted_doors: null, uncontacted_doors_at: null });
+		expect(await counts(1)).toMatchObject({
+			uncontacted_doors: null,
+			uncontacted_doors_at: null,
+			contacted_doors: null,
+		});
 	});
 });
 
@@ -950,6 +1024,89 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 		expect(result.turfsRecomputed).toBe(1);
 		expect((await counts(1)).uncontacted_doors).toBe(1);
 		expect((await counts(2)).uncontacted_doors).toBe(42);
+	});
+
+	// Deployed code from before `contactedDoors` recounts turfs without it,
+	// and may run after migration 0070 and before the release that reads it.
+	it('recounts every turf when some turf has a count but no contacted doors', async () => {
+		const quiet = fakeVan(() => []);
+		await runContactSync(db, quiet.van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn: quiet.fetchFn,
+			sleep: noSleep,
+		});
+		await client.execute('UPDATE van_turfs SET contacted_doors = NULL');
+		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
+		const result = await runContactSync(db, quiet.van.client, {
+			campaignId: 1,
+			hasher,
+			now: later,
+			fetchFn: quiet.fetchFn,
+			sleep: noSleep,
+		});
+		expect(result.turfsRecomputed).toBe(2);
+		expect((await counts(1)).contacted_doors).toBe(0);
+		expect((await counts(2)).contacted_doors).toBe(0);
+
+		// Healed: the next run recounts only what it touched.
+		const again = await runContactSync(db, quiet.van.client, {
+			campaignId: 1,
+			hasher,
+			now: new Date(later.getTime() + 30 * 60 * 1000),
+			fetchFn: quiet.fetchFn,
+			sleep: noSleep,
+		});
+		expect(again.turfsRecomputed).toBe(0);
+	});
+
+	it('does not recount everything on a nudge, even with counts missing', async () => {
+		const quiet = fakeVan(() => []);
+		await runContactSync(db, quiet.van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn: quiet.fetchFn,
+			sleep: noSleep,
+		});
+		await client.execute('UPDATE van_turfs SET contacted_doors = NULL');
+		const result = await runContactSync(db, quiet.van.client, {
+			campaignId: 1,
+			hasher,
+			now: new Date(NOW.getTime() + 30 * 60 * 1000),
+			fetchFn: quiet.fetchFn,
+			sleep: noSleep,
+			recomputeTurfIds: [1],
+		});
+		expect(result.turfsRecomputed).toBe(1);
+		expect((await counts(2)).contacted_doors).toBeNull();
+	});
+
+	// A contact aging out can only lower `contactedDoors`, and a nudge is as
+	// good a time as any to say so.
+	it('also recounts, on a nudge, the turf of anyone it pruned', async () => {
+		const quiet = fakeVan(() => []);
+		await runContactSync(db, quiet.van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn: quiet.fetchFn,
+			sleep: noSleep,
+		});
+		await contact('333', '2026-08-20T00:00:00.000Z');
+		await client.execute('UPDATE van_turfs SET contacted_doors = 1 WHERE turf_id = 2');
+		const result = await runContactSync(db, quiet.van.client, {
+			campaignId: 1,
+			hasher,
+			now: new Date(NOW.getTime() + 30 * 60 * 1000),
+			fetchFn: quiet.fetchFn,
+			sleep: noSleep,
+			recomputeTurfIds: [1],
+		});
+		expect(result.contactsPruned).toBe(1);
+		expect(result.turfsRecomputed).toBe(2);
+		expect((await counts(2)).contacted_doors).toBe(0);
 	});
 
 	it('does the full recompute again once the feature has been switched off and on', async () => {
