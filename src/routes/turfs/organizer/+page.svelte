@@ -3,7 +3,9 @@
 	import { enhance } from '$app/forms';
 	import { resolve } from '$app/paths';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
+	import { campaignSheetStamp } from '$lib/campaign-time.js';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
+	import type { ActionData } from './$types';
 
 	const { data, form } = $props();
 
@@ -14,6 +16,18 @@
 	/** Hidden turf whose "show again" is in flight, so its box cannot be
 	 *  ticked back mid-request. */
 	let unhiding = $state<Record<number, boolean>>({});
+
+	/** While a turf history search is in flight. */
+	let historyLoading = $state(false);
+
+	type HistoryResult = Extract<NonNullable<ActionData>, { historyQuery: string }>;
+
+	/** The last history search's answer, kept apart from `form`: every other
+	 *  form on the page replaces `form`, and the results and the search box
+	 *  must not go with it. `form` is the fallback with JavaScript off, where a
+	 *  search is a full page load. */
+	let searched = $state<HistoryResult | null>(null);
+	const history = $derived(searched ?? (form && 'historyQuery' in form ? form : null));
 
 	// No `ago()` here, and no clock of any kind: the "ago" labels arrive from the
 	// load function as `claimedAgoLabel` / `completedAgoLabel`. This file used to
@@ -447,6 +461,157 @@
 					</tbody>
 				</table>
 			</div>
+		{/if}
+	</section>
+
+	<section class="board">
+		<h2>Turf history</h2>
+		<p class="section-note">
+			Every cut of a turf in VAN, when its doors were knocked, and who claimed it here — for when a
+			volunteer says they knocked a turf that now looks untouched. Search part of a turf's name, its
+			region, or its turf id.
+		</p>
+		<!-- Enter submits it like the button. The answer goes to `searched`, not
+		     through update(): a search must not reload the board above, nor
+		     touch `form`, which the other actions on this page answer through. -->
+		<form
+			class="history-search"
+			method="POST"
+			action="?/turfHistory"
+			use:enhance={() => {
+				historyLoading = true;
+				return async ({ result, update }) => {
+					if (result.type === 'success' || result.type === 'failure') {
+						searched = result.data as HistoryResult;
+					} else {
+						await update();
+					}
+					historyLoading = false;
+				};
+			}}
+		>
+			<input
+				class="history-input"
+				type="search"
+				name="query"
+				value={history?.historyQuery ?? ''}
+				placeholder="R02F_037_Kent_PlainfieldTowns_003 Turf 05"
+				aria-label="Turf name, region, or turf id"
+				required
+			/>
+			<button type="submit" class="van-sync-button" disabled={historyLoading}>
+				{historyLoading ? 'Loading…' : 'Look up'}
+			</button>
+		</form>
+
+		{#if history?.historyError}
+			<p class="section-note is-error" role="alert">{history.historyError}</p>
+		{:else if history?.histories}
+			{#if history.histories.length === 0}
+				<p class="empty">No turf matches “{history.historyQuery}”.</p>
+			{:else if history.historyTruncated}
+				<p class="section-note">
+					Showing the first {history.histories.length} matches. Search a turf's full name or id to see
+					one that isn't here.
+				</p>
+			{/if}
+			{#each history.histories as turf (turf.campaignId + ':' + turf.name)}
+				<div class="history-turf">
+					<h3 class="history-name">
+						{turf.name}<span class="turf-sub">{campaignSuffix(turf.campaignId)}</span>
+					</h3>
+					{#if turf.why}
+						<p class="callout is-quiet">{turf.why}</p>
+					{/if}
+					<div class="table-wrap">
+						<table>
+							<thead>
+								<tr>
+									<th>Cut</th>
+									<th>Doors</th>
+									<th>Knocked</th>
+									<th>Claims here</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each turf.cuts as cut (cut.turfId)}
+									<tr>
+										<td>
+											<span class="turf-name">{campaignSheetStamp(cut.cutAt)}</span>
+											<span class="turf-sub">
+												{cut.retiredAt ? `retired ${campaignSheetStamp(cut.retiredAt)}` : 'Live'}
+											</span>
+											<span class="turf-sub">
+												turf {cut.turfId} · list {cut.savedListId ?? '—'}
+											</span>
+										</td>
+										<td class="col-num">
+											{cut.doorCount.toLocaleString('en-US')} in VAN
+											<span class="turf-sub">
+												{#if cut.uncontactedDoors !== null && cut.rosterCurrent}
+													app shows {cut.uncontactedDoors.toLocaleString('en-US')} left
+												{:else}
+													no roster — app shows VAN's count
+												{/if}
+											</span>
+										</td>
+										<td>
+											{#if cut.rosterDoors === null}
+												<span class="turf-sub">No roster, so no knock history</span>
+											{:else}
+												{cut.knockedSinceCut} of {cut.rosterDoors} since this cut
+												{#if cut.knockedBeforeCut > 0}
+													<span class="turf-sub">
+														{cut.knockedBeforeCut} before it (not counted against this cut)
+													</span>
+												{/if}
+												{#if cut.knockedByDay.length > 0}
+													<span class="turf-sub">
+														By day of latest knock: {cut.knockedByDay
+															.map((d) => `${d.day} ${d.doors}`)
+															.join(', ')}
+													</span>
+												{/if}
+											{/if}
+										</td>
+										<td>
+											{#if cut.claims.length === 0}
+												<span class="turf-sub">None</span>
+											{:else}
+												<ul class="history-claims">
+													{#each cut.claims as claim (claim.checkoutId)}
+														<li>
+															{claim.slackUserName}
+															<span class="turf-sub">
+																claimed {campaignSheetStamp(claim.claimedAt)} ·
+																{#if claim.completedAt}
+																	marked walked {campaignSheetStamp(
+																		claim.completedAt,
+																	)}{claim.reportedPercent !== null
+																		? ` at ${claim.reportedPercent}%`
+																		: ''}
+																{:else if claim.releasedAt}
+																	{claim.releaseReason ?? 'released'}
+																	{campaignSheetStamp(claim.releasedAt)}
+																{:else}
+																	still held
+																{/if}
+																{#if claim.doorsKnocked !== null}
+																	· {claim.doorsKnocked} doors knocked
+																{/if}
+															</span>
+														</li>
+													{/each}
+												</ul>
+											{/if}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			{/each}
 		{/if}
 	</section>
 </main>

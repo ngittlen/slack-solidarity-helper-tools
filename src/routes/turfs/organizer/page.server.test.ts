@@ -14,6 +14,8 @@ const mockLastVanSync = vi.hoisted(() => vi.fn());
 const mockStartSync = vi.hoisted(() => vi.fn());
 const mockHidden = vi.hoisted(() => vi.fn());
 const mockSetHidden = vi.hoisted(() => vi.fn());
+const mockTurfHistory = vi.hoisted(() => vi.fn());
+const mockExplain = vi.hoisted(() => vi.fn(() => null as string | null));
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'secret', PORT: 3000 }));
 const mockRefreshSwitches = vi.hoisted(() =>
 	vi.fn(async () => ({ on: [] as string[], off: ['One Team Michigan'] })),
@@ -44,6 +46,10 @@ vi.mock('$lib/server/van/geometry-progress-store.js', () => ({
 vi.mock('$lib/server/van/turf-hide-store.js', () => ({
 	loadHiddenTurfs: mockHidden,
 	setTurfHidden: mockSetHidden,
+}));
+vi.mock('$lib/server/van/turf-history-store.js', () => ({
+	loadTurfHistory: mockTurfHistory,
+	explainLiveCut: mockExplain,
 }));
 vi.mock('$lib/server/van/holdings-store.js', () => ({
 	COMPLETION_LOOKBACK: 200,
@@ -722,6 +728,84 @@ describe('/turfs/organizer hidden turf', () => {
 		await expect(untick(ADMIN, '300')).resolves.toMatchObject({
 			status: 500,
 			data: { unhideError: expect.stringContaining('Could not') },
+		});
+	});
+});
+
+describe('/turfs/organizer turf history', () => {
+	const cut = (turfId: number, retiredAt: string | null) => ({
+		turfId,
+		campaignId: 1,
+		name: 'Turf 05',
+		savedListId: turfId * 10,
+		cutAt: iso(NOW.getTime() - 48 * HOUR),
+		retiredAt,
+		doorCount: 3,
+		uncontactedDoors: 3,
+		rosterCurrent: true,
+		rosterDoors: 3,
+		knockedSinceCut: 0,
+		knockedBeforeCut: 0,
+		lastKnockedBeforeCut: null,
+		knockedByDay: [],
+		claims: [],
+	});
+	const history = (name: string) => ({ name, campaignId: 1, cuts: [cut(100, null)] });
+
+	const search = (session: unknown, query: string) => {
+		const body = new FormData();
+		body.set('query', query);
+		return actions.turfHistory({
+			locals: { session },
+			request: new Request('https://app.example/turfs/organizer?/turfHistory', {
+				method: 'POST',
+				body,
+			}),
+		} as never);
+	};
+
+	it.each([
+		['no session', null],
+		['a non-admin', { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false }],
+	])('refuses %s', async (_label, session) => {
+		await expect(search(session, 'Turf 05')).resolves.toMatchObject({ status: 403 });
+		expect(mockTurfHistory).not.toHaveBeenCalled();
+	});
+
+	it('asks for something to search', async () => {
+		await expect(search(ADMIN, '   ')).resolves.toMatchObject({ status: 400 });
+		expect(mockTurfHistory).not.toHaveBeenCalled();
+	});
+
+	it('returns each match with the sentence explaining its live cut', async () => {
+		mockTurfHistory.mockResolvedValueOnce([history('Turf 05')]);
+		mockExplain.mockReturnValueOnce('VAN re-cut this turf.');
+		await expect(search(ADMIN, ' Turf 05 ')).resolves.toEqual({
+			historyQuery: 'Turf 05',
+			histories: [{ ...history('Turf 05'), why: 'VAN re-cut this turf.' }],
+			historyTruncated: false,
+		});
+		expect(mockTurfHistory).toHaveBeenCalledWith(expect.anything(), 'Turf 05', { limit: 11 });
+	});
+
+	it('shows ten matches and says there were more', async () => {
+		mockTurfHistory.mockResolvedValueOnce(
+			Array.from({ length: 11 }, (_, i) => history(`Turf ${i}`)),
+		);
+		const result = (await search(ADMIN, 'Turf')) as {
+			histories: unknown[];
+			historyTruncated: boolean;
+		};
+		expect(result.histories).toHaveLength(10);
+		expect(result.historyTruncated).toBe(true);
+	});
+
+	it('answers on the form when the read fails', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockTurfHistory.mockRejectedValueOnce(new Error('SQLITE_BUSY'));
+		await expect(search(ADMIN, 'Turf 05')).resolves.toMatchObject({
+			status: 500,
+			data: { historyQuery: 'Turf 05', historyError: expect.stringContaining('Could not') },
 		});
 	});
 });

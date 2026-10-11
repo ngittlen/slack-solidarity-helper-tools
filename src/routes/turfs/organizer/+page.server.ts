@@ -37,6 +37,11 @@ import {
 	type HiddenTurfRow,
 } from '$lib/server/van/turf-hide-store.js';
 import {
+	explainLiveCut,
+	loadTurfHistory,
+	type TurfHistory,
+} from '$lib/server/van/turf-history-store.js';
+import {
 	lastVanSyncs,
 	startManualVanSync,
 	type CampaignLastSync,
@@ -83,6 +88,15 @@ export interface SuspectView extends SuspectCompletion {
 export interface HiddenTurfView extends HiddenTurfRow {
 	/** "2 days ago", against this load's `now`. See HoldingView.claimedAgoLabel. */
 	hiddenAgoLabel: string;
+}
+
+/** Turf names one history search shows. See loadTurfHistory's `limit`. */
+const TURF_HISTORY_LIMIT = 10;
+
+export interface TurfHistoryView extends TurfHistory {
+	/** explainLiveCut's sentence, or null. Computed here because it lives in
+	 *  $lib/server. */
+	why: string | null;
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -265,6 +279,38 @@ export const actions: Actions = {
 			return fail(500, { unhideError: 'Could not show that turf again. Please try again.' });
 		}
 		return { unhidden: turfId };
+	},
+
+	/**
+	 * A turf's history across VAN's cuts — `npm run van:turf` for organizers
+	 * who don't run scripts. Read-only and no VAN call; see
+	 * van/turf-history-store.ts. An action rather than part of `load` so a
+	 * search doesn't re-run the board's queries, and so the board's loads don't
+	 * re-run it.
+	 */
+	turfHistory: async ({ locals, request }) => {
+		if (!locals.session?.isAdmin) return fail(403, { historyError: 'Organizers only.' });
+		const historyQuery = String((await request.formData()).get('query') ?? '').trim();
+		if (!historyQuery) {
+			return fail(400, {
+				historyQuery,
+				historyError: 'Enter a turf name, region, or turf id.',
+			});
+		}
+		let found: TurfHistory[];
+		try {
+			found = await loadTurfHistory(db, historyQuery, { limit: TURF_HISTORY_LIMIT + 1 });
+		} catch (err) {
+			console.error('[van] turf history failed:', err);
+			return fail(500, {
+				historyQuery,
+				historyError: 'Could not load that turf’s history. Please try again.',
+			});
+		}
+		const histories: TurfHistoryView[] = found
+			.slice(0, TURF_HISTORY_LIMIT)
+			.map((h) => ({ ...h, why: explainLiveCut(h) }));
+		return { historyQuery, histories, historyTruncated: found.length > TURF_HISTORY_LIMIT };
 	},
 
 	/**

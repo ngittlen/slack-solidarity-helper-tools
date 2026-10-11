@@ -103,4 +103,30 @@ describe('loadTurfHistory', () => {
 		expect(history!.cuts[0]!.rosterCurrent).toBe(false);
 		expect(explainLiveCut(history!)).toMatch(/No roster for the current list/);
 	});
+
+	it('reads at most `limit` turf names, in name order', async () => {
+		await turf(100, 1100, OLD_CUT, null);
+		await turf(200, 2200, OLD_CUT, null);
+		await turf(300, 3300, OLD_CUT, null);
+		await client.execute("UPDATE van_turfs SET name = 'Turf 0' || (turf_id / 100)");
+
+		const histories = await loadTurfHistory(db, 'Plainfield', { limit: 2 });
+
+		expect(histories.map((h) => h.name)).toEqual(['Turf 01', 'Turf 02']);
+		expect(await loadTurfHistory(db, 'Plainfield')).toHaveLength(3);
+	});
+
+	it('reads `_` and `%` in a search as themselves', async () => {
+		await turf(100, 1100, OLD_CUT, null);
+		await turf(200, 2200, OLD_CUT, null);
+		await client.execute(
+			"UPDATE van_turfs SET name = 'Turf_05', region_name = 'R1' WHERE turf_id = 100",
+		);
+		await client.execute(
+			"UPDATE van_turfs SET name = 'TurfX05', region_name = 'R2' WHERE turf_id = 200",
+		);
+
+		expect((await loadTurfHistory(db, 'Turf_05')).map((h) => h.name)).toEqual(['Turf_05']);
+		expect(await loadTurfHistory(db, '%')).toEqual([]);
+	});
 });
