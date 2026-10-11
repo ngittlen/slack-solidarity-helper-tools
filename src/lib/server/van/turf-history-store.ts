@@ -11,7 +11,7 @@
 //
 // Counts only. Hashes are read to group doors and go no further.
 
-import { and, asc, eq, like, or, sql } from 'drizzle-orm';
+import { and, asc, eq, or, sql, type AnyColumn } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { campaignDayKey, campaignSheetStamp } from '../../campaign-time.js';
 import { vanPersonContacts, vanTurfCheckouts, vanTurfRoster, vanTurfs } from '../schema.js';
@@ -19,6 +19,7 @@ import { vanPersonContacts, vanTurfCheckouts, vanTurfRoster, vanTurfs } from '..
 type Db = ReturnType<typeof drizzle>;
 
 export interface TurfCutClaim {
+	checkoutId: number;
 	claimedAt: string;
 	slackUserName: string;
 	completedAt: string | null;
@@ -70,8 +71,16 @@ export interface TurfHistory {
  * Every cut of every turf matching `query` — a turf id, or part of a turf's
  * name or region — grouped by name, oldest cut first. A turf id finds the
  * other cuts under its name too.
+ *
+ * `limit` caps the turf names read, in name order: each cut costs two more
+ * queries, so a short search on the organizer page must not walk the whole
+ * catalog. Pass one more than you show to know whether there were more.
  */
-export async function loadTurfHistory(db: Db, query: string): Promise<TurfHistory[]> {
+export async function loadTurfHistory(
+	db: Db,
+	query: string,
+	{ limit }: { limit?: number } = {},
+): Promise<TurfHistory[]> {
 	const id = /^\d+$/.test(query.trim()) ? Number(query.trim()) : null;
 	let names: Array<{ name: string; campaignId: number }>;
 	if (id !== null) {
@@ -80,12 +89,16 @@ export async function loadTurfHistory(db: Db, query: string): Promise<TurfHistor
 			.from(vanTurfs)
 			.where(eq(vanTurfs.turfId, id));
 	} else {
-		const pattern = `%${query.trim()}%`;
+		// Escaped, so the `_` in every region name is a literal underscore
+		// rather than "any character", and a typed `%` matches only itself.
+		const pattern = `%${query.trim().replace(/[\\%_]/g, '\\$&')}%`;
+		const matches = (column: AnyColumn) => sql`${column} like ${pattern} escape '\\'`;
 		names = await db
 			.selectDistinct({ name: vanTurfs.name, campaignId: vanTurfs.campaignId })
 			.from(vanTurfs)
-			.where(or(like(vanTurfs.name, pattern), like(vanTurfs.regionName, pattern)))
-			.orderBy(asc(vanTurfs.name));
+			.where(or(matches(vanTurfs.name), matches(vanTurfs.regionName)))
+			.orderBy(asc(vanTurfs.name))
+			.limit(limit ?? -1); // -1: SQLite for "no limit"
 	}
 
 	const histories: TurfHistory[] = [];
@@ -139,6 +152,7 @@ async function loadCut(db: Db, turf: typeof vanTurfs.$inferSelect): Promise<Turf
 
 	const claims = await db
 		.select({
+			checkoutId: vanTurfCheckouts.id,
 			claimedAt: vanTurfCheckouts.claimedAt,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			completedAt: vanTurfCheckouts.completedAt,
