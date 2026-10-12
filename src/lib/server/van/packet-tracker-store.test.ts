@@ -496,7 +496,7 @@ describe('a checkout through its life', () => {
 });
 
 describe('the campaign’s entries are never overwritten', () => {
-	/** Give turf 100 a current uncontacted count, so the sheet stops blocking. */
+	/** Give turf 100 a current uncontacted count. The sheet blocks regardless. */
 	async function withDoorsLeft(uncontacted: number) {
 		await client.execute({
 			sql: `UPDATE van_turfs SET saved_list_id = 900, roster_saved_list_id = 900,
@@ -505,10 +505,9 @@ describe('the campaign’s entries are never overwritten', () => {
 		});
 	}
 
-	// Silent where doors are known to be left: the filled row no longer blocks
-	// claiming that turf, so this is expected rather than something for an
-	// organizer to chase.
-	it('leaves a packet someone else has filled in, without a warning, on turf with doors left', async () => {
+	// The filled row should have kept the claim from happening, doors left or
+	// not, so two people have the turf: an organizer's to sort out, said once.
+	it('warns once about someone else’s entry on turf with doors left', async () => {
 		await turf();
 		await withDoorsLeft(12);
 		await checkout();
@@ -520,13 +519,11 @@ describe('the campaign’s entries are never overwritten', () => {
 
 		expect(fake.sheet('sheet-downriver')[2]).toEqual(theirs);
 		expect(writes(fake.calls)).toEqual([]);
-		expect(first.warnings).toEqual([]);
+		expect(first.warnings).toEqual([expect.stringContaining("someone else's entry")]);
 		expect(second.warnings).toEqual([]);
 	});
 
-	// With no count the sheet still blocks claims, so a claim that collided
-	// with an entry is worth one warning — and only one.
-	it('warns once about someone else’s entry where the sheet still blocks', async () => {
+	it('warns once about someone else’s entry on turf with no count', async () => {
 		await turf();
 		await checkout();
 		const theirs = packet(LIST, { Canvasser: 'Sam', Status: 'Incomplete', 'Walk Mode': 'Paper' });
@@ -549,7 +546,8 @@ describe('the campaign’s entries are never overwritten', () => {
 			'sheet-downriver': tracker(packet(LIST, { Canvasser: 'Sam', Status: 'Incomplete' })),
 		});
 		const first = await run(fake.api);
-		expect(first).toMatchObject({ filled: 0, warnings: [] });
+		expect(first).toMatchObject({ filled: 0 });
+		expect(first.warnings).toEqual([expect.stringContaining("someone else's entry")]);
 
 		fake.sheet('sheet-downriver')[2] = packet(LIST, { Status: 'Unwalked' });
 		const second = await run(fake.api);

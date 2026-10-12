@@ -28,6 +28,7 @@ import { expiryFor, DEFAULT_CLAIM_TTL_HOURS } from '../../van/checkout.js';
 import {
 	planReconciliation,
 	renderRecutGone,
+	turfNameKey,
 	type ReconcileClaim,
 	type RecutClaim,
 	type ReplacementTurf,
@@ -78,6 +79,16 @@ export interface ReconcileOptions {
 	 *  value a fresh claim gets, because that is what it is: the volunteer has
 	 *  new turf, new doors and the whole window to walk it. */
 	ttlHours?: number;
+	/** The Packet Tracker, read live: who it says has a turf, null for nobody,
+	 *  undefined when it could not be read. The same check a claim makes
+	 *  (packetTrackerCheck). The sync reads the tracker only after this runs,
+	 *  so a route the re-cut just created has no `sheetAssignedTo` yet — and
+	 *  its list number is exactly what an organizer writes down first. */
+	sheetCheck?: (turf: {
+		turfId: number;
+		regionName: string;
+		printedListNumber: string | null;
+	}) => Promise<string | null | undefined>;
 }
 
 /** Live claims, with the turf they point at. */
@@ -166,7 +177,12 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 }
 
 /** Candidate replacements, scoped to the regions that actually lost a claim. */
-async function loadReplacements(db: Db, mapRegionIds: number[]): Promise<ReplacementTurf[]> {
+async function loadReplacements(
+	db: Db,
+	recut: readonly RecutClaim[],
+	sheetCheck: ReconcileOptions['sheetCheck'],
+): Promise<ReplacementTurf[]> {
+	const mapRegionIds = [...new Set(recut.map((c) => c.turf.mapRegionId))];
 	if (mapRegionIds.length === 0) return [];
 
 	const rows = await db
@@ -188,7 +204,24 @@ async function loadReplacements(db: Db, mapRegionIds: number[]): Promise<Replace
 				isNull(vanTurfCheckouts.completedAt),
 			),
 		);
-	const claimedIds = new Set(claimed.map((c) => c.turfId));
+	// A turf the Packet Tracker has out is somebody's, the same as one held
+	// here: handing it over would put two canvassers on it.
+	const claimedIds = new Set([
+		...claimed.map((c) => c.turfId),
+		...rows.filter((r) => r.sheetAssignedTo).map((r) => r.turfId),
+	]);
+
+	// Live, and only for routes a re-cut claim could actually be handed: same
+	// region and name, nobody holding it. The tracker read is cached per
+	// spreadsheet, so a region's worth costs one round trip to Google.
+	if (sheetCheck) {
+		const wanted = new Set(recut.map((c) => `${c.turf.mapRegionId}|${turfNameKey(c.turf.name)}`));
+		for (const row of rows) {
+			if (claimedIds.has(row.turfId)) continue;
+			if (!wanted.has(`${row.mapRegionId}|${turfNameKey(row.name)}`)) continue;
+			if (await sheetCheck(row)) claimedIds.add(row.turfId);
+		}
+	}
 
 	return rows.map((row) => ({
 		turfId: row.turfId,
@@ -232,7 +265,7 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 		// Inside the guard with the other two: this function is documented as
 		// never throwing, and the sync that calls it has already written its
 		// catalog rows.
-		replacements = await loadReplacements(db, [...new Set(recut.map((c) => c.turf.mapRegionId))]);
+		replacements = await loadReplacements(db, recut, options.sheetCheck);
 	} catch (err) {
 		console.error(`${LOG} could not read claims to reconcile:`, errMessage(err));
 		return result;

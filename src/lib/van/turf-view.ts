@@ -94,7 +94,10 @@ export function currentUncontacted(row: CountedRow): number | null {
 
 /**
  * Whether somebody knocked on a door in this turf recently — a not-home
- * counts — before VAN last cut it, where MiniVAN can no longer show it.
+ * counts — before VAN last cut it, where MiniVAN can no longer show it. Put
+ * the other way: whether a volunteer who loads this turf into MiniVAN will
+ * see more doors to knock than we said it has (`doorsLeft`). Still true after
+ * a walk since the cut that missed some of those doors, done or not.
  *
  * The campaign re-cuts walked turf and every door comes back uncontacted, so
  * the since-cut count alone shows a turf walked yesterday as untouched. This is what
@@ -108,18 +111,6 @@ export function hasContactHistory(
 ): boolean {
 	if (row.knockedBeforeCut == null || row.savedListId == null) return false;
 	return row.rosterSavedListId === row.savedListId && row.knockedBeforeCut > 0;
-}
-
-/**
- * Whether a filled-in Packet Tracker row still keeps this turf from being
- * claimed. Only while we cannot see what is left: once the ContactHistory count
- * says doors remain uncontacted, a name in the campaign's sheet does not mean
- * the doors are being knocked, and the turf goes back in the pool. (VAN's own
- * record of an outside hand-out, `vanDistributedTo`, still blocks.)
- */
-export function sheetBlocksClaim(row: CountedRow): boolean {
-	const left = currentUncontacted(row);
-	return left === null || left <= 0;
 }
 
 /**
@@ -496,12 +487,12 @@ export function turfSnapshot(
 		hidden: row.hiddenAt != null,
 		// Handed out outside this app — through VAN, or written into the
 		// campaign's Packet Tracker by an organizer. VAN's lapses after the
-		// admin's hand-out TTL and the sheet only counts while no uncontacted
-		// doors are known to remain, both once there is a count; see
-		// vanAssignmentBlocks and sheetBlocksClaim.
+		// admin's hand-out TTL once there is a count (vanAssignmentBlocks). The
+		// sheet blocks for as long as the entry is there: it is the campaign's
+		// word that someone has the turf, however many doors are left.
 		vanDistributedTo:
 			(vanAssignmentBlocks(row, now, vanAssignmentTtlHours) ? row.vanDistributedTo : null) ??
-			(sheetBlocksClaim(row) ? row.sheetAssignedTo : null) ??
+			row.sheetAssignedTo ??
 			null,
 		// The since-cut count, not the one shown: a turf knocked before the cut but
 		// re-cut by the campaign still goes out. The shown number is never

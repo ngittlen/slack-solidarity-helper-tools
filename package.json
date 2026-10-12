@@ -26,6 +26,7 @@
 		"van:geometry": "tsx --env-file=.env.local scripts/van-geometry-status.ts",
 		"van:drain": "tsx --env-file=.env.local scripts/van-geometry-drain.ts",
 		"van:turf": "tsx --env-file=.env.local scripts/van-turf-history.ts",
+		"van:list": "tsx --env-file=.env.local scripts/van-list.ts",
 		"sheets:check": "tsx --env-file=.env.local scripts/sheets-check.ts",
 		"slack:copy-members": "tsx --env-file=.env.local scripts/copy-channel-members.ts"
 	},

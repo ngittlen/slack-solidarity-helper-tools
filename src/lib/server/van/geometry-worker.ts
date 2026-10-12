@@ -39,6 +39,7 @@ import {
 import { geocodeAddresses } from './geocode-batch.js';
 import { needsGeometry } from './catalog.js';
 import { recomputeUncontacted, recountStatement, rosterStatements } from './contact-sync.js';
+import { createGroupWriter } from './group-writer.js';
 import type { PersonHasher } from './person-hash.js';
 import type { VanExportJob } from './types.js';
 
@@ -59,6 +60,10 @@ export const MAX_ATTEMPTS = 4;
  *  speed. `options.concurrency` raises it for a one-off backlog drain run from
  *  a script — the VAN client's own limiter still bounds calls to VAN itself. */
 const MAX_CONCURRENCY = 2;
+
+/** Groups waiting for the writer before a worker holds off starting another
+ *  turf. Only reached when the database falls well behind VAN. */
+const WRITE_BACKLOG = 100;
 
 /** Whole-run budget, under the 10-minute lock in the van-sync route and well
  *  under Fly's patience. A run that lapses leaves its rows resumable. */
@@ -218,24 +223,29 @@ export interface GeometryTimings {
 	downloadMs: number;
 	/** The Census geocoder, for rows VAN had no coordinates for. */
 	geocodeMs: number;
-	/** Everything else: the database reads and writes, roster included. */
+	/** Everything else, which is time a turf was held up by the database: the
+	 *  queue read, waiting for the writer to make room, the wait at the end
+	 *  for its last transaction, and the recount. Its writes are not in it —
+	 *  the writer makes them while the turfs go on. */
 	dbMs: number;
 
-	// Inside dbMs, not added to it: what the database time is made of, to
-	// tell a cost per transaction (fixed per write) from a cost per row.
+	// The run's writer (group-writer.ts), which runs alongside the turfs
+	// rather than inside any stage: to tell a cost per transaction from a
+	// cost per row, and how much each transaction carried.
 
-	/** Each finished turf's one batch of writes — hull, roster, done row.
-	 *  Only batches that succeeded: a failed one's time stays in dbMs alone,
-	 *  so the fit below is over complete writes. */
+	/** Its transactions. Only those that committed: a failed one counts
+	 *  nowhere, so the fit below is over complete writes. */
 	writeMs: number;
-	/** How many of those batches. */
+	/** How many of those transactions. */
 	writes: number;
+	/** Finished turfs they carried. */
+	writeTurfs: number;
 	/** Roster rows inserted by them. With writeRowsSq and writeRowsMs, enough
-	 *  to fit write time against rows: ms ≈ fixed + perRow × rows. */
+	 *  to fit transaction time against rows: ms ≈ fixed + perRow × rows. */
 	writeRows: number;
 	writeRowsSq: number;
 	writeRowsMs: number;
-	/** batchRecount's recount at the end of the run. */
+	/** batchRecount's recount at the end of the run. Inside dbMs. */
 	recountMs: number;
 }
 
@@ -311,6 +321,7 @@ export async function runGeometryQueue(
 			dbMs: 0,
 			writeMs: 0,
 			writes: 0,
+			writeTurfs: 0,
 			writeRows: 0,
 			writeRowsSq: 0,
 			writeRowsMs: 0,
@@ -361,6 +372,29 @@ export async function runGeometryQueue(
 	const queue = options.maxItems == null ? items : items.slice(0, options.maxItems);
 	if (queue.length === 0) return result;
 
+	// Every write a turf makes goes through this one writer, which turns the
+	// turfs' writes into a few transactions rather than each turf queueing
+	// for the write lock in turn. See group-writer.ts.
+	const writer = createGroupWriter(db);
+	/** Each write's outcome, settled before the run returns. */
+	const settling: Promise<void>[] = [];
+	/** The first write that could not be made — not even as a failure record,
+	 *  so the database is gone. Stops new turfs, and is thrown at the end. */
+	// Cast, or the checks below narrow it to the null it starts as: it is set
+	// from a callback, which the compiler does not follow.
+	let fatal = null as { err: unknown } | null;
+	/** See `work` through before the run returns. A rejection is fatal. */
+	function track(work: Promise<unknown>): void {
+		settling.push(
+			work.then(
+				() => undefined,
+				(err) => {
+					fatal ??= { err };
+				},
+			),
+		);
+	}
+
 	/** processItem, timed. Each turf keeps its own clock, since the shared
 	 *  totals also move with every other turf in flight. The database gets
 	 *  whatever the other stages did not account for, rather than a timer
@@ -369,6 +403,8 @@ export async function runGeometryQueue(
 		const started = Date.now();
 		const clock: ItemClock = { vanMs: 0, pollWaitMs: 0, downloadMs: 0, geocodeMs: 0 };
 		try {
+			// Held here rather than piling up rosters while the database lags.
+			await writer.room(WRITE_BACKLOG);
 			await processItem(item, clock);
 		} finally {
 			// downloadMs already includes the geocoder, which ran inside it.
@@ -406,15 +442,20 @@ export async function runGeometryQueue(
 		result.attempted++;
 
 		// A fresh row is marked running in the same write that stores its job
-		// id, after the POST: one round trip rather than two. A crash during
-		// the POST leaves it pending, which is what a running row with no job
-		// id was treated as anyway. A resumed row already has its job, so it is
-		// marked before the GET, as a claim on it.
+		// id, after the POST: one write rather than two. A crash during the
+		// POST leaves it pending, which is what a running row with no job id
+		// was treated as anyway. A resumed row already has its job, so it is
+		// marked before the GET, as a claim on it. Neither is waited for: the
+		// writer commits them in order, ahead of anything the turf writes next.
 		if (item.exportJobId !== null) {
-			await db
-				.update(vanGeometryQueue)
-				.set({ status: 'running', attempts, lastError: null })
-				.where(eq(vanGeometryQueue.turfId, item.turfId));
+			track(
+				writer.write([
+					db
+						.update(vanGeometryQueue)
+						.set({ status: 'running', attempts, lastError: null })
+						.where(eq(vanGeometryQueue.turfId, item.turfId)),
+				]),
+			);
 		}
 
 		try {
@@ -432,21 +473,27 @@ export async function runGeometryQueue(
 						webhookUrl: options.webhookUrlFor(item.turfId),
 					}),
 				);
-				// Persisted before the download so a crash mid-download resumes
-				// by polling instead of submitting a second job.
+				// Handed to the writer before the download, which commits it while
+				// the download runs: a crash after that resumes by polling instead
+				// of submitting a second job. One before it costs a duplicate
+				// export, as a crash during the POST always has.
 				exportJobId = job.exportJobId;
-				await db
-					.update(vanGeometryQueue)
-					.set({
-						status: 'running',
-						attempts,
-						exportJobId,
-						// Stamped when a job is submitted, never on a resume: it is
-						// what tells a slow job from one that is never going to finish.
-						requestedAt: now.toISOString(),
-						lastError: null,
-					})
-					.where(eq(vanGeometryQueue.turfId, item.turfId));
+				track(
+					writer.write([
+						db
+							.update(vanGeometryQueue)
+							.set({
+								status: 'running',
+								attempts,
+								exportJobId,
+								// Stamped when a job is submitted, never on a resume: it is
+								// what tells a slow job from one that is never going to finish.
+								requestedAt: now.toISOString(),
+								lastError: null,
+							})
+							.where(eq(vanGeometryQueue.turfId, item.turfId)),
+					]),
+				);
 			}
 
 			// Small lists are already Completed here and skip the loop entirely.
@@ -494,10 +541,14 @@ export async function runGeometryQueue(
 				// Not a failure — the job is simply still running. Leave it
 				// resumable and DO NOT count the attempt against it, or a slow
 				// export would dead-letter itself by being polled four times.
-				await db
-					.update(vanGeometryQueue)
-					.set({ status: 'running', attempts: priorAttempts })
-					.where(eq(vanGeometryQueue.turfId, item.turfId));
+				track(
+					writer.write([
+						db
+							.update(vanGeometryQueue)
+							.set({ status: 'running', attempts: priorAttempts })
+							.where(eq(vanGeometryQueue.turfId, item.turfId)),
+					]),
+				);
 				result.stillRunning++;
 				return;
 			}
@@ -507,10 +558,14 @@ export async function runGeometryQueue(
 			// request the scheduled sync is allowed; the job id is already
 			// stored, so leaving the row resumable costs one GET on the next run.
 			if (finishBy - Date.now() < MIN_DOWNLOAD_MS) {
-				await db
-					.update(vanGeometryQueue)
-					.set({ status: 'running', attempts: priorAttempts })
-					.where(eq(vanGeometryQueue.turfId, item.turfId));
+				track(
+					writer.write([
+						db
+							.update(vanGeometryQueue)
+							.set({ status: 'running', attempts: priorAttempts })
+							.where(eq(vanGeometryQueue.turfId, item.turfId)),
+					]),
+				);
 				result.stillRunning++;
 				result.budgetLapsed = true;
 				return;
@@ -570,27 +625,25 @@ export async function runGeometryQueue(
 			});
 
 			const hasHull = extract.hull.length >= 3;
-			// Every write the turf's result makes, in one batch: one round trip
-			// rather than one each, and all or nothing — a failure part way can
-			// no longer leave a stored hull on a row about to be retried.
+			// Every write the turf's result makes, as one group: committed
+			// together, all or nothing — a failure part way can no longer leave
+			// a stored hull on a row about to be retried.
 			const writes: unknown[] = [];
+			// The turf's own columns, in one update rather than one each: the
+			// row carries the hull, so every update rewrites all of it.
+			const turfPatch: Partial<typeof vanTurfs.$inferInsert> = {};
 			if (wantsHull) {
 				// routeSize as read with the queue: the hull is only valid against
 				// the route as it stood then, and that is exactly what
 				// hullSourceRouteSize records.
-				writes.push(
-					db
-						.update(vanTurfs)
-						.set({
-							hullJson: hasHull ? JSON.stringify(extract.hull) : null,
-							centroidLat: extract.centre?.lat ?? null,
-							centroidLng: extract.centre?.lng ?? null,
-							// Null when there is no geometry at all, so `needsGeometry`
-							// re-queues it rather than treating "no hull" as settled.
-							hullSourceRouteSize: extract.centre ? item.routeSize : null,
-						})
-						.where(eq(vanTurfs.turfId, item.turfId)),
-				);
+				Object.assign(turfPatch, {
+					hullJson: hasHull ? JSON.stringify(extract.hull) : null,
+					centroidLat: extract.centre?.lat ?? null,
+					centroidLng: extract.centre?.lng ?? null,
+					// Null when there is no geometry at all, so `needsGeometry`
+					// re-queues it rather than treating "no hull" as settled.
+					hullSourceRouteSize: extract.centre ? item.routeSize : null,
+				});
 			}
 
 			// Stamped with the QUEUE row's saved list, which is the one this
@@ -598,19 +651,23 @@ export async function runGeometryQueue(
 			// mismatch and queues again. The recount reads the new roster, so it
 			// comes after it.
 			if (extract.roster) {
-				writes.push(...rosterStatements(db, item.turfId, item.savedListId, extract.roster));
+				if (options.batchRecount) {
+					// Until the end-of-run recount, no count rather than the old
+					// cut's: NULL is what readers already fall back from, to VAN's
+					// doorCount. A run killed before the recount leaves it so,
+					// which is degraded rather than wrong.
+					Object.assign(turfPatch, {
+						uncontactedDoors: null,
+						uncontactedDoorsAt: null,
+						knockedBeforeCut: null,
+					});
+				}
 				writes.push(
-					options.batchRecount
-						? // Until the end-of-run recount, no count rather than the old
-							// cut's: NULL is what readers already fall back from, to
-							// VAN's doorCount. A run killed before the recount leaves
-							// it so, which is degraded rather than wrong.
-							db
-								.update(vanTurfs)
-								.set({ uncontactedDoors: null, uncontactedDoorsAt: null, knockedBeforeCut: null })
-								.where(eq(vanTurfs.turfId, item.turfId))
-						: recountStatement(db, [item.turfId], new Date()),
+					...rosterStatements(db, item.turfId, item.savedListId, extract.roster, turfPatch),
 				);
+				if (!options.batchRecount) writes.push(recountStatement(db, [item.turfId], new Date()));
+			} else if (wantsHull) {
+				writes.push(db.update(vanTurfs).set(turfPatch).where(eq(vanTurfs.turfId, item.turfId)));
 			}
 
 			// A roster that could not be built leaves its reason on the done
@@ -627,58 +684,59 @@ export async function runGeometryQueue(
 					})
 					.where(eq(vanGeometryQueue.turfId, item.turfId)),
 			);
-			const writeStarted = Date.now();
-			await db.batch(writes as unknown as Parameters<typeof db.batch>[0]);
-			const writeMs = Date.now() - writeStarted;
-			const rows = extract.roster?.length ?? 0;
-			timings.writeMs += writeMs;
-			timings.writes++;
-			timings.writeRows += rows;
-			timings.writeRowsSq += rows * rows;
-			timings.writeRowsMs += rows * writeMs;
-			if (extract.roster) {
-				result.rostersStored++;
-				// Only once its roster is stored: there is nothing new to count
-				// for a turf whose batch failed.
-				if (options.batchRecount) rostered.push(item.turfId);
-			}
-			if (extract.rosterUnavailable) result.rostersUnavailable++;
+			// Not waited for: the worker goes on to its next turf while the
+			// writer commits this one, and the turf is counted once it has.
+			const stored = writer.write(writes, { rows: extract.roster?.length ?? 0, turf: true });
+			track(
+				stored.then(
+					() => {
+						if (extract.roster) {
+							result.rostersStored++;
+							// Only once its roster is stored: there is nothing new to count
+							// for a turf whose batch failed.
+							if (options.batchRecount) rostered.push(item.turfId);
+						}
+						if (extract.rosterUnavailable) result.rostersUnavailable++;
 
-			result.geocodedFromAddress += extract.geocodedFromAddress;
-			// A roster-only pass says nothing new about the shape, so it counts
-			// toward none of the geometry outcomes or their warnings.
-			if (!wantsHull) return;
-			if (hasHull) result.hullsStored++;
-			else if (extract.centre) result.centroidsOnly++;
-			else result.noGeometry++;
+						result.geocodedFromAddress += extract.geocodedFromAddress;
+						// A roster-only pass says nothing new about the shape, so it counts
+						// toward none of the geometry outcomes or their warnings.
+						if (!wantsHull) return;
+						if (hasHull) result.hullsStored++;
+						else if (extract.centre) result.centroidsOnly++;
+						else result.noGeometry++;
 
-			if (!extract.centre) {
-				warnings.push(
-					`Turf ${item.turfId}: export returned ${extract.rowCount} row(s) but no usable ` +
-						`coordinates (${extract.rowsWithoutCoordinates} ungeocoded) — it will render without a pin.`,
-				);
-			} else if (extract.hullTooLarge) {
-				result.hullsTooLarge++;
-				const km = Math.round((extract.hullExtentMeters ?? 0) / 1000);
-				// Two readings of the same wide span, and the point count is what
-				// tells them apart — see MIN_POINTS_FOR_SPAN_VERDICT. Saying "the
-				// saved list is probably not a cut map region" on six points was
-				// stating a conclusion the evidence could not support, and pointed
-				// at re-cutting turf that was already correct.
-				warnings.push(
-					extract.pointCount < MIN_POINTS_FOR_SPAN_VERDICT
-						? `Turf ${item.turfId}: addresses span ~${km} km across only ` +
-								`${extract.pointCount} coordinate(s) — too few to tell a mis-scoped saved list ` +
-								`from a map region that is simply sparsely populated. The shape is stored; ` +
-								`treat it as approximate rather than as a turf boundary.`
-						: `Turf ${item.turfId}: addresses span ~${km} km across ` +
-								`${extract.pointCount} coordinates, far past a walkable turf. The shape is ` +
-								`stored but is almost certainly not a turf boundary — the saved list is ` +
-								`probably not a cut map region.`,
-				);
-			}
+						if (!extract.centre) {
+							warnings.push(
+								`Turf ${item.turfId}: export returned ${extract.rowCount} row(s) but no usable ` +
+									`coordinates (${extract.rowsWithoutCoordinates} ungeocoded) — it will render without a pin.`,
+							);
+						} else if (extract.hullTooLarge) {
+							result.hullsTooLarge++;
+							const km = Math.round((extract.hullExtentMeters ?? 0) / 1000);
+							// Two readings of the same wide span, and the point count is what
+							// tells them apart — see MIN_POINTS_FOR_SPAN_VERDICT. Saying "the
+							// saved list is probably not a cut map region" on six points was
+							// stating a conclusion the evidence could not support, and pointed
+							// at re-cutting turf that was already correct.
+							warnings.push(
+								extract.pointCount < MIN_POINTS_FOR_SPAN_VERDICT
+									? `Turf ${item.turfId}: addresses span ~${km} km across only ` +
+											`${extract.pointCount} coordinate(s) — too few to tell a mis-scoped saved list ` +
+											`from a map region that is simply sparsely populated. The shape is stored; ` +
+											`treat it as approximate rather than as a turf boundary.`
+									: `Turf ${item.turfId}: addresses span ~${km} km across ` +
+											`${extract.pointCount} coordinates, far past a walkable turf. The shape is ` +
+											`stored but is almost certainly not a turf boundary — the saved list is ` +
+											`probably not a cut map region.`,
+							);
+						}
+					},
+					(err) => recordFailure(item, attempts, exportJobId, err),
+				),
+			);
 		} catch (err) {
-			await recordFailure(item, attempts, exportJobId, err);
+			track(recordFailure(item, attempts, exportJobId, err));
 		}
 	}
 
@@ -696,21 +754,23 @@ export async function runGeometryQueue(
 			err instanceof HullExtractError || (err instanceof VanError && err.isAuthFailure);
 		const dead = permanent || attempts >= MAX_ATTEMPTS;
 
-		await db
-			.update(vanGeometryQueue)
-			.set({
-				// Written here as well as when the row was marked running: a
-				// fresh row whose POST failed has had no earlier write to carry it.
-				attempts,
-				status: dead ? 'failed' : 'pending',
-				// A dead-lettered row keeps its job id for forensics; a retrying
-				// one drops it so the next attempt submits a fresh job rather
-				// than polling one that already errored.
-				exportJobId: dead ? exportJobId : null,
-				lastError: message.slice(0, 500),
-				completedAt: dead ? new Date().toISOString() : null,
-			})
-			.where(eq(vanGeometryQueue.turfId, item.turfId));
+		await writer.write([
+			db
+				.update(vanGeometryQueue)
+				.set({
+					// Written here as well as when the row was marked running: a
+					// fresh row whose POST failed has had no earlier write to carry it.
+					attempts,
+					status: dead ? 'failed' : 'pending',
+					// A dead-lettered row keeps its job id for forensics; a retrying
+					// one drops it so the next attempt submits a fresh job rather
+					// than polling one that already errored.
+					exportJobId: dead ? exportJobId : null,
+					lastError: message.slice(0, 500),
+					completedAt: dead ? new Date().toISOString() : null,
+				})
+				.where(eq(vanGeometryQueue.turfId, item.turfId)),
+		]);
 
 		if (dead) {
 			result.deadLettered++;
@@ -729,6 +789,7 @@ export async function runGeometryQueue(
 	const width = Math.max(1, Math.floor(options.concurrency ?? MAX_CONCURRENCY));
 	const workers = Array.from({ length: Math.min(width, queue.length) }, async () => {
 		while (cursor < queue.length) {
+			if (fatal) return;
 			if (Date.now() >= deadline) {
 				result.budgetLapsed = true;
 				return;
@@ -738,6 +799,20 @@ export async function runGeometryQueue(
 		}
 	});
 	await Promise.all(workers);
+
+	// What the turfs left with the writer, and what follows each write. The
+	// turfs are done; this is the run waiting on the database for them.
+	const settleStarted = Date.now();
+	await Promise.all(settling);
+	timings.dbMs += Date.now() - settleStarted;
+	const w = writer.stats;
+	timings.writeMs += w.ms;
+	timings.writes += w.transactions;
+	timings.writeTurfs += w.turfs;
+	timings.writeRows += w.rows;
+	timings.writeRowsSq += w.rowsSq;
+	timings.writeRowsMs += w.rowsMs;
+	if (fatal) throw fatal.err;
 
 	// batchRecount: the counts every per-turf write above left for now.
 	// Caught rather than thrown: the turfs themselves are stored, and their

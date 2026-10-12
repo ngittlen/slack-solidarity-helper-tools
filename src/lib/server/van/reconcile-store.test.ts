@@ -290,6 +290,45 @@ describe('reconcileClaims — a turf VAN re-cut', () => {
 		expect(result.recutReplaced).toBe(0);
 	});
 
+	it('does not offer a replacement the Packet Tracker has out', async () => {
+		const { db } = makeDb([[], [recutRow()], [replacementRow({ sheetAssignedTo: 'Bobby' })], []]);
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP });
+		expect(result.recutGone).toBe(1);
+		expect(result.recutReplaced).toBe(0);
+	});
+
+	// The sync reads the tracker after this runs, so a route the re-cut just
+	// made has no sheetAssignedTo yet. The live check is what catches it.
+	it('asks the tracker live, and does not offer a replacement written down since', async () => {
+		const { db } = makeDb([[], [recutRow()], [replacementRow()], []]);
+		const sheetCheck = vi.fn(async () => 'Bobby');
+		const result = await reconcileClaims(db, { now: NOW, appUrl: APP, sheetCheck });
+		expect(sheetCheck).toHaveBeenCalledWith(expect.objectContaining({ turfId: 56502 }));
+		expect(result.recutGone).toBe(1);
+		expect(result.recutReplaced).toBe(0);
+	});
+
+	it('hands over the replacement when the tracker has nobody on it, or cannot be read', async () => {
+		for (const answer of [null, undefined]) {
+			const { db } = makeDb([[], [recutRow()], [replacementRow()], []]);
+			const sheetCheck = vi.fn(async () => answer);
+			const result = await reconcileClaims(db, { now: NOW, appUrl: APP, sheetCheck });
+			expect(result.recutReplaced).toBe(1);
+		}
+	});
+
+	it('only asks the tracker about routes a claim could be handed', async () => {
+		const { db } = makeDb([
+			[],
+			[recutRow()],
+			[replacementRow(), replacementRow({ turfId: 56503, name: 'Turf 02' })],
+			[],
+		]);
+		const sheetCheck = vi.fn(async () => null);
+		await reconcileClaims(db, { now: NOW, appUrl: APP, sheetCheck });
+		expect(sheetCheck).toHaveBeenCalledOnce();
+	});
+
 	it('stamps an old re-cut without DMing anyone', async () => {
 		const { db, updates } = makeDb([
 			[],

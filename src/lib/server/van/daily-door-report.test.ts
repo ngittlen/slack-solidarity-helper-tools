@@ -8,6 +8,7 @@ import { createPersonHasher } from './person-hash.js';
 import {
 	countDoorsByTurf,
 	dailyReportCampaigns,
+	listLoads,
 	runDailyDoorReport,
 	type DailyReportDeps,
 } from './daily-door-report.js';
@@ -254,6 +255,40 @@ describe('dailyReportCampaigns', () => {
 	});
 });
 
+async function loaded(
+	turfId: number,
+	loadedAt: string | null,
+	issued: string | null,
+	slackUserName = 'Dana',
+) {
+	await client.execute({
+		sql: `INSERT INTO van_turf_checkouts
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		         loaded_in_minivan_at, issued_list_number)
+		      VALUES (?, 'U1', ?, '2026-10-06T00:00:00.000Z', '2026-10-09T00:00:00.000Z', ?, ?)`,
+		args: [turfId, slackUserName, loadedAt, issued],
+	});
+}
+
+describe('listLoads', () => {
+	it('lists claims whose list was loaded, oldest load first, in this campaign only', async () => {
+		await turf(1, { name: 'Turf A' });
+		await turf(2, { name: 'Turf B' });
+		await turf(3, { name: 'Elsewhere', campaignId: 2 });
+		await client.execute("UPDATE van_turfs SET printed_list_number = '222-2' WHERE turf_id = 2");
+		await loaded(1, '2026-10-07T18:00:00.000Z', '111-1');
+		await loaded(2, '2026-10-06T14:05:00.000Z', null); // no issued number: the turf's
+		await turf(4, { name: 'Turf D' });
+		await loaded(4, null, '444-4'); // given out, never loaded
+		await loaded(3, '2026-10-06T12:00:00.000Z', '333-3');
+
+		expect(await listLoads(db, 1)).toEqual([
+			{ loadedAt: '2026-10-06 10:05', turfName: 'Turf B', listNumber: '222-2' },
+			{ loadedAt: '2026-10-07 14:00', turfName: 'Turf A', listNumber: '111-1' },
+		]);
+	});
+});
+
 describe('runDailyDoorReport', () => {
 	let replaceTab: Mock<SheetsClient['replaceTab']>;
 	let post: Mock<DailyReportDeps['post']>;
@@ -358,6 +393,39 @@ describe('runDailyDoorReport', () => {
 		expect(post.mock.calls[0]![0]).toContain('could not be written');
 		// Not an access problem, so no advice about sharing.
 		expect(post.mock.calls[0]![0]).not.toContain('shared with');
+	});
+
+	it('rewrites the loads tab after the day’s tab, and keeps it first', async () => {
+		await loaded(1, '2026-10-07T18:00:00.000Z', '111-1');
+		const result = await runDailyDoorReport(deps(), campaign, { day: DAY, announce: false });
+
+		expect(result.loadsWritten).toBe(true);
+		expect(replaceTab).toHaveBeenCalledTimes(2);
+		const loads = replaceTab.mock.calls[1]![0];
+		expect(loads).toMatchObject({
+			spreadsheetId: 'sheet-abc',
+			tabName: 'Lists loaded in MiniVAN',
+			ownedPrefix: 'Lists loaded in MiniVAN · ',
+			index: 0,
+		});
+		expect(loads.rows[0]!.cells[0]).toBe('Lists loaded in MiniVAN · Main');
+		expect(loads.rows).toContainEqual({
+			cells: ['Date/time', 'Turf name', 'List number'],
+			bold: true,
+		});
+		expect(loads.rows.at(-1)).toEqual({ cells: ['2026-10-07 14:00', 'Turf 1', '111-1'] });
+	});
+
+	it('still posts the totals when the loads tab cannot be written, and says so', async () => {
+		replaceTab
+			.mockResolvedValueOnce({ ok: true, value: { sheetId: 42 } })
+			.mockResolvedValueOnce({ ok: false, status: 409, error: 'not ours' });
+		const result = await runDailyDoorReport(deps(), campaign, { day: DAY, announce: true });
+
+		expect(result).toMatchObject({ written: true, loadsWritten: false, posted: true });
+		expect(post).toHaveBeenCalledTimes(2);
+		expect(post.mock.calls[0]![0]).toContain('Lists loaded in MiniVAN');
+		expect(post.mock.calls[1]![0]).toContain('edit#gid=42');
 	});
 
 	it('writes nothing on a dry run', async () => {

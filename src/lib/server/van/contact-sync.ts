@@ -146,12 +146,15 @@ export async function replaceRoster(
 }
 
 /** replaceRoster's statements, unrun, for a caller that batches them with its
- *  own writes. They must run together and in order. */
+ *  own writes. They must run together and in order. `alsoSet` is more of the
+ *  turf's columns for the same update — one rewrite of a row that carries a
+ *  hull, rather than one per caller. */
 export function rosterStatements(
 	db: Db,
 	turfId: number,
 	savedListId: number,
 	entries: readonly RosterEntry[],
+	alsoSet: Partial<typeof vanTurfs.$inferInsert> = {},
 ) {
 	const inserts = chunked(entries, ROSTER_BATCH).map((batch) =>
 		db
@@ -163,7 +166,10 @@ export function rosterStatements(
 	return [
 		db.delete(vanTurfRoster).where(eq(vanTurfRoster.turfId, turfId)),
 		...inserts,
-		db.update(vanTurfs).set({ rosterSavedListId: savedListId }).where(eq(vanTurfs.turfId, turfId)),
+		db
+			.update(vanTurfs)
+			.set({ ...alsoSet, rosterSavedListId: savedListId })
+			.where(eq(vanTurfs.turfId, turfId)),
 	];
 }
 

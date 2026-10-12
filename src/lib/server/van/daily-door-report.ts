@@ -28,21 +28,32 @@
 // Injected sheets client, folder lookup and Slack post, so tests drive it
 // without Google, VAN or Slack. The endpoint wires the real ones.
 
-import { and, eq, isNotNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, ne, sql } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { vanCampaigns, vanContactSyncState, type VanCampaignRow } from '../schema.js';
+import {
+	vanCampaigns,
+	vanContactSyncState,
+	vanTurfCheckouts,
+	vanTurfs,
+	type VanCampaignRow,
+} from '../schema.js';
 import type { SheetsClient } from '../google/sheets.js';
 import { errChainText, errMessage } from '../../err-message.js';
 import { escapeMrkdwn } from '../../slack-mrkdwn.js';
 import { campaignDayBounds, campaignDayLabel, campaignSheetStamp } from '../../campaign-time.js';
 import {
+	buildLoadsRows,
 	buildReportRows,
 	groupByFolder,
+	LOADS_COLUMN_WIDTHS,
+	LOADS_TAB_NAME,
+	LOADS_TITLE_PREFIX,
 	REPORT_COLUMN_WIDTHS,
 	REPORT_TITLE_PREFIX,
 	reportSlackText,
 	totals,
 	type DoorReport,
+	type ListLoad,
 	type ReportRow,
 	type TurfDoors,
 } from '../../van/daily-door-report.js';
@@ -180,6 +191,35 @@ export async function countDoorsByTurf(
 	};
 }
 
+/**
+ * Every claim in the campaign whose list was seen loaded in MiniVAN, oldest
+ * load first: the turf and the number this app gave its volunteer.
+ *
+ * `loadedInMinivanAt` is the first export of the turf's list inside the claim
+ * (catalog.ts), so a claim counts once however often its list was reloaded,
+ * and a list loaded only after its claim ended — after a re-cut, say — does not
+ * count. The number is the one we issued; a claim from before that was
+ * recorded falls back to the turf's, which is the list the export matched.
+ */
+export async function listLoads(db: Db, campaignId: number): Promise<ListLoad[]> {
+	const rows = await db
+		.select({
+			loadedAt: vanTurfCheckouts.loadedInMinivanAt,
+			turfName: vanTurfs.name,
+			issued: vanTurfCheckouts.issuedListNumber,
+			printed: vanTurfs.printedListNumber,
+		})
+		.from(vanTurfCheckouts)
+		.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
+		.where(and(eq(vanTurfs.campaignId, campaignId), isNotNull(vanTurfCheckouts.loadedInMinivanAt)))
+		.orderBy(asc(vanTurfCheckouts.loadedInMinivanAt), asc(vanTurfCheckouts.id));
+	return rows.map((r) => ({
+		loadedAt: campaignSheetStamp(r.loadedAt!),
+		turfName: r.turfName,
+		listNumber: r.issued ?? r.printed ?? '',
+	}));
+}
+
 export interface DailyReportDeps {
 	db: Db;
 	/** The Sheets client, or why there is none. */
@@ -208,6 +248,8 @@ export interface DailyReportResult {
 	folders: number;
 	peopleOutsideTurfs: number;
 	written: boolean;
+	/** Whether the first tab, every list loaded in MiniVAN, was rewritten. */
+	loadsWritten: boolean;
 	posted: boolean;
 	error?: string;
 	/** The tab's rows, on a dry run. */
@@ -236,6 +278,7 @@ export async function runDailyDoorReport(
 		folders: 0,
 		peopleOutsideTurfs: 0,
 		written: false,
+		loadsWritten: false,
 		posted: false,
 	};
 
@@ -318,6 +361,31 @@ export async function runDailyDoorReport(
 			return failed(`Google answered ${written.status}: ${written.error}`, written.status !== 409);
 		}
 		result.written = true;
+
+		// After the day's tab, which is added at the front: this one is moved
+		// back in front of it. Its own failure is said, but the day's tab is
+		// written and its totals still go out.
+		const loads = await deps.sheets.client.replaceTab({
+			spreadsheetId,
+			tabName: LOADS_TAB_NAME,
+			rows: buildLoadsRows({
+				campaignName: name,
+				generatedAt: report.generatedAt,
+				loads: await listLoads(deps.db, campaign.id),
+			}),
+			ownedPrefix: LOADS_TITLE_PREFIX,
+			columnWidths: LOADS_COLUMN_WIDTHS,
+			index: 0,
+			deadline: Date.now() + SHEETS_BUDGET_MS,
+		});
+		if (loads.ok) {
+			result.loadsWritten = true;
+		} else {
+			await deps.post(
+				`:warning: The "${escapeMrkdwn(LOADS_TAB_NAME)}" tab for ${escapeMrkdwn(name)} could not be ` +
+					`written: Google answered ${loads.status}: ${escapeMrkdwn(loads.error)}.`,
+			);
+		}
 
 		if (options.announce) {
 			const link =

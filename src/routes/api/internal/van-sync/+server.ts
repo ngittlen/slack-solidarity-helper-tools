@@ -33,7 +33,7 @@ import { sendDriftAlerts } from '$lib/server/van/drift-alert-store.js';
 import { sendListExpiryAlerts } from '$lib/server/van/list-expiry-alert-store.js';
 import { runRefreshSweep, settleRefreshes } from '$lib/server/van/refresh.js';
 import { reconcileClaims } from '$lib/server/van/reconcile-store.js';
-import { runPacketTracker } from '$lib/server/van/packet-tracker-live.js';
+import { packetTrackerCheck, runPacketTracker } from '$lib/server/van/packet-tracker-live.js';
 import { stampDoorDeltas } from '$lib/server/van/door-delta-store.js';
 import { doorsHealthWarning } from '$lib/server/van/doors-store.js';
 import { alertFor } from '$lib/server/slack.js';
@@ -531,6 +531,7 @@ async function runSharedStages(
 			now,
 			appUrl: APP_URL,
 			ttlHours: vanTurfClaimTtlHours,
+			sheetCheck: packetTrackerCheck(db),
 		});
 
 		// Story 5.6: the sync-back check. After the reconciliation, because that

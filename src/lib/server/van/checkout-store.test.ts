@@ -445,8 +445,8 @@ describe('claimTurf — the campaign’s Packet Tracker', () => {
 		expect(await claim(async () => undefined)).toMatchObject({ ok: true });
 	});
 
-	// A name in the sheet does not mean the doors are being knocked. Once the
-	// ContactHistory count says doors remain, the turf goes back in the pool.
+	// The sheet is the campaign's word that someone has the turf, however many
+	// doors are left on it.
 	describe('with uncontacted doors known to remain', () => {
 		const counted = (left: number) =>
 			client.execute(
@@ -454,22 +454,21 @@ describe('claimTurf — the campaign’s Packet Tracker', () => {
 				        uncontacted_doors = ${left} WHERE turf_id = 100`,
 			);
 
-		it('claims turf the last sync saw in the tracker', async () => {
+		it('still refuses turf the last sync saw in the tracker', async () => {
 			await counted(12);
 			await client.execute(
 				"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE turf_id = 100",
 			);
-			expect(await claim()).toMatchObject({ ok: true });
+			expect(await claim()).toMatchObject({ ok: false, status: 409 });
 		});
 
-		it('does not ask Google at all', async () => {
+		it('still asks Google, and refuses turf written down since', async () => {
 			await counted(12);
 			const sheetCheck = vi.fn(async () => 'Organizer Olu');
-			expect(await claim(sheetCheck)).toMatchObject({ ok: true });
-			expect(sheetCheck).not.toHaveBeenCalled();
+			expect(await claim(sheetCheck)).toMatchObject({ ok: false, status: 409 });
+			expect(sheetCheck).toHaveBeenCalledOnce();
 		});
 
-		// VAN's own record of an outside hand-out is a different matter.
 		it('still refuses turf VAN says was handed out directly', async () => {
 			await counted(12);
 			await client.execute("UPDATE van_turfs SET van_distributed_to = 'Sam' WHERE turf_id = 100");

@@ -188,6 +188,9 @@ export interface SheetsClient {
 		rows: ReadonlyArray<{ cells: ReadonlyArray<string | number>; bold?: boolean }>;
 		ownedPrefix?: string;
 		columnWidths?: readonly number[];
+		/** Move the tab to this position on every write, not only when it is
+		 *  added — a tab added later at index 0 would push it along. */
+		index?: number;
 		deadline?: number;
 	}): Promise<SheetsResult<{ sheetId: number }>>;
 	/** Whether the spreadsheet is reachable and whether it already has the tab.
@@ -657,7 +660,7 @@ export function createSheetsClient(
 			return { ok: true, value: options };
 		},
 
-		async replaceTab({ spreadsheetId, tabName, rows, ownedPrefix, columnWidths, deadline }) {
+		async replaceTab({ spreadsheetId, tabName, rows, ownedPrefix, columnWidths, index, deadline }) {
 			// Looked up afresh: a tab someone deleted since the last run would
 			// otherwise be written to by a cached id that no longer exists.
 			tabs.delete(tabKey(spreadsheetId, tabName));
@@ -674,7 +677,7 @@ export function createSheetsClient(
 									addSheet: {
 										properties: {
 											title: tabName,
-											index: 0,
+											index: index ?? 0,
 											gridProperties: {
 												rowCount: Math.max(rows.length, 1),
 												columnCount: width,
@@ -762,6 +765,16 @@ export function createSheetsClient(
 								},
 							},
 						]),
+				...(index !== undefined
+					? [
+							{
+								updateSheetProperties: {
+									properties: { sheetId, index },
+									fields: 'index',
+								},
+							},
+						]
+					: []),
 			);
 			const res = await request(
 				`${base(spreadsheetId)}:batchUpdate`,

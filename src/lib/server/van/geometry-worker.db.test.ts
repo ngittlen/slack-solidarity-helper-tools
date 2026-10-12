@@ -90,12 +90,14 @@ describe('runGeometryQueue on a real database', () => {
 
 			expect(result.hullsStored).toBe(2);
 			expect(result.rostersStored).toBe(2);
-			// One batch per turf, each carrying its four roster rows; the
-			// breakdown sits inside the db stage, never beyond it.
+			// Both turfs through the one writer, with their four roster rows
+			// each; how many transactions that took is the writer's to choose —
+			// at most one per write, two job ids and two results.
 			const t = result.timings;
-			expect([t.writes, t.writeRows, t.writeRowsSq]).toEqual([2, 8, 32]);
-			expect(t.writeRowsMs).toBe(4 * t.writeMs);
-			expect(t.writeMs + t.recountMs).toBeLessThanOrEqual(t.dbMs);
+			expect([t.writeTurfs, t.writeRows]).toEqual([2, 8]);
+			expect(t.writes).toBeGreaterThanOrEqual(1);
+			expect(t.writes).toBeLessThanOrEqual(4);
+			expect(t.recountMs).toBeLessThanOrEqual(t.dbMs);
 			if (!batchRecount) expect(t.recountMs).toBe(0);
 			for (const turfId of [100, 200]) {
 				const turf = await turfRow(turfId);
