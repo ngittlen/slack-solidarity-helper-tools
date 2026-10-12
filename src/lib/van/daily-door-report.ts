@@ -244,3 +244,40 @@ export function reportSlackText(report: DoorReport, link: string): string {
 		mrkdwnLink(link, 'Full report by turf'),
 	].join('\n');
 }
+
+/** The report spreadsheet's first tab: every list this app handed out that its
+ *  volunteer then loaded in MiniVAN. Rewritten whole with each report. */
+export const LOADS_TAB_NAME = 'Lists loaded in MiniVAN';
+/** What A1 of that tab starts with; see REPORT_TITLE_PREFIX. */
+export const LOADS_TITLE_PREFIX = 'Lists loaded in MiniVAN · ';
+export const LOADS_COLUMN_WIDTHS = [150, 320, 150] as const;
+
+/** One claim whose list was seen loaded in MiniVAN. */
+export interface ListLoad {
+	/** Campaign-local, as campaignSheetStamp writes it. */
+	loadedAt: string;
+	turfName: string;
+	listNumber: string;
+}
+
+/** The loads tab: a title, how fresh it is, the headings, then one row per
+ *  load, oldest first. */
+export function buildLoadsRows(input: {
+	campaignName: string;
+	generatedAt: string;
+	loads: readonly ListLoad[];
+}): ReportRow[] {
+	return [
+		{ cells: [`${LOADS_TITLE_PREFIX}${input.campaignName}`], bold: true },
+		{
+			cells: [
+				`Made ${input.generatedAt}. Lists this app gave out, by when the volunteer loaded them in MiniVAN.`,
+			],
+		},
+		{ cells: [] },
+		{ cells: ['Date/time', 'Turf name', 'List number'], bold: true },
+		...(input.loads.length === 0
+			? [{ cells: ['No list from this app has been loaded in MiniVAN yet.'] }]
+			: input.loads.map((l) => ({ cells: [l.loadedAt, l.turfName, l.listNumber] }))),
+	];
+}

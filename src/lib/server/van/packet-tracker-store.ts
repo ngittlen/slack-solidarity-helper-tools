@@ -76,7 +76,6 @@ import {
 	type WalkInLayout,
 	type WalkInMark,
 } from '../../van/walk-ins.js';
-import { sheetBlocksClaim } from '../../van/turf-view.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -270,14 +269,9 @@ export interface TrackerOptions {
 	onlyTurfId?: number;
 }
 
-/** The count columns are for `sheetBlocksClaim`: whether someone else's
- *  entry in the sheet is still an organizer's problem. */
 type Candidate = PacketCheckout & {
 	sheetState: string | null;
 	walkInState: string | null;
-	uncontactedDoors: number | null;
-	savedListId: number | null;
-	rosterSavedListId: number | null;
 };
 
 async function loadCandidates(
@@ -315,9 +309,6 @@ async function loadCandidates(
 				turfName: vanTurfs.name,
 				regionName: vanTurfs.regionName,
 				doorCount: vanTurfs.doorCount,
-				uncontactedDoors: vanTurfs.uncontactedDoors,
-				savedListId: vanTurfs.savedListId,
-				rosterSavedListId: vanTurfs.rosterSavedListId,
 			})
 			.from(vanTurfCheckouts)
 			// Inner join is safe for retired turf: those rows are stamped, never
@@ -595,10 +586,9 @@ async function syncCheckout(
 		if (!isUnfilled(current, tab.layout)) {
 			// Somebody has this packet. Theirs — but it is checked again every
 			// run, and filled in if their entry is cleared while ours is live.
-			// Said only where the sheet still blocks a claim. On turf with doors
-			// known to be uncontacted it no longer does (sheetBlocksClaim), so a
-			// name already there is expected, not an organizer's problem to chase.
-			if (state.told !== 'taken' && sheetBlocksClaim(candidate)) {
+			// The sheet's entry should have blocked the claim, so one here means
+			// two people have the turf — an organizer's problem to sort out.
+			if (state.told !== 'taken') {
 				warnings.push(
 					`${LOG} ${label} was claimed, but its packet already has someone else's entry in the Packet Tracker, so that entry was left as it is`,
 				);

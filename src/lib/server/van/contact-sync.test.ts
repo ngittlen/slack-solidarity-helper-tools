@@ -206,6 +206,16 @@ describe('recomputeUncontacted', () => {
 		expect(await counts(1)).toMatchObject({ uncontacted_doors: 1, knocked_before_cut: 0 });
 	});
 
+	// Re-cut, then walked again but not finished and marked done: MiniVAN
+	// still lists the door the second walk missed, which we count as knocked.
+	it('keeps a door the walk since the cut missed', async () => {
+		await contact('a', '2026-09-10T15:00:00.000Z');
+		await contact('c', '2026-09-10T16:00:00.000Z');
+		await contact('c', '2026-09-20T15:00:00.000Z');
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect(await counts(1)).toMatchObject({ uncontacted_doors: 1, knocked_before_cut: 1 });
+	});
+
 	it('counts nothing when the cut is older than the history kept', async () => {
 		await client.execute({
 			sql: 'UPDATE van_turfs SET cut_at = ?',

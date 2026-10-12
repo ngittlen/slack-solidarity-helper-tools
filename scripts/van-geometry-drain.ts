@@ -194,32 +194,31 @@ function formatTimings(t: GeometryTimings, van: VanClientStats, share = false): 
 	].join(' · ');
 }
 
-/** Fewest batches worth fitting a line to. */
+/** Fewest transactions worth fitting a line to. */
 const MIN_FIT_WRITES = 10;
 
 /**
- * What the db stage is made of: each finished turf's one batch of writes, per
- * finished turf; then per turf picked up, the end-of-slice recount and the
- * rest — the job id stored after each POST, a resumed turf's claim, a failed
- * turf's record, and the time of any batch that failed. Then a line fitted through the batches, write time against
- * roster rows: a big fixed part says each transaction costs the same whatever
- * it carries, so writing a slice's turfs in one batch would pay; a big per-row
- * part says the rows are the cost, and it would not.
- *
- * Several turfs writing at once each wait behind the others, which lands in
- * the fixed part. For a clean reading run a few minutes at --concurrency 1.
+ * The database's side of the run. `held` is how long, per turf, the turfs
+ * waited on it: the queue read, room in the writer, its last transaction and
+ * the recount. Then the writer, which commits the turfs' writes alongside
+ * them: its transactions, what each carried and took, and a line fitted
+ * through them, time against roster rows — a big fixed part says each
+ * transaction costs the same whatever it carries, so carrying more pays; a
+ * big per-row part says the rows themselves are the cost. A writer busy for
+ * most of the run is the database setting the pace.
  */
 function formatDbBreakdown(t: GeometryTimings): string {
 	if (t.turfs === 0) return 'no turfs';
-	const other = Math.max(0, t.dbMs - t.writeMs - t.recountMs);
 	const parts = [
-		t.writes > 0
-			? `write ${secs(t.writeMs / t.writes)} per finished turf (${Math.round(t.writeRows / t.writes)} roster rows)`
-			: 'no writes',
-		`recount ${secs(t.recountMs / t.turfs)}`,
-		`other ${secs(other / t.turfs)}`,
+		`held ${secs(t.dbMs / t.turfs)} per turf (recount ${secs(t.recountMs / t.turfs)})`,
 	];
 	const n = t.writes;
+	if (n > 0) {
+		parts.push(
+			`writer ${n} transactions of ${(t.writeTurfs / n).toFixed(1)} turfs, ` +
+				`${Math.round(t.writeRows / n)} roster rows, ${secs(t.writeMs / n)} each`,
+		);
+	} else parts.push('no writes');
 	const spread = n * t.writeRowsSq - t.writeRows * t.writeRows;
 	if (n >= MIN_FIT_WRITES && spread > 0) {
 		const perRow = (n * t.writeRowsMs - t.writeRows * t.writeMs) / spread;
@@ -238,6 +237,7 @@ const timingTotals: GeometryTimings = {
 	dbMs: 0,
 	writeMs: 0,
 	writes: 0,
+	writeTurfs: 0,
 	writeRows: 0,
 	writeRowsSq: 0,
 	writeRowsMs: 0,
@@ -448,7 +448,7 @@ async function main(): Promise<void> {
 					webhookUrlFor: (turfId) => exportCallbackUrl(appUrl, cronSecret, turfId),
 					timeBudgetMs: Math.min(SLICE_MS, remaining),
 					finishGraceMs: FINISH_GRACE_MS,
-					// The database is most of a turf's time; see batchRecount.
+					// The database was most of a turf's time; see batchRecount.
 					batchRecount: true,
 					concurrency: CONCURRENCY,
 					maxItems: MAX_ITEMS,

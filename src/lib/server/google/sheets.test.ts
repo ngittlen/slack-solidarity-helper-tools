@@ -613,6 +613,31 @@ describe('replaceTab', () => {
 		}
 	});
 
+	it('moves an existing tab to the given position on every write', async () => {
+		fetchFn = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(existing())
+			.mockResolvedValueOnce(ok({}));
+
+		await owned({ ownedPrefix: undefined, index: 0 });
+		expect(body(2).requests).toContainEqual({
+			updateSheetProperties: { properties: { sheetId: 5, index: 0 }, fields: 'index' },
+		});
+	});
+
+	it('leaves an existing tab where it is without a position', async () => {
+		fetchFn = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(existing())
+			.mockResolvedValueOnce(ok({}));
+
+		await owned({ ownedPrefix: undefined });
+		const requests = body(2).requests as Array<Record<string, unknown>>;
+		expect(requests.some((r) => 'updateSheetProperties' in r)).toBe(false);
+	});
+
 	it('sets fixed column widths instead of fitting them, when given', async () => {
 		fetchFn = vi
 			.fn<typeof fetch>()

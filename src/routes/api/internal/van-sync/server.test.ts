@@ -20,6 +20,7 @@ const mockRefreshSweep = vi.hoisted(() => vi.fn());
 const mockDoorDeltas = vi.hoisted(() => vi.fn());
 const mockDoorsHealth = vi.hoisted(() => vi.fn());
 const mockRunPacketTracker = vi.hoisted(() => vi.fn());
+const mockSheetCheck = vi.hoisted(() => vi.fn());
 const mockRunContactStage = vi.hoisted(() => vi.fn());
 const mockHasher = vi.hoisted(() => vi.fn());
 const mockEnsureCampaignRows = vi.hoisted(() => vi.fn());
@@ -94,6 +95,7 @@ vi.mock('$lib/server/van/door-delta-store.js', () => ({ stampDoorDeltas: mockDoo
 vi.mock('$lib/server/van/doors-store.js', () => ({ doorsHealthWarning: mockDoorsHealth }));
 vi.mock('$lib/server/van/packet-tracker-live.js', () => ({
 	runPacketTracker: mockRunPacketTracker,
+	packetTrackerCheck: () => mockSheetCheck,
 }));
 vi.mock('$lib/server/env.js', () => ({
 	get INTERNAL_CRON_SECRET() {
@@ -521,7 +523,13 @@ describe('POST /api/internal/van-sync', () => {
 		await POST(event());
 		expect(mockReconcile).toHaveBeenCalledWith(
 			{},
-			{ now: mockSweep.mock.calls[0]![1], appUrl: 'https://app.example', ttlHours: 48 },
+			{
+				now: mockSweep.mock.calls[0]![1],
+				appUrl: 'https://app.example',
+				ttlHours: 48,
+				// The tracker's live check, so a handover never lands on turf it has out.
+				sheetCheck: mockSheetCheck,
+			},
 		);
 	});
 
