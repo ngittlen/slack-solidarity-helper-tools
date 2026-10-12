@@ -33,7 +33,9 @@ export type TurfShade =
 	| 'yours'
 	/** Held by someone else, or assigned in VAN. Hue carries this too. */
 	| 'taken'
-	/** Available, but every door has been knocked. Not claimable. */
+	/** Available, but every door has been knocked — since the cut, when it is
+	 *  not claimable, or in the last 30 days on a turf the campaign re-cut for
+	 *  another pass, when it still is. */
 	| 'cleared'
 	/** Available, 1–9 doors. */
 	| 'low'
@@ -126,7 +128,7 @@ export function shadeLabel(shade: TurfShade): string {
 
 /**
  * The spoken shade for the map's label, given whether the turf was knocked
- * lately (`TurfView.contactHistory`). A re-cut lists every door as untouched,
+ * recently before its cut (`TurfView.contactHistory`). A re-cut lists every door as untouched,
  * so the full band alone would tell a screen reader "untouched" about a turf
  * walked last week — the exact mistake the stripes are there to correct.
  */
@@ -136,7 +138,7 @@ export function spokenShade(shade: TurfShade, knocked: boolean): string {
 }
 
 /** What the stripes on a knocked turf say, for the same label. */
-export const KNOCKED_LABEL = 'doors knocked in the last 30 days';
+export const KNOCKED_LABEL = 'doors knocked recently, before the list was re-cut';
 
 /** Pixels between repeats of the knocked-turf stripe tile, both ways. */
 export const STRIPE_PERIOD_PX = 11;

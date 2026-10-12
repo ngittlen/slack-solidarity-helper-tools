@@ -523,6 +523,35 @@
 					{#if turf.why}
 						<p class="callout is-quiet">{turf.why}</p>
 					{/if}
+					{#if turf.doorsNow}
+						<!-- The turf as it stands: every door in the live cut, by the day
+						     it was last knocked, whichever cut that was under. -->
+						<p class="section-note">
+							{turf.doorsNow.doors.toLocaleString('en-US')} doors in the turf now ·
+							{turf.doorsNow.knocked.toLocaleString('en-US')} knocked. Each door counts once, on the day
+							it was last knocked — only a door's latest knock is kept.
+						</p>
+						{#if turf.doorsNow.byDay.length > 0}
+							<div class="table-wrap history-days">
+								<table>
+									<thead>
+										<tr>
+											<th>Day</th>
+											<th class="col-num">Doors knocked</th>
+										</tr>
+									</thead>
+									<tbody>
+										{#each turf.doorsNow.byDay as day (day.day)}
+											<tr>
+												<td>{day.day}</td>
+												<td class="col-num">{day.doors.toLocaleString('en-US')}</td>
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
+						{/if}
+					{/if}
 					<div class="table-wrap">
 						<table>
 							<thead>

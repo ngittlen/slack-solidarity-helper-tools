@@ -607,7 +607,7 @@ export async function runGeometryQueue(
 							// it so, which is degraded rather than wrong.
 							db
 								.update(vanTurfs)
-								.set({ uncontactedDoors: null, uncontactedDoorsAt: null, contactedDoors: null })
+								.set({ uncontactedDoors: null, uncontactedDoorsAt: null, knockedBeforeCut: null })
 								.where(eq(vanTurfs.turfId, item.turfId))
 						: recountStatement(db, [item.turfId], new Date()),
 				);

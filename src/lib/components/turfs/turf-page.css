@@ -468,7 +468,7 @@ main {
 }
 
 /* Matching the map: dashed and striped, for turf whose doors were knocked in
-   the last 30 days even though VAN's re-cut lists them as uncontacted. */
+   the last 30 days before VAN's re-cut listed them as uncontacted again. */
 .swatch-knocked {
 	background:
 		repeating-linear-gradient(
@@ -866,6 +866,32 @@ main {
 .door-tile.shade-no-list {
 	background: color-mix(in srgb, var(--color-error) 18%, transparent);
 	border: 1px solid var(--color-error);
+}
+
+/* Doors knocked before the list was re-cut: the map's and the legend's
+   stripes, laid over whichever tint the shade gave the tile. After the shades,
+   whose `background` shorthand would otherwise clear the stripes. Fainter
+   than the legend's, which carries no text: these sit under the count. The
+   border goes dashed, keeping a red one for a turf with no list number. */
+.door-tile.is-knocked {
+	background-image: repeating-linear-gradient(
+		-45deg,
+		color-mix(in srgb, var(--color-near-black) 22%, transparent) 0 1.5px,
+		transparent 1.5px 5px
+	);
+	border-style: dashed;
+}
+.door-tile.is-knocked:not(.shade-no-list, .shade-cleared) {
+	border-color: var(--color-navy-mid);
+}
+
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
 }
 
 /* Shown only to organizers — the server nulls `heldBy` for everyone else, so

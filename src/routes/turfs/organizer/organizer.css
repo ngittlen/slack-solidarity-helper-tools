@@ -397,3 +397,8 @@ tr:hover td {
 .history-claims li + li {
 	margin-top: var(--space-2);
 }
+
+.history-days {
+	max-width: 360px;
+	margin-bottom: var(--space-3);
+}

@@ -94,9 +94,24 @@ export interface HiddenTurfView extends HiddenTurfRow {
 const TURF_HISTORY_LIMIT = 10;
 
 export interface TurfHistoryView extends TurfHistory {
-	/** explainLiveCut's sentence, or null. Computed here because it lives in
-	 *  $lib/server. */
+	/** explainLiveCut's sentence, or null — less the re-cut one, which the
+	 *  by-day table shows. Computed here because it lives in $lib/server. */
 	why: string | null;
+	/** The doors in the live cut, and the day each was last knocked — under
+	 *  this cut or an earlier one. Null with no live cut, or no door list for
+	 *  it (`why` says which). */
+	doorsNow: { doors: number; knocked: number; byDay: Array<{ day: string; doors: number }> } | null;
+}
+
+/** See TurfHistoryView.doorsNow. */
+function doorsNow(history: TurfHistory): TurfHistoryView['doorsNow'] {
+	const live = history.cuts.filter((c) => c.retiredAt === null).at(-1);
+	if (!live || live.rosterDoors === null) return null;
+	return {
+		doors: live.rosterDoors,
+		knocked: live.knockedSinceCut + live.knockedBeforeCut,
+		byDay: live.knockedByDay,
+	};
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -309,7 +324,7 @@ export const actions: Actions = {
 		}
 		const histories: TurfHistoryView[] = found
 			.slice(0, TURF_HISTORY_LIMIT)
-			.map((h) => ({ ...h, why: explainLiveCut(h) }));
+			.map((h) => ({ ...h, why: explainLiveCut(h, { omitRecut: true }), doorsNow: doorsNow(h) }));
 		return { historyQuery, histories, historyTruncated: found.length > TURF_HISTORY_LIMIT };
 	},
 

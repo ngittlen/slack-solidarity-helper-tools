@@ -72,6 +72,7 @@ describe('loadTurfHistory', () => {
 		expect(explainLiveCut(history!)).toMatch(
 			/re-cut .* 2 of its 3 doors were knocked before the cut/,
 		);
+		expect(explainLiveCut(history!, { omitRecut: true })).toBeNull();
 	});
 
 	it('finds every cut under the name from one turf id', async () => {

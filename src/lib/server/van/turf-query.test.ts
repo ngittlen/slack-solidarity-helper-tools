@@ -172,7 +172,7 @@ describe('loadChapterTurfs', () => {
 				name: 'Near but knocked',
 				centroidLat: 42.281,
 				centroidLng: -83.741,
-				contactedDoors: 4,
+				knockedBeforeCut: 4,
 				rosterSavedListId: 585052,
 			}),
 		];

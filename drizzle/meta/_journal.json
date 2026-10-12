@@ -498,6 +498,13 @@
       "when": 1791740624202,
       "tag": "0070_turf_contact_history",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "6",
+      "when": 1791763361298,
+      "tag": "0071_knocked_before_cut",
+      "breakpoints": true
     }
   ]
 }

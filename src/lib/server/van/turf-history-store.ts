@@ -189,8 +189,14 @@ async function loadCut(db: Db, turf: typeof vanTurfs.$inferSelect): Promise<Turf
 /**
  * Why the live cut looks the way it does, in a sentence — or null when there
  * is nothing surprising to explain.
+ *
+ * `omitRecut` drops the re-cut sentence, for the organizer page, whose
+ * by-day table of the live cut's doors already shows it.
  */
-export function explainLiveCut(history: TurfHistory): string | null {
+export function explainLiveCut(
+	history: TurfHistory,
+	{ omitRecut = false }: { omitRecut?: boolean } = {},
+): string | null {
 	const live = history.cuts.filter((c) => c.retiredAt === null).at(-1);
 	if (!live) return 'Every cut of this turf is retired: VAN no longer has it.';
 	if (!live.rosterCurrent) {
@@ -200,6 +206,9 @@ export function explainLiveCut(history: TurfHistory): string | null {
 		);
 	}
 	if (live.knockedBeforeCut > 0) {
+		// Null rather than on to the next case: that one says nothing was
+		// knocked, which is untrue here.
+		if (omitRecut) return null;
 		const earlier = history.cuts.length > 1 ? ' and kept doors already knocked' : '';
 		return (
 			`VAN re-cut this turf at ${campaignSheetStamp(live.cutAt)}${earlier}: ` +

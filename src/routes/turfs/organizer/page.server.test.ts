@@ -782,10 +782,51 @@ describe('/turfs/organizer turf history', () => {
 		mockExplain.mockReturnValueOnce('VAN re-cut this turf.');
 		await expect(search(ADMIN, ' Turf 05 ')).resolves.toEqual({
 			historyQuery: 'Turf 05',
-			histories: [{ ...history('Turf 05'), why: 'VAN re-cut this turf.' }],
+			histories: [
+				{ ...history('Turf 05'), why: 'VAN re-cut this turf.', doorsNow: expect.anything() },
+			],
 			historyTruncated: false,
 		});
 		expect(mockTurfHistory).toHaveBeenCalledWith(expect.anything(), 'Turf 05', { limit: 11 });
+		expect(mockExplain).toHaveBeenCalledWith(expect.anything(), { omitRecut: true });
+	});
+
+	it('counts the live cut’s doors by the day each was last knocked', async () => {
+		const byDay = [
+			{ day: '2026-10-05', doors: 2 },
+			{ day: '2026-10-09', doors: 1 },
+		];
+		mockTurfHistory.mockResolvedValueOnce([
+			{
+				name: 'Turf 05',
+				campaignId: 1,
+				cuts: [
+					// A retired cut's knocks are not the turf as it stands.
+					{
+						...cut(100, iso(NOW.getTime() - HOUR)),
+						knockedByDay: [{ day: '2026-10-01', doors: 3 }],
+					},
+					{
+						...cut(200, null),
+						rosterDoors: 5,
+						knockedSinceCut: 1,
+						knockedBeforeCut: 2,
+						knockedByDay: byDay,
+					},
+				],
+			},
+		]);
+		const result = (await search(ADMIN, 'Turf 05')) as { histories: Array<{ doorsNow: unknown }> };
+		expect(result.histories[0]!.doorsNow).toEqual({ doors: 5, knocked: 3, byDay });
+	});
+
+	it.each([
+		['no live cut', [cut(100, iso(NOW.getTime() - HOUR))]],
+		['no door list for the live cut', [{ ...cut(200, null), rosterDoors: null }]],
+	])('has no door count with %s', async (_label, cuts) => {
+		mockTurfHistory.mockResolvedValueOnce([{ name: 'Turf 05', campaignId: 1, cuts }]);
+		const result = (await search(ADMIN, 'Turf 05')) as { histories: Array<{ doorsNow: unknown }> };
+		expect(result.histories[0]!.doorsNow).toBeNull();
 	});
 
 	it('shows ten matches and says there were more', async () => {
