@@ -1363,8 +1363,8 @@
 		stroke-width: 3;
 	}
 
-	/* Knocked in the last 30 days, a not-home included, though VAN's re-cut
-	   lists every door as untouched. Dashed and striped rather than recoloured:
+	/* Knocked in the last 30 days, a not-home included, before VAN's re-cut
+	   listed every door as untouched and MiniVAN stopped showing the knocks. Dashed and striped rather than recoloured:
 	   the hue still says whether you can take it and the ramp how many doors
 	   it lists, and the pattern reads without colour vision. */
 	.turf.is-knocked polygon,

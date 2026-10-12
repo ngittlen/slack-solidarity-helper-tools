@@ -4,6 +4,7 @@ import {
 	parseHull,
 	mappableTurfs,
 	doorsLeft,
+	claimDoorsLeft,
 	doorDensity,
 	hasContactHistory,
 	vanAssignmentBlocks,
@@ -133,6 +134,7 @@ describe('toTurfView — what reaches the browser', () => {
 				'regionName',
 				'routeSize',
 				'status',
+				'totalDoors',
 			].sort(),
 		);
 	});
@@ -365,16 +367,89 @@ describe('doorsLeft', () => {
 	});
 });
 
+describe('doorsLeft after a re-cut', () => {
+	// 130 doors; the re-cut lists every one as uncontacted, but 91 were
+	// knocked last week, which MiniVAN's new list does not show. Shown: the 39
+	// nobody has been to.
+	const recut = {
+		doorCount: 130,
+		uncontactedDoors: 130,
+		knockedBeforeCut: 91,
+		savedListId: 900,
+		rosterSavedListId: 900,
+	};
+
+	it('shows the doors nobody has knocked recently', () => {
+		expect(doorsLeft(recut)).toBe(39);
+	});
+
+	it('leaves the claim rules on the since-cut count', () => {
+		expect(claimDoorsLeft(recut)).toBe(130);
+	});
+
+	it('takes the knocks before the cut off the since-cut count', () => {
+		// 30 knocked since the cut and 50 only before it: 50 nobody has been to.
+		expect(doorsLeft({ ...recut, uncontactedDoors: 100, knockedBeforeCut: 50 })).toBe(50);
+	});
+
+	it('is never below zero', () => {
+		expect(doorsLeft({ ...recut, knockedBeforeCut: 131 })).toBe(0);
+	});
+
+	it('ignores a knocked count from another cut', () => {
+		expect(doorsLeft({ ...recut, rosterSavedListId: 899 })).toBe(130);
+	});
+
+	it('is the since-cut count when there is no knocked count yet', () => {
+		expect(doorsLeft({ ...recut, knockedBeforeCut: null })).toBe(130);
+	});
+
+	it('shows the total and the fresh doors on the view', () => {
+		const view = toTurfView(row(recut), [], VOLUNTEER, NOW);
+		expect(view.doorsRemaining).toBe(39);
+		expect(view.totalDoors).toBe(130);
+	});
+
+	// The campaign re-cut it for another pass: none left to us, but its call.
+	it('still hands out a turf knocked all over before the cut', () => {
+		const view = toTurfView(row({ ...recut, knockedBeforeCut: 130 }), [], VOLUNTEER, NOW);
+		expect(view.doorsRemaining).toBe(0);
+		expect(view.claimable).toBe(true);
+	});
+
+	it('still refuses a turf knocked all over since the cut', () => {
+		const view = toTurfView(
+			row({ ...recut, uncontactedDoors: 0, knockedBeforeCut: 0 }),
+			[],
+			VOLUNTEER,
+			NOW,
+		);
+		expect(view.claimable).toBe(false);
+	});
+
+	// Its knocks are in MiniVAN's list: the next volunteer sees them there.
+	it('does not mark a turf knocked only since the cut', () => {
+		const view = toTurfView(
+			row({ ...recut, uncontactedDoors: 40, knockedBeforeCut: 0 }),
+			[],
+			VOLUNTEER,
+			NOW,
+		);
+		expect(view.doorsRemaining).toBe(40);
+		expect(view).not.toHaveProperty('contactHistory');
+	});
+});
+
 describe('hasContactHistory', () => {
-	const base = { contactedDoors: 3, savedListId: 900, rosterSavedListId: 900 };
+	const base = { knockedBeforeCut: 3, savedListId: 900, rosterSavedListId: 900 };
 
 	it('is true once any door has been knocked', () => {
 		expect(hasContactHistory(base)).toBe(true);
 	});
 
 	it('is false when nobody has knocked, or there is no count', () => {
-		expect(hasContactHistory({ ...base, contactedDoors: 0 })).toBe(false);
-		expect(hasContactHistory({ ...base, contactedDoors: null })).toBe(false);
+		expect(hasContactHistory({ ...base, knockedBeforeCut: 0 })).toBe(false);
+		expect(hasContactHistory({ ...base, knockedBeforeCut: null })).toBe(false);
 		expect(hasContactHistory({ savedListId: 900, rosterSavedListId: 900 })).toBe(false);
 	});
 
@@ -387,7 +462,7 @@ describe('hasContactHistory', () => {
 	it('rides on the view only when true', () => {
 		const knocked = toTurfView(row(base), [], VOLUNTEER, NOW);
 		expect(knocked.contactHistory).toBe(true);
-		const fresh = toTurfView(row({ ...base, contactedDoors: 0 }), [], VOLUNTEER, NOW);
+		const fresh = toTurfView(row({ ...base, knockedBeforeCut: 0 }), [], VOLUNTEER, NOW);
 		expect('contactHistory' in fresh).toBe(false);
 	});
 });

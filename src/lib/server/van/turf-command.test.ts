@@ -34,6 +34,7 @@ function view(over: Partial<TurfView> = {}): TurfView {
 		printedListNumber: null,
 		routeSize: 400,
 		doorsRemaining: 250,
+		totalDoors: 250,
 		hull: [],
 		centre: { lat: 42.281, lng: -83.741 },
 		bounds: { minLat: 42.28, minLng: -83.75, maxLat: 42.29, maxLng: -83.73 },

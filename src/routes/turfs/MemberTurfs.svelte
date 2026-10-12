@@ -13,7 +13,7 @@
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
 	import { coarseNear } from '$lib/van/turf-paging.js';
 	import { statusLabel } from '$lib/van/turf-status.js';
-	import { rampStyle, turfShade } from '$lib/van/turf-shade.js';
+	import { KNOCKED_LABEL, rampStyle, turfShade } from '$lib/van/turf-shade.js';
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
@@ -852,14 +852,20 @@
 								<!-- First in the DOM as well as on screen, so what a screen
 								     reader hears matches what the eye lands on, and both lead
 								     with the field the list is scanned for. -->
+								<!-- Striped like the map when doors were knocked before the
+								     list was re-cut, which MiniVAN no longer shows. -->
 								<span
 									class="door-tile shade-{turf.noListNumber
 										? 'no-list'
 										: turfShade(turf.status, turf.doorsRemaining)}"
+									class:is-knocked={turf.contactHistory}
 									style={rampStyle(turf.doorsRemaining)}
 								>
 									<span class="door-count">{turf.doorsRemaining}</span>
 									<span class="door-label">doors left</span>
+									{#if turf.contactHistory}
+										<span class="visually-hidden">, {KNOCKED_LABEL}</span>
+									{/if}
 									{#if expanded}
 										<!-- Story 4.3: never imply live data. A volunteer who walks a
 										     turf on stale counts finds knocked doors and stops
@@ -920,13 +926,15 @@
 										<!-- What the open row says about the turf besides its name,
 										     as a list rather than a run of {#if}s: a turf with no
 										     distance to show still lays out correctly, with nothing
-										     dangling where the missing field was. Two of them, so
-										     they hold one line even in the ~190px the list column
-										     leaves beside the door tile on a desktop. -->
+										     dangling where the missing field was. Total doors comes
+										     first of the counts, to read against the tile's doors
+										     left. The row wraps rather than overflows in the ~190px
+										     the list column leaves beside the tile on a desktop. -->
 										{@const stats = [
 											distances[turf.turfId] !== undefined
 												? { label: 'Distance', value: formatDistance(distances[turf.turfId]) }
 												: null,
+											{ label: 'Total doors', value: String(turf.totalDoors) },
 											{ label: 'People in list', value: String(turf.routeSize) },
 										].filter((stat) => stat !== null)}
 										<!-- Labelled rather than run together with separators: the
@@ -987,10 +995,7 @@
 											type="button"
 											class="claim-btn"
 											class:is-no-list={turf.noListNumber}
-											disabled={data.needsName ||
-												!turf.claimable ||
-												turf.doorsRemaining <= 0 ||
-												busy[turf.turfId]}
+											disabled={data.needsName || !turf.claimable || busy[turf.turfId]}
 											onclick={() => act(turf, 'claim')}
 										>
 											{busy[turf.turfId] ? 'Checking out…' : 'Check out this turf'}

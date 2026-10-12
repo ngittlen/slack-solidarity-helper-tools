@@ -66,10 +66,10 @@ export interface TurfRowInput {
 	 *  it; null until the turf has a roster. */
 	uncontactedDoors?: number | null;
 	uncontactedDoorsAt?: string | null;
-	/** Doors with an in-person contact in the last 30 days, before the cut as
-	 *  well as after it (van/contact-sync.ts). Optional so fixtures predating
-	 *  it need not name it; null until the turf has a roster. */
-	contactedDoors?: number | null;
+	/** Doors with an in-person contact in the last 30 days from before the
+	 *  cut, and none since (van/contact-sync.ts). Optional so fixtures
+	 *  predating it need not name it; null until the turf has a roster. */
+	knockedBeforeCut?: number | null;
 	/** The saved list VAN cut this route from, and the one its roster was
 	 *  built from. The count only describes this cut when the two agree. */
 	savedListId?: number | null;
@@ -78,7 +78,7 @@ export interface TurfRowInput {
 
 type CountedRow = Pick<
 	TurfRowInput,
-	'doorCount' | 'uncontactedDoors' | 'savedListId' | 'rosterSavedListId'
+	'doorCount' | 'uncontactedDoors' | 'knockedBeforeCut' | 'savedListId' | 'rosterSavedListId'
 >;
 
 /**
@@ -93,20 +93,21 @@ export function currentUncontacted(row: CountedRow): number | null {
 }
 
 /**
- * Whether anyone has knocked on a door in this turf recently — a not-home
- * counts — including before VAN last cut it.
+ * Whether somebody knocked on a door in this turf recently — a not-home
+ * counts — before VAN last cut it, where MiniVAN can no longer show it.
  *
  * The campaign re-cuts walked turf and every door comes back uncontacted, so
- * `doorsLeft` alone shows a turf walked yesterday as untouched. This is what
+ * the since-cut count alone shows a turf walked yesterday as untouched. This is what
  * marks it on the map and sinks it below turf nobody has been to, on the web
- * list and in Slack alike. Like `currentUncontacted`, only for a roster from
- * this cut: one from an older cut describes different doors.
+ * list and in Slack alike. Knocks since the cut do not mark it: the volunteer
+ * who picks it up sees those in MiniVAN. Like `currentUncontacted`, only for a
+ * roster from this cut: one from an older cut describes different doors.
  */
 export function hasContactHistory(
-	row: Pick<TurfRowInput, 'contactedDoors' | 'savedListId' | 'rosterSavedListId'>,
+	row: Pick<TurfRowInput, 'knockedBeforeCut' | 'savedListId' | 'rosterSavedListId'>,
 ): boolean {
-	if (row.contactedDoors == null || row.savedListId == null) return false;
-	return row.rosterSavedListId === row.savedListId && row.contactedDoors > 0;
+	if (row.knockedBeforeCut == null || row.savedListId == null) return false;
+	return row.rosterSavedListId === row.savedListId && row.knockedBeforeCut > 0;
 }
 
 /**
@@ -145,12 +146,36 @@ export function vanAssignmentBlocks(
 }
 
 /**
- * Doors still to knock: our own ContactHistory count when there is a current
- * one, VAN's doorCount when not. VAN's number only shrinks when a region is
- * re-cut with a "not yet contacted" filter, so the count is the fresher of the
- * two whenever it exists.
+ * Doors nobody has knocked since the cut or in the last 30 days — what the
+ * volunteer is shown as "doors left", ranked by, and shaded by, on the web and
+ * in Slack alike.
+ *
+ * The since-cut count (`claimDoorsLeft`) less the doors knocked only before
+ * the cut (`knockedBeforeCut`): a campaign that re-cuts walked turf lists
+ * every door as uncontacted again, and a turf walked last week should not read
+ * as untouched. The two never share a door, so the difference is exact. Never
+ * below zero.
+ *
+ * NOT what the claim rules read. A turf whose every door was knocked recently
+ * still goes out if the campaign re-cut it for another pass; it just shows
+ * none left and sorts last. See `claimDoorsLeft`.
  */
 export function doorsLeft(row: CountedRow): number {
+	const sinceCut = claimDoorsLeft(row);
+	if (currentUncontacted(row) === null) return sinceCut;
+	return Math.max(0, sinceCut - (row.knockedBeforeCut ?? 0));
+}
+
+/**
+ * Doors with no contact since the cut: our own ContactHistory count when there
+ * is a current one, VAN's doorCount when not. VAN's number only shrinks when a
+ * region is re-cut with a "not yet contacted" filter, so the count is the
+ * fresher of the two whenever it exists.
+ *
+ * What the claim rules read ("no doors left"): the cut is the campaign's word
+ * on which doors are to be knocked again. See `doorsLeft` for what is shown.
+ */
+export function claimDoorsLeft(row: CountedRow): number {
 	return currentUncontacted(row) ?? row.doorCount;
 }
 
@@ -185,9 +210,12 @@ export interface TurfView {
 	printedListNumber: string | null;
 	/** People in the list. */
 	routeSize: number;
-	/** Doors with no in-person contact since the cut (see `doorsLeft`), as of
-	 *  `refreshedMinutesAgo`. */
+	/** Doors nobody has knocked since the cut, nor in the last 30 days before
+	 *  it (see `doorsLeft`), as of `refreshedMinutesAgo`. Can be 0 on a turf that
+	 *  is still claimable: the campaign re-cut it for another pass. */
 	doorsRemaining: number;
+	/** Every door on the turf, knocked or not: VAN's door count. */
+	totalDoors: number;
 	/** Hull vertices, or [] when geometry is missing or was degenerate. */
 	hull: LatLng[];
 	/** Null when the turf has no geometry at all — it is still listed, just
@@ -275,9 +303,10 @@ export interface TurfView {
 	 */
 	walkReport?: { percent: number; dayLabel: string };
 	/**
-	 * True when doors in this turf have been knocked in the last 30 days, a
-	 * not-home included — even before VAN last re-cut it, which puts every
-	 * door back as uncontacted. Striped on the map and sorted below turf
+	 * True when doors in this turf were knocked in the last 30 days, a
+	 * not-home included, before VAN last re-cut it — which puts every door
+	 * back as uncontacted, so MiniVAN no longer shows those knocks. Knocks
+	 * since the cut do not count: MiniVAN shows them. Striped on the map and sorted below turf
 	 * nobody has been to. See `hasContactHistory`. Omitted when false, like
 	 * `updating`.
 	 */
@@ -474,9 +503,10 @@ export function turfSnapshot(
 			(vanAssignmentBlocks(row, now, vanAssignmentTtlHours) ? row.vanDistributedTo : null) ??
 			(sheetBlocksClaim(row) ? row.sheetAssignedTo : null) ??
 			null,
-		// The claim gate's "no doors left" reads the same number the volunteer
-		// sees, so a turf never shows doors it will then refuse to hand out.
-		doorCount: doorsLeft(row),
+		// The since-cut count, not the one shown: a turf knocked before the cut but
+		// re-cut by the campaign still goes out. The shown number is never
+		// above this one, so a turf never shows doors it will refuse.
+		doorCount: claimDoorsLeft(row),
 		uncontactedDoors: currentUncontacted(row),
 		reportedPercent: walkReports?.get(row.turfId)?.percent ?? null,
 		walked: walkReports?.has(row.turfId) ?? false,
@@ -525,6 +555,7 @@ export function toTurfView(
 		printedListNumber: visible.status === 'held-by-you' ? row.printedListNumber : null,
 		routeSize: row.routeSize,
 		doorsRemaining: doorsLeft(row),
+		totalDoors: row.doorCount,
 		hull,
 		centre,
 		bounds,

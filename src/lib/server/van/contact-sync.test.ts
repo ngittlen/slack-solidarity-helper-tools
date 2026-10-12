@@ -76,7 +76,7 @@ async function contact(vanId: string, at: string) {
 
 async function counts(turfId: number) {
 	const res = await client.execute({
-		sql: 'SELECT uncontacted_doors, uncontacted_doors_at, contacted_doors FROM van_turfs WHERE turf_id = ?',
+		sql: 'SELECT uncontacted_doors, uncontacted_doors_at, knocked_before_cut FROM van_turfs WHERE turf_id = ?',
 		args: [turfId],
 	});
 	return res.rows[0]!;
@@ -183,30 +183,48 @@ describe('recomputeUncontacted', () => {
 	});
 
 	// A campaign that re-cuts walked turf lists every door as uncontacted
-	// again; this is what still says somebody knocked.
-	it('counts doors knocked before the cut as well as after it', async () => {
+	// again, and MiniVAN's new list no longer shows the knocks; this is what
+	// still says somebody was there. A knock since the cut, MiniVAN shows.
+	it('counts doors knocked before the cut, not after it', async () => {
 		await contact('a', '2026-09-10T15:00:00.000Z');
 		await contact('c', '2026-09-20T15:00:00.000Z');
 		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
-		expect(await counts(1)).toMatchObject({ uncontacted_doors: 1, contacted_doors: 2 });
+		expect(await counts(1)).toMatchObject({ uncontacted_doors: 1, knocked_before_cut: 1 });
 	});
 
 	it('counts a door with two residents contacted once', async () => {
 		await contact('a', '2026-09-10T15:00:00.000Z');
 		await contact('b', '2026-09-11T15:00:00.000Z');
 		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
-		expect((await counts(1)).contacted_doors).toBe(1);
+		expect((await counts(1)).knocked_before_cut).toBe(1);
+	});
+
+	it('leaves out a door knocked before the cut and again since', async () => {
+		await contact('a', '2026-09-10T15:00:00.000Z');
+		await contact('b', '2026-09-20T15:00:00.000Z');
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect(await counts(1)).toMatchObject({ uncontacted_doors: 1, knocked_before_cut: 0 });
+	});
+
+	it('counts nothing when the cut is older than the history kept', async () => {
+		await client.execute({
+			sql: 'UPDATE van_turfs SET cut_at = ?',
+			args: [new Date(NOW.getTime() - CONTACT_HISTORY_MS - 86_400_000).toISOString()],
+		});
+		await contact('a', '2026-09-20T15:00:00.000Z');
+		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
+		expect(await counts(1)).toMatchObject({ uncontacted_doors: 1, knocked_before_cut: 0 });
 	});
 
 	it('records zero, not null, for a rostered turf nobody has knocked', async () => {
 		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
-		expect((await counts(1)).contacted_doors).toBe(0);
+		expect((await counts(1)).knocked_before_cut).toBe(0);
 	});
 
 	it('leaves out a contact older than the history kept', async () => {
 		await contact('a', new Date(NOW.getTime() - CONTACT_HISTORY_MS - 60_000).toISOString());
 		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
-		expect((await counts(1)).contacted_doors).toBe(0);
+		expect((await counts(1)).knocked_before_cut).toBe(0);
 	});
 
 	it('clears the knocked count with the roster from an older saved list', async () => {
@@ -214,7 +232,7 @@ describe('recomputeUncontacted', () => {
 		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
 		await client.execute('UPDATE van_turfs SET saved_list_id = 901');
 		await recomputeUncontacted(db, { campaignId: 1, now: NOW });
-		expect((await counts(1)).contacted_doors).toBeNull();
+		expect((await counts(1)).knocked_before_cut).toBeNull();
 	});
 
 	it('touches only the turfs asked for', async () => {
@@ -541,7 +559,7 @@ describe('runContactSync', () => {
 
 	it('recomputes a turf whose contact aged out, so it stops reading as knocked', async () => {
 		await contact('111', '2026-08-20T00:00:00.000Z');
-		await client.execute('UPDATE van_turfs SET contacted_doors = 1');
+		await client.execute('UPDATE van_turfs SET knocked_before_cut = 1');
 		// A recompute already done, so this run recomputes only what it touched.
 		await client.execute(
 			`INSERT INTO van_contact_sync_state (campaign_id, full_recompute_at)
@@ -555,7 +573,7 @@ describe('runContactSync', () => {
 			fetchFn,
 			sleep: noSleep,
 		});
-		expect((await counts(1)).contacted_doors).toBe(0);
+		expect((await counts(1)).knocked_before_cut).toBe(0);
 	});
 
 	it('does nothing but recompute when there is no turf to count for', async () => {
@@ -743,7 +761,7 @@ describe('clearUncontacted', () => {
 		expect(await counts(1)).toMatchObject({
 			uncontacted_doors: null,
 			uncontacted_doors_at: null,
-			contacted_doors: null,
+			knocked_before_cut: null,
 		});
 	});
 });
@@ -1026,9 +1044,10 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 		expect((await counts(2)).uncontacted_doors).toBe(42);
 	});
 
-	// Deployed code from before `contactedDoors` recounts turfs without it,
-	// and may run after migration 0070 and before the release that reads it.
-	it('recounts every turf when some turf has a count but no contacted doors', async () => {
+	// Deployed code from before `knockedBeforeCut` recounts turfs without it,
+	// and may run after migration 0070 and before the release that reads it;
+	// and migration 0071 clears it.
+	it('recounts every turf when some turf has a count but no knocked-before-cut count', async () => {
 		const quiet = fakeVan(() => []);
 		await runContactSync(db, quiet.van.client, {
 			campaignId: 1,
@@ -1037,7 +1056,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 			fetchFn: quiet.fetchFn,
 			sleep: noSleep,
 		});
-		await client.execute('UPDATE van_turfs SET contacted_doors = NULL');
+		await client.execute('UPDATE van_turfs SET knocked_before_cut = NULL');
 		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
 		const result = await runContactSync(db, quiet.van.client, {
 			campaignId: 1,
@@ -1047,8 +1066,8 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 			sleep: noSleep,
 		});
 		expect(result.turfsRecomputed).toBe(2);
-		expect((await counts(1)).contacted_doors).toBe(0);
-		expect((await counts(2)).contacted_doors).toBe(0);
+		expect((await counts(1)).knocked_before_cut).toBe(0);
+		expect((await counts(2)).knocked_before_cut).toBe(0);
 
 		// Healed: the next run recounts only what it touched.
 		const again = await runContactSync(db, quiet.van.client, {
@@ -1070,7 +1089,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 			fetchFn: quiet.fetchFn,
 			sleep: noSleep,
 		});
-		await client.execute('UPDATE van_turfs SET contacted_doors = NULL');
+		await client.execute('UPDATE van_turfs SET knocked_before_cut = NULL');
 		const result = await runContactSync(db, quiet.van.client, {
 			campaignId: 1,
 			hasher,
@@ -1080,10 +1099,10 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 			recomputeTurfIds: [1],
 		});
 		expect(result.turfsRecomputed).toBe(1);
-		expect((await counts(2)).contacted_doors).toBeNull();
+		expect((await counts(2)).knocked_before_cut).toBeNull();
 	});
 
-	// A contact aging out can only lower `contactedDoors`, and a nudge is as
+	// A contact aging out can only lower `knockedBeforeCut`, and a nudge is as
 	// good a time as any to say so.
 	it('also recounts, on a nudge, the turf of anyone it pruned', async () => {
 		const quiet = fakeVan(() => []);
@@ -1095,7 +1114,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 			sleep: noSleep,
 		});
 		await contact('333', '2026-08-20T00:00:00.000Z');
-		await client.execute('UPDATE van_turfs SET contacted_doors = 1 WHERE turf_id = 2');
+		await client.execute('UPDATE van_turfs SET knocked_before_cut = 1 WHERE turf_id = 2');
 		const result = await runContactSync(db, quiet.van.client, {
 			campaignId: 1,
 			hasher,
@@ -1106,7 +1125,7 @@ describe('runContactSync: what a run recomputes and stamps', () => {
 		});
 		expect(result.contactsPruned).toBe(1);
 		expect(result.turfsRecomputed).toBe(2);
-		expect((await counts(2)).contacted_doors).toBe(0);
+		expect((await counts(2)).knocked_before_cut).toBe(0);
 	});
 
 	it('does the full recompute again once the feature has been switched off and on', async () => {
