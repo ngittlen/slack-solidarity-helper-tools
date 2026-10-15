@@ -105,6 +105,45 @@ describe('clearOutsideVolunteers', () => {
 		expect(await clearOutsideVolunteers(db)).toBe(0);
 	});
 
+	// Their push settings are tied to their ids: a clear that left them would
+	// not be a clear. A Slack member's settings stay, on a shared browser too.
+	it("forgets outside volunteers' push settings, and only theirs", async () => {
+		for (const [id, current] of [
+			[1, 'google:1'],
+			[2, 'apple:1'],
+			[3, 'U1'],
+		] as const) {
+			await client.execute({
+				sql: `INSERT INTO push_devices (id, endpoint, p256dh, auth, current_user_id, created_at)
+				      VALUES (?, ?, 'k', 'a', ?, '2026-10-13T00:00:00.000Z')`,
+				args: [id, `https://fcm.googleapis.com/fcm/send/${id}`, current],
+			});
+		}
+		for (const [deviceId, userId] of [
+			[1, 'google:1'],
+			[2, 'apple:1'],
+			[2, 'U1'],
+			[3, 'U1'],
+		] as const) {
+			await client.execute({
+				sql: `INSERT INTO push_opt_ins (device_id, user_id, created_at)
+				      VALUES (?, ?, '2026-10-13T00:00:00.000Z')`,
+				args: [deviceId, userId],
+			});
+		}
+		await clearOutsideVolunteers(db);
+		const devices = await client.execute(
+			'SELECT id, current_user_id FROM push_devices ORDER BY id',
+		);
+		// Device 1 was only theirs; device 2 is shared, and nobody's until used.
+		expect(devices.rows.map((r) => ({ ...r }))).toEqual([
+			{ id: 2, current_user_id: null },
+			{ id: 3, current_user_id: 'U1' },
+		]);
+		const optIns = await client.execute('SELECT user_id FROM push_opt_ins ORDER BY device_id');
+		expect(optIns.rows.map((r) => r.user_id)).toEqual(['U1', 'U1']);
+	});
+
 	it('clears nothing when part of it fails', async () => {
 		await google('google:1', 'a@x.org', 'Ana');
 		await client.execute('DROP TABLE turf_notices');

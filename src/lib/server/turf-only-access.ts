@@ -30,6 +30,10 @@ export const TURF_ONLY_ROUTES: ReadonlySet<string> = new Set([
 	'/turfs',
 	'/api/turfs',
 	'/api/turfs/[turfId]',
+	// Push notifications about their turf (van/holder-notices.ts): the
+	// header's bell, and the manifest an iPhone needs to allow them.
+	'/api/push',
+	'/manifest.webmanifest',
 	// Signing in, out, and across to Slack. The Slack callback refuses the
 	// post-as-you grant to anyone who is not an admin or moderator on its own.
 	'/signin',

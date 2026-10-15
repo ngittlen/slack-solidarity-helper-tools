@@ -32,6 +32,15 @@ export function vanContactLock(campaignId: number): string {
 }
 
 /**
+ * A campaign's live ContactHistory poll (live-contacts.ts): one machine polls
+ * at a time. Not vanContactLock, which the scheduled pull and the completion
+ * nudge would then find taken every half minute.
+ */
+export function vanLiveContactLock(campaignId: number): string {
+	return `van-live-contacts:${campaignId}`;
+}
+
+/**
  * The ledger housekeeping every van-sync request starts with: expiring lapsed
  * claims, the six-hour warnings, and noticing new campaign secrets. It reads
  * only our own tables and covers every campaign at once, so it takes one lock

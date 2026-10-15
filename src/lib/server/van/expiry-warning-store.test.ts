@@ -5,7 +5,11 @@ import { migrate } from 'drizzle-orm/libsql/migrator';
 
 const mockSendDm = vi.hoisted(() => vi.fn());
 vi.mock('$lib/server/slack-dm.js', () => ({ sendDm: mockSendDm }));
-vi.mock('$lib/server/env.js', () => ({ APP_URL: 'https://app.example.org' }));
+vi.mock('$lib/server/env.js', () => ({
+	APP_URL: 'https://app.example.org',
+	VAPID_PUBLIC_KEY: '',
+	VAPID_PRIVATE_KEY: '',
+}));
 
 const { sendExpiryWarnings } = await import('./expiry-warning-store.js');
 

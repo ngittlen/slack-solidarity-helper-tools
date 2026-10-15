@@ -1209,6 +1209,11 @@ export const vanTurfCheckouts = sqliteTable(
 		 *  turf had no roster to count against; the dashboard then falls back
 		 *  to `confirmedDoorDelta`. */
 		doorsKnocked: integer('doors_knocked'),
+		/** When the holder was told VAN has their doors (van/claim-notices.ts):
+		 *  once, the first time `doorsKnocked` comes to more than 0. */
+		doorsCountedNotifiedAt: text('doors_counted_notified_at'),
+		/** When the holder was told their claim lapsed (van/claim-notices.ts). */
+		lapseNotifiedAt: text('lapse_notified_at'),
 		/** The MiniVAN list number this volunteer was actually given.
 		 *
 		 *  Not a duplicate of van_turfs.printed_list_number: that column is what
@@ -1361,6 +1366,51 @@ export const turfNotices = sqliteTable(
 	(table) => [index('turf_notices_user').on(table.userId, table.createdAt)],
 );
 
+// Browsers that asked for push notifications (src/lib/server/push.ts): one row
+// per device, keyed by the endpoint the browser's push service handed out. A
+// browser has one endpoint for the whole site, however many people use it, so
+// who wants notifications there is push_opt_ins, and only `currentUserId`'s
+// are sent: a shared device never shows one person another's turf.
+//
+// An endpoint the push service says is gone (404/410) is deleted on the spot,
+// one that keeps failing otherwise at MAX_PUSH_FAILURES, and one nobody is
+// opted in on any more as soon as that happens. There are no foreign keys:
+// push.ts deletes a device's opt-ins with it.
+export const pushDevices = sqliteTable(
+	'push_devices',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		endpoint: text('endpoint').notNull().unique(),
+		/** The browser's keys for encrypting each message to it. */
+		p256dh: text('p256dh').notNull(),
+		auth: text('auth').notNull(),
+		/** Whoever last used the site on this device: a Slack id, or `google:` /
+		 *  `apple:`. Null once they log out on it, and then nobody's notices go
+		 *  there until someone signs in again. */
+		currentUserId: text('current_user_id'),
+		createdAt: text('created_at').notNull(),
+		lastSentAt: text('last_sent_at'),
+		failures: integer('failures').notNull().default(0),
+	},
+	(table) => [index('push_devices_current_user').on(table.currentUserId)],
+);
+
+// Who turned notifications on, on which device: each person's own setting, so
+// one of two people sharing a phone can have them on and the other off.
+export const pushOptIns = sqliteTable(
+	'push_opt_ins',
+	{
+		deviceId: integer('device_id').notNull(),
+		/** The session's user id: a Slack id, or `google:` / `apple:`. */
+		userId: text('user_id').notNull(),
+		createdAt: text('created_at').notNull(),
+	},
+	(table) => [
+		primaryKey({ columns: [table.deviceId, table.userId] }),
+		index('push_opt_ins_user').on(table.userId),
+	],
+);
+
 // Work queue for the per-turf export jobs that produce hull geometry. Export
 // Jobs are scoped to one savedListId, so a 200-turf region is 200 jobs; this
 // exists to throttle them and to survive a dropped webhook.
@@ -1454,6 +1504,11 @@ export const vanContactSyncState = sqliteTable('van_contact_sync_state', {
 	 *  scheduled run does all of them; after that, only turfs with a person
 	 *  in the contacts just pulled. Cleared when the feature is switched off. */
 	fullRecomputeAt: text('full_recompute_at'),
+	/** How far the live poll (van/live-contacts.ts) has read ContactHistory:
+	 *  every half minute while turf is claimed, a few minutes at a time, for
+	 *  the "I synced MiniVAN" check. Apart from `cursor`, which only the
+	 *  scheduled pull moves and which decides what has been counted. */
+	liveThrough: text('live_through'),
 });
 
 // One row per Map Region we have ever asked VAN to re-cut.

@@ -3,6 +3,13 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!-- Lets an iPhone add the site to its Home Screen, which is what Safari
+		     requires before it allows push notifications. -->
+		<link rel="manifest" href="/manifest.webmanifest" />
+		<!-- static/favicon.svg; iPhones take only a PNG for the Home Screen. -->
+		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
 		<!-- Replaced in hooks.server.ts with the resolved theme's custom
 		     properties. Server-rendered so there is no flash of the wrong
 		     palette, and no client JS is involved in theming at all. -->

@@ -8,6 +8,7 @@ import { parseThemeMode, themeAttribute, THEME_COOKIE } from '$lib/theme-mode.js
 import { errMessage } from '$lib/err-message.js';
 import { INTERNAL_CRON_SECRET, validateEnv } from '$lib/server/env.js';
 import { localCaller, startScheduler } from '$lib/server/scheduler.js';
+import { startLiveContactPoll } from '$lib/server/van/live-contacts.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
 import { applyDevViewAs, parseDevViewAs } from '$lib/server/dev-view-as.js';
 import { gateTurfOnlySession } from '$lib/server/turf-only-access.js';
@@ -46,6 +47,10 @@ export async function init() {
 				call: localCaller(Number(vars['PORT']) || 3000, INTERNAL_CRON_SECRET),
 			});
 		}
+		// The "I synced MiniVAN" check's half-minute ContactHistory poll. Its
+		// own loop: the scheduler's slots are a minute apart. Does nothing
+		// while no turf is claimed. See src/lib/server/van/live-contacts.ts.
+		startLiveContactPoll(db);
 	}
 }
 

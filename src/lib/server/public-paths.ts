@@ -20,11 +20,13 @@
 // list that omitted public URLs would be a worse record than a redundant one.
 // If any of them ever becomes a page, it is already covered. `/terms` in
 // particular is the terms-of-service URL Google's and Apple's sign-in consent
-// screens link to, so it must answer anyone.
+// screens link to, so it must answer anyone. `/manifest.webmanifest` is the
+// web app manifest: the site's name and colours, which a browser fetches
+// without cookies.
 
 /** Page routes served without a session. Prefix matches, so `/policies#x` and
  *  `/policies?print=1` are covered too. */
-const PUBLIC_PREFIXES = ['/policies', '/privacy', '/security', '/terms'];
+const PUBLIC_PREFIXES = ['/policies', '/privacy', '/security', '/terms', '/manifest.webmanifest'];
 
 /**
  * Page routes served without a session at exactly this path, and NOT below it.

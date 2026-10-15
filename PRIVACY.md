@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 2026-10-05_
+_Last updated: 2026-10-13_
 
 This document covers **Tools for Abdul's deployment** of slack-solidarity-helper-tools at
 `https://slack.tools4abdul.com`, and — in [For other operators](#for-other-operators) — what
@@ -93,6 +93,39 @@ Messages a Slack member would get as a DM about turf they hold — that it is ab
 MiniVAN may not have synced, that VAN re-cut it or gave it a new list number — are instead kept for
 you and shown on `/turfs` (`turf_notices`). Each is deleted when you dismiss it, and after a week
 regardless.
+
+### Push notifications, if you turn them on
+
+The bell in the header turns on notifications on that device about turf you hold: that it is about
+to expire or has ended, that MiniVAN may not have synced, that VAN re-cut it or gave it a new list
+number, and that VAN has your doors. It is off until you turn it on, and it is per person and per
+device: turning it on for your phone does nothing for your laptop, or for anyone else who uses your
+phone.
+
+Turning it on stores two things. For the device: **the push address your browser's push service
+gave it, the keys to encrypt messages to it, the Slack ID (or Google or Apple account ID) of
+whoever used the site on it last, when it was added, when it was last sent a notification, and how
+many sends in a row have failed** (`push_devices`). For you: **your account ID, which device, and
+when you turned it on there** (`push_opt_ins`). Nothing else about the device — no name, model,
+location or IP address.
+
+**A shared device only gets the notifications of whoever used the site on it last.** If two people
+use the same phone and both turn notifications on, each keeps their own setting, but the phone
+shows only the notices of the one who last opened any page here on it, so neither sees the other's
+turf. Logging out on a device stops yours going there until someone uses the site on it
+again. A notification can be held by the push service for up to six hours while a device is off;
+if one meant for you arrives after someone else has used the site on that device, or after you
+logged out there, it shows only "You have a turf update", never what it says.
+
+A notification is the same message you would otherwise get: the turf's name, and where it says so a
+door count or MiniVAN list number. It is encrypted for your device before it leaves the app, so the
+push service that delivers it can read where it is going and when, but not what it says. It does
+show on your device as notifications do, including on a lock screen if your settings allow.
+
+For a Slack member, a notification **replaces** the Slack DM about the same thing; the DM is sent
+only if none of your devices took the notification. For a Google or Apple sign-in, the message is
+still kept on `/turfs` as well. The notices that your claim ended and that VAN has your doors come
+only as notifications.
 
 ### From solidarity.tech
 
@@ -249,6 +282,7 @@ Data leaves this app in exactly these directions:
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
 | **Slack**                 | Messages, DMs, channel invites, modal contents                                                                                                                                                                                                                                                                                                                                                                                                   | The app is a Slack bot                              |
 | **Google**                | The sign-in request, if you choose Sign in with Google; turf checkout entries written to the campaign's Packet Tracker spreadsheets (see [Turf checkout](#turf-checkout)); and the nightly door report — how many doors were contacted on each turf that day, how many of them through this app, and whether the turf was checked out here, with turf, region and VAN folder names — never who checked it out, and nothing else about any person | Signing you in; the Packet Tracker; the door report |
+| **Browser push services** | If you turn on notifications: each notification, encrypted so only your device can read it, sent to the service your browser uses — Google for Chrome and Android, Mozilla for Firefox, Microsoft for Edge on Windows, Apple for Safari. The service sees the push address, the time and the size, not the content                                                                                                                               | Notifications about your turf                       |
 | **Apple**                 | The sign-in request, if you choose Sign in with Apple                                                                                                                                                                                                                                                                                                                                                                                            | Signing you in                                      |
 | **solidarity.tech**       | Lookups by email; RSVP and event reads                                                                                                                                                                                                                                                                                                                                                                                                           | Chapter matching, member lookup                     |
 | **Mobilize**              | Event and RSVP sync                                                                                                                                                                                                                                                                                                                                                                                                                              | Keeping the two calendars aligned                   |
@@ -271,8 +305,8 @@ channel sees per-chapter counts. Configure those as private admin channels.
 exists to run one campaign, and the records below have no purpose once it is over. Within 30
 days of the election every record identifying a volunteer, canvasser or organizer is deleted —
 the help-to-join queue, notes and warnings, Slack join rows, account links, the turf checkout
-ledger and block list, Google and Apple sign-in records, per-canvasser door-knock rows, stored admin
-tokens, and any sessions still open. What survives is aggregate: daily and weekly counts per chapter and date, which name
+ledger and block list, Google and Apple sign-in records, push notification settings,
+per-canvasser door-knock rows, stored admin tokens, and any sessions still open. What survives is aggregate: daily and weekly counts per chapter and date, which name
 nobody.
 
 Nothing in the code enforces that date. It is a commitment the Tools for Abdul team carries out
@@ -284,23 +318,26 @@ checkout entries written into them (see § "Turf checkout") live in spreadsheets
 and deleting this app's own records does not touch them. Clearing those is the campaign's to do,
 and asking for it means asking them, not us.
 
-| Data                                        | Retention                                                                                                                                                                                                                                 |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sessions                                    | 8 hours, then deleted on next access                                                                                                                                                                                                      |
-| Admin Slack tokens                          | Until you stop being an admin, the encryption key is rotated, or the election                                                                                                                                                             |
-| Help-to-join queue (`requests`)             | Until removed by an admin, and in any case the election; no automatic expiry                                                                                                                                                              |
-| Notes and warnings                          | Kept until the election. Warning numbering is a running count, so deleting one before then silently renumbers the rest — early removal is a deliberate act, not routine cleanup                                                           |
-| Turf checkout ledger                        | Kept until the election, as the record of who had which turf when                                                                                                                                                                         |
-| Turf messages for Google and Apple sign-ins | Until you dismiss them, and at most a week                                                                                                                                                                                                |
-| Google and Apple sign-in records            | Until an admin clears them at the end of the campaign, and in any case the election. Clearing does not lift a block or remove your name from past claims. Anyone whose name came from Apple or was typed is asked for it again afterwards |
-| Turf entries in campaign sheets             | Not ours to delete — they live in the campaign's own spreadsheets and outlast this app's records                                                                                                                                          |
-| Retired turf rows                           | Kept while the campaign runs, so a live claim still renders                                                                                                                                                                               |
-| Slack invite sightings                      | Kept after a link is removed — deleting them would erase the record of the fix. Names pages, not people                                                                                                                                   |
-| Daily signup / door-knock snapshots         | Kept indefinitely. These are counts per (date, chapter), not per person                                                                                                                                                                   |
-| Geocoded ZIP centroids                      | Kept indefinitely. Not linked to anyone                                                                                                                                                                                                   |
+| Data                                        | Retention                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sessions                                    | 8 hours, then deleted on next access                                                                                                                                                                                                                                                                                                                              |
+| Admin Slack tokens                          | Until you stop being an admin, the encryption key is rotated, or the election                                                                                                                                                                                                                                                                                     |
+| Help-to-join queue (`requests`)             | Until removed by an admin, and in any case the election; no automatic expiry                                                                                                                                                                                                                                                                                      |
+| Notes and warnings                          | Kept until the election. Warning numbering is a running count, so deleting one before then silently renumbers the rest — early removal is a deliberate act, not routine cleanup                                                                                                                                                                                   |
+| Turf checkout ledger                        | Kept until the election, as the record of who had which turf when                                                                                                                                                                                                                                                                                                 |
+| Turf messages for Google and Apple sign-ins | Until you dismiss them, and at most a week                                                                                                                                                                                                                                                                                                                        |
+| Push notification settings                  | Yours on a device: until you turn notifications off there, you turn them on for more than 10 devices (the oldest goes), the device stops accepting them (uninstalled, unsubscribed, or 5 failed sends in a row), an admin clears Google and Apple sign-in records (for those sign-ins), or the election. The device's own record goes with the last setting on it |
+| Google and Apple sign-in records            | Until an admin clears them at the end of the campaign, and in any case the election. Clearing does not lift a block or remove your name from past claims. Anyone whose name came from Apple or was typed is asked for it again afterwards                                                                                                                         |
+| Turf entries in campaign sheets             | Not ours to delete — they live in the campaign's own spreadsheets and outlast this app's records                                                                                                                                                                                                                                                                  |
+| Retired turf rows                           | Kept while the campaign runs, so a live claim still renders                                                                                                                                                                                                                                                                                                       |
+| Slack invite sightings                      | Kept after a link is removed — deleting them would erase the record of the fix. Names pages, not people                                                                                                                                                                                                                                                           |
+| Daily signup / door-knock snapshots         | Kept indefinitely. These are counts per (date, chapter), not per person                                                                                                                                                                                                                                                                                           |
+| Geocoded ZIP centroids                      | Kept indefinitely. Not linked to anyone                                                                                                                                                                                                                                                                                                                           |
 
-Apart from session expiry and the week-old turf messages for Google and Apple sign-ins, no deletion is
-automated — including the post-election wipe above. Earlier removal is done on request, by hand.
+Apart from session expiry, the week-old turf messages for Google and Apple sign-ins, and push
+notification settings on devices that stop accepting them or past the limit of 10, no deletion is
+automated — including the
+post-election wipe above. Earlier removal is done on request, by hand.
 
 ## Your choices
 
@@ -315,6 +352,11 @@ automated — including the post-election wipe above. Earlier removal is done on
   too. The app keeps no Google or Apple access to revoke, but you can also remove it from your
   Google account's third-party connections, or from "Sign in with Apple" in your Apple ID
   settings.
+- **Turn off notifications.** Use the bell in the header on that device, which deletes your setting
+  there and leaves anyone else's who uses it alone. Logging out on a device also stops yours going there. You can also block notifications
+  for the site in your browser's settings, which stops them for everyone using that browser; the
+  device's record here is then deleted once the push service reports it gone, or after 5 failed
+  sends. Slack members then get Slack DMs again.
 - **Turn off location.** Decline the browser prompt; `/turfs` still works, sorted by name or by
   a ZIP you choose to type.
 
@@ -343,12 +385,13 @@ If you self-host this code, **this document is not your privacy policy** — it 
 deployment's choices. Before publishing your own, change at least:
 
 1. **Who is responsible** and the contact route for requests.
-2. **Which integrations you actually run.** Mobilize, VAN, the Packet Tracker spreadsheets and
-   Google and Apple sign-in are each optional; a deployment without them collects less and should say so.
+2. **Which integrations you actually run.** Mobilize, VAN, the Packet Tracker spreadsheets,
+   Google and Apple sign-in, and push notifications (on only when the VAPID keys are set) are each
+   optional; a deployment without them collects less and should say so.
 3. **Your channel configuration.** Which Slack channels see notes, warnings, tracking messages
    and growth reports is your decision and belongs in your policy.
 4. **Your retention practice, including your own end date.** The code deletes nothing but expired
-   sessions and week-old turf messages — the post-election wipe above is a Tools for Abdul commitment carried out by hand,
+   sessions, week-old turf messages and push settings on devices that stop working or past the limit — the post-election wipe above is a Tools for Abdul commitment carried out by hand,
    not something you inherit by running this software. Decide when your campaign's records end,
    say so, and set a reminder; a deletion date nobody is scheduled to act on is worse than an
    honest "retained indefinitely".
