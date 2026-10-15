@@ -136,6 +136,15 @@ export interface SheetsClient {
 		on: boolean;
 		deadline?: number;
 	}): Promise<SheetsResult<true>>;
+	/** Take the fill colour off every cell from `fromRowIndex` (0-based) to the
+	 *  bottom of the tab, every column, in one request. Values and the
+	 *  campaign's other formats stay. */
+	clearHighlights(input: {
+		spreadsheetId: string;
+		tabName: string;
+		fromRowIndex: number;
+		deadline?: number;
+	}): Promise<SheetsResult<true>>;
 	/**
 	 * The options of a column's drop-down, or null when none of the rows looked
 	 * at has one. Looks down `rows` rows from `rowIndex` and takes the first
@@ -568,6 +577,32 @@ export function createSheetsClient(
 			);
 			// A tab deleted and made again has a new id, which Google answers
 			// with a 400; look it up afresh next time.
+			if (!res.ok) return forgetTab(res, spreadsheetId, tabName);
+			return { ok: true, value: true };
+		},
+
+		async clearHighlights({ spreadsheetId, tabName, fromRowIndex, deadline }) {
+			const id = await tabInfo(spreadsheetId, tabName, deadline);
+			if (!id.ok) return id;
+			const res = await request(
+				`${base(spreadsheetId)}:batchUpdate`,
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						requests: [
+							{
+								repeatCell: {
+									// No end row or columns: to the edge of the tab.
+									range: { sheetId: id.value.id, startRowIndex: fromRowIndex },
+									cell: { userEnteredFormat: {} },
+									fields: 'userEnteredFormat.backgroundColor',
+								},
+							},
+						],
+					}),
+				},
+				deadline,
+			);
 			if (!res.ok) return forgetTab(res, spreadsheetId, tabName);
 			return { ok: true, value: true };
 		},

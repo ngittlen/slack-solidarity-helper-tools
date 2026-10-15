@@ -173,14 +173,16 @@ export function rosterStatements(
 	];
 }
 
-/** Record contacts, keeping the later date where one is already stored. */
+/** Record contacts, keeping the later date where one is already stored.
+ *  Returns how many rows were written: new people, or a later date. */
 export async function upsertContacts(
 	db: Db,
 	campaignId: number,
 	contacts: ReadonlyMap<string, { personHash: Buffer; at: string }>,
-): Promise<void> {
+): Promise<number> {
+	let written = 0;
 	for (const batch of chunked([...contacts.values()], CONTACT_BATCH)) {
-		await db
+		const result = await db
 			.insert(vanPersonContacts)
 			.values(batch.map((c) => ({ campaignId, personHash: c.personHash, lastInPersonAt: c.at })))
 			.onConflictDoUpdate({
@@ -191,7 +193,9 @@ export async function upsertContacts(
 				// update would rewrite each of those rows every time.
 				setWhere: sql`excluded.last_in_person_at > ${vanPersonContacts.lastInPersonAt}`,
 			});
+		written += Number(result.rowsAffected ?? 0);
 	}
+	return written;
 }
 
 /** Turfs whose count is still kept up to date: live, or retired recently

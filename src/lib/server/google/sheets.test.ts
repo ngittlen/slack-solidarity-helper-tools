@@ -207,6 +207,36 @@ describe('readRow', () => {
 	});
 });
 
+describe('clearHighlights', () => {
+	it('takes the fill off every row from the one given, every column, in one request', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(ok({ sheets: [{ properties: { sheetId: 77, title: 'Walk Ins' } }] }))
+			.mockResolvedValueOnce(ok({}));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.clearHighlights({
+			spreadsheetId: 'sheet-1',
+			tabName: 'Walk Ins',
+			fromRowIndex: 1,
+		});
+
+		expect(res).toEqual({ ok: true, value: true });
+		const [url, init] = fetchFn.mock.calls[2] as [string, RequestInit];
+		expect(url).toContain('/spreadsheets/sheet-1:batchUpdate');
+		expect(JSON.parse(init.body as string).requests).toEqual([
+			{
+				repeatCell: {
+					range: { sheetId: 77, startRowIndex: 1 },
+					cell: { userEnteredFormat: {} },
+					fields: 'userEnteredFormat.backgroundColor',
+				},
+			},
+		]);
+	});
+});
+
 describe('highlightCells', () => {
 	const TABS = () =>
 		ok({

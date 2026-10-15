@@ -126,7 +126,8 @@ export interface LivePollOptions {
 }
 
 export type LivePollResult =
-	| { kind: 'read'; from: string; through: string; contacts: number }
+	/** `contacts` read from VAN; `written` of them new or later than stored. */
+	| { kind: 'read'; from: string; through: string; contacts: number; written: number }
 	/** VAN had not finished the job inside the budget. */
 	| { kind: 'pending' };
 
@@ -195,7 +196,7 @@ export async function pollLiveContacts(
 		}
 		await readContactFile(responseChunks(res), kinds, hasher, contacts);
 	}
-	await upsertContacts(db, campaignId, contacts);
+	const written = await upsertContacts(db, campaignId, contacts);
 	await db
 		.insert(vanContactSyncState)
 		.values({ campaignId, liveThrough: through })
@@ -203,7 +204,7 @@ export async function pollLiveContacts(
 			target: vanContactSyncState.campaignId,
 			set: { liveThrough: through },
 		});
-	return { kind: 'read', from, through, contacts: contacts.size };
+	return { kind: 'read', from, through, contacts: contacts.size, written };
 }
 
 /** One round across every campaign with turf out. */
@@ -223,8 +224,10 @@ export async function liveContactRound(db: Db): Promise<void> {
 				hasher,
 			});
 			// Quiet when nothing came in, or this would log every half minute.
-			if (result.kind === 'read' && result.contacts > 0) {
-				console.log(`${LOG} live contacts for campaign ${campaign.id}: ${result.contacts}`);
+			// Only rounds that wrote something: each window re-reads the last few
+			// minutes, so the same contacts come back for several rounds running.
+			if (result.kind === 'read' && result.written > 0) {
+				console.log(`${LOG} live contacts for campaign ${campaign.id}: ${result.written} new`);
 			} else if (result.kind === 'pending') {
 				console.warn(`${LOG} live contacts for campaign ${campaign.id}: VAN's job ran long`);
 			}

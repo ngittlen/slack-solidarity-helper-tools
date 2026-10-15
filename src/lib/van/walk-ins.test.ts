@@ -10,6 +10,7 @@ import {
 	shiftFor,
 	shiftMinutes,
 	walkInDay,
+	highlightSweepDay,
 } from './walk-ins.js';
 
 const HEADER = [
@@ -149,6 +150,21 @@ describe('walkInDay', () => {
 		expect(walkInDay('2026-09-20T03:00:00.000Z')).toBe('2026-09-19'); // 11pm
 		expect(walkInDay('2026-09-20T07:30:00.000Z')).toBe('2026-09-19'); // 3:30am
 		expect(walkInDay('2026-09-20T08:30:00.000Z')).toBe('2026-09-20'); // 4:30am
+	});
+});
+
+describe('highlightSweepDay', () => {
+	const at = (iso: string) => highlightSweepDay(new Date(iso));
+
+	it('names the closing day from midnight until the rollover', () => {
+		expect(at('2026-09-20T04:07:00.000Z')).toBe('2026-09-19'); // 12:07am
+		expect(at('2026-09-20T07:59:00.000Z')).toBe('2026-09-19'); // 3:59am
+	});
+
+	it('is null the rest of the day', () => {
+		expect(at('2026-09-20T03:59:00.000Z')).toBeNull(); // 11:59pm
+		expect(at('2026-09-20T08:00:00.000Z')).toBeNull(); // 4am
+		expect(at('2026-09-20T18:00:00.000Z')).toBeNull(); // 2pm
 	});
 });
 
