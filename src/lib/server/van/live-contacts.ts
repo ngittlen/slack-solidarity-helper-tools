@@ -25,7 +25,7 @@
 // One machine polls a campaign at a time (vanLiveContactLock). The result is
 // in the database, so a check on any machine sees it.
 
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import {
@@ -49,6 +49,7 @@ import {
 	upsertContacts,
 } from './contact-sync.js';
 import { responseChunks } from './hull-extract.js';
+import { chunked } from './sql-chunk.js';
 import { vanLiveContactLock } from './locks.js';
 import type { PersonHasher } from './person-hash.js';
 
@@ -291,7 +292,7 @@ export async function turfSyncCheck(
 	input: { turfId: number; slackUserId: string; now: Date },
 ): Promise<TurfSyncCheck | null> {
 	const [claim] = await db
-		.select({ claimedAt: vanTurfCheckouts.claimedAt, campaignId: vanTurfs.campaignId })
+		.select({ id: vanTurfCheckouts.id, campaignId: vanTurfs.campaignId })
 		.from(vanTurfCheckouts)
 		.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
 		.where(
@@ -305,36 +306,79 @@ export async function turfSyncCheck(
 		);
 	if (!claim) return null;
 
-	const since = new Date(Date.parse(claim.claimedAt) - KNOCK_LEAD_MS).toISOString();
-	const [count] = await db
-		.select({
-			total: sql<number>`count(DISTINCT ${vanTurfRoster.doorHash})`,
-			knocked: sql<number>`count(DISTINCT CASE WHEN ${vanPersonContacts.lastInPersonAt} >= ${since}
-				THEN ${vanTurfRoster.doorHash} END)`,
-		})
-		.from(vanTurfRoster)
-		.leftJoin(
-			vanPersonContacts,
-			and(
-				eq(vanPersonContacts.campaignId, claim.campaignId),
-				eq(vanPersonContacts.personHash, vanTurfRoster.personHash),
-			),
-		)
-		.where(eq(vanTurfRoster.turfId, input.turfId));
+	const progress = (await claimDoorProgress(db, [claim.id])).get(claim.id) ?? null;
 	const [state] = await db
 		.select({ cursor: vanContactSyncState.cursor, liveThrough: vanContactSyncState.liveThrough })
 		.from(vanContactSyncState)
 		.where(eq(vanContactSyncState.campaignId, claim.campaignId));
 
-	const total = Number(count?.total ?? 0);
 	const checkedThrough = later(state?.liveThrough ?? null, state?.cursor ?? null);
 	return {
-		doors: total > 0 ? Number(count!.knocked) : null,
-		totalDoors: total > 0 ? total : null,
+		doors: progress?.knocked ?? null,
+		totalDoors: progress?.doors ?? null,
 		checkedThrough,
 		checkedAgeMs:
 			checkedThrough === null
 				? null
 				: Math.max(0, input.now.getTime() - Date.parse(checkedThrough)),
 	};
+}
+
+/** How far into a claim's turf VAN shows its holder: the turf's doors, and
+ *  how many have an in-person contact since the claim. */
+export interface ClaimDoorProgress {
+	doors: number;
+	knocked: number;
+}
+
+/**
+ * Door progress for each of these claims, by checkout id — what the "I synced
+ * MiniVAN" check (turfSyncCheck) and the organizer board's "Walked" column
+ * show, so the two always agree.
+ *
+ * Counted the way doors knocked is (stampDoorsKnocked), from KNOCK_LEAD_MS
+ * before the claim, but with no end: the claim is still out. A turf with no
+ * roster to count against has no entry, and nor does one whose roster was
+ * built from a saved list VAN has since replaced — the same rule as the
+ * board's doors left (doorsLeftColumn): until the sync rebuilds it, the
+ * stored roster is not this turf's doors. One query for the whole board,
+ * however many claims are out.
+ */
+export async function claimDoorProgress(
+	db: Db,
+	checkoutIds: readonly number[],
+): Promise<Map<number, ClaimDoorProgress>> {
+	const progress = new Map<number, ClaimDoorProgress>();
+	const since = sql`strftime('%Y-%m-%dT%H:%M:%fZ', ${vanTurfCheckouts.claimedAt}, ${`${-KNOCK_LEAD_MS / 1000} seconds`})`;
+	for (const batch of chunked([...new Set(checkoutIds)])) {
+		const rows = await db
+			.select({
+				checkoutId: vanTurfCheckouts.id,
+				doors: sql<number>`count(DISTINCT ${vanTurfRoster.doorHash})`,
+				knocked: sql<number>`count(DISTINCT CASE WHEN ${vanPersonContacts.lastInPersonAt} >= ${since}
+					THEN ${vanTurfRoster.doorHash} END)`,
+			})
+			.from(vanTurfCheckouts)
+			.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
+			.innerJoin(vanTurfRoster, eq(vanTurfRoster.turfId, vanTurfCheckouts.turfId))
+			.leftJoin(
+				vanPersonContacts,
+				and(
+					eq(vanPersonContacts.campaignId, vanTurfs.campaignId),
+					eq(vanPersonContacts.personHash, vanTurfRoster.personHash),
+				),
+			)
+			.where(
+				and(
+					inArray(vanTurfCheckouts.id, batch),
+					eq(vanTurfs.rosterSavedListId, vanTurfs.savedListId),
+				),
+			)
+			.groupBy(vanTurfCheckouts.id);
+		for (const row of rows) {
+			const doors = Number(row.doors);
+			if (doors > 0) progress.set(row.checkoutId, { doors, knocked: Number(row.knocked) });
+		}
+	}
+	return progress;
 }

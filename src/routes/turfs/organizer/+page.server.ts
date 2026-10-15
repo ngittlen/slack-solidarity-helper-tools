@@ -28,6 +28,7 @@ import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
 import { campaignFilter, campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
 import { loadHolderAccounts } from '$lib/server/outside-volunteers.js';
+import { claimDoorProgress, type ClaimDoorProgress } from '$lib/server/van/live-contacts.js';
 import type { HolderAccount } from '$lib/holder-account.js';
 import { INTERNAL_CRON_SECRET, PORT } from '$lib/server/env.js';
 import { localCaller } from '$lib/server/scheduler.js';
@@ -75,6 +76,10 @@ export interface HoldingView extends Holding {
 	 *  `expiresLabel` is: the component used to compute this from `Date.now()`
 	 *  while rendering, which disagreed with SSR on every row. */
 	claimedAgoLabel: string;
+	/** How much of the turf VAN shows walked since this claim: the same count
+	 *  as the holder's "I synced MiniVAN" check, kept current by the live
+	 *  poll. Null when the turf has no roster to count against. */
+	walked: { doors: number; knocked: number; percent: number } | null;
 }
 
 export interface SuspectView extends SuspectCompletion {
@@ -173,11 +178,18 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const current = currentHoldings(holdingRows, now);
 	const suspected = suspectCompletions(completionRows);
-	// Every holder this page names, in one read.
-	const accounts = await loadHolderAccounts(db, [
-		...current.map((h) => h.slackUserId),
-		...suspected.map((c) => c.slackUserId),
-		...drift.items.map((i) => i.heldByUserId),
+	// Every holder this page names, in one read; and how far each claim has
+	// got, in another.
+	const [accounts, progress] = await Promise.all([
+		loadHolderAccounts(db, [
+			...current.map((h) => h.slackUserId),
+			...suspected.map((c) => c.slackUserId),
+			...drift.items.map((i) => i.heldByUserId),
+		]),
+		claimDoorProgress(
+			db,
+			current.map((h) => h.checkoutId),
+		),
 	]);
 
 	const holdings: HoldingView[] = current.map((h) => ({
@@ -185,6 +197,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		account: accounts.get(h.slackUserId) ?? null,
 		expiresLabel: `${campaignDayLabel(h.expiresAt)} at ${campaignTimeLabel(h.expiresAt)}`,
 		claimedAgoLabel: relativeSince(h.claimedAt, now),
+		walked: walkedSoFar(progress.get(h.checkoutId)),
 	}));
 
 	const suspects: SuspectView[] = suspected.map((c) => ({
@@ -241,6 +254,21 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		lastVanSync: lastSyncSummary(lastSyncs, now),
 	};
 };
+
+/** A claim's door progress as the board shows it. A turf part-walked is
+ *  never shown as 0% or 100%: rounding only within 1–99 keeps "started" and
+ *  "nearly done" from reading as "untouched" or "finished". */
+function walkedSoFar(p: ClaimDoorProgress | undefined): HoldingView['walked'] {
+	if (!p) return null;
+	const exact = (p.knocked / p.doors) * 100;
+	const percent =
+		p.knocked === 0
+			? 0
+			: p.knocked === p.doors
+				? 100
+				: Math.min(99, Math.max(1, Math.round(exact)));
+	return { ...p, percent };
+}
 
 /**
  * One label while every enabled campaign reads the same ("3m ago"), or one

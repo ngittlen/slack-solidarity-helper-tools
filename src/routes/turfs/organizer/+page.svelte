@@ -194,6 +194,7 @@
 							<th>Turf</th>
 							<th>Volunteer</th>
 							<th>Held for</th>
+							<th>Walked</th>
 							<th>Expires</th>
 							<th class="col-flag">Reminder</th>
 						</tr>
@@ -207,7 +208,7 @@
 										<span class="turf-sub">{held.regionName}</span>
 									{/if}
 									<span class="turf-sub">
-										{held.doorCount.toLocaleString('en-US')} doors · {held.chapterName}{campaignSuffix(
+										{held.doorCount.toLocaleString('en-US')} doors left · {held.chapterName}{campaignSuffix(
 											held.campaignId,
 										)}
 									</span>
@@ -216,6 +217,21 @@
 								<td class="col-num">
 									{held.hoursHeld}h
 									<span class="turf-sub">{held.claimedAgoLabel}</span>
+								</td>
+								<!-- Doors VAN shows knocked since the claim: what the holder's
+								     "I synced MiniVAN" check counts, as up to date as the live
+								     poll. A dash when the turf has no roster to count against. -->
+								<td class="col-num">
+									{#if held.walked}
+										{held.walked.percent}%
+										<span class="turf-sub">
+											{held.walked.knocked.toLocaleString('en-US')} of {held.walked.doors.toLocaleString(
+												'en-US',
+											)} doors
+										</span>
+									{:else}
+										<span title="This turf's doors can't be counted yet">—</span>
+									{/if}
 								</td>
 								<td class="col-num">
 									<span class="expires-in">{hoursLabel(held.hoursLeft)}</span>
