@@ -722,8 +722,8 @@
 										VAN has {check.doors} of {check.totalDoors}
 										{check.totalDoors === 1 ? 'door' : 'doors'} on this turf knocked since you took it.
 									{:else}
-										VAN doesn't show any doors from this turf yet. If you just hit
-										<strong>Sync</strong>, give it a minute — this updates on its own.
+										VAN doesn't show any doors from this turf yet. A sync can take a few minutes to
+										reach VAN — this updates on its own.
 									{/if}
 									{#if check && check !== 'error' && check.checkedAgeMs !== null}
 										<span class="sync-check-age">

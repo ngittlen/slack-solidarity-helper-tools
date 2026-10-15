@@ -208,12 +208,30 @@ describe('pollLiveContacts', () => {
 			sleep: noSleep,
 		});
 
-		expect(result).toMatchObject({ kind: 'read', contacts: 1 });
+		expect(result).toMatchObject({ kind: 'read', contacts: 1, written: 1 });
 		const stored = await client.execute('SELECT last_in_person_at FROM van_person_contacts');
 		// Detroit is UTC-4 in October.
 		expect(stored.rows.map((r) => r.last_in_person_at)).toEqual(['2026-10-13T17:55:00.000Z']);
 		const state = await client.execute('SELECT cursor FROM van_contact_sync_state');
 		expect(state.rows[0]!.cursor).toBe('2026-10-13T17:30:00.000Z');
+	});
+
+	// Each window re-reads the last few minutes: the same contacts come back
+	// for several rounds, and only the first writes (or logs) anything.
+	it('says nothing was written when a round re-reads contacts already stored', async () => {
+		const rows = [contactRow('111', 2, '10/13/2026 1:55:00 PM')];
+		const poll = () => {
+			const { van, fetchFn } = fakeVan(rows);
+			return pollLiveContacts(db, van, {
+				campaignId: 1,
+				hasher,
+				now: NOW,
+				fetchFn,
+				sleep: noSleep,
+			});
+		};
+		expect(await poll()).toMatchObject({ contacts: 1, written: 1 });
+		expect(await poll()).toMatchObject({ contacts: 1, written: 0 });
 	});
 
 	it('leaves a job VAN has not finished and does not move liveThrough', async () => {

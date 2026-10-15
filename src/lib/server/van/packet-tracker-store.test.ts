@@ -131,6 +131,17 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 			}
 			return { ok: true, value: true };
 		},
+		async clearHighlights({ spreadsheetId, tabName, fromRowIndex }) {
+			calls.push(`${prefix(tabName)}clear:${spreadsheetId}:${fromRowIndex}`);
+			const fail = failing.get(`${prefix(tabName)}clear:${spreadsheetId}`);
+			if (fail) return { ok: false, ...fail };
+			for (const key of [...yellow]) {
+				const [tab, row] = key.split(':');
+				if (tab === `${spreadsheetId}/${tabName}` && Number(row) >= fromRowIndex)
+					yellow.delete(key);
+			}
+			return { ok: true, value: true };
+		},
 		async dropdownOptions({ spreadsheetId }) {
 			calls.push(`walkins-options:${spreadsheetId}`);
 			const fail = failing.get(`walkins-options:${spreadsheetId}`);
@@ -1668,5 +1679,110 @@ describe('the Walk Ins tab', () => {
 		fake.failing.delete('highlight:sheet-downriver');
 		expect((await run(fake.api)).filled).toBe(1);
 		expect(fake.highlighted('sheet-downriver')).not.toEqual([]);
+	});
+
+	describe('the nightly highlight sweep', () => {
+		/** 00:30 in Detroit (EDT): the midnight sync. */
+		const MIDNIGHT = new Date('2026-09-20T04:30:00.000Z');
+		/** 01:30, the next hourly run. */
+		const ONE_AM = new Date('2026-09-20T05:30:00.000Z');
+		const sweeps = (calls: string[]) => calls.filter((c) => c.startsWith('walkins-clear:'));
+
+		/** Yellow the campaign's nightly clear left behind on emptied rows. */
+		async function leftover(fake: ReturnType<typeof fakeSheets>, ...rows: number[]) {
+			for (const rowIndex of rows) {
+				await fake.api.highlightCells({
+					spreadsheetId: 'sheet-downriver',
+					tabName: WALK_IN_TAB_NAME,
+					rowIndex,
+					columns: [0, 1],
+					on: true,
+				});
+			}
+		}
+
+		it('takes every highlight below the header off at midnight', async () => {
+			const fake = await withWalkIns([], [], theirs('Ari'));
+			await leftover(fake, 0, 1, 2, 3);
+
+			await run(fake.api, { now: MIDNIGHT });
+
+			expect(sweeps(fake.calls)).toEqual(['walkins-clear:sheet-downriver:1']);
+			expect([1, 2, 3].map((r) => fake.walkInYellow('sheet-downriver', r))).toEqual([
+				false,
+				false,
+				false,
+			]);
+			// The header is the campaign's.
+			expect(fake.walkInYellow('sheet-downriver', 0)).toBe(true);
+		});
+
+		it('does nothing during the day', async () => {
+			const fake = await withWalkIns([]);
+			await leftover(fake, 1);
+
+			await run(fake.api);
+
+			expect(sweeps(fake.calls)).toEqual([]);
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+		});
+
+		it('sweeps once a night', async () => {
+			const fake = await withWalkIns([]);
+
+			await run(fake.api, { now: MIDNIGHT });
+			await leftover(fake, 1);
+			await run(fake.api, { now: ONE_AM });
+
+			expect(sweeps(fake.calls)).toHaveLength(1);
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+		});
+
+		it('tries again on the next run when Google fails it', async () => {
+			const fake = await withWalkIns([]);
+			await leftover(fake, 1);
+			fake.failing.set('walkins-clear:sheet-downriver', { status: 500, error: 'backend' });
+
+			await run(fake.api, { now: MIDNIGHT });
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+
+			fake.failing.delete('walkins-clear:sheet-downriver');
+			await run(fake.api, { now: ONE_AM });
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(false);
+		});
+
+		it('repaints a row a checkout still holds, in the same run', async () => {
+			const fake = await withWalkIns();
+			await checkout();
+			await run(fake.api);
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+
+			await run(fake.api, { now: MIDNIGHT });
+
+			expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('*Dana');
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+			expect(await walkInState()).toMatchObject({ rowIndex: 1, painted: true });
+		});
+
+		it('does not repaint a row the campaign emptied', async () => {
+			const fake = await withWalkIns();
+			await checkout();
+			await run(fake.api);
+			fake.walkInSheet('sheet-downriver')[1] = [];
+
+			await run(fake.api, { now: MIDNIGHT });
+
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(false);
+			expect(await walkInState()).toMatchObject({ rowIndex: null });
+		});
+
+		it('is not part of a nudge for one turf', async () => {
+			const fake = await withWalkIns([]);
+			await leftover(fake, 1);
+
+			await run(fake.api, { now: MIDNIGHT, onlyTurfId: 100 });
+
+			expect(sweeps(fake.calls)).toEqual([]);
+		});
 	});
 });

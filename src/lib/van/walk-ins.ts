@@ -21,9 +21,13 @@
 // were knocked. Clearing empties the cells we wrote and takes the highlight
 // off; the row is never deleted, so nothing below it moves.
 //
+// The campaign empties the tab's values every night, but not its colours. So
+// once a night, from the midnight sync (`highlightSweepDay`), every highlight
+// below the header comes off, and any row the app still holds is repainted.
+//
 // Pure — no DB, no network. The store is packet-tracker-store.ts.
 
-import { campaignDayKey, campaignTimeLabel } from '../campaign-time.js';
+import { campaignDayKey, campaignHour, campaignTimeLabel } from '../campaign-time.js';
 import { HEADER_SEARCH_ROWS, markedName, normaliseHeader } from './packet-tracker.js';
 
 export const WALK_IN_TAB_NAME = 'Walk Ins';
@@ -74,6 +78,20 @@ export function walkInDay(iso: string): string {
 	const ms = Date.parse(iso);
 	if (Number.isNaN(ms)) return '';
 	return campaignDayKey(new Date(ms - DAY_ROLLOVER_HOURS * 60 * 60 * 1000).toISOString());
+}
+
+/**
+ * The canvass day whose highlights come off the tab tonight, while it is
+ * between campaign midnight and the day's rollover; null at any other hour.
+ * The campaign empties the tab's values each night but its fill colours stay
+ * behind. From midnight rather than the rollover: the midnight sync is the
+ * one meant to do it, and the later hours are there to retry a run that could
+ * not.
+ */
+export function highlightSweepDay(now: Date): string | null {
+	const hour = campaignHour(now);
+	if (hour === null || hour >= DAY_ROLLOVER_HOURS) return null;
+	return walkInDay(now.toISOString());
 }
 
 export interface WalkInLayout {
