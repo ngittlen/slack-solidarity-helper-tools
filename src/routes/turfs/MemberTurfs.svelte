@@ -17,6 +17,7 @@
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
+	import { formatRelative } from '$lib/components/settings/format-relative.js';
 	import {
 		campaignStoppedNote,
 		doorDensity,
@@ -47,6 +48,21 @@
 	 *  disabled until it is: how much got walked now comes from VAN, so doors
 	 *  still on the phone would read as never knocked. */
 	let synced = $state<Record<number, boolean>>({});
+
+	/** What VAN has for a ticked turf: GET /api/turfs/[turfId], which reads
+	 *  what the server's half-minute poll of VAN stored (van/live-contacts.ts).
+	 *  `checkedAgeMs` is worked out on the server's clock, so "checked 2m ago"
+	 *  never sets the server's stamp against this browser's clock. It is as of
+	 *  the answer, which is refreshed every SYNC_CHECK_MS. */
+	interface SyncCheck {
+		doors: number | null;
+		totalDoors: number | null;
+		checkedAgeMs: number | null;
+	}
+	let syncChecks = $state<Record<number, SyncCheck | 'error'>>({});
+	/** The server's answer moves at most every half minute; this only bounds
+	 *  how long after that the card shows it. */
+	const SYNC_CHECK_MS = 10_000;
 
 	/** Browser geolocation, requested once and never blocking. A volunteer who
 	 *  declines still gets the map (framed on all the turf) and the full list —
@@ -343,6 +359,37 @@
 	);
 
 	const myTurfs = $derived(turfs.filter((t) => t.status === 'held-by-you'));
+
+	async function checkSync(turfId: number): Promise<void> {
+		try {
+			const res = await fetch(`/api/turfs/${turfId}`);
+			if (!res.ok) {
+				syncChecks[turfId] = 'error';
+				return;
+			}
+			syncChecks[turfId] = (await res.json()) as SyncCheck;
+		} catch {
+			syncChecks[turfId] = 'error';
+		}
+	}
+
+	/** Held turf whose "I synced MiniVAN" box is ticked. */
+	const tickedIds = $derived(myTurfs.filter((t) => synced[t.turfId]).map((t) => t.turfId));
+
+	function checkTicked(): void {
+		if (document.visibilityState !== 'visible') return;
+		for (const id of tickedIds) void checkSync(id);
+	}
+
+	// Keeps the answer current while the box is ticked, so a volunteer who
+	// ticks it before their sync lands watches it arrive. Paused in a hidden
+	// tab; coming back to it (from MiniVAN, usually) checks at once.
+	$effect(() => {
+		if (tickedIds.length === 0) return;
+		checkTicked();
+		const timer = setInterval(checkTicked, SYNC_CHECK_MS);
+		return () => clearInterval(timer);
+	});
 	const availableCount = $derived(turfs.filter((t) => t.status === 'available').length);
 	// The OLDEST count on the page, not the first row's — see turf-freshness.ts.
 	// The same helper backs the /turfs Slack command, so the two surfaces cannot
@@ -420,6 +467,7 @@
 				delete issued[turf.turfId];
 				delete copied[turf.turfId];
 				delete synced[turf.turfId];
+				delete syncChecks[turf.turfId];
 			}
 			// Re-run the load function so every turf's status, claimability and
 			// door count come back from the server rather than being patched
@@ -507,6 +555,7 @@
 </script>
 
 <svelte:window onscroll={onScroll} />
+<svelte:document onvisibilitychange={checkTicked} />
 
 <svelte:head><title>{data.pageTitle}</title></svelte:head>
 
@@ -653,6 +702,36 @@
 								<input type="checkbox" bind:checked={synced[turf.turfId]} />
 								I synced MiniVAN
 							</label>
+							{#if synced[turf.turfId]}
+								{@const check = syncChecks[turf.turfId]}
+								<!-- Information, not a gate: VAN can be a minute behind, and
+								     a turf with no roster cannot be counted at all. -->
+								<p
+									class="sync-check"
+									class:is-confirmed={check && check !== 'error' && (check.doors ?? 0) > 0}
+									role="status"
+								>
+									{#if check === undefined}
+										Checking VAN for your doors…
+									{:else if check === 'error'}
+										Couldn't check VAN just now. You can still mark it walked.
+									{:else if check.doors === null}
+										This turf's doors can't be counted yet, so we can't confirm your sync. You can
+										still mark it walked.
+									{:else if check.doors > 0}
+										VAN has {check.doors} of {check.totalDoors}
+										{check.totalDoors === 1 ? 'door' : 'doors'} on this turf knocked since you took it.
+									{:else}
+										VAN doesn't show any doors from this turf yet. If you just hit
+										<strong>Sync</strong>, give it a minute — this updates on its own.
+									{/if}
+									{#if check && check !== 'error' && check.checkedAgeMs !== null}
+										<span class="sync-check-age">
+											Checked with VAN {formatRelative(check.checkedAgeMs)}.
+										</span>
+									{/if}
+								</p>
+							{/if}
 							<button
 								type="button"
 								class="claim-btn"

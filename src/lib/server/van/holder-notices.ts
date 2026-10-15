@@ -6,17 +6,43 @@
 // Same boolean contract as sendDm — true when the message is delivered or
 // stored — so the sweeps keep their stamp-on-success, retry-on-failure logic
 // unchanged for both kinds of holder.
+//
+// A holder who turned on push notifications (the header's bell) gets a push first
+// (push.ts). For a Slack holder it replaces the DM; the DM goes only if no
+// device took the push. A Google or Apple holder's notice is still kept for
+// the page, where the push opens it. A push-only notice (PUSH_ONLY) whose
+// every device failed reports undelivered, so the sweep retries it as it
+// does a failed DM; one for a holder with no devices is simply done.
 
 import { and, desc, eq, gte, lt } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { turfNotices } from '../schema.js';
 import { isOutsideUserId } from '../identity.js';
 import { sendDm } from '../slack-dm.js';
+import { APP_URL } from '../env.js';
+import { sendPush } from '../push.js';
 import { errMessage } from '../../err-message.js';
+import { noticePushText } from '../../van/notice-text.js';
 
 type Database = ReturnType<typeof drizzle>;
 
-export type HolderNoticeKind = 'expiry' | 'unsynced' | 'list-number' | 'walked-out' | 'recut';
+export type HolderNoticeKind =
+	'expiry' | 'unsynced' | 'list-number' | 'walked-out' | 'recut' | 'lapsed' | 'doors-counted';
+
+/** The notification's title; the message itself is its body. */
+const PUSH_TITLES: Record<HolderNoticeKind, string> = {
+	expiry: 'Your turf expires soon',
+	unsynced: "VAN doesn't have your doors yet",
+	'list-number': 'Your list number changed',
+	'walked-out': 'Your turf is done',
+	recut: 'Your turf was re-cut',
+	lapsed: 'Your turf claim ended',
+	'doors-counted': 'VAN has your doors',
+};
+
+/** Notices that arrived with push and have never been Slack DMs. A Slack
+ *  holder without push gets nothing for these, as before they existed. */
+const PUSH_ONLY: ReadonlySet<HolderNoticeKind> = new Set(['lapsed', 'doors-counted']);
 
 /** How long an undismissed notice stays on /turfs. Every message here is
  *  about a claim measured in hours or days; past a week it is history. */
@@ -30,8 +56,9 @@ export interface HolderNotice {
 }
 
 /**
- * DM a Slack holder, or keep the message for a Google or Apple holder's next visit to
- * /turfs. Never throws.
+ * Push to a holder's devices, if they opted in. Then DM a Slack holder no
+ * device reached, or keep the message for a Google or Apple holder's next
+ * visit to /turfs. Never throws.
  */
 export async function notifyHolder(
 	db: Database,
@@ -41,7 +68,18 @@ export async function notifyHolder(
 	logTag: string,
 	now: Date = new Date(),
 ): Promise<boolean> {
-	if (!isOutsideUserId(holderId)) return sendDm(holderId, text, logTag);
+	const { body, url } = noticePushText(text, APP_URL);
+	const push = await sendPush(
+		db,
+		holderId,
+		{ title: PUSH_TITLES[kind], body, url, tag: kind },
+		{ now },
+	);
+	if (!isOutsideUserId(holderId)) {
+		if (push === 'sent') return true;
+		if (PUSH_ONLY.has(kind)) return push === 'no-devices';
+		return sendDm(holderId, text, logTag);
+	}
 	try {
 		await db
 			.insert(turfNotices)
@@ -49,7 +87,7 @@ export async function notifyHolder(
 		return true;
 	} catch (err) {
 		console.error(`${logTag} could not store a ${kind} notice for ${holderId}:`, errMessage(err));
-		return false;
+		return push === 'sent';
 	}
 }
 

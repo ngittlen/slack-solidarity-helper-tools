@@ -8,11 +8,13 @@ import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
 import { setTurfHidden } from '$lib/server/van/turf-hide-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from '$lib/server/van/packet-tracker-live.js';
 import { nudgeContactCount } from '$lib/server/van/contact-live.js';
+import { turfSyncCheck } from '$lib/server/van/live-contacts.js';
 import { recordRequest } from '$lib/van/request-budget.js';
 import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-store.js';
 
 // Claim, release, and complete — and, for admins, hide and unhide — as one
-// handler over an `action` body rather than sibling routes.
+// handler over an `action` body rather than sibling routes. GET is the
+// "I synced MiniVAN" check on turf the caller holds.
 //
 // Rate-limited on the same shared budget as the read endpoints, for a reason
 // that is not obvious: the refusals here are informative. A 404 means no such
@@ -30,9 +32,15 @@ type Action = 'claim' | 'release' | 'complete' | 'hide' | 'unhide';
 
 const ACTIONS = new Set<Action>(['claim', 'release', 'complete', 'hide', 'unhide']);
 
-export const POST: RequestHandler = async ({ locals, params, request }) => {
+type Guarded =
+	| { ok: true; session: NonNullable<App.Locals['session']>; turfId: number; now: number }
+	| { ok: false; response: Response };
+
+/** Every request's guard, in order: session, request budget, blocklist, a
+ *  valid route id. One copy, shared by GET and POST. */
+async function guard(locals: App.Locals, params: { turfId: string }): Promise<Guarded> {
 	const session = locals.session;
-	if (!session) return json({ error: 'Not signed in' }, { status: 401 });
+	if (!session) return { ok: false, response: json({ error: 'Not signed in' }, { status: 401 }) };
 
 	const now = Date.now();
 	pruneRateLimitStores(now);
@@ -42,10 +50,13 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	});
 	if (!budget.allowed) {
 		console.warn(`[van] turf API request budget exhausted: user=${session.slackUserId}`);
-		return json(
-			{ error: 'Too many requests. Slow down and try again shortly.' },
-			{ status: 429, headers: { 'Retry-After': String(budget.retryAfterSeconds) } },
-		);
+		return {
+			ok: false,
+			response: json(
+				{ error: 'Too many requests. Slow down and try again shortly.' },
+				{ status: 429, headers: { 'Retry-After': String(budget.retryAfterSeconds) } },
+			),
+		};
 	}
 
 	const access = turfAccess(
@@ -53,12 +64,40 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		await loadVanBlockedIds(db),
 		SLACK_SUPERUSER_ID,
 	);
-	if (!access.allowed) return json({ error: access.message }, { status: 403 });
+	if (!access.allowed) {
+		return { ok: false, response: json({ error: access.message }, { status: 403 }) };
+	}
 
 	const turfId = Number(params.turfId);
 	if (!Number.isInteger(turfId)) {
-		return json({ error: 'Unknown turf' }, { status: 400 });
+		return { ok: false, response: json({ error: 'Unknown turf' }, { status: 400 }) };
 	}
+	return { ok: true, session, turfId, now };
+}
+
+/**
+ * Whether VAN has this volunteer's doors: polled by the turf card while
+ * "I synced MiniVAN" is ticked. Reads our own tables only — the live poll
+ * (van/live-contacts.ts) keeps them a minute behind VAN. 404 unless the
+ * caller holds the turf, so it says nothing about anyone else's.
+ */
+export const GET: RequestHandler = async ({ locals, params }) => {
+	const guarded = await guard(locals, params);
+	if (!guarded.ok) return guarded.response;
+	const { session, turfId, now } = guarded;
+	const check = await turfSyncCheck(db, {
+		turfId,
+		slackUserId: session.slackUserId,
+		now: new Date(now),
+	});
+	if (!check) return json({ error: "You don't hold that turf." }, { status: 404 });
+	return json(check);
+};
+
+export const POST: RequestHandler = async ({ locals, params, request }) => {
+	const guarded = await guard(locals, params);
+	if (!guarded.ok) return guarded.response;
+	const { session, turfId, now } = guarded;
 
 	let action: unknown;
 	// "I synced MiniVAN" — required when marking walked, and checked by endClaim

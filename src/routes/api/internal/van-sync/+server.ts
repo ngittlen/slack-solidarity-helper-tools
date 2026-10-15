@@ -35,6 +35,7 @@ import { runRefreshSweep, settleRefreshes } from '$lib/server/van/refresh.js';
 import { reconcileClaims } from '$lib/server/van/reconcile-store.js';
 import { packetTrackerCheck, runPacketTracker } from '$lib/server/van/packet-tracker-live.js';
 import { stampDoorDeltas } from '$lib/server/van/door-delta-store.js';
+import { notifyDoorsCounted, notifyLapsedClaims } from '$lib/server/van/claim-notices.js';
 import { doorsHealthWarning } from '$lib/server/van/doors-store.js';
 import { alertFor } from '$lib/server/slack.js';
 import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
@@ -251,6 +252,18 @@ async function runHousekeeping(now: Date): Promise<Housekeeping> {
 		// Sweep first, then warn: the sweep releases anything already past its
 		// TTL, so nobody is warned about turf that expired moments ago.
 		const warnings = await sendExpiryWarnings(db, now);
+
+		// "Your claim ended", for whoever the sweep just released — or another
+		// volunteer's claim released lazily. Push, or the page for a Google or
+		// Apple holder; never a Slack DM (holder-notices.ts). Never fails the sync.
+		try {
+			const lapsed = await notifyLapsedClaims(db, { now, appUrl: APP_URL });
+			if (lapsed.sent + lapsed.failed > 0) {
+				console.log(`[van] lapse notices: ${lapsed.sent} sent, ${lapsed.failed} failed`);
+			}
+		} catch (err) {
+			console.error('[van] lapse notices failed:', err instanceof Error ? err.message : err);
+		}
 
 		// Turf messages kept for Google and Apple holders last a week at most, read or
 		// not (see holder-notices.ts). Bookkeeping, so never fails the sync.
@@ -538,6 +551,20 @@ async function runSharedStages(
 		// is what releases claims a re-cut invalidated — verifying those as
 		// completions would measure a delta against turf that no longer exists.
 		const doorDeltas = await stampDoorDeltas(db, { now, appUrl: APP_URL });
+
+		// The good-news half of the same question: VAN has the doors. After the
+		// campaigns' contact pulls, which are what stamp `doorsKnocked`.
+		try {
+			const counted = await notifyDoorsCounted(db, { now, appUrl: APP_URL });
+			if (counted.sent + counted.failed > 0) {
+				console.log(`[van] doors-counted notices: ${counted.sent} sent, ${counted.failed} failed`);
+			}
+		} catch (err) {
+			console.error(
+				'[van] doors-counted notices failed:',
+				err instanceof Error ? err.message : err,
+			);
+		}
 
 		// Story 9.4's health check: every doors number depends on map regions
 		// being cut with a "not yet contacted" filter, which nothing here can

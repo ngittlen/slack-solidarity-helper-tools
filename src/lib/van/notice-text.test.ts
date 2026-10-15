@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { noticeLines, type NoticeLine } from './notice-text.js';
+import { noticeLines, noticePushText, type NoticeLine } from './notice-text.js';
 import { renderExpiryWarning } from './expiry-warning.js';
 import { renderListNumberChanged } from './refresh-reconcile.js';
 import { renderUnsyncedNudge } from './door-delta.js';
@@ -89,5 +89,30 @@ describe('noticeLines', () => {
 			[],
 			[{ text: 'two' }],
 		]);
+	});
+});
+
+describe('noticePushText', () => {
+	const APP = 'https://app.example';
+
+	it('is the same words as plain text, opening the first link into the app', () => {
+		const text =
+			':hourglass_flowing_sand: *Your turf expires in about 6 hours.*\n\n' +
+			'*Kent 03*  · 40 doors\n' +
+			'<https://app.example/turfs?chapter=4|Open turf checkout>';
+		expect(noticePushText(text, APP)).toEqual({
+			body: 'Your turf expires in about 6 hours.\nKent 03  · 40 doors\nOpen turf checkout',
+			url: '/turfs?chapter=4',
+		});
+	});
+
+	it('opens /turfs when the notice links nowhere in the app', () => {
+		expect(noticePushText('<https://elsewhere.example/x|Look>', APP).url).toBe('/turfs');
+	});
+
+	it('cuts a long notice short', () => {
+		const { body } = noticePushText('word '.repeat(200), APP, 50);
+		expect(body).toHaveLength(50);
+		expect(body.endsWith('…')).toBe(true);
 	});
 });

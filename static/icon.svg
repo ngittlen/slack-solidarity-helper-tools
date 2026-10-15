@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+	<!-- The site's icon: a map pin holding a ballot going into a ballot box, in
+	     the toolkit's neutral palette rather than any one campaign's brand. The
+	     background is full bleed and the pin sits inside the middle 80%, so it
+	     works as a "maskable" Home Screen icon that Android crops to a circle.
+	     static/*.png are renders of this file; static/favicon.svg is this on a
+	     squircle, for the browser tab. -->
+	<rect width="512" height="512" fill="#b9cdf2" />
+	<path d="M256 420 L159.8 273 A115 115 0 1 1 352.2 273 Z" fill="#1b2a49" stroke="#1b2a49"
+		stroke-width="16" stroke-linejoin="round" />
+	<!-- The ballot, tipped as it drops, with a check on it. The box is drawn
+	     over its lower half, so it reads as half-way through the slot. -->
+	<g transform="rotate(-10 256 200)">
+		<rect x="224" y="138" width="64" height="96" rx="6" fill="#e8e5da" />
+		<path d="M238 176 L251 189 L274 162" fill="none" stroke="#648de5" stroke-width="10"
+			stroke-linecap="round" stroke-linejoin="round" />
+	</g>
+	<rect x="194" y="214" width="124" height="68" rx="8" fill="#d1603d" />
+</svg>

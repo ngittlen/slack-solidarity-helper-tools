@@ -5,6 +5,9 @@ import { drizzle } from 'drizzle-orm/libsql';
 
 const mockSendDm = vi.hoisted(() => vi.fn());
 vi.mock('../slack-dm.js', () => ({ sendDm: mockSendDm }));
+const mockSendPush = vi.hoisted(() => vi.fn());
+vi.mock('../push.js', () => ({ sendPush: mockSendPush }));
+vi.mock('../env.js', () => ({ APP_URL: 'https://app.example' }));
 
 import {
 	dismissHolderNotice,
@@ -22,6 +25,7 @@ let client: ReturnType<typeof createClient>;
 beforeEach(async () => {
 	vi.clearAllMocks();
 	mockSendDm.mockResolvedValue(true);
+	mockSendPush.mockResolvedValue('no-devices');
 	client = createClient({ url: ':memory:' });
 	for (const statement of readFileSync('drizzle/0062_turf_notices.sql', 'utf8').split(
 		'--> statement-breakpoint',
@@ -69,6 +73,68 @@ describe('notifyHolder', () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		client.close();
 		expect(await notifyHolder(db, 'google:7', 'expiry', 'x', '[test]', NOW)).toBe(false);
+	});
+});
+
+describe('notifyHolder with push', () => {
+	const EXPIRY =
+		':hourglass_flowing_sand: *Your turf expires in about 6 hours.*\n\n' +
+		'<https://app.example/turfs?chapter=4|Open turf checkout>';
+
+	it('pushes to an opted-in Slack holder instead of the DM', async () => {
+		mockSendPush.mockResolvedValue('sent');
+		expect(await notifyHolder(db, 'U123', 'expiry', EXPIRY, '[test]', NOW)).toBe(true);
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(mockSendPush).toHaveBeenCalledWith(
+			db,
+			'U123',
+			{
+				title: 'Your turf expires soon',
+				body: 'Your turf expires in about 6 hours.\nOpen turf checkout',
+				url: '/turfs?chapter=4',
+				tag: 'expiry',
+			},
+			{ now: NOW },
+		);
+	});
+
+	// A wiped phone, or push not set up: nobody loses the warning.
+	it('falls back to the DM when no device took the push', async () => {
+		expect(await notifyHolder(db, 'U123', 'expiry', EXPIRY, '[test]', NOW)).toBe(true);
+		expect(mockSendDm).toHaveBeenCalledWith('U123', EXPIRY, '[test]');
+	});
+
+	// Lapse and doors-counted arrived with push and were never DMs.
+	it('never DMs the push-only notices, and reports them done for a holder without push', async () => {
+		expect(await notifyHolder(db, 'U123', 'lapsed', 'x', '[test]', NOW)).toBe(true);
+		expect(await notifyHolder(db, 'U123', 'doors-counted', 'x', '[test]', NOW)).toBe(true);
+		expect(mockSendDm).not.toHaveBeenCalled();
+	});
+
+	// A push service that is down for a minute must not lose the notice.
+	it('reports a push-only notice undelivered when every device failed, so the sweep retries', async () => {
+		mockSendPush.mockResolvedValue('failed');
+		expect(await notifyHolder(db, 'U123', 'lapsed', 'x', '[test]', NOW)).toBe(false);
+		expect(mockSendDm).not.toHaveBeenCalled();
+	});
+
+	it('falls back to the DM when every device failed', async () => {
+		mockSendPush.mockResolvedValue('failed');
+		expect(await notifyHolder(db, 'U123', 'expiry', EXPIRY, '[test]', NOW)).toBe(true);
+		expect(mockSendDm).toHaveBeenCalledWith('U123', EXPIRY, '[test]');
+	});
+
+	it('pushes to a Google holder and keeps the notice for the page as well', async () => {
+		mockSendPush.mockResolvedValue('sent');
+		expect(await notifyHolder(db, 'google:7', 'lapsed', 'Ended', '[test]', NOW)).toBe(true);
+		expect(await loadHolderNotices(db, 'google:7', NOW)).toHaveLength(1);
+	});
+
+	it('counts a push as delivered when the page copy could not be written', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockSendPush.mockResolvedValue('sent');
+		client.close();
+		expect(await notifyHolder(db, 'google:7', 'expiry', 'x', '[test]', NOW)).toBe(true);
 	});
 });
 

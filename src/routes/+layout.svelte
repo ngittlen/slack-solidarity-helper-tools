@@ -4,7 +4,10 @@
 	import { resolve } from '$app/paths';
 	import UserMenu, { type MenuItem } from '$lib/components/nav/UserMenu.svelte';
 	import ThemeToggle from '$lib/components/nav/ThemeToggle.svelte';
+	import NotificationToggle from '$lib/components/nav/NotificationToggle.svelte';
 	import { documentTitle, resolveSiteName } from '$lib/site-name.js';
+	import { currentPushSubscription, tellServiceWorker } from '$lib/push-client.js';
+	import { tick } from 'svelte';
 
 	let { data, children } = $props();
 
@@ -60,6 +63,34 @@
 	// Blocked users still see it — access.ts redirects them to an explanation,
 	// which is friendlier than a link that silently is not there.
 	const showTurfLink = $derived(signedIn && !data.isAdmin && !data.isModerator);
+
+	/** This browser's push address, when it has one: sent with "Log out" so
+	 *  the server stops sending this person's notices here. */
+	let pushEndpoint = $state<string | null>(null);
+	/** How long Log out waits on the browser before going anyway. */
+	const LOGOUT_WAIT_MS = 1500;
+
+	/** Logging out gives up this browser's notifications: the server stops
+	 *  sending this person's, and the service worker stops showing any still
+	 *  on their way in full. The address is looked up here, at the click.
+	 *  Without JavaScript the form still logs out, just without either. */
+	async function logOut(event: SubmitEvent): Promise<void> {
+		event.preventDefault();
+		const form = event.currentTarget as HTMLFormElement;
+		const giveUp = (async () => {
+			pushEndpoint = (await currentPushSubscription())?.endpoint ?? null;
+			await tellServiceWorker(null);
+			await tick();
+		})();
+		try {
+			// Never let the browser's service worker hold up logging out.
+			await Promise.race([giveUp, new Promise((resolve) => setTimeout(resolve, LOGOUT_WAIT_MS))]);
+		} catch {
+			// Logging out matters more than either.
+		} finally {
+			form.submit();
+		}
+	}
 </script>
 
 <!-- One <title> for the whole app. Individual pages used to set their own and
@@ -93,6 +124,12 @@
 		</div>
 		<div class="user-info">
 			<ThemeToggle mode={data.themeMode} />
+			<!-- Push notifications. Loading it claims this browser for whoever
+			     is signed in, on every page, so a shared device only gets the
+			     notices of whoever used it last (src/lib/server/push.ts). -->
+			{#if signedIn}
+				<NotificationToggle />
+			{/if}
 			{#if signedIn}
 				{#if showTurfLink}
 					<a
@@ -105,7 +142,10 @@
 				<span class="user-greeting">
 					Logged in as <span class="user-name">{data.userName}</span>
 				</span>
-				<form method="POST" action="/auth/logout">
+				<form method="POST" action="/auth/logout" onsubmit={logOut}>
+					{#if pushEndpoint}
+						<input type="hidden" name="push_endpoint" value={pushEndpoint} />
+					{/if}
 					<button type="submit" class="logout-btn">Log out</button>
 				</form>
 			{:else if data.signInHref && page.url.pathname !== '/signin'}
@@ -175,6 +215,13 @@
 		display: inline-flex;
 		align-items: baseline;
 		gap: 4px;
+	}
+	/* On a phone the header's right side has no room for it: the menu, the
+	   two buttons and Log out come first. */
+	@media (max-width: 600px) {
+		.user-greeting {
+			display: none;
+		}
 	}
 	.user-name {
 		color: var(--color-gold);

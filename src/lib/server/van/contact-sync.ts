@@ -185,9 +185,11 @@ export async function upsertContacts(
 			.values(batch.map((c) => ({ campaignId, personHash: c.personHash, lastInPersonAt: c.at })))
 			.onConflictDoUpdate({
 				target: [vanPersonContacts.campaignId, vanPersonContacts.personHash],
-				set: {
-					lastInPersonAt: sql`max(${vanPersonContacts.lastInPersonAt}, excluded.last_in_person_at)`,
-				},
+				set: { lastInPersonAt: sql`excluded.last_in_person_at` },
+				// Only a later date writes. The live poll (live-contacts.ts) reads
+				// the same few minutes every half minute, and an unconditional
+				// update would rewrite each of those rows every time.
+				setWhere: sql`excluded.last_in_person_at > ${vanPersonContacts.lastInPersonAt}`,
 			});
 	}
 }
@@ -458,7 +460,7 @@ function campaignScope(campaignId: number) {
 
 /** Contacts this long before a claim still count as its volunteer's: they
  *  may start knocking a moment before the claim lands. */
-const KNOCK_LEAD_MS = 30 * 60 * 1000;
+export const KNOCK_LEAD_MS = 30 * 60 * 1000;
 /** And this long after marking walked: the last doors of the evening can be
  *  stamped a little after the volunteer taps the button. */
 const KNOCK_TRAIL_MS = 60 * 60 * 1000;
@@ -610,7 +612,7 @@ export function contactPullDone(
 	return result.windowsApplied === 0 || reachedStart;
 }
 
-function isStatus(job: VanChangedEntityExportJob, wanted: string): boolean {
+export function isStatus(job: VanChangedEntityExportJob, wanted: string): boolean {
 	return (job.jobStatus ?? '').trim().toLowerCase() === wanted;
 }
 
@@ -622,7 +624,7 @@ function isStatus(job: VanChangedEntityExportJob, wanted: string): boolean {
  * A row whose change type is a deletion is skipped: it is a contact someone
  * removed from VAN (entered on the wrong person, most often), not a knock.
  */
-async function readContactFile(
+export async function readContactFile(
 	chunks: AsyncIterable<string>,
 	kinds: { inPerson: ReadonlySet<string>; deletions: ReadonlySet<string> },
 	hasher: PersonHasher,
@@ -673,12 +675,26 @@ async function readContactFile(
 	return read;
 }
 
+/** The contact type ids that are a knock on a door: the in-person channel,
+ *  less NOT_A_DOOR_CONTACT_TYPES. */
+export async function inPersonContactTypes(client: VanClient): Promise<Set<string>> {
+	return new Set(
+		(await client.contactTypes())
+			.filter(
+				(t) =>
+					(t.channelTypeName ?? '').trim().toLowerCase() === IN_PERSON_CHANNEL &&
+					!NOT_A_DOOR_CONTACT_TYPES.has((t.name ?? '').trim().toLowerCase()),
+			)
+			.map((t) => String(t.contactTypeId)),
+	);
+}
+
 /**
  * The ContactHistory change type ids that mean "deleted". Best-effort: if VAN
  * will not say, deletions count as contacts — the pre-existing behaviour, and
  * better than no count at all — and the log says so every run.
  */
-async function deletionChangeTypes(client: VanClient): Promise<Set<string>> {
+export async function deletionChangeTypes(client: VanClient): Promise<Set<string>> {
 	try {
 		const ids = (await client.changeTypes('ContactHistory'))
 			.filter((t) => /delet/i.test(t.changeTypeName ?? ''))
@@ -803,15 +819,7 @@ export async function runContactSync(
 		if (cursor !== null && floor !== null) {
 			// Resolved per run rather than hardcoded: contact type ids are per
 			// committee, and the channel is what says "someone was at the door".
-			const inPerson = new Set(
-				(await client.contactTypes())
-					.filter(
-						(t) =>
-							(t.channelTypeName ?? '').trim().toLowerCase() === IN_PERSON_CHANNEL &&
-							!NOT_A_DOOR_CONTACT_TYPES.has((t.name ?? '').trim().toLowerCase()),
-					)
-					.map((t) => String(t.contactTypeId)),
-			);
+			const inPerson = await inPersonContactTypes(client);
 			if (inPerson.size === 0) {
 				// Not fatal, but every row of every window below is skipped and the
 				// cursor still moves past it — those contacts are never read again

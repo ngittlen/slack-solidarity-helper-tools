@@ -311,6 +311,28 @@ main {
 	accent-color: var(--color-border-focus);
 }
 
+/* What VAN has for this turf, under "I synced MiniVAN" once it is ticked.
+   Green only when VAN shows doors: "not yet" is not an error, just early. */
+.sync-check {
+	margin: 0 0 var(--space-2);
+	padding: var(--space-2) var(--space-3);
+	border-left: 3px solid var(--color-border);
+	background: var(--color-cream-light);
+	border-radius: var(--radius-sm);
+	font-size: var(--font-size-sm);
+	line-height: 1.5;
+	color: var(--color-text);
+}
+
+.sync-check.is-confirmed {
+	border-left-color: var(--color-success);
+}
+
+.sync-check-age {
+	display: block;
+	color: var(--color-text-muted);
+}
+
 /* An admin's "Hide from volunteers" box, at the foot of an open card. */
 .hide-check {
 	display: flex;

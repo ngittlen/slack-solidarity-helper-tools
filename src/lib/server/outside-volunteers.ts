@@ -2,9 +2,16 @@
 // Apple — see the `outside_volunteers` table in schema.ts for what it is for
 // and who reads it.
 
-import { and, desc, eq, inArray, isNull, like, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { googleVolunteers, outsideVolunteers, turfNotices, vanTurfCheckouts } from './schema.js';
+import {
+	googleVolunteers,
+	outsideVolunteers,
+	pushDevices,
+	pushOptIns,
+	turfNotices,
+	vanTurfCheckouts,
+} from './schema.js';
 import {
 	APPLE_ID_PREFIX,
 	GOOGLE_ID_PREFIX,
@@ -29,7 +36,13 @@ export interface OutsideVolunteer {
 }
 
 /** Holder ids that are not Slack's, for a LIKE over a column of them. */
-function isOutsideColumn(column: typeof vanTurfCheckouts.slackUserId | typeof turfNotices.userId) {
+function isOutsideColumn(
+	column:
+		| typeof vanTurfCheckouts.slackUserId
+		| typeof turfNotices.userId
+		| typeof pushOptIns.userId
+		| typeof pushDevices.currentUserId,
+) {
 	return or(like(column, `${GOOGLE_ID_PREFIX}%`), like(column, `${APPLE_ID_PREFIX}%`));
 }
 
@@ -216,8 +229,10 @@ export async function outsideBlockTargetName(db: Database, userId: string): Prom
 
 /**
  * Delete every stored outside volunteer, Google and Apple alike (end of a
- * campaign), and the turf messages kept for them — the campaign is over, and
- * some name a MiniVAN list number. Blocks and past claims are left alone: they
+ * campaign), the turf messages kept for them — the campaign is over, and
+ * some name a MiniVAN list number — and their push notification settings,
+ * which are tied to their ids: their opt-ins go, a browser they were last to
+ * use belongs to nobody, and a browser nobody else is opted in on goes too. Blocks and past claims are left alone: they
  * hold their own display name, and a block must outlive the record or clearing
  * would quietly unblock people. Returns how many volunteer records went.
  */
@@ -227,6 +242,14 @@ export async function clearOutsideVolunteers(db: Database): Promise<number> {
 	const [gone] = await db.batch([
 		db.delete(outsideVolunteers).returning({ userId: outsideVolunteers.userId }),
 		db.delete(turfNotices).where(isOutsideColumn(turfNotices.userId)),
+		db.delete(pushOptIns).where(isOutsideColumn(pushOptIns.userId)),
+		db
+			.update(pushDevices)
+			.set({ currentUserId: null })
+			.where(isOutsideColumn(pushDevices.currentUserId)),
+		db
+			.delete(pushDevices)
+			.where(notInArray(pushDevices.id, db.select({ id: pushOptIns.deviceId }).from(pushOptIns))),
 		// The retired table still holds the copies 0063 took its rows from,
 		// emails included, until a later release drops it (see schema.ts). A
 		// clear that left them would not be a clear.

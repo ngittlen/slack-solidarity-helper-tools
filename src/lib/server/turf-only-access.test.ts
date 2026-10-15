@@ -70,6 +70,8 @@ describe('the turf-only allow-list', () => {
 				'/turfs',
 				'/api/turfs',
 				'/api/turfs/[turfId]',
+				'/api/push',
+				'/manifest.webmanifest',
 				'/signin',
 				'/auth/logout',
 				'/auth/google',

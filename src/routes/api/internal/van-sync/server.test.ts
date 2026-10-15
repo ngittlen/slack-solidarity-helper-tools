@@ -92,6 +92,10 @@ vi.mock('$lib/server/van/refresh.js', () => ({
 }));
 vi.mock('$lib/server/van/reconcile-store.js', () => ({ reconcileClaims: mockReconcile }));
 vi.mock('$lib/server/van/door-delta-store.js', () => ({ stampDoorDeltas: mockDoorDeltas }));
+vi.mock('$lib/server/van/claim-notices.js', () => ({
+	notifyLapsedClaims: async () => ({ sent: 0, failed: 0 }),
+	notifyDoorsCounted: async () => ({ sent: 0, failed: 0 }),
+}));
 vi.mock('$lib/server/van/doors-store.js', () => ({ doorsHealthWarning: mockDoorsHealth }));
 vi.mock('$lib/server/van/packet-tracker-live.js', () => ({
 	runPacketTracker: mockRunPacketTracker,

@@ -212,6 +212,15 @@ export const VAN_EXPORT_JOB_TYPE_ID = (() => {
 // Rotating it orphans every stored digest; see person-hash.ts for the reset.
 export const VAN_ID_HASH_SECRET = get('VAN_ID_HASH_SECRET');
 
+// Web push (src/lib/server/push.ts). One VAPID key pair for the whole app:
+//   npx web-push generate-vapid-keys
+// The public key goes to browsers; the private key signs every push. Unset
+// turns push off — the /turfs toggle is hidden and notices go by Slack or
+// the page as before. Rotating the pair orphans every subscription: each
+// browser has to opt in again.
+export const VAPID_PUBLIC_KEY = get('VAPID_PUBLIC_KEY');
+export const VAPID_PRIVATE_KEY = get('VAPID_PRIVATE_KEY');
+
 // Every VAN campaign's credentials: one `VAN_CAMPAIGN_<KEY>` secret each, plus
 // the legacy VAN_APP_NAME/VAN_API_KEY/VAN_DATABASE_MODE above standing in for
 // the `primary` campaign. See van/campaign-credentials.ts for the format.

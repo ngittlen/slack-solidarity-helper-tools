@@ -505,6 +505,20 @@
       "when": 1791763361298,
       "tag": "0071_knocked_before_cut",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "6",
+      "when": 1791864451428,
+      "tag": "0072_live_contact_poll",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "6",
+      "when": 1792025091631,
+      "tag": "0073_push_notifications",
+      "breakpoints": true
     }
   ]
 }

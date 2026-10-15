@@ -86,3 +86,26 @@ export function noticeLines(mrkdwn: string, appUrl: string): NoticeLine[] {
 	while (out.length > 0 && out[out.length - 1]!.length === 0) out.pop();
 	return out;
 }
+
+/**
+ * A notice as a push notification's body: the same words as plain text, one
+ * line per paragraph, and the first link into this app as where tapping it
+ * goes (/turfs when there is none). A notification shows a few lines at most,
+ * so the body is cut at `maxLength`.
+ */
+export function noticePushText(
+	mrkdwn: string,
+	appUrl: string,
+	maxLength = 300,
+): { body: string; url: string } {
+	const lines = noticeLines(mrkdwn, appUrl).filter((line) => line.length > 0);
+	const body = lines
+		.map((line) => line.map((s) => s.text).join(''))
+		.join('\n')
+		.trim();
+	const url = lines.flat().find((s) => s.href)?.href ?? '/turfs';
+	return {
+		body: body.length > maxLength ? `${body.slice(0, maxLength - 1).trimEnd()}…` : body,
+		url,
+	};
+}

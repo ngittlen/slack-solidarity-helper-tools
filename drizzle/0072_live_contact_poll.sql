@@ -1,0 +1,1 @@
+ALTER TABLE `van_contact_sync_state` ADD `live_through` text;

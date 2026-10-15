@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { POST } from './+server.js';
+import { GET, POST } from './+server.js';
 
 const mockBlockedIds = vi.hoisted(() => vi.fn());
 const mockClaim = vi.hoisted(() => vi.fn());
@@ -19,6 +19,8 @@ vi.mock('$lib/server/van/checkout-store.js', () => ({
 	endClaim: mockEndClaim,
 }));
 vi.mock('$lib/server/van/turf-hide-store.js', () => ({ setTurfHidden: mockSetHidden }));
+const mockSyncCheck = vi.hoisted(() => vi.fn());
+vi.mock('$lib/server/van/live-contacts.js', () => ({ turfSyncCheck: mockSyncCheck }));
 
 const VOLUNTEER = { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false };
 
@@ -251,5 +253,52 @@ describe('POST /api/turfs/[turfId] — configured claim options', () => {
 	it.each([['release'], ['complete']])('does not read settings to %s', async (action) => {
 		await POST(event(VOLUNTEER, { action }));
 		expect(mockLoadSettings).not.toHaveBeenCalled();
+	});
+});
+
+describe('GET /api/turfs/[turfId]', () => {
+	const get = (session: unknown, turfId = '100') =>
+		GET({ locals: { session }, params: { turfId } } as never);
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockBlockedIds.mockResolvedValue(new Set<string>());
+	});
+
+	it('returns 401 when not signed in', async () => {
+		expect((await get(null)).status).toBe(401);
+		expect(mockSyncCheck).not.toHaveBeenCalled();
+	});
+
+	it('returns 403 for a blocked user', async () => {
+		mockBlockedIds.mockResolvedValue(new Set(['U_VOL']));
+		expect((await get(VOLUNTEER)).status).toBe(403);
+		expect(mockSyncCheck).not.toHaveBeenCalled();
+	});
+
+	it('returns 400 for a route id that is not a number', async () => {
+		expect((await get(VOLUNTEER, 'abc')).status).toBe(400);
+	});
+
+	it("answers for the caller's own claim", async () => {
+		const check = {
+			doors: 12,
+			totalDoors: 40,
+			checkedThrough: '2026-10-13T18:00:00.000Z',
+			checkedAgeMs: 30_000,
+		};
+		mockSyncCheck.mockResolvedValue(check);
+		const res = await get(VOLUNTEER);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual(check);
+		expect(mockSyncCheck).toHaveBeenCalledWith(
+			{},
+			expect.objectContaining({ turfId: 100, slackUserId: 'U_VOL' }),
+		);
+	});
+
+	it('returns 404 for turf the caller does not hold', async () => {
+		mockSyncCheck.mockResolvedValue(null);
+		expect((await get(VOLUNTEER)).status).toBe(404);
 	});
 });
