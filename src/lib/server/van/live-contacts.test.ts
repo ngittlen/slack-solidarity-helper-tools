@@ -6,6 +6,7 @@ import type { VanClient } from './client.js';
 import { KNOCK_LEAD_MS, replaceRoster, upsertContacts } from './contact-sync.js';
 import {
 	campaignsWithLiveClaims,
+	claimDoorProgress,
 	clearContactKindsCache,
 	LIVE_MAX_LOOKBACK_MS,
 	LIVE_OVERLAP_MS,
@@ -344,10 +345,80 @@ describe('turfSyncCheck', () => {
 		});
 	});
 
+	// Its roster is from a list VAN has since re-saved: counted as no roster,
+	// as the board does, until the sync rebuilds it.
+	it('is null doors on a turf whose roster is out of date', async () => {
+		await turf(2);
+		await replaceRoster(db, 2, 899, roster({ '111': '1 Main St' }));
+		await claim(2);
+		await contact('111', '2026-10-13T16:30:00.000Z');
+		expect(await check('U1', 2)).toMatchObject({ doors: null, totalDoors: null });
+	});
+
 	// Nothing about turf the caller does not hold.
 	it('is null for someone else, or once the claim has ended', async () => {
 		expect(await check('U2')).toBeNull();
 		await client.execute(`UPDATE van_turf_checkouts SET completed_at = '${NOW.toISOString()}'`);
 		expect(await check()).toBeNull();
+	});
+});
+
+describe('claimDoorProgress', () => {
+	async function checkoutIds(): Promise<number[]> {
+		const rows = await client.execute('SELECT id FROM van_turf_checkouts ORDER BY id');
+		return rows.rows.map((r) => Number(r.id));
+	}
+
+	// The organizer board asks for every claim out at once.
+	it("counts each claim's doors against its own turf and claim time, in one go", async () => {
+		await turf(1);
+		await turf(2);
+		await turf(3);
+		await replaceRoster(db, 1, 900, roster({ '111': '1 Main St', '222': '2 Main St' }));
+		await replaceRoster(
+			db,
+			2,
+			900,
+			roster({ '333': '3 Main St', '444': '4 Main St', '555': '5 Main St' }),
+		);
+		await claim(1);
+		await claim(2);
+		// No roster: nothing to count against.
+		await claim(3);
+		await contact('111', '2026-10-13T16:30:00.000Z');
+		await contact('333', '2026-10-13T17:00:00.000Z');
+		await contact('444', '2026-10-13T17:10:00.000Z');
+		// Knocked last week, by someone else: not this walk.
+		await contact('555', '2026-10-06T17:00:00.000Z');
+
+		const [a, b, c] = await checkoutIds();
+		const progress = await claimDoorProgress(db, [a!, b!, c!]);
+		expect(progress.get(a!)).toEqual({ doors: 2, knocked: 1 });
+		expect(progress.get(b!)).toEqual({ doors: 3, knocked: 2 });
+		expect(progress.has(c!)).toBe(false);
+	});
+
+	it('only counts contacts in the claim’s own campaign', async () => {
+		await turf(1);
+		await replaceRoster(db, 1, 900, roster({ '111': '1 Main St' }));
+		await claim(1);
+		await contact('111', '2026-10-13T16:30:00.000Z', 2);
+		const [a] = await checkoutIds();
+		expect((await claimDoorProgress(db, [a!])).get(a!)).toEqual({ doors: 1, knocked: 0 });
+	});
+
+	// VAN re-saved the turf's list and the sync has not rebuilt the roster
+	// yet: the stored doors are not this turf's any more.
+	it('leaves out a turf whose roster is from a saved list since replaced', async () => {
+		await turf(1);
+		await replaceRoster(db, 1, 899, roster({ '111': '1 Main St' }));
+		await claim(1);
+		await contact('111', '2026-10-13T16:30:00.000Z');
+		const [a] = await checkoutIds();
+		expect((await claimDoorProgress(db, [a!])).has(a!)).toBe(false);
+	});
+
+	it('is empty for no claims', async () => {
+		expect((await claimDoorProgress(db, [])).size).toBe(0);
 	});
 });

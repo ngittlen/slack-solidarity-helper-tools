@@ -13,6 +13,7 @@ const mockGeometryProgress = vi.hoisted(() => vi.fn());
 const mockLastVanSync = vi.hoisted(() => vi.fn());
 const mockStartSync = vi.hoisted(() => vi.fn());
 const mockHidden = vi.hoisted(() => vi.fn());
+const mockProgress = vi.hoisted(() => vi.fn());
 const mockSetHidden = vi.hoisted(() => vi.fn());
 const mockTurfHistory = vi.hoisted(() => vi.fn());
 const mockExplain = vi.hoisted(() => vi.fn(() => null as string | null));
@@ -22,6 +23,7 @@ const mockRefreshSwitches = vi.hoisted(() =>
 );
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
+vi.mock('$lib/server/van/live-contacts.js', () => ({ claimDoorProgress: mockProgress }));
 vi.mock('$lib/server/env.js', () => mockEnv);
 vi.mock('$lib/server/van/manual-sync.js', () => ({
 	lastVanSyncs: mockLastVanSync,
@@ -125,6 +127,7 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
 	mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+	mockProgress.mockResolvedValue(new Map());
 	mockLastVanSync.mockResolvedValue([]);
 	mockEnv.INTERNAL_CRON_SECRET = 'secret';
 	mockGeometryProgress.mockResolvedValue({
@@ -285,6 +288,47 @@ describe('/turfs/organizer board', () => {
 		});
 		// 2026-09-04T00:00Z is 8:00 PM on the 3rd in Detroit under EDT.
 		expect(data.holdings[0]!.expiresLabel).toContain('8:00 PM');
+	});
+
+	// The holder's "I synced MiniVAN" count, so the two never disagree.
+	it("shows how much of each claim's turf VAN has walked, asking for every claim at once", async () => {
+		mockHoldings.mockResolvedValue([
+			holdingRow({ checkoutId: 1 }),
+			holdingRow({ checkoutId: 2, turfId: 2 }),
+			holdingRow({ checkoutId: 3, turfId: 3 }),
+		]);
+		mockProgress.mockResolvedValue(
+			new Map([
+				[1, { doors: 65, knocked: 23 }],
+				[2, { doors: 40, knocked: 0 }],
+			]),
+		);
+		const data = await run(event(ADMIN));
+		expect(mockProgress).toHaveBeenCalledWith({}, [1, 2, 3]);
+		expect(data.holdings.map((h: { walked: unknown }) => h.walked)).toEqual([
+			{ doors: 65, knocked: 23, percent: 35 },
+			{ doors: 40, knocked: 0, percent: 0 },
+			// No roster to count against.
+			null,
+		]);
+	});
+
+	// Started is never "0%", and nearly done is never "100%".
+	it('keeps a part-walked turf between 1% and 99%', async () => {
+		mockHoldings.mockResolvedValue([
+			holdingRow({ checkoutId: 1 }),
+			holdingRow({ checkoutId: 2, turfId: 2 }),
+		]);
+		mockProgress.mockResolvedValue(
+			new Map([
+				[1, { doors: 400, knocked: 1 }],
+				[2, { doors: 400, knocked: 399 }],
+			]),
+		);
+		const data = await run(event(ADMIN));
+		expect(data.holdings.map((h: { walked: { percent: number } }) => h.walked.percent)).toEqual([
+			1, 99,
+		]);
 	});
 
 	it('drops a claim the sweep has not stamped but which has lapsed', async () => {
