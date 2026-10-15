@@ -10,7 +10,10 @@ const turfs = (
 ).rows;
 for (const { turf_id: id, n } of turfs) {
 	const roster = (
-		await c.execute({ sql: 'select person_hash, door_hash from van_turf_roster where turf_id = ?', args: [id] })
+		await c.execute({
+			sql: 'select person_hash, door_hash from van_turf_roster where turf_id = ?',
+			args: [id],
+		})
 	).rows;
 	const placeholders = roster.map(() => '(?, ?, ?)').join(', ');
 	const insert = {
@@ -19,15 +22,27 @@ for (const { turf_id: id, n } of turfs) {
 	};
 	const parts: Record<string, InStatement[]> = {
 		'turf updates only': [
-			{ sql: 'update van_turfs set hull_json = hull_json, centroid_lat = centroid_lat where turf_id = ?', args: [id] },
-			{ sql: 'update van_turfs set roster_saved_list_id = roster_saved_list_id where turf_id = ?', args: [id] },
+			{
+				sql: 'update van_turfs set hull_json = hull_json, centroid_lat = centroid_lat where turf_id = ?',
+				args: [id],
+			},
+			{
+				sql: 'update van_turfs set roster_saved_list_id = roster_saved_list_id where turf_id = ?',
+				args: [id],
+			},
 			{ sql: 'update van_geometry_queue set status = status where turf_id = ?', args: [id] },
 		],
 		'full batch': [
-			{ sql: 'update van_turfs set hull_json = hull_json, centroid_lat = centroid_lat where turf_id = ?', args: [id] },
+			{
+				sql: 'update van_turfs set hull_json = hull_json, centroid_lat = centroid_lat where turf_id = ?',
+				args: [id],
+			},
 			{ sql: 'delete from van_turf_roster where turf_id = ?', args: [id] },
 			insert,
-			{ sql: 'update van_turfs set roster_saved_list_id = roster_saved_list_id where turf_id = ?', args: [id] },
+			{
+				sql: 'update van_turfs set roster_saved_list_id = roster_saved_list_id where turf_id = ?',
+				args: [id],
+			},
 			{ sql: 'update van_geometry_queue set status = status where turf_id = ?', args: [id] },
 		],
 	};
@@ -37,8 +52,9 @@ for (const { turf_id: id, n } of turfs) {
 		await c.batch(stmts, 'write');
 		out.push(`${label} ${Math.round(performance.now() - t)}ms`);
 	}
-	const check = (await c.execute({ sql: 'select count(*) n from van_turf_roster where turf_id = ?', args: [id] }))
-		.rows[0]!.n;
+	const check = (
+		await c.execute({ sql: 'select count(*) n from van_turf_roster where turf_id = ?', args: [id] })
+	).rows[0]!.n;
 	console.log(`turf ${id} (${n} rows, now ${check}): ${out.join(' · ')}`);
 }
 c.close();
