@@ -3,18 +3,19 @@ import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 
-// Only the echo guard is under test here: which Solidarity events reach the
-// planner. Everything around it is stubbed; the ledger read is real SQL.
+// Only what reaches the planner is under test here: which Solidarity events,
+// and whether virtual ones are wanted. Everything around it is stubbed; the
+// ledger read is real SQL.
 
 vi.mock('./env.js', () => ({ MOBILIZE_SYNC_MAX_CREATES: 25, SOLIDARITY_API_TOKEN: 't' }));
 vi.mock('./mobilize-api.js', () => ({ loadMobilizeApi: () => ({ apiKey: 'k', orgId: 7 }) }));
-vi.mock('./settings.js', () => ({
-	loadSettings: async () => ({
-		mobilizeContactName: 'Field',
-		mobilizeContactEmail: 'field@example.org',
-		mobilizeContactPhone: '',
-	}),
+const settings = vi.hoisted(() => ({
+	mobilizeContactName: 'Field',
+	mobilizeContactEmail: 'field@example.org',
+	mobilizeContactPhone: '',
+	mobilizeSyncVirtualEvents: false,
 }));
+vi.mock('./settings.js', () => ({ loadSettings: async () => settings }));
 const fetchAllEvents = vi.hoisted(() => vi.fn());
 vi.mock('../../../mobilize-migrator/lib/solidarity.js', async (importOriginal) => ({
 	...(await importOriginal<typeof import('../../../mobilize-migrator/lib/solidarity.js')>()),
@@ -24,10 +25,11 @@ vi.mock('../../../mobilize-migrator/lib/pages.js', () => ({
 	fetchPageDescriptions: async () => new Map(),
 }));
 const planMigration = vi.hoisted(() =>
-	vi.fn<(events: { id: number }[]) => object>(() => ({
+	vi.fn<(events: { id: number }[], ...rest: unknown[]) => object>(() => ({
 		planned: [],
 		skipped: [],
 		excludedByTag: [],
+		noJoinLink: [],
 		duplicateSessions: [],
 	})),
 );
@@ -47,6 +49,7 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 	vi.spyOn(console, 'log').mockImplementation(() => {});
 	planMigration.mockClear();
+	settings.mobilizeSyncVirtualEvents = false;
 });
 
 afterEach(() => {
@@ -77,5 +80,20 @@ describe('runMobilizeSync — the echo guard', () => {
 		fetchAllEvents.mockResolvedValue([{ id: 901, title: 'Ours', tags: [] }]);
 		await runMobilizeSync(db, { apply: false });
 		expect(planMigration.mock.calls[0][0].map((e) => e.id)).toEqual([901]);
+	});
+});
+
+describe('runMobilizeSync — the virtual-events switch', () => {
+	beforeEach(() => fetchAllEvents.mockResolvedValue([{ id: 901, title: 'Ours', tags: [] }]));
+
+	it('leaves virtual events out while the switch is off', async () => {
+		await runMobilizeSync(db, { apply: false });
+		expect(planMigration.mock.calls[0][3]).toEqual({ includeVirtual: false });
+	});
+
+	it('asks the planner for virtual events once it is on', async () => {
+		settings.mobilizeSyncVirtualEvents = true;
+		await runMobilizeSync(db, { apply: false });
+		expect(planMigration.mock.calls[0][3]).toEqual({ includeVirtual: true });
 	});
 });

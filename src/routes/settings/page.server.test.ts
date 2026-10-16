@@ -96,6 +96,7 @@ const settingsFixture = {
 	mobilizeContactEmail: 'field@example.org',
 	mobilizeContactPhone: '',
 	mobilizeImportTag: '',
+	mobilizeSyncVirtualEvents: false,
 	slackGrowthReportRankingAlpha: 0.5,
 	welcomeDisabledChannelIds: new Set<string>(),
 	siteName: '',

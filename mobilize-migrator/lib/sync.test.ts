@@ -4,6 +4,7 @@ import type { MobilizeApiConfig, MobilizeEvent } from './mobilize.js';
 import {
 	describeChanges,
 	findOpenZeroCaps,
+	payloadForPlan,
 	raiseCapsToFloors,
 	reconcileTimeslots,
 	runSync,
@@ -31,6 +32,7 @@ function plan(overrides: Partial<PlannedEvent> = {}): PlannedEvent {
 		title: 'Detroit Canvass',
 		description: 'Knock doors',
 		eventType: 'COMMUNITY_CANVASS',
+		isVirtual: false,
 		locationName: 'Field Office',
 		addressLine1: '2857 East Grand Boulevard',
 		city: 'Detroit',
@@ -199,6 +201,16 @@ describe('reconcileTimeslots', () => {
 		const result = reconcileTimeslots(duplicate, live([{ id: 5001, start: START }]), NOW);
 		expect(result.timeslots[0].id).toBe(5001);
 		expect(result.timeslots[1].id).toBeUndefined();
+	});
+});
+
+describe('reconcileTimeslots hand-written notes', () => {
+	it("re-sends an in-person shift's note as it is, without calling it a change", () => {
+		const withNote = live([{ id: 5001, start: START }]);
+		withNote.timeslots[0].instructions = 'Please arrive at 1:30 pm';
+		const result = reconcileTimeslots(plan(), withNote, NOW);
+		expect(result.changed).toBe(false);
+		expect(result.timeslots[0].instructions).toBe('Please arrive at 1:30 pm');
 	});
 });
 
@@ -1249,5 +1261,276 @@ describe('raiseCapsToFloors', () => {
 		).toBeNull();
 		expect(raiseCapsToFloors(slots, new MobilizeError('nope', 403, ''))).toBeNull();
 		expect(raiseCapsToFloors(slots, new Error('network'))).toBeNull();
+	});
+});
+
+describe('virtual events', () => {
+	const JOIN = 'Join link: https://us06web.zoom.us/j/123?pwd=abc';
+	const contact: EventContact = { name: 'Field', emailAddress: 'f@example.org', phoneNumber: '' };
+	const virtual = (overrides: Partial<PlannedEvent> = {}) =>
+		plan({
+			key: 'solidarity:1:virtual',
+			isVirtual: true,
+			locationName: '',
+			addressLine1: '',
+			city: '',
+			state: '',
+			zipcode: '',
+			country: '',
+			coordinates: null,
+			timeslots: [
+				{
+					startDate: Math.floor(START / 1000),
+					endDate: Math.floor((START + 2 * HOUR) / 1000),
+					maxAttendees: null,
+					instructions: JOIN,
+				},
+			],
+			...overrides,
+		});
+	const liveVirtual = (instructions: string | null) =>
+		live([{ id: 5001, start: START }], {
+			is_virtual: true,
+			location: null,
+			timeslots: [
+				{
+					id: 5001,
+					start_date: Math.floor(START / 1000),
+					end_date: Math.floor((START + 2 * HOUR) / 1000),
+					instructions,
+				},
+			],
+		});
+
+	it('sends is_virtual and the join link, and no location', () => {
+		const body = payloadForPlan(virtual(), contact);
+		expect(body.is_virtual).toBe(true);
+		expect(body).not.toHaveProperty('location');
+		expect(body.timeslots).toEqual([expect.objectContaining({ instructions: JOIN })]);
+	});
+
+	it('leaves an in-person body exactly as it was', () => {
+		const body = payloadForPlan(plan(), contact);
+		expect(body).not.toHaveProperty('is_virtual');
+		expect(body.location).toMatchObject({ postal_code: '48202' });
+		expect(body.timeslots).toEqual([
+			expect.not.objectContaining({ instructions: expect.anything() }),
+		]);
+	});
+
+	it('sees nothing to do when Mobilize already has the link', () => {
+		const result = reconcileTimeslots(virtual(), liveVirtual(JOIN), NOW);
+		expect(result.changed).toBe(false);
+		expect(result.timeslots[0]).toMatchObject({ id: 5001, instructions: JOIN });
+		expect(describeChanges(virtual(), liveVirtual(JOIN), false, false)).toEqual([]);
+	});
+
+	it('pushes a join link that was changed in Solidarity, and says attendees need telling', () => {
+		const result = reconcileTimeslots(
+			virtual(),
+			liveVirtual('Join link: https://us06web.zoom.us/j/999?pwd=old'),
+			NOW,
+		);
+		expect(result.changed).toBe(true);
+		expect(result.linkChanged).toBe(true);
+	});
+
+	it('sees the same link stored as HTML, with its host cased differently, as unchanged', () => {
+		const html =
+			'<p>Join link: <a href="https://US06WEB.zoom.us/j/123?pwd=abc">' +
+			'https://us06web.zoom.us/j/123?pwd=abc</a></p>';
+		const result = reconcileTimeslots(virtual(), liveVirtual(html), NOW);
+		expect(result.changed).toBe(false);
+		expect(result.linkChanged).toBe(false);
+	});
+
+	it('sets a link Mobilize does not have without emailing anyone', () => {
+		// Nobody was sent a link, so there is nothing to correct.
+		const result = reconcileTimeslots(virtual(), liveVirtual(null), NOW);
+		expect(result.changed).toBe(true);
+		expect(result.linkChanged).toBe(false);
+	});
+
+	it('pushes a new password for the same meeting without emailing anyone', () => {
+		const result = reconcileTimeslots(
+			virtual(),
+			liveVirtual('Join link: https://us06web.zoom.us/j/123?pwd=old'),
+			NOW,
+		);
+		expect(result.changed).toBe(true);
+		expect(result.linkChanged).toBe(false);
+	});
+
+	it('never reads a location Mobilize reports for a virtual event as a change', () => {
+		const withCity = { ...liveVirtual(JOIN), location: { locality: 'Detroit' } };
+		expect(describeChanges(virtual(), withCity, false, false)).toEqual([]);
+	});
+
+	it('keeps the join link on a shift whose session was removed', () => {
+		const later = START + 24 * HOUR;
+		const withOrphan = liveVirtual(JOIN);
+		withOrphan.timeslots.push({
+			id: 5002,
+			start_date: Math.floor(later / 1000),
+			end_date: Math.floor((later + HOUR) / 1000),
+			instructions: 'Join link: https://kept.example',
+		});
+		const result = reconcileTimeslots(virtual(), withOrphan, NOW);
+		expect(result.timeslots[1]).toMatchObject({
+			id: 5002,
+			instructions: 'Join link: https://kept.example',
+		});
+	});
+});
+
+describe('runSync virtual events', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 1 };
+	const CONTACT: EventContact = { name: 'Field', emailAddress: 'f@example.org', phoneNumber: '' };
+	const JOIN = 'Join link: https://us06web.zoom.us/j/123?pwd=abc';
+	const SLOT_START = Math.floor(START / 1000);
+
+	const virtual = (overrides: Partial<PlannedEvent> = {}) =>
+		plan({
+			key: 'solidarity:1:virtual',
+			isVirtual: true,
+			locationName: '',
+			addressLine1: '',
+			city: '',
+			state: '',
+			zipcode: '',
+			country: '',
+			coordinates: null,
+			timeslots: [
+				{
+					startDate: SLOT_START,
+					endDate: SLOT_START + 7200,
+					maxAttendees: null,
+					instructions: JOIN,
+				},
+			],
+			...overrides,
+		});
+
+	/** Mobilize answers with `listed` for the bulk read and accepts every write. */
+	function stubMobilize(listed: Partial<MobilizeEvent>[] = []) {
+		const calls: { url: string; method: string; body: Record<string, unknown> | null }[] = [];
+		vi.stubGlobal('fetch', async (input: unknown, init: RequestInit = {}) => {
+			const url = String(input);
+			calls.push({
+				url,
+				method: init.method ?? 'GET',
+				body: init.body ? JSON.parse(String(init.body)) : null,
+			});
+			const body =
+				init.method === 'POST'
+					? JSON.stringify({ data: { event: { id: 901, title: 'x', timeslots: [] } } })
+					: init.method === 'PUT'
+						? JSON.stringify({ data: {} })
+						: JSON.stringify({ data: listed, next: null });
+			return { ok: true, status: 200, text: async () => body, headers: new Headers() };
+		});
+		return calls;
+	}
+
+	function ledger(known: LedgerRecord[] = []): Ledger {
+		return {
+			async all() {
+				return known;
+			},
+			async record() {},
+			async imageFor() {
+				return null;
+			},
+			async recordImage() {},
+			async zipFor() {
+				return null;
+			},
+			async recordZip() {},
+		};
+	}
+
+	const run = (planned: PlannedEvent, known: LedgerRecord[] = []) =>
+		runSync(
+			[planned],
+			{ api: API, contact: CONTACT, maxCreatesPerRun: 100, apply: true, pauseMs: 0 },
+			ledger(known),
+			() => null,
+		);
+
+	const KNOWN: LedgerRecord = {
+		key: 'solidarity:1:virtual',
+		mobilizeEventId: 900,
+		title: 'Detroit Canvass',
+	};
+	const liveEvent = (instructions: string, overrides: Partial<MobilizeEvent> = {}) => ({
+		id: 900,
+		title: 'Detroit Canvass',
+		event_type: 'COMMUNITY_CANVASS',
+		description: 'Knock doors',
+		is_virtual: true,
+		location: null,
+		timeslots: [{ id: 5001, start_date: SLOT_START, end_date: SLOT_START + 7200, instructions }],
+		...overrides,
+	});
+
+	it('creates without a postal code or a geocoder lookup', async () => {
+		const calls = stubMobilize();
+		const report = await run(virtual());
+		expect(report).toMatchObject({ created: 1, failed: 0, errors: [] });
+		expect(calls.some((c) => c.url.includes('census.gov'))).toBe(false);
+		const create = calls.find((c) => c.method === 'POST')!;
+		expect(create.body).toMatchObject({ is_virtual: true });
+		expect(create.body).not.toHaveProperty('location');
+	});
+
+	it('updates without a postal code, and emails nobody for a routine edit', async () => {
+		const calls = stubMobilize([liveEvent(JOIN, { description: 'old body' })]);
+		const report = await run(virtual(), [KNOWN]);
+		expect(report).toMatchObject({ updated: 1, failed: 0, errors: [] });
+		const put = calls.find((c) => c.method === 'PUT')!;
+		expect(put.url).toContain('send_update_notifications=false');
+	});
+
+	it('emails attendees when the meeting itself changed', async () => {
+		const calls = stubMobilize([liveEvent('Join link: https://us06web.zoom.us/j/999')]);
+		const report = await run(virtual(), [KNOWN]);
+		expect(report.updatedTitles).toEqual(['Detroit Canvass (timeslots, join link)']);
+		const put = calls.find((c) => c.method === 'PUT')!;
+		expect(put.url).toContain('send_update_notifications=true');
+		expect((put.body!.timeslots as { instructions: string }[])[0].instructions).toBe(JOIN);
+	});
+
+	it('names the old event when an in-person event turned virtual', async () => {
+		stubMobilize([
+			{
+				...liveEvent(''),
+				is_virtual: false,
+				location: { locality: 'Detroit' },
+				browser_url: 'https://www.mobilize.us/x/event/900/',
+			},
+		]);
+		const report = await run(virtual(), [
+			{ key: 'solidarity:1:2857 east grand blvd', mobilizeEventId: 900, title: 'Detroit Canvass' },
+		]);
+		expect(report.typeSwitched).toEqual([
+			{
+				title: 'Detroit Canvass',
+				mobilizeEventId: 900,
+				browserUrl: 'https://www.mobilize.us/x/event/900/',
+			},
+		]);
+		expect(report.created).toBe(1);
+	});
+
+	it('says nothing once the old event is gone from Mobilize', async () => {
+		stubMobilize();
+		const report = await run(virtual(), [
+			{ key: 'solidarity:1:2857 east grand blvd', mobilizeEventId: 900, title: 'Detroit Canvass' },
+		]);
+		expect(report.typeSwitched).toEqual([]);
 	});
 });

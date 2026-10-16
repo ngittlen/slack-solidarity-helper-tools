@@ -96,6 +96,11 @@ export function findDuplicate(
 	const plannedCity = normalizeTitle(planned.city);
 
 	for (const candidate of existing) {
+		// A virtual event and an in-person one are never the same event, however
+		// alike their names. Checked first because a virtual plan has no city, so
+		// the city guard below would wave every candidate through.
+		if (Boolean(candidate.is_virtual) !== planned.isVirtual) continue;
+
 		const candidateNorm = normalizeTitle(candidate.title);
 		if (plannedNorm && plannedNorm === candidateNorm) {
 			return {

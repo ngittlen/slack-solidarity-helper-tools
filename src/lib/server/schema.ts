@@ -341,6 +341,10 @@ export const appConfig = sqliteTable(
 		// tag are copied into Solidarity. NULL / '' means the import is off. No
 		// env fallback — it is the switch an organizer flips, not deploy config.
 		mobilizeImportTag: text('mobilize_import_tag'),
+		// Whether the Solidarity -> Mobilize event sync publishes virtual events
+		// too. NULL means off, which is how the sync behaved before this column
+		// existed. No env fallback — the same organizer's switch as the import tag.
+		mobilizeSyncVirtualEvents: integer('mobilize_sync_virtual_events', { mode: 'boolean' }),
 		// Header countdown (label + ISO end datetime). DB-only, no env fallback;
 		// '' means "not configured" (the set-only save contract reserves NULL for
 		// "use the fallback", so clearing writes '' rather than NULL).

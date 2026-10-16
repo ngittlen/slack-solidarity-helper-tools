@@ -30,6 +30,7 @@ function plan(
 		title: 'Detroit Canvass',
 		description: 'Knock doors',
 		eventType: 'COMMUNITY_CANVASS',
+		isVirtual: false,
 		locationName: 'Field Office',
 		addressLine1: '2857 East Grand Boulevard',
 		city: 'Detroit',

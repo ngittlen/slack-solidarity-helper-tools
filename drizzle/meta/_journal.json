@@ -519,6 +519,13 @@
       "when": 1792025091631,
       "tag": "0073_push_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "6",
+      "when": 1792111061165,
+      "tag": "0074_mobilize_sync_virtual_events",
+      "breakpoints": true
     }
   ]
 }

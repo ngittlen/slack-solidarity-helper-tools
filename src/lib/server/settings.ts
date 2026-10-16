@@ -150,6 +150,9 @@ export interface Settings {
 	/** Partner Mobilize events carrying this tag are imported into Solidarity.
 	 *  DB-only, no env fallback; '' means the import is off. */
 	mobilizeImportTag: string;
+	/** Whether the event sync publishes virtual events to Mobilize as well as
+	 *  in-person ones. DB-only, no env fallback; unset means off. */
+	mobilizeSyncVirtualEvents: boolean;
 	slackGrowthReportRankingAlpha: number | undefined;
 	/** Shown after each page's own name in the browser tab. DB-only with a code
 	 *  default; '' means "use DEFAULT_SITE_NAME". */
@@ -209,6 +212,7 @@ export type AppConfigPatch = Partial<{
 	mobilizeContactPhone: string;
 	/** Tag selecting partner Mobilize events to import. '' turns it off. */
 	mobilizeImportTag: string;
+	mobilizeSyncVirtualEvents: boolean;
 	slackGrowthReportRankingAlpha: number;
 	siteName: string;
 	countdownLabel: string;
@@ -325,6 +329,9 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	const mobilizeContactPhone = cfg?.mobilizeContactPhone ?? MOBILIZE_CONTACT_PHONE;
 	// No env fallback: whether to import is an organizer's call, made here.
 	const mobilizeImportTag = cfg?.mobilizeImportTag?.trim() ?? '';
+	// Off until an organizer turns it on, which is how the sync behaved before
+	// the switch existed.
+	const mobilizeSyncVirtualEvents = cfg?.mobilizeSyncVirtualEvents ?? false;
 	const slackGrowthReportRankingAlpha =
 		cfg?.slackGrowthReportRankingAlpha ?? SLACK_GROWTH_REPORT_RANKING_ALPHA;
 	const siteName = cfg?.siteName ?? '';
@@ -369,6 +376,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		mobilizeContactEmail,
 		mobilizeContactPhone,
 		mobilizeImportTag,
+		mobilizeSyncVirtualEvents,
 		slackGrowthReportRankingAlpha,
 		siteName,
 		countdownLabel,
@@ -1044,6 +1052,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'mobilizeContactEmail',
 	'mobilizeContactPhone',
 	'mobilizeImportTag',
+	'mobilizeSyncVirtualEvents',
 	'slackGrowthReportRankingAlpha',
 	'siteName',
 	'countdownLabel',

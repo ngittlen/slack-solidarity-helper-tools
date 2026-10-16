@@ -218,10 +218,40 @@ Two dead ends, both checked against the live API rather than assumed:
   but it is **silently ignored on create** — send `PRIVATE`, read back `PUBLIC`.
   It is documented under the response schema only, and it behaves that way.
 
-**Skipped.** Virtual events (they need a join URL the list payload doesn't expose),
-co-hosted mirrors of another org's event, past sessions, anything without a
-usable street address, and private-address events with neither a postal code nor
-coordinates to geocode one from.
+**Virtual events** sync only while "Virtual events on Mobilize" is switched on
+in /settings. Each one becomes a single Mobilize event created with
+`is_virtual: true` and no location. Each session's join link goes on its own
+timeslot as `instructions`, which Mobilize sends privately to that shift's
+attendees after they sign up. Solidarity keeps the link in one of two places:
+a link typed in by hand is the session's `location_address`, and a meeting made
+through Solidarity's Zoom integration keeps it in `zoom_meeting_data.join_url`.
+That object also holds the host's `start_url`, which is never read. If any
+upcoming session has no https link, or is in-person, the whole event is held
+back, named in the response's `skippedNoJoinLink`, and listed in the nightly
+Slack alert.
+
+A link is compared by the URL itself, not the note's exact text, so Mobilize
+storing the note as HTML doesn't make it look changed every run. Updates are
+normally sent with `send_update_notifications=false`, but when Mobilize holds a
+link to a _different meeting_ (another host or path), the update emails that
+event's attendees, since the link they were sent no longer works. A new password
+on the same meeting is pushed without an email, so the email can't repeat if
+Mobilize rewrites a link's query string.
+
+Duplicate detection never matches a virtual event against an in-person one.
+
+`is_virtual` can't be changed after create, so an event that switches between
+virtual and in-person in Solidarity gets a new ledger key and a new Mobilize
+event. The old one is left live, and while it is still upcoming it is named in
+`typeSwitched` and the nightly Slack alert, so someone can take it down.
+
+An in-person shift's own note in Mobilize (one typed there by hand) is re-sent
+unchanged on every update rather than left out of it.
+
+**Skipped.** Virtual events while the switch is off, co-hosted mirrors of
+another org's event, past sessions, anything without a usable street address,
+and private-address events with neither a postal code nor coordinates to geocode
+one from.
 
 ### What the v1 API cannot set
 

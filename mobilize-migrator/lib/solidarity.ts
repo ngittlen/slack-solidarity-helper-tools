@@ -29,6 +29,13 @@ export interface SolidaritySession {
 	location_data: SolidarityLocationData | null;
 	max_capacity: number | null;
 	event_type: string;
+	/**
+	 * Set when Solidarity created the session's Zoom meeting itself; a link typed
+	 * in by hand arrives in `location_address` instead. Only `join_url` is ever
+	 * read: this object also carries the host's `start_url`, which starts the
+	 * meeting as its host and must never be published.
+	 */
+	zoom_meeting_data?: { join_url?: string | null } | null;
 }
 
 export interface SolidarityEvent {

@@ -116,6 +116,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			`[mobilize-sync]${dryRun ? ' (dry)' : ''} planned ${result.planned}: ` +
 				`created ${result.created}, updated ${result.updated}, unchanged ${result.unchanged}, ` +
 				`existing ${result.skippedExisting}, no-address ${result.skippedNoAddress}, ` +
+				`no-join-link ${result.skippedNoJoinLink.length}, ` +
 				`tag-excluded ${result.excludedByTag} (${result.excludedStillLive} already live), ` +
 				`failed ${result.failed}` +
 				(result.zeroCapStillOpen.length > 0
@@ -181,6 +182,32 @@ export const POST: RequestHandler = async ({ url }) => {
 					'waitlist is switched on for the shift in Mobilize — which takes signups instead of ' +
 					'turning people away, and has no API field for us to read — or Mobilize is not ' +
 					'treating a 0 cap as closed. Opening one in Mobilize says which.',
+			);
+		}
+
+		// Both repeat every run until a person acts, so they go out once a night
+		// (the pass that is not `quiet`) rather than 48 times a day.
+		if (!dryRun && !quiet && result.skippedNoJoinLink.length > 0) {
+			await alert(
+				`:link: *Mobilize sync — ${result.skippedNoJoinLink.length} virtual event(s) held ` +
+					'back.* Each needs a Zoom or Meet link on every upcoming session in Solidarity ' +
+					'before it can go on Mobilize:\n' +
+					result.skippedNoJoinLink
+						.slice(0, 10)
+						.map((s) => `• ${mrkdwnLink(null, s.title)} — ${s.reason}`)
+						.join('\n'),
+			);
+		}
+		if (!dryRun && !quiet && result.typeSwitched.length > 0) {
+			await alert(
+				`:twisted_rightwards_arrows: *Mobilize sync — ${result.typeSwitched.length} event(s) ` +
+					'switched between in-person and virtual in Solidarity.* Mobilize cannot change ' +
+					'that on an existing event, so each now has a new one, and the old one is still ' +
+					'live with the old details. Take the old one down in Mobilize:\n' +
+					result.typeSwitched
+						.slice(0, 10)
+						.map((s) => `• ${mrkdwnLink(s.browserUrl, s.title)} (old event #${s.mobilizeEventId})`)
+						.join('\n'),
 			);
 		}
 
