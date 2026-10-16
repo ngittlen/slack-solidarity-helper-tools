@@ -325,6 +325,7 @@ export const APP_CONFIG_FIELDS: {
 	mobilizeContactPhone: boundedTextField('mobilizeContactPhone', CONTACT_FIELD_MAX_LENGTH),
 	// '' turns the partner-org import off.
 	mobilizeImportTag: boundedTextField('mobilizeImportTag', MOBILIZE_TAG_MAX_LENGTH),
+	mobilizeSyncVirtualEvents: (value) => checkBoolean('mobilizeSyncVirtualEvents', value),
 
 	// [0, 1] is the range the /settings slider offers and the span of meaningful
 	// power-law exponents for the growth score.

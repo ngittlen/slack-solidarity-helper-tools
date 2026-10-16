@@ -298,7 +298,14 @@ export interface MobilizeEvent {
 	 * is still taking signups. Optional so an absent field reads as "Mobilize did
 	 * not say", never as "open".
 	 */
-	timeslots: { id: number; start_date: number; end_date: number; is_full?: boolean }[];
+	timeslots: {
+		id: number;
+		start_date: number;
+		end_date: number;
+		is_full?: boolean;
+		/** Private text sent to the shift's attendees; a virtual event's join link. */
+		instructions?: string | null;
+	}[];
 	location: {
 		venue?: string | null;
 		locality?: string | null;
@@ -393,14 +400,19 @@ export async function createEvent(
  * Notifications are suppressed: this runs nightly and re-pushes the same events,
  * so leaving them on would mail every attendee whenever a description changed.
  */
+/**
+ * `notify` makes Mobilize email the event's attendees about the change. Off
+ * unless asked for: a routine sync edit is not news to anyone signed up.
+ */
 export async function updateEvent(
 	config: MobilizeApiConfig,
 	id: number,
 	payload: Record<string, unknown>,
+	{ notify = false }: { notify?: boolean } = {},
 ): Promise<void> {
 	await callJson(
 		config,
-		`${BASE}/organizations/${config.orgId}/events/${id}?send_update_notifications=false`,
+		`${BASE}/organizations/${config.orgId}/events/${id}?send_update_notifications=${notify}`,
 		{ method: 'PUT', ...jsonBody(payload) },
 	);
 }

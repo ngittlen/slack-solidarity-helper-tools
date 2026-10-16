@@ -146,6 +146,14 @@ export interface SyncReport {
 	zeroCapStillOpen: OpenZeroCap[];
 	/** Per-event reasons for the skips, so a dry run can be reviewed by eye. */
 	skippedDetails: { title: string; reason: string }[];
+	/**
+	 * Events that switched between in-person and virtual in Solidarity while the
+	 * Mobilize event made for the old type is still upcoming. Mobilize cannot
+	 * change `is_virtual` after create, so the new type gets a new event and the
+	 * old one is left live — with its address or join links — for a person to
+	 * take down. Reported until it is gone or past.
+	 */
+	typeSwitched: { title: string; mobilizeEventId: number; browserUrl: string | null }[];
 	errors: string[];
 }
 
@@ -155,6 +163,9 @@ export interface PutTimeslot {
 	startDate: number;
 	endDate: number;
 	maxAttendees: number | null;
+	/** A virtual event's join link, or whatever an orphan already had; see
+	 *  Timeslot.instructions. */
+	instructions?: string | null;
 }
 
 export interface TimeslotPairing {
@@ -173,11 +184,68 @@ export interface TimeslotPlan {
 	 *  `changed` so the update log says "capacity" instead of "timeslots". */
 	capacityChanged: boolean;
 	/**
+	 * A shift Mobilize holds a link to a DIFFERENT meeting for — so everyone
+	 * already signed up was sent one that no longer works, and the update should
+	 * email them. Never set when Mobilize has no link at all (nobody was sent
+	 * one), nor for the same meeting written differently; see isOtherMeeting.
+	 */
+	linkChanged: boolean;
+	/**
 	 * Mobilize timeslot -> Solidarity session, for the rows we matched. The
 	 * attendee sync needs this to file a signup against the right session, and
 	 * here is the only place both ids are known at once.
 	 */
 	pairings: TimeslotPairing[];
+}
+
+/** The first https link in a timeslot's instructions. */
+const HTTPS_LINK = /https:\/\/[^\s"'<>]+/;
+
+/**
+ * The first https link in some instructions, parsed — so the same link with an
+ * HTML-escaped query (`&amp;`) or a differently cased host compares equal. Null
+ * when there is none.
+ */
+function firstLink(text: string | null | undefined): URL | null {
+	const link = (text ?? '').replaceAll('&amp;', '&').match(HTTPS_LINK)?.[0];
+	if (!link) return null;
+	try {
+		return new URL(link);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Does Mobilize's copy of a shift's instructions already carry the join link?
+ *
+ * By the link, not the whole text: if Mobilize stores the note differently from
+ * how it was sent (as HTML, say, or with its whitespace changed), an exact
+ * compare would call every virtual event changed on every run, forever.
+ */
+function carriesLink(live: string | null | undefined, wanted: string): boolean {
+	const want = firstLink(wanted);
+	if (!want) return (live ?? '').trim() === wanted.trim();
+	return firstLink(live)?.href === want.href;
+}
+
+/**
+ * Is the link Mobilize holds for a shift a different MEETING from the one we
+ * would send — another host or path, not the same link written another way?
+ *
+ * This decides whether attendees are emailed, so it has to be immune to a
+ * rewrite on Mobilize's side: an escaped or re-encoded query string must not
+ * read as a new meeting, or every run would email everyone again. A Zoom
+ * meeting that was recreated gets a new id, which is in the path.
+ */
+function isOtherMeeting(live: string | null | undefined, wanted: string): boolean {
+	const meeting = (text: string | null | undefined) => {
+		const url = firstLink(text);
+		return url && `${url.host}${url.pathname.replace(/\/+$/, '')}`.toLowerCase();
+	};
+	const had = meeting(live);
+	const want = meeting(wanted);
+	return Boolean(had && want && had !== want);
 }
 
 /**
@@ -214,6 +282,7 @@ export function reconcileTimeslots(
 	const pairings: TimeslotPairing[] = [];
 	let changed = false;
 	let capacityChanged = false;
+	let linkChanged = false;
 
 	plan.timeslots.forEach((slot, index) => {
 		const startInstant = plan.startInstants[index];
@@ -228,6 +297,13 @@ export function reconcileTimeslots(
 			if (Math.abs(match.end_date * 1000 - plan.endInstants[index]) > START_MATCH_TOLERANCE_MS) {
 				changed = true;
 			}
+			// A join link edited in Solidarity. Only virtual slots carry instructions,
+			// so an in-person event never compares them; the bulk list returns them on
+			// every timeslot, so this costs no extra read.
+			if (slot.instructions != null && !carriesLink(match.instructions, slot.instructions)) {
+				changed = true;
+				if (isOtherMeeting(match.instructions, slot.instructions)) linkChanged = true;
+			}
 			// A cap can only be compared against what we recorded sending, since
 			// Mobilize never gives it back. No record and no cap wanted means there
 			// is nothing to do; no record and a cap wanted means this slot predates
@@ -238,7 +314,14 @@ export function reconcileTimeslots(
 			) {
 				capacityChanged = true;
 			}
-			timeslots.push({ id: match.id, ...slot });
+			// An in-person shift sends no instructions of its own, so whatever an
+			// organizer wrote on it in Mobilize ("Please arrive at 1:30 pm") is re-sent
+			// as it is, rather than left to an update that might clear it.
+			const keptNote =
+				slot.instructions === undefined && match.instructions?.trim()
+					? { instructions: match.instructions }
+					: {};
+			timeslots.push({ id: match.id, ...slot, ...keptNote });
 			const solidaritySessionId = plan.solidaritySessionIds[index];
 			if (solidaritySessionId !== undefined) {
 				pairings.push({
@@ -268,10 +351,20 @@ export function reconcileTimeslots(
 			// so hardcoding null here quietly un-capped every orphan on every edit —
 			// harmless while nothing managed caps, silently destructive now.
 			maxAttendees: pushedCaps.get(orphan.id) ?? null,
+			// Re-sent for the same reason: a shift whose session was removed in
+			// Solidarity keeps its signups, and they still need the join link.
+			...(orphan.instructions ? { instructions: orphan.instructions } : {}),
 		});
 	}
 
-	return { timeslots, orphanCount: orphans.length, changed, capacityChanged, pairings };
+	return {
+		timeslots,
+		orphanCount: orphans.length,
+		changed,
+		capacityChanged,
+		linkChanged,
+		pairings,
+	};
 }
 
 export interface OpenZeroCap {
@@ -378,8 +471,12 @@ export function describeChanges(
 	// the old dashboard API allowed it. Backfill one when we now have it, rather
 	// than leaving them unfindable by zip in Mobilize's search.
 	if (plan.zipcode && !(live.location?.postal_code ?? '').trim()) changes.push('postal code');
+	// A virtual event sends no location, so whatever Mobilize reports for one is
+	// nothing a PUT from here could change.
 	const liveCity = (live.location?.locality ?? '').trim().toLowerCase();
-	if (liveCity && plan.city.trim().toLowerCase() !== liveCity) changes.push('location');
+	if (!plan.isVirtual && liveCity && plan.city.trim().toLowerCase() !== liveCity) {
+		changes.push('location');
+	}
 	return changes;
 }
 
@@ -401,6 +498,7 @@ export function payloadForPlan(
 		imageUrl,
 		eventType: plan.eventType,
 		timezone: CAMPAIGN_TIMEZONE,
+		isVirtual: plan.isVirtual,
 		locationName: plan.locationName,
 		addressLine1: plan.addressLine1,
 		city: plan.city,
@@ -441,6 +539,7 @@ export async function runSync(
 		updatedTitles: [],
 		zeroCapStillOpen: [],
 		skippedDetails: [],
+		typeSwitched: [],
 		errors: [],
 	};
 
@@ -460,6 +559,28 @@ export async function runSync(
 		if (record) {
 			toSync.push({ plan, record });
 		} else {
+			// Ledger keys are `solidarity:<eventId>:<location>`, and a virtual event's
+			// location is `virtual`. No in-person key can end that way: an in-person
+			// key is its address, or a venue name only when there is no address, and
+			// an event with no address is never planned.
+			for (const other of known.values()) {
+				const [, eventId] = other.key.split(':');
+				const live = existingById.get(other.mobilizeEventId);
+				// One virtual event that became in-person at three venues is still one
+				// old event to take down, so each is named once.
+				if (
+					eventId === String(plan.solidarityEventId) &&
+					other.key.endsWith(':virtual') !== plan.isVirtual &&
+					live &&
+					!report.typeSwitched.some((s) => s.mobilizeEventId === other.mobilizeEventId)
+				) {
+					report.typeSwitched.push({
+						title: plan.title,
+						mobilizeEventId: other.mobilizeEventId,
+						browserUrl: live.browser_url ?? null,
+					});
+				}
+			}
 			const duplicate = findDuplicate(plan, existing) as {
 				mobilizeEventId: number;
 				mobilizeTitle: string;
@@ -532,7 +653,8 @@ export async function runSync(
 	 * events will sync that in fact cannot) but never writes to the cache.
 	 */
 	const resolveZip = async (plan: PlannedEvent): Promise<PlannedEvent | null> => {
-		if (plan.zipcode) return plan;
+		// A virtual event sends no location, so it needs no zip.
+		if (plan.isVirtual || plan.zipcode) return plan;
 		if (!plan.coordinates) return null;
 		const key = pointKey(plan.coordinates);
 		const cached = await ledger.zipFor(key);
@@ -668,6 +790,11 @@ export async function runSync(
 				slotPlan.changed,
 				slotPlan.capacityChanged,
 			);
+			if (slotPlan.linkChanged) changes.push('join link');
+			// Attendees already hold the old link, so this one edit is worth an email.
+			// It cannot repeat: once Mobilize holds the new meeting's link, however it
+			// writes it, isOtherMeeting no longer fires.
+			const notify = slotPlan.linkChanged;
 			if (changes.length === 0) {
 				report.unchanged++;
 				continue;
@@ -679,7 +806,7 @@ export async function runSync(
 			}
 			// A PUT with a blank postal_code is rejected outright, so the edit waits
 			// for a fixed address rather than failing against the API every night.
-			if (!zipped.zipcode) {
+			if (!zipped.isVirtual && !zipped.zipcode) {
 				report.failed++;
 				report.errors.push(`update "${plan.title}": ${noZip(plan)}`);
 				continue;
@@ -694,6 +821,7 @@ export async function runSync(
 					config.api,
 					record.mobilizeEventId,
 					payloadForPlan(zipped, config.contact, imageUrl, sentSlots),
+					{ notify },
 				);
 			} catch (err) {
 				const raised = raiseCapsToFloors(sentSlots, err);
@@ -707,6 +835,7 @@ export async function runSync(
 					config.api,
 					record.mobilizeEventId,
 					payloadForPlan(zipped, config.contact, imageUrl, sentSlots),
+					{ notify },
 				);
 			}
 			// Only after the PUT lands: recording a cap we did not manage to send

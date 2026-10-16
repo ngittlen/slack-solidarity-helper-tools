@@ -4,6 +4,7 @@ import { findDuplicate, normalizeTitle, titleSimilarity } from './dedupe.js';
 import type { MobilizeEvent } from './mobilize.js';
 import {
 	classifyEventType,
+	joinLink,
 	normalizeLocation,
 	planMigration,
 	titlesForLocations,
@@ -603,6 +604,17 @@ describe('duplicate detection', () => {
 		expect(findDuplicate(planned, [mobilizeEvent()])?.reason).toBe('identical title');
 	});
 
+	it('never matches a virtual event against an in-person one, or the reverse', () => {
+		// A virtual plan has no city, so without this the city guard waved every
+		// same-time candidate through on title overlap alone.
+		const virtualPlan = { ...planned, isVirtual: true, city: '' };
+		expect(findDuplicate(virtualPlan, [mobilizeEvent({ is_virtual: false })])).toBeNull();
+		expect(findDuplicate(planned, [mobilizeEvent({ is_virtual: true })])).toBeNull();
+		expect(findDuplicate(virtualPlan, [mobilizeEvent({ is_virtual: true })])?.reason).toBe(
+			'identical title',
+		);
+	});
+
 	it('matches a reworded title at the same start time', () => {
 		// Real pair: Solidarity vs Mobilize naming of the Negaunee event.
 		const match = findDuplicate(planned, [
@@ -760,5 +772,166 @@ describe('duplicate sessions', () => {
 
 		expect(planned[0]!.timeslots).toHaveLength(2);
 		expect(duplicateSessions).toEqual([]);
+	});
+});
+
+describe('virtual events', () => {
+	const zoom = 'https://us06web.zoom.us/j/111?pwd=abc';
+	const virtualSession = (overrides: Partial<SolidarityEvent['event_sessions'][number]> = {}) =>
+		session({
+			event_type: 'virtual',
+			location_name: null,
+			location_address: zoom,
+			location_data: null,
+			...overrides,
+		});
+	const virtualEvent = (overrides: Partial<SolidarityEvent> = {}) =>
+		event({
+			title: 'Phonebank for Abdul',
+			event_type: 'virtual',
+			event_sessions: [virtualSession()],
+			...overrides,
+		});
+
+	it('leaves them out unless asked for', () => {
+		const result = planMigration([virtualEvent()], NOW);
+		expect(result.planned).toEqual([]);
+		expect(result.noJoinLink).toEqual([]);
+	});
+
+	it('plans one Mobilize event with each join link on its own shift', () => {
+		const meet = 'https://meet.google.com/abc-defg-hij';
+		const { planned } = planMigration(
+			[
+				virtualEvent({
+					event_sessions: [
+						virtualSession({ id: 1 }),
+						virtualSession({
+							id: 2,
+							start_time: '2026-08-06T20:00:00.000-04:00',
+							end_time: '2026-08-06T22:00:00.000-04:00',
+							location_address: meet,
+						}),
+					],
+				}),
+			],
+			NOW,
+			undefined,
+			{ includeVirtual: true },
+		);
+		expect(planned).toHaveLength(1);
+		expect(planned[0]).toMatchObject({
+			key: 'solidarity:100:virtual',
+			title: 'Phonebank for Abdul',
+			isVirtual: true,
+			zipcode: '',
+			solidaritySessionIds: [1, 2],
+		});
+		expect(planned[0].timeslots.map((t) => t.instructions)).toEqual([
+			`Join link: ${zoom}`,
+			`Join link: ${meet}`,
+		]);
+	});
+
+	it('holds back the whole event when any upcoming session has no link, and names it', () => {
+		const result = planMigration(
+			[
+				virtualEvent({
+					event_sessions: [
+						virtualSession({ id: 1 }),
+						virtualSession({
+							id: 2,
+							start_time: '2026-08-06T20:00:00.000-04:00',
+							end_time: '2026-08-06T22:00:00.000-04:00',
+							location_address: null,
+						}),
+					],
+				}),
+			],
+			NOW,
+			undefined,
+			{ includeVirtual: true },
+		);
+		expect(result.planned).toEqual([]);
+		expect(result.skipped).toEqual([]);
+		expect(result.noJoinLink).toEqual([
+			{
+				solidarityEventId: 100,
+				title: 'Phonebank for Abdul',
+				reason: 'virtual, but 1 of 2 upcoming session(s) have no join link',
+			},
+		]);
+	});
+
+	it('names an in-person session as the reason, not a missing link', () => {
+		const { noJoinLink } = planMigration(
+			[
+				virtualEvent({
+					event_sessions: [
+						virtualSession({ id: 1 }),
+						session({
+							id: 2,
+							start_time: '2026-08-06T20:00:00.000-04:00',
+							end_time: '2026-08-06T22:00:00.000-04:00',
+						}),
+					],
+				}),
+			],
+			NOW,
+			undefined,
+			{ includeVirtual: true },
+		);
+		expect(noJoinLink[0].reason).toBe(
+			'virtual, but 1 of 2 upcoming session(s) are in-person, and Mobilize takes one or the other',
+		);
+	});
+
+	it('still respects mobilize-exclude and co-hosted mirrors', () => {
+		const { planned, excludedByTag } = planMigration(
+			[
+				virtualEvent({ tags: ['mobilize-exclude'] }),
+				virtualEvent({ id: 101, is_co_hosted_mirror: true }),
+			],
+			NOW,
+			undefined,
+			{ includeVirtual: true },
+		);
+		expect(planned).toEqual([]);
+		expect(excludedByTag).toHaveLength(1);
+	});
+
+	it('leaves in-person planning untouched when switched on', () => {
+		const on = planMigration([event()], NOW, undefined, { includeVirtual: true });
+		const off = planMigration([event()], NOW);
+		expect(on.planned).toEqual(off.planned);
+		expect(on.planned[0].isVirtual).toBe(false);
+	});
+});
+
+describe('joinLink', () => {
+	const base = session({ event_type: 'virtual', location_address: null, location_data: null });
+
+	it('takes a link typed into the address field', () => {
+		expect(joinLink({ ...base, location_address: ' https://meet.google.com/x ' })).toBe(
+			'https://meet.google.com/x',
+		);
+	});
+
+	it("falls back to Solidarity's own Zoom meeting, and only its join link", () => {
+		expect(
+			joinLink({
+				...base,
+				zoom_meeting_data: {
+					join_url: 'https://us06web.zoom.us/j/1?pwd=x',
+					start_url: 'https://us06web.zoom.us/s/1?zak=host-token',
+				} as { join_url: string },
+			}),
+		).toBe('https://us06web.zoom.us/j/1?pwd=x');
+	});
+
+	it('refuses plain http and free text', () => {
+		expect(joinLink({ ...base, location_address: 'http://zoom.us/j/1' })).toBeNull();
+		expect(joinLink({ ...base, location_address: 'Zoom link to follow' })).toBeNull();
+		expect(joinLink(base)).toBeNull();
 	});
 });

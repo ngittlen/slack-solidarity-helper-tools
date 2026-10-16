@@ -84,6 +84,10 @@ export interface MobilizeSyncOptions {
 
 export interface MobilizeSyncResult extends SyncReport {
 	skippedNoAddress: number;
+	/** Virtual events held back because an upcoming session has no join link,
+	 *  by name: only an organizer adding the link can fix one. Always empty while
+	 *  virtual events are switched off on /settings. */
+	skippedNoJoinLink: { title: string; reason: string }[];
 	/** Held back by the `mobilize-exclude` tag in Solidarity. */
 	excludedByTag: number;
 	/** Of those, the ones already published to Mobilize by an earlier run. The
@@ -147,11 +151,15 @@ export async function runMobilizeSync(
 			`[mobilize-sync] left out ${excludedImports} event(s) imported from the partner org`,
 		);
 	}
-	const { planned, skipped, excludedByTag, duplicateSessions } = planMigration(
+	const { planned, skipped, excludedByTag, noJoinLink, duplicateSessions } = planMigration(
 		events,
 		Date.now(),
 		pageDescriptions,
+		{ includeVirtual: settings.mobilizeSyncVirtualEvents },
 	);
+	for (const entry of noJoinLink) {
+		console.warn(`[mobilize-sync] "${entry.title}": ${entry.reason} — left out`);
+	}
 	for (const duplicate of duplicateSessions) {
 		console.warn(
 			`[mobilize-sync] "${duplicate.title}": session ${duplicate.sessionId} repeats the exact ` +
@@ -204,6 +212,7 @@ export async function runMobilizeSync(
 	return {
 		...report,
 		skippedNoAddress: skipped.length,
+		skippedNoJoinLink: noJoinLink.map(({ title, reason }) => ({ title, reason })),
 		excludedByTag: excludedByTag.length,
 		excludedStillLive,
 		duplicateSessions: duplicateSessions.map(({ title, sessionId, keptSessionId }) => ({

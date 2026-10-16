@@ -45,6 +45,7 @@ describe('the table', () => {
 				'mobilizeContactEmail',
 				'mobilizeContactPhone',
 				'mobilizeImportTag',
+				'mobilizeSyncVirtualEvents',
 				'slackGrowthReportRankingAlpha',
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
@@ -59,7 +60,7 @@ describe('the table', () => {
 				'publicJoinUrl',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(21);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(22);
 	});
 });
 
@@ -157,6 +158,14 @@ describe('contact fields', () => {
 		});
 		expect(await run('mobilizeImportTag', '')).toEqual({ ok: true, value: '' });
 		expect(await run('mobilizeImportTag', 'x'.repeat(101))).toMatchObject({ ok: false });
+	});
+
+	it('takes the virtual-events switch only as a real boolean', async () => {
+		expect(await run('mobilizeSyncVirtualEvents', true)).toEqual({ ok: true, value: true });
+		expect(await run('mobilizeSyncVirtualEvents', false)).toEqual({ ok: true, value: false });
+		// "false" is truthy; a stringly-typed client must not switch it ON.
+		expect(await run('mobilizeSyncVirtualEvents', 'false')).toMatchObject({ ok: false });
+		expect(await run('mobilizeSyncVirtualEvents', 1)).toMatchObject({ ok: false });
 	});
 
 	it.each(['organizer@example.org', 'a.b+tag@sub.example.co.uk'])(

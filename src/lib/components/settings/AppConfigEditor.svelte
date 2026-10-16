@@ -52,6 +52,8 @@
 		mobilizeContactPhone: string;
 		/** Tag selecting partner Mobilize events to import ('' = import off). */
 		mobilizeImportTag: string;
+		/** Whether the event sync publishes virtual events to Mobilize too. */
+		mobilizeSyncVirtualEvents: boolean;
 		rankingAlpha: number | undefined;
 		/** Header countdown config ('' when unset). */
 		countdownLabel: string;
@@ -83,6 +85,7 @@
 		mobilizeContactEmail,
 		mobilizeContactPhone,
 		mobilizeImportTag,
+		mobilizeSyncVirtualEvents,
 		rankingAlpha,
 		countdownLabel,
 		countdownEndAt,
@@ -219,6 +222,21 @@
 		save: (value) => postAppConfig({ mobilizeImportTag: value }),
 	});
 
+	// Virtual events on Mobilize — a checkbox on the same autosave as the VAN
+	// campaign switches.
+	const virtualEventsSave = createFieldAutosave<boolean>({
+		initial: mobilizeSyncVirtualEvents,
+		parse: (raw) => raw === 'true',
+		save: (value) => postAppConfig({ mobilizeSyncVirtualEvents: value }),
+	});
+
+	/** The autosave helper reads `event.target.value`, which on a checkbox is
+	 *  the constant "on" — so hand it the checked state as the string it parses. */
+	function onVirtualEventsToggle(e: Event): void {
+		const checked = (e.currentTarget as HTMLInputElement).checked;
+		virtualEventsSave.oninput({ target: { value: String(checked) } } as unknown as Event);
+	}
+
 	const contactSaves = $derived([contactNameSave, contactEmailSave, contactPhoneSave]);
 	const contactStatus = $derived(contactSaves.find((f) => f.status !== 'idle')?.status ?? 'idle');
 	const contactError = $derived(contactSaves.find((f) => f.error)?.error ?? null);
@@ -302,6 +320,7 @@
 		siteNameSave.destroy();
 		publicJoinUrlSave.destroy();
 		importTagSave.destroy();
+		virtualEventsSave.destroy();
 		alphaSave.destroy();
 		tickerSpeedSave.destroy();
 		countdownLabelSave.destroy();
@@ -605,6 +624,26 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.mobilizeSyncVirtualEvents}
+		label="Virtual events on Mobilize"
+		status={virtualEventsSave.status}
+		error={virtualEventsSave.error}
+		onRetry={virtualEventsSave.status === 'error' ? virtualEventsSave.retry : undefined}
+	>
+		<label class="toggle">
+			<input type="checkbox" checked={virtualEventsSave.value} onchange={onVirtualEventsToggle} />
+			<span>Sync virtual events to Mobilize as well as in-person ones</span>
+		</label>
+		<p class="app-config-note">
+			Each session's join link (its Zoom or Meet link in Solidarity) goes on its Mobilize shift as
+			private instructions, which Mobilize only sends to people after they sign up. A virtual event
+			with an upcoming session that has no link is skipped until one is added, and named in the
+			Mobilize sync channel each night. Turning this off stops new virtual events and updates to
+			existing ones; it doesn't take down events already on Mobilize.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
 		id={APP_CONFIG_ROW_IDS.mobilizeImportTag}
 		label="Partner Mobilize import tag"
 		status={importTagSave.status}
@@ -885,6 +924,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
+	}
+
+	.toggle {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
 	}
 
 	.app-config-note {
