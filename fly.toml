@@ -37,6 +37,8 @@ primary_region = 'ord'
   path = '/health'
 
 [[vm]]
-  memory = '512mb'
+  # 512mb ran out mid catalog sync (2026-10-17): the machine was killed, the
+  # catalog froze for a campaign, and requests in flight got a 500.
+  memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
