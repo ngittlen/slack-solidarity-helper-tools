@@ -20,6 +20,7 @@ import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
 import { loadContactMarks, marksFor } from './contact-sync.js';
+import { gatedByFreshTurf } from './fresh-nearby.js';
 import { turfSnapshot } from '../../van/turf-view.js';
 import {
 	canClaim,
@@ -180,6 +181,7 @@ export async function claimTurf(
 	const snapshot = turfSnapshot(row, now, {
 		walkReports: await latestWalkReports(db, [turfId]),
 		vanAssignmentTtlHours: input.options?.vanAssignmentTtlHours,
+		freshTurfNearby: await gatedByFreshTurf(db, [row], slackUserId, now, input.options),
 	});
 
 	const options = input.options ?? {};
