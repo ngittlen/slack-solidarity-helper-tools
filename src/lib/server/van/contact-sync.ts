@@ -47,6 +47,7 @@ import { vanContactSyncState, vanPersonContacts, vanTurfRoster, vanTurfs } from 
 import type { VanClient } from './client.js';
 import { csvRows, responseChunks, type RosterEntry } from './hull-extract.js';
 import type { PersonHasher } from './person-hash.js';
+import { restoreRosterPersonIndex } from './roster-index.js';
 import { chunked } from './sql-chunk.js';
 import type { VanChangedEntityExportJob } from './types.js';
 
@@ -963,6 +964,14 @@ export async function runContactSync(
 	}
 
 	result.cursor = cursor;
+	// A drain that died with the person index dropped leaves it to the next
+	// pull; turfsWithPeople scans the roster without it. Caught: a slow scan
+	// is no reason to lose the counts.
+	try {
+		if (await restoreRosterPersonIndex(db)) console.log('[van] rebuilt van_turf_roster_person');
+	} catch (err) {
+		console.warn('[van] could not rebuild van_turf_roster_person:', errMessage(err));
+	}
 	const full = scheduled && (!state?.fullRecomputeAt || (await needsFullRecompute(db, campaignId)));
 	const recomputeIds = full
 		? undefined

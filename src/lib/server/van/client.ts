@@ -45,6 +45,9 @@ export interface VanConfig {
 	databaseMode: VanDatabaseMode;
 	/** Overridable for tests and for any future sandbox host. */
 	baseUrl?: string;
+	/** Calls in flight at once, across the whole client. Defaults to
+	 *  MAX_CONCURRENCY; a drain run by hand raises it. */
+	maxConcurrency?: number;
 }
 
 /** An error from VAN, carrying the HTTP status and any codes from the standard
@@ -82,7 +85,8 @@ type FetchFn = typeof fetch;
 const MAX_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
-// Concurrency across the whole client, not per call site.
+// Concurrency across the whole client, not per call site. The app's default;
+// VanConfig.maxConcurrency overrides it per client.
 const MAX_CONCURRENCY = 2;
 // VAN's documented maximum $top for /printedLists. Other endpoints allow more,
 // but this one 400s rather than clamping.
@@ -170,7 +174,7 @@ export interface VanClient {
 }
 
 export interface VanClientStats {
-	/** Time callers spent queued for one of the MAX_CONCURRENCY slots. High
+	/** Time callers spent queued for one of the client's slots. High
 	 *  means our own limiter, not VAN, is what the caller waited on. */
 	slotWaitMs: number;
 	/** Time spent sleeping between retries of a 429, 5xx or network failure —
@@ -223,8 +227,9 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	};
 
 	// Simple FIFO semaphore. Every request — paginated walks included — passes
-	// through here, so a caller that fans out over 200 turfs still only has two
-	// requests in flight.
+	// through here, so a caller that fans out over 200 turfs still only has
+	// `maxConcurrency` requests in flight (two unless the config says otherwise).
+	const maxConcurrency = Math.max(1, Math.floor(config.maxConcurrency ?? MAX_CONCURRENCY));
 	let active = 0;
 	const waiting: Array<() => void> = [];
 	const stats: VanClientStats = { slotWaitMs: 0, retryWaitMs: 0, retries: 0 };
@@ -235,7 +240,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	};
 
 	/**
-	 * At most MAX_CONCURRENCY calls in flight.
+	 * At most `maxConcurrency` calls in flight.
 	 *
 	 * The slot is TRANSFERRED to a waiter rather than released and re-taken.
 	 * Decrementing first and waking a waiter afterwards opens a gap: the woken
@@ -244,7 +249,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	 * three in flight against a limit of two.
 	 */
 	async function withSlot<T>(run: () => Promise<T>): Promise<T> {
-		if (active >= MAX_CONCURRENCY) {
+		if (active >= maxConcurrency) {
 			// Resuming here means a slot was handed over, already counted.
 			const queuedAt = Date.now();
 			await new Promise<void>((resolve) => waiting.push(resolve));

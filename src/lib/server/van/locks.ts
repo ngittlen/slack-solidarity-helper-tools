@@ -48,3 +48,10 @@ export function vanLiveContactLock(campaignId: number): string {
  * wait on another campaign's catalog to expire claims.
  */
 export const VAN_LEDGER_LOCK = 'van-ledger';
+
+/**
+ * Held by a drain while the roster's person index is dropped for its bulk
+ * load (roster-index.ts), so the contact pull does not rebuild it underneath.
+ * One for every campaign: the index is the whole table's.
+ */
+export const VAN_ROSTER_BULK_LOCK = 'van-roster-bulk-load';

@@ -56,9 +56,9 @@ export interface CatalogSyncResult {
 	turfsUnretired: number;
 	geometryQueued: number;
 	claimsReleased: number;
-	/** Queue rows deleted because their turf was retired. Reported rather than
-	 *  silent: it is the only signal that geometry work was abandoned, as
-	 *  distinct from having failed. */
+	/** Queue rows deleted because their turf was retired, or has no doors and
+	 *  was still waiting. Reported rather than silent: it is the only signal
+	 *  that geometry work was abandoned, as distinct from having failed. */
 	geometryQueueDropped: number;
 	/** Every region this run actually read, with VAN's own `dateRefreshed`.
 	 *
@@ -442,12 +442,34 @@ export async function runCatalogSync(
 			.returning({ id: vanTurfCheckouts.id }),
 	);
 
-	const dropStatements = chunked(retiredRouteIds).map((batch) =>
-		db
-			.delete(vanGeometryQueue)
-			.where(inArray(vanGeometryQueue.turfId, batch))
-			.returning({ turfId: vanGeometryQueue.turfId }),
+	// Turf with no doors is no longer queued (planCatalogSync), and VAN never
+	// finishes exporting its empty list. Any row still waiting — queued before
+	// that rule, or for a route VAN has since emptied — is dropped too, so the
+	// next run does not spend an hour per resubmit on it before it dead-letters.
+	// Only waiting rows: a done or failed one is the record of what happened.
+	// Deleted rather than settled, so one that gains doors is queued afresh.
+	const emptyTurfIds = plan.upserts.flatMap((row) =>
+		(row.routeSize ?? 0) <= 0 && row.turfId !== undefined ? [row.turfId] : [],
 	);
+	const dropStatements = [
+		...chunked(retiredRouteIds).map((batch) =>
+			db
+				.delete(vanGeometryQueue)
+				.where(inArray(vanGeometryQueue.turfId, batch))
+				.returning({ turfId: vanGeometryQueue.turfId }),
+		),
+		...chunked(emptyTurfIds).map((batch) =>
+			db
+				.delete(vanGeometryQueue)
+				.where(
+					and(
+						inArray(vanGeometryQueue.turfId, batch),
+						inArray(vanGeometryQueue.status, ['pending', 'running']),
+					),
+				)
+				.returning({ turfId: vanGeometryQueue.turfId }),
+		),
+	];
 	// A retired route's people are a cut nobody can walk any more — but not
 	// straight away: a completion on it still derives its % walked from its
 	// count for RETIRED_ROSTER_KEEP_MS (see contact-sync.ts), and marking walked

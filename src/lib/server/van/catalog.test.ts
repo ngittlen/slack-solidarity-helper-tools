@@ -382,6 +382,16 @@ describe('planCatalogSync', () => {
 			expect(plan.geometryQueue).toHaveLength(0);
 		});
 
+		it('skips a route with no doors — VAN never finishes exporting an empty list', () => {
+			const plan = planCatalogSync({
+				...base,
+				roster: true,
+				folders: [folder([region([route({ routeSize: 0, doorCount: 0 })])])],
+			});
+			expect(plan.geometryQueue).toHaveLength(0);
+			expect(plan.upserts).toHaveLength(1);
+		});
+
 		it('skips a route with no saved list — there is nothing to export', () => {
 			const plan = planCatalogSync({
 				...base,

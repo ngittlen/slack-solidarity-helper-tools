@@ -52,7 +52,7 @@ type FetchFn = typeof fetch;
  *  hundred export jobs to rediscover that is worse than surfacing it. */
 export const MAX_ATTEMPTS = 4;
 
-/** Work items in flight. The VAN client already caps ITS OWN concurrency at 2,
+/** Work items in flight. The VAN client already caps ITS OWN concurrency (2 by default),
  *  but the blob download goes straight to Azure and bypasses that limiter
  *  entirely, so the cap is repeated here over whole items.
  *

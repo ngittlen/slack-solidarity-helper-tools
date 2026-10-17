@@ -528,7 +528,11 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 					routeSize,
 				});
 				const wantsRoster = input.roster === true && prior?.rosterSavedListId !== route.savedListId;
-				if (route.savedListId && (wantsGeometry || wantsRoster)) {
+				// A route with no doors has nothing to draw or roster, and VAN never
+				// finishes exporting its empty list: queued, it held its place for
+				// hours of resubmits before dead-lettering. runCatalogSync unqueues one
+				// already waiting.
+				if (route.savedListId && routeSize > 0 && (wantsGeometry || wantsRoster)) {
 					geometryQueue.push({
 						vanMapRouteId: route.mapRouteId,
 						savedListId: route.savedListId,

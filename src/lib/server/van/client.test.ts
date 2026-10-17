@@ -204,6 +204,23 @@ describe('createVanClient', () => {
 		expect(fetchFn).toHaveBeenCalledTimes(6);
 	});
 
+	it('caps concurrency at maxConcurrency when one is given', async () => {
+		let inFlight = 0;
+		let peak = 0;
+		const fetchFn = vi.fn().mockImplementation(async () => {
+			inFlight++;
+			peak = Math.max(peak, inFlight);
+			await new Promise((r) => setTimeout(r, 10));
+			inFlight--;
+			return res(200, { items: [] });
+		});
+
+		const client = createVanClient({ ...config, maxConcurrency: 4 }, fetchFn as never);
+		await withTimers(Promise.all([1, 2, 3, 4, 5, 6, 7, 8].map((id) => client.mapRegions(id))));
+		expect(peak).toBe(4);
+		expect(fetchFn).toHaveBeenCalledTimes(8);
+	});
+
 	// The forward walk this replaces read the OLDEST 6.6% of a 30,261-record
 	// table in 200 requests and then stopped silently on MAX_PAGES, which is
 	// precisely the data the distribution index does not want.

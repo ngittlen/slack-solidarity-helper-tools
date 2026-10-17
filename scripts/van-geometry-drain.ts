@@ -24,10 +24,16 @@
  * the turfs whose people it saw contacted, so `van:sync` then `van:drain`
  * leaves the doors-left numbers current.
  *
+ * A big roster pass (ROSTER_BULK_MIN queued or more) drops the roster's person
+ * index for the run and builds it again at the end — kept up row by row it
+ * was most of the drain's time; see roster-index.ts.
+ *
+ * Its VAN client allows VAN_CONCURRENCY calls at once, against the app's two.
+ *
  * Usage (from project root):
- *   npm run van:drain                      # 30 minutes, 2 at a time
+ *   npm run van:drain                      # 30 minutes, 4 at a time
  *   npm run van:drain -- --minutes 60
- *   npm run van:drain -- --concurrency 4   # raise if VAN is keeping up
+ *   npm run van:drain -- --concurrency 2   # lower if VAN pushes back
  *   npm run van:drain -- --max 50          # a taste, then stop
  *
  * Stop it with Ctrl-C: the lock is released, the row being worked stays
@@ -50,7 +56,11 @@ import { dbConfig } from '../bin/db-config.js';
 import { createVanClient } from '../src/lib/server/van/client.js';
 import { runGeometryQueue, type GeometryTimings } from '../src/lib/server/van/geometry-worker.js';
 import type { VanClientStats } from '../src/lib/server/van/client.js';
-import { vanContactLock, vanSyncLock } from '../src/lib/server/van/locks.js';
+import { VAN_ROSTER_BULK_LOCK, vanContactLock, vanSyncLock } from '../src/lib/server/van/locks.js';
+import {
+	createRosterPersonIndex,
+	dropRosterPersonIndex,
+} from '../src/lib/server/van/roster-index.js';
 import { PRIMARY_CAMPAIGN_KEY } from '../src/lib/server/van/campaign-credentials.js';
 import {
 	campaignCredential,
@@ -79,7 +89,13 @@ const flag = (name: string, fallback: number): number => {
 };
 
 const MINUTES = flag('minutes', 30);
-const CONCURRENCY = flag('concurrency', 2);
+const CONCURRENCY = flag('concurrency', 4);
+/** VAN calls in flight at once. Turfs past this many queue for VAN rather
+ *  than adding to it, so --concurrency above it overlaps downloads only. */
+const VAN_CONCURRENCY = 4;
+/** Queued turfs, with rosters on, worth dropping the person index for: below
+ *  this, rebuilding it costs more than the rows would. */
+const ROSTER_BULK_MIN = 500;
 // `|| null` so `--max` with a junk value means "no cap" rather than "do nothing".
 const MAX_ITEMS = args.includes('--max') ? flag('max', 0) || null : null;
 /** Work is done in slices so the run reports progress as it goes, rather than
@@ -109,6 +125,7 @@ const client = createVanClient({
 	appName: credential.appName,
 	apiKey: credential.apiKey,
 	databaseMode: credential.databaseMode,
+	maxConcurrency: VAN_CONCURRENCY,
 });
 
 /** Set by main() once the campaign row is read. */
@@ -130,6 +147,63 @@ const LOCK_HEARTBEAT_MS = 30 * 1000;
 const SLICE_GAP_MS = 10 * 1000;
 /** How long to wait for a scheduled sync to let go of the lock. */
 const LOCK_RETRY_MS = 15 * 1000;
+
+/** The bulk lock while this run has the person index down, kept alive by a
+ *  heartbeat as the slice's is. */
+let bulkToken: string | null = null;
+let bulkHeartbeat: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Drop the roster's person index for a big roster pass (roster-index.ts).
+ * Under the bulk lock, so a contact pull meanwhile leaves it down. Skipped
+ * when another drain holds that lock: it has the index down already, and
+ * will build it again when it is done.
+ */
+async function setIndexAside(pending: number): Promise<void> {
+	if (!roster || pending < ROSTER_BULK_MIN) return;
+	const token = await acquireSyncLock(db, VAN_ROSTER_BULK_LOCK, LOCK_TTL_MS);
+	if (!token) {
+		console.log('  Another drain is loading rosters; leaving the person index to it.\n');
+		return;
+	}
+	bulkToken = token;
+	bulkHeartbeat = setInterval(() => {
+		extendSyncLock(db, VAN_ROSTER_BULK_LOCK, token, LOCK_TTL_MS)
+			.then((held) => {
+				if (!held) console.warn('  ! lost the bulk lock — a contact pull may rebuild the index');
+			})
+			.catch((err) => console.warn('  ! could not extend the bulk lock:', err));
+	}, LOCK_HEARTBEAT_MS);
+	const started = Date.now();
+	await dropRosterPersonIndex(db);
+	console.log(
+		`  Dropped van_turf_roster_person for the roster pass (${secs(Date.now() - started)}); ` +
+			'rebuilt at the end.\n',
+	);
+}
+
+/**
+ * Build the person index again, if this run dropped it. Before the contact
+ * pull, which is what reads it. A failure is reported, not thrown: the lock
+ * is released either way, and the next contact pull builds it.
+ */
+async function putIndexBack(): Promise<void> {
+	const token = bulkToken;
+	if (!token) return;
+	if (bulkHeartbeat) clearInterval(bulkHeartbeat);
+	bulkHeartbeat = null;
+	console.log('\n  Rebuilding van_turf_roster_person…');
+	const started = Date.now();
+	try {
+		await createRosterPersonIndex(db);
+		console.log(`  Rebuilt in ${secs(Date.now() - started)}.`);
+	} catch (err) {
+		console.error('  ! Could not rebuild it; the next contact pull will:', err);
+	} finally {
+		bulkToken = null;
+		await releaseSyncLock(db, VAN_ROSTER_BULK_LOCK, token).catch(() => {});
+	}
+}
 
 /** "1h 05m" / "12m" / "<1m". */
 function formatDuration(ms: number): string {
@@ -376,7 +450,9 @@ async function main(): Promise<void> {
 	// mid-flight keeps its export job id and resumes on the next run.
 	//
 	// The first press lets the slice finish, which with its grace can be a few
-	// minutes. A second quits at once, releasing the lock on the way out. Rows
+	// minutes, then rebuilds the person index if the run dropped it. A second
+	// quits at once, releasing the locks on the way out — the index is left
+	// for the next contact pull, which builds it once the bulk lock is free. Rows
 	// in flight are left `running`: one with a job id resumes by polling, and
 	// one caught mid-POST resubmits — at worst one orphaned export in VAN.
 	// The slice's end-of-slice recount is skipped too, so turfs it rostered
@@ -391,9 +467,12 @@ async function main(): Promise<void> {
 			return;
 		}
 		console.log('\n  Quitting now.');
-		const release = heldToken
-			? releaseSyncLock(db, vanSyncLock(campaignId), heldToken).catch(() => {})
-			: Promise.resolve();
+		const release = Promise.all([
+			heldToken
+				? releaseSyncLock(db, vanSyncLock(campaignId), heldToken).catch(() => {})
+				: undefined,
+			bulkToken ? releaseSyncLock(db, VAN_ROSTER_BULK_LOCK, bulkToken).catch(() => {}) : undefined,
+		]);
 		// Bounded: a database that is not answering must not hold the exit up.
 		void Promise.race([release, new Promise((r) => setTimeout(r, 3000))]).then(() =>
 			process.exit(130),
@@ -413,6 +492,7 @@ async function main(): Promise<void> {
 	 *  end — nothing else would reach them. */
 	const unrecounted: number[] = [];
 	try {
+		await setIndexAside(before.pending);
 		let slice = 0;
 		while (!stopping && Date.now() < deadline) {
 			const remaining = deadline - Date.now();
@@ -510,15 +590,29 @@ async function main(): Promise<void> {
 			// Nothing attempted means the queue is empty — or every row left is
 			// one this run already failed, which retrying now will not fix.
 			if (result.attempted === 0 || progress.pending === 0) break;
+			// Everything left was tried this slice and is still waiting on VAN.
+			// The next slice could only ask again in a few seconds — a job is
+			// resubmitted only once it is an hour stale — so the run would spin
+			// to its budget, the index rebuild and contact pull waiting behind it.
+			if (result.stillRunning === result.attempted && progress.pending <= result.stillRunning) {
+				console.log(
+					`        ${progress.pending} export(s) still pending in VAN; ` +
+						'the scheduled sync will pick them up.',
+				);
+				break;
+			}
 			if (MAX_ITEMS) break;
 		}
 		// A run that ended while still waiting on a sync still waited.
 		if (syncWaitStarted !== null) syncWaitMs += Date.now() - syncWaitStarted;
 		// Before the contact pull, whose VAN calls are not the turfs'.
 		geometryVanStats = clientStats();
+		await putIndexBack();
 		await recountMissed(unrecounted);
 		await pullContacts(deadline, () => stopping);
 	} finally {
+		// A no-op unless the run threw before rebuilding it.
+		await putIndexBack();
 		process.off('SIGINT', onSignal);
 		process.off('SIGTERM', onSignal);
 	}
