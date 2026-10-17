@@ -12,7 +12,7 @@
 // we skipped — a partial sync is safe because retirement is scoped to the
 // folders actually fetched (see planCatalogSync).
 
-import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 // Relative, not `$lib/...`: scripts/van-sync-once.ts runs this under tsx,
 // outside the Vite bundle, where the alias does not resolve.
@@ -289,7 +289,35 @@ export async function runCatalogSync(
 	// elsewhere (catalog.ts, outsideAssignment).
 	const claims = await loadClaimsForExports(db, campaignId, now);
 
-	const existing = await db.select().from(vanTurfs).where(eq(vanTurfs.campaignId, campaignId));
+	// Live turf in full; retired turf only as far as each use needs it.
+	//
+	// Every re-cut retires a region's routes and keeps the rows, so retired turf
+	// outgrows live turf many times over — 29,251 retired against 12,245 live on
+	// 2026-10-17, R10 alone re-cut six times in two weeks. Loaded whole, with
+	// hulls and every other column, the catalog went past the machine's 512 MB
+	// and was killed mid-sync on every run: no error recorded, lock left to
+	// lapse, the catalog frozen. The planner needs a retired row only when VAN lists its
+	// route again (an unretirement), so only those are read in full.
+	const live = await db
+		.select()
+		.from(vanTurfs)
+		.where(and(eq(vanTurfs.campaignId, campaignId), isNull(vanTurfs.retiredAt)));
+	const retired = await db
+		.select({
+			turfId: vanTurfs.turfId,
+			vanMapRouteId: vanTurfs.vanMapRouteId,
+			retiredAt: vanTurfs.retiredAt,
+		})
+		.from(vanTurfs)
+		.where(and(eq(vanTurfs.campaignId, campaignId), isNotNull(vanTurfs.retiredAt)));
+	const routesRead = new Set(
+		folders.flatMap((f) => f.regions.flatMap((r) => (r.mapRoutes ?? []).map((m) => m.mapRouteId))),
+	);
+	const returning = retired.filter((row) => routesRead.has(row.vanMapRouteId)).map((r) => r.turfId);
+	const existing = [...live];
+	for (const batch of chunked(returning)) {
+		existing.push(...(await db.select().from(vanTurfs).where(inArray(vanTurfs.turfId, batch))));
+	}
 	// Every campaign's ids, so a new turf never takes an id another one holds.
 	const takenTurfIds = new Set(
 		(await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs)).map((r) => r.turfId),
@@ -413,9 +441,7 @@ export async function runCatalogSync(
 	const retiredRouteIds = [
 		...new Set([
 			...plan.retirements,
-			...existing
-				.filter((row) => row.retiredAt !== null && !unretired.has(row.turfId))
-				.map((row) => row.turfId),
+			...retired.filter((row) => !unretired.has(row.turfId)).map((row) => row.turfId),
 		]),
 	];
 
@@ -478,7 +504,7 @@ export async function runCatalogSync(
 	// Last in the batch, and not counted, so the result indexes above are
 	// unchanged.
 	const rosterCutoff = new Date(now.getTime() - RETIRED_ROSTER_KEEP_MS).toISOString();
-	const rosterExpired = existing
+	const rosterExpired = retired
 		.filter(
 			(row) => row.retiredAt !== null && row.retiredAt < rosterCutoff && !unretired.has(row.turfId),
 		)
