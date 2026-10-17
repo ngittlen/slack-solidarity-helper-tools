@@ -48,10 +48,19 @@ export interface TurfSnapshot {
 	/** That walk is newer than the last scheduled contact sync, so an
 	 *  uncontacted count does not reflect it yet. */
 	walkAwaitingCount?: boolean;
+	/** Its doors were knocked before the cut (`hasContactHistory`) and turf
+	 *  nobody has been to is free within FRESH_TURF_RADIUS_MILES, so this one
+	 *  waits. Decided by van/fresh-nearby.ts, which needs the neighbours; see
+	 *  `canClaim`. Optional so snapshots that predate it need not name it. */
+	freshTurfNearby?: boolean;
 }
 
 /** At this, a reported turf has nothing left to knock and leaves the pool. */
 export const WALKED_OUT_PERCENT = 100;
+
+/** How far to look, centroid to centroid, for fresh turf that keeps turf
+ *  knocked before its cut out of the pool. See `TurfSnapshot.freshTurfNearby`. */
+export const FRESH_TURF_RADIUS_MILES = 2;
 
 export interface ClaimSnapshot {
 	turfId: number;
@@ -233,6 +242,7 @@ export type ClaimRefusalReason =
 	| 'no-doors-left'
 	| 'already-held'
 	| 'assigned-in-van'
+	| 'fresh-turf-nearby'
 	| 'at-claim-limit';
 
 export type ClaimDecision =
@@ -363,6 +373,18 @@ export function canClaim(
 			ok: false,
 			reason: 'assigned-in-van',
 			message: 'An organizer has already sent this turf to someone directly.',
+		};
+	}
+
+	// A re-cut that did not leave out the knocked doors lists them as untouched,
+	// and MiniVAN would send this volunteer back to them. While turf nobody has
+	// been to is free nearby, that turf goes first; once it is all taken or
+	// walked, this one comes back by itself.
+	if (turf.freshTurfNearby === true) {
+		return {
+			ok: false,
+			reason: 'fresh-turf-nearby',
+			message: `Someone knocked these doors before the list was re-cut. There's fresh turf within ${FRESH_TURF_RADIUS_MILES} miles. Take one of those first.`,
 		};
 	}
 

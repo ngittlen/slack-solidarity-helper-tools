@@ -355,6 +355,9 @@ export type TurfViewOptions = ClaimOptions & {
 	 *  an admin viewer; and even if passed for anyone else it is not used,
 	 *  because it rides on `heldBy`, which only admins get. */
 	holderAccounts?: ReadonlyMap<string, HolderAccount>;
+	/** Routes knocked before their cut that wait while fresh turf nearby is
+	 *  free. See `TurfSnapshot.freshTurfNearby`. */
+	freshTurfNearby?: ReadonlySet<number>;
 };
 
 /** Campaign id → the badge text volunteers see beside its turf. Sent once per
@@ -477,9 +480,11 @@ export function turfSnapshot(
 	options: {
 		walkReports?: ReadonlyMap<number, WalkReportInput>;
 		vanAssignmentTtlHours?: number;
+		/** Routes held back for fresh turf nearby (van/fresh-nearby.ts). */
+		freshTurfNearby?: ReadonlySet<number>;
 	} = {},
 ): TurfSnapshot {
-	const { walkReports, vanAssignmentTtlHours } = options;
+	const { walkReports, vanAssignmentTtlHours, freshTurfNearby } = options;
 	return {
 		turfId: row.turfId,
 		printedListNumber: row.printedListNumber,
@@ -502,6 +507,7 @@ export function turfSnapshot(
 		reportedPercent: walkReports?.get(row.turfId)?.percent ?? null,
 		walked: walkReports?.has(row.turfId) ?? false,
 		walkAwaitingCount: walkReports?.get(row.turfId)?.awaitingCount ?? false,
+		freshTurfNearby: freshTurfNearby?.has(row.turfId) ?? false,
 	};
 }
 
