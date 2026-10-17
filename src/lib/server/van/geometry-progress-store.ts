@@ -3,12 +3,12 @@
 // Four cheap aggregates rather than one clever join: the queue and the turf
 // table answer different halves of the question (what is left to do, and what
 // has landed), and a turf can be absent from the queue for two opposite reasons
-// — it already has a shape, or it never had a saved list to export.
+// — it already has a shape, or it never had a saved list or doors to export.
 //
 // Retired turf is excluded throughout. It is off the map, and counting it would
 // make a finished run look permanently incomplete.
 
-import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanGeometryQueue, vanTurfs } from '../schema.js';
 import type { GeometryProgress } from '../../van/geometry-progress.js';
@@ -22,7 +22,14 @@ const count = sql<number>`count(*)`;
  *  otherwise count another's rows as its own work left. */
 export async function loadGeometryProgress(db: Db, campaignId?: number): Promise<GeometryProgress> {
 	const inCampaign = campaignId === undefined ? undefined : eq(vanTurfs.campaignId, campaignId);
-	const live = and(isNull(vanTurfs.retiredAt), isNotNull(vanTurfs.savedListId), inCampaign);
+	// A route with no doors has nothing to draw and is never queued (see
+	// planCatalogSync), so counting it would leave a finished run short of 100%.
+	const live = and(
+		isNull(vanTurfs.retiredAt),
+		isNotNull(vanTurfs.savedListId),
+		gt(vanTurfs.routeSize, 0),
+		inCampaign,
+	);
 
 	const [eligibleRow] = await db.select({ n: count }).from(vanTurfs).where(live);
 	const [shapedRow] = await db

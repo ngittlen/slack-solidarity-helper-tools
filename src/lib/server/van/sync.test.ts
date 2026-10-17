@@ -362,6 +362,38 @@ describe('runCatalogSync', () => {
 		expect(deletedFrom).toEqual([vanGeometryQueue]);
 	});
 
+	it('drops waiting geometry rows for turf with no doors', async () => {
+		// VAN never finishes exporting an empty saved list: left queued, the row
+		// is resubmitted hourly until it dead-letters, and a drain spins on it.
+		const empty = makeClient({
+			mapRegions: async () => [
+				{
+					mapRegionId: 10,
+					name: 'Cambridge North',
+					mapRoutes: [
+						{
+							mapRouteId: 100,
+							name: 'Turf 01',
+							savedListId: 900,
+							routeNumber: 1,
+							routeSize: 0,
+							doorCount: 0,
+							phoneCount: 0,
+							printedList: { number: '35536745-88712' },
+						},
+					],
+				} as VanMapRegion,
+			],
+		});
+		const { db, deletedFrom, inserted } = makeDb();
+		const result = await runCatalogSync(db, empty, 1, MAPPING);
+
+		expect(result.turfsRetired).toBe(0);
+		expect(result.geometryQueueDropped).toBe(1);
+		expect(deletedFrom).toEqual([vanGeometryQueue]);
+		expect(inserted).not.toContainEqual(expect.objectContaining({ status: 'pending' }));
+	});
+
 	it('drops no geometry rows when nothing is retired', async () => {
 		const { db, deletedFrom } = makeDb();
 		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);

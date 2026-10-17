@@ -23,6 +23,7 @@ async function turf(
 		name: `Turf ${turfId}`,
 		saved_list_id: 900 + turfId,
 		door_count: 100,
+		route_size: 180,
 		hull_json: null,
 		centroid_lat: null,
 		retired_at: null,
@@ -108,6 +109,14 @@ describe('loadGeometryProgress', () => {
 		// below 100% forever.
 		await turf(100, { hull_json: '[{"lat":42,"lng":-83}]' });
 		await turf(200, { saved_list_id: null });
+
+		expect(await loadGeometryProgress(db)).toMatchObject({ eligible: 1, shaped: 1 });
+	});
+
+	it('leaves turf with no doors out of the denominator', async () => {
+		// Never queued (planCatalogSync): there is nothing to draw.
+		await turf(100, { hull_json: '[{"lat":42,"lng":-83}]' });
+		await turf(200, { route_size: 0, door_count: 0 });
 
 		expect(await loadGeometryProgress(db)).toMatchObject({ eligible: 1, shaped: 1 });
 	});
