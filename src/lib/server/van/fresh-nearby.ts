@@ -20,9 +20,12 @@
 // The one exception is the volunteer who checked the turf out last. They are
 // the one who knows which of its doors they reached, so they may take it back
 // to finish it whatever is free nearby. Anyone has claimed it since, and it is
-// held back from them like from anyone else.
+// held back from them like from anyone else. "The turf" is the ground, not the
+// cut: a region refresh retires every route in it and issues new ones under the
+// same names (turf-history-store.ts), and the re-cut is exactly what stripes
+// the turf, so their last checkout is nearly always on an earlier cut.
 
-import { and, between, desc, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, between, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs, type VanTurfRow } from '../schema.js';
 import { turfCampaignEnabled } from './campaigns.js';
@@ -57,7 +60,8 @@ function centreOf(row: Pick<VanTurfRow, 'centroidLat' | 'centroidLng'>): LatLng 
  * fresh turf within FRESH_TURF_RADIUS_MILES — what `turfSnapshot` takes as
  * `freshTurfNearby`, for `viewerSlackUserId`. A turf with no centroid is never
  * held back: there is no telling what is near it. Nor is one whose latest
- * checkout was the viewer's, so they can come back and finish it.
+ * checkout, on this cut or an earlier one, was the viewer's, so they can come
+ * back and finish it.
  */
 export async function gatedByFreshTurf(
 	db: Db,
@@ -124,32 +128,48 @@ export async function gatedByFreshTurf(
 
 	// Last, so the ledger is read only for turf that would otherwise wait.
 	if (gated.size > 0) {
-		for (const turfId of await lastCheckedOutBy(db, [...gated], viewerSlackUserId)) {
+		const held = rows.filter((row) => gated.has(row.turfId));
+		for (const turfId of await lastCheckedOutBy(db, held, viewerSlackUserId)) {
 			gated.delete(turfId);
 		}
 	}
 	return gated;
 }
 
-/** The routes among `turfIds` whose most recent checkout, live or ended, was
- *  `slackUserId`'s. */
-async function lastCheckedOutBy(db: Db, turfIds: number[], slackUserId: string): Promise<number[]> {
-	const mine: number[] = [];
-	for (const batch of chunked(turfIds)) {
+/** Which cuts are the same ground: VAN keeps the region and the name across a
+ *  refresh. Region as well as name, because names like "Turf 3" repeat. */
+function groundOf(row: Pick<VanTurfRow, 'campaignId' | 'mapRegionId' | 'name'>): string {
+	return `${row.campaignId}:${row.mapRegionId}:${row.name}`;
+}
+
+/** The routes among `turfs` whose most recent checkout, live or ended, on any
+ *  cut of the same ground, was `slackUserId`'s. */
+async function lastCheckedOutBy(
+	db: Db,
+	turfs: readonly VanTurfRow[],
+	slackUserId: string,
+): Promise<number[]> {
+	const grounds = new Set(turfs.map(groundOf));
+	const lastBy = new Map<string, string>();
+	for (const batch of chunked([...new Set(turfs.map((t) => t.name))])) {
 		const rows = await db
-			.select({ turfId: vanTurfCheckouts.turfId, slackUserId: vanTurfCheckouts.slackUserId })
+			.select({
+				campaignId: vanTurfs.campaignId,
+				mapRegionId: vanTurfs.mapRegionId,
+				name: vanTurfs.name,
+				slackUserId: vanTurfCheckouts.slackUserId,
+			})
 			.from(vanTurfCheckouts)
-			.where(inArray(vanTurfCheckouts.turfId, batch))
+			.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
+			.where(inArray(vanTurfs.name, batch))
 			.orderBy(desc(vanTurfCheckouts.claimedAt), desc(vanTurfCheckouts.id));
-		const seen = new Set<number>();
 		for (const row of rows) {
-			// Newest first, so the first row per route is the last checkout.
-			if (seen.has(row.turfId)) continue;
-			seen.add(row.turfId);
-			if (row.slackUserId === slackUserId) mine.push(row.turfId);
+			// Newest first, so the first row per ground is the last checkout.
+			const ground = groundOf(row);
+			if (grounds.has(ground) && !lastBy.has(ground)) lastBy.set(ground, row.slackUserId);
 		}
 	}
-	return mine;
+	return turfs.filter((t) => lastBy.get(groundOf(t)) === slackUserId).map((t) => t.turfId);
 }
 
 /** Open claims on these routes. `canClaim` reads expiry itself. */

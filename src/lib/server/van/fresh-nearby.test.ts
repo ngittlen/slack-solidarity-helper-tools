@@ -40,6 +40,9 @@ async function insertTurf(
 		listNumber?: string | null;
 		hidden?: boolean;
 		doorCount?: number;
+		name?: string;
+		regionId?: number;
+		retired?: boolean;
 	} = {},
 ) {
 	const knocked = over.knockedBeforeCut ?? 0;
@@ -48,12 +51,13 @@ async function insertTurf(
 		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
 		         region_name, name, printed_list_number, door_count, centroid_lat, centroid_lng,
 		         saved_list_id, roster_saved_list_id, uncontacted_doors, knocked_before_cut,
-		         hidden_at, first_seen_at, last_seen_at)
-		      VALUES (?, ?, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, ?, ?, ?, 5, 5, ?, ?, ?, ?, ?)`,
+		         hidden_at, retired_at, first_seen_at, last_seen_at)
+		      VALUES (?, ?, ?, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, ?, ?, ?, 5, 5, ?, ?, ?, ?, ?, ?)`,
 		args: [
 			turfId,
 			turfId,
-			`Turf ${turfId}`,
+			over.regionId ?? 1,
+			over.name ?? `Turf ${turfId}`,
 			over.listNumber === undefined ? `L-${turfId}` : over.listNumber,
 			over.doorCount ?? 100,
 			over.lat === undefined ? HOME.lat : over.lat,
@@ -61,6 +65,7 @@ async function insertTurf(
 			over.doorCount ?? 100,
 			knocked,
 			over.hidden ? NOW.toISOString() : null,
+			over.retired ? NOW.toISOString() : null,
 			NOW.toISOString(),
 			NOW.toISOString(),
 		],
@@ -200,6 +205,50 @@ describe('gatedByFreshTurf', () => {
 				releasedAt: '2026-10-16T15:00:00.000Z',
 			});
 			expect(await gated()).toEqual(new Set([STRIPED]));
+		});
+
+		describe('across a re-cut', () => {
+			// The striped turf is the new cut; this is the route it replaced.
+			const EARLIER_CUT = 10;
+
+			it('lets them back in when their checkout was on the earlier cut', async () => {
+				await insertTurf(EARLIER_CUT, { name: `Turf ${STRIPED}`, retired: true });
+				await claim(EARLIER_CUT, { slackUserId: ME, releasedAt: '2026-10-16T15:00:00.000Z' });
+				expect(await gated()).toEqual(new Set());
+				expect(await gated([STRIPED], 'U_SOMEONE')).toEqual(new Set([STRIPED]));
+			});
+
+			it('holds it back once someone else has checked out the new cut', async () => {
+				await insertTurf(EARLIER_CUT, { name: `Turf ${STRIPED}`, retired: true });
+				await claim(EARLIER_CUT, {
+					slackUserId: ME,
+					claimedAt: '2026-10-15T12:00:00.000Z',
+					releasedAt: '2026-10-15T15:00:00.000Z',
+				});
+				await claim(STRIPED, {
+					slackUserId: 'U_SOMEONE',
+					releasedAt: '2026-10-16T15:00:00.000Z',
+				});
+				expect(await gated()).toEqual(new Set([STRIPED]));
+			});
+
+			it('does not count a turf of the same name in another region', async () => {
+				await insertTurf(EARLIER_CUT, { name: `Turf ${STRIPED}`, regionId: 2, retired: true });
+				await claim(EARLIER_CUT, { slackUserId: ME, releasedAt: '2026-10-16T15:00:00.000Z' });
+				expect(await gated()).toEqual(new Set([STRIPED]));
+			});
+
+			it('lets them re-claim the new cut through claimTurf', async () => {
+				await insertTurf(EARLIER_CUT, { name: `Turf ${STRIPED}`, retired: true });
+				await claim(EARLIER_CUT, { slackUserId: ME, releasedAt: '2026-10-16T15:00:00.000Z' });
+				const result = await claimTurf(db, {
+					turfId: STRIPED,
+					slackUserId: ME,
+					slackUserName: 'Sam',
+					now: NOW,
+				});
+				expect(result).toMatchObject({ ok: true });
+			});
 		});
 
 		it('lets them re-claim it through claimTurf', async () => {
