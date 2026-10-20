@@ -58,9 +58,25 @@ describe('the table', () => {
 				'warningDmMessage',
 				'themeTokens',
 				'publicJoinUrl',
+				'mentorWalksVisibility',
+				'volunteerGuidelinesUrl',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(22);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(24);
+	});
+});
+
+describe('mentorWalksVisibility', () => {
+	const run = (v: unknown) => APP_CONFIG_FIELDS.mentorWalksVisibility(v, ctx);
+
+	it('accepts the three settings', () => {
+		for (const v of ['off', 'staff', 'everyone']) expect(run(v)).toEqual({ ok: true, value: v });
+	});
+
+	it('refuses anything else', () => {
+		for (const bad of ['', 'Everyone', 'admins', 1, null]) {
+			expect(run(bad)).toMatchObject({ ok: false, status: 400 });
+		}
 	});
 });
 

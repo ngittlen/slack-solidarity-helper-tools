@@ -21,6 +21,10 @@ export interface SessionData {
 	 *  placeholder meanwhile ("Apple volunteer"), never stamped on a claim by
 	 *  this code and hidden from the page header. */
 	needsName?: true;
+	/** An admin trying mentor walks as a new mentor would (the debug panel on
+	 *  /turfs): treated as eligible, and shown the feature whatever the
+	 *  Mentor walks setting says. Ignored for anyone but an admin. */
+	mentorSimulation?: true;
 }
 
 // Lazy-initialized so module import (e.g. SvelteKit's build-time analyse step,

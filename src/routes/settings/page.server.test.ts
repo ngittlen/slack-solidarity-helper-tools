@@ -112,6 +112,8 @@ const settingsFixture = {
 	vanRegionRefreshEnabled: false,
 	vanSheetTabName: 'Packet Tracker',
 	publicJoinUrl: '',
+	mentorWalksVisibility: 'off' as const,
+	volunteerGuidelinesUrl: '',
 };
 
 function makeEvent(overrides: {

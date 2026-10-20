@@ -19,6 +19,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 
 import { sessions, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { saveVanBlockedUser, deleteVanBlockedUser, type Editor } from '../settings.js';
+import { loadMentor, revokeMentor } from '../mentor-walks/store.js';
 
 type Database = ReturnType<typeof drizzle>;
 
@@ -105,6 +106,14 @@ export async function blockFromTurfCheckout(
 			.update(vanTurfCheckouts)
 			.set({ releasedAt, releaseReason: 'blocked' })
 			.where(eq(vanTurfCheckouts.id, row.id));
+	}
+
+	// Blocking an active mentor revokes them, cancelling their upcoming walks
+	// (specs/015-mentor-walks, edge cases). Unblocking doesn't undo it: only an
+	// organizer reinstates a mentor.
+	const mentor = await loadMentor(db, target.slackUserId);
+	if (mentor?.status === 'active') {
+		await revokeMentor(db, target.slackUserId, editor, new Date(releasedAt));
 	}
 
 	const sessionsRevoked = await revokeSessions(db, target.slackUserId);

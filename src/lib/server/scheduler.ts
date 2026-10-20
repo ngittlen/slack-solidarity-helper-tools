@@ -268,12 +268,24 @@ const vanDailyReport: Job = {
 	},
 };
 
+/** Mentor walk housekeeping: deleting phone numbers a day after their walk
+ *  starts (specs/015-mentor-walks, FR-011). Hourly, so none outlives the
+ *  limit by more than an hour. No workflow mirrors it. */
+const mentorWalksSweep: Job = {
+	name: 'mentor-walks-sweep',
+	schedule: [{ hours: EVERY_HOUR, minutes: [20] }],
+	run: async (_slot, call) => {
+		await call('/api/internal/mentor-walks-sweep', {}, MINUTE);
+	},
+};
+
 export const JOBS: readonly Job[] = [
 	vanSync,
 	mobilizeSync,
 	mobilizeImport,
 	slackInviteAudit,
 	vanDailyReport,
+	mentorWalksSweep,
 ];
 
 /**

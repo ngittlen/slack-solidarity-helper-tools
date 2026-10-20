@@ -393,6 +393,13 @@ export const appConfig = sqliteTable(
 		// env fallback; NULL or '' hides the button rather than showing a dead
 		// link.
 		publicJoinUrl: text('public_join_url'),
+		// Who sees mentor walks (specs/015-mentor-walks, FR-040): 'off',
+		// 'staff' (admins and moderators) or 'everyone'. NULL means 'off', so the
+		// feature ships dark.
+		mentorWalksVisibility: text('mentor_walks_visibility'),
+		// The volunteer guidelines mentors agree to before hosting (FR-005,
+		// FR-036). NULL or '' means nobody can be invited or start hosting.
+		volunteerGuidelinesUrl: text('volunteer_guidelines_url'),
 		lastEditedBy: text('last_edited_by').notNull(),
 		lastEditedByName: text('last_edited_by_name').notNull(),
 		lastEditedAt: text('last_edited_at').notNull(),
@@ -1673,3 +1680,63 @@ export type VanContactSyncStateRow = typeof vanContactSyncState.$inferSelect;
 
 export type VanZipCentroidRow = typeof vanZipCentroids.$inferSelect;
 export type NewVanZipCentroidRow = typeof vanZipCentroids.$inferInsert;
+
+// Mentor status (specs/015-mentor-walks, FR-003): one row per person who has
+// answered the invitation or been appointed. No row means "not invited yet" —
+// the invitation shows until it is answered, so there is no stored 'invited'.
+export const mentors = sqliteTable('mentors', {
+	/** The holder id: a Slack id, or `google:` / `apple:`. */
+	holderId: text('holder_id').primaryKey(),
+	holderName: text('holder_name').notNull(),
+	status: text('status').$type<'snoozed' | 'declined' | 'active' | 'revoked'>().notNull(),
+	/** Set while snoozed: the invitation comes back after this. */
+	snoozedUntil: text('snoozed_until'),
+	/** When they agreed to the volunteer guidelines, and to which link. A
+	 *  changed link means agreeing again (FR-005). */
+	agreedAt: text('agreed_at'),
+	agreedUrl: text('agreed_url'),
+	/** The organizer who made them a mentor, when one did. */
+	appointedBy: text('appointed_by'),
+	appointedByName: text('appointed_by_name'),
+	revokedBy: text('revoked_by'),
+	revokedByName: text('revoked_by_name'),
+	revokedAt: text('revoked_at'),
+	updatedAt: text('updated_at').notNull(),
+});
+
+// A walk a mentor hosts (FR-007). Never deleted: a cancelled or hidden walk
+// keeps its row for the organizer view. The phone number is cleared a day
+// after the start (FR-011, purgeExpiredPhones).
+export const mentorWalks = sqliteTable(
+	'mentor_walks',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		mentorId: text('mentor_id').notNull(),
+		mentorName: text('mentor_name').notNull(),
+		chapterId: integer('chapter_id').notNull(),
+		/** ISO UTC. A walk lasts WALK_HOURS from here. */
+		startsAt: text('starts_at').notNull(),
+		place: text('place').notNull(),
+		lat: real('lat').notNull(),
+		lng: real('lng').notNull(),
+		note: text('note'),
+		seats: integer('seats').notNull(),
+		phone: text('phone'),
+		status: text('status')
+			.$type<'scheduled' | 'cancelled' | 'hidden'>()
+			.notNull()
+			.default('scheduled'),
+		/** Who cancelled or hid it: the mentor, or an organizer. */
+		statusBy: text('status_by'),
+		statusByName: text('status_by_name'),
+		createdAt: text('created_at').notNull(),
+		updatedAt: text('updated_at').notNull(),
+	},
+	(table) => [
+		index('mentor_walks_mentor').on(table.mentorId, table.startsAt),
+		index('mentor_walks_chapter').on(table.chapterId, table.startsAt),
+	],
+);
+
+export type MentorRow = typeof mentors.$inferSelect;
+export type MentorWalkRow = typeof mentorWalks.$inferSelect;

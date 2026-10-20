@@ -188,6 +188,75 @@ async function cacheCentroid(db: Db, zip: string, point: LatLng): Promise<void> 
 	}
 }
 
+/** What an address lookup came to. `unavailable` is the geocoder failing
+ *  (an error status, a timeout, a garbled answer), as opposed to `not-found`,
+ *  an answer with no usable match — so a caller can tell "try another
+ *  address" from "try again later". */
+export type AddressLookup =
+	| { kind: 'found'; point: LatLng; zip: string | null; matchedAddress: string | null }
+	| { kind: 'not-found' }
+	| { kind: 'unavailable' };
+
+/**
+ * Where a free-text address is, the ZIP the geocoder matched it to, and the
+ * address it took the query to mean ("229 W MICHIGAN AVE, YPSILANTI, MI,
+ * 48197"), which is worth showing back: the geocoder confidently matches a
+ * half-understood query to the wrong town.
+ *
+ * Never throws, per the module header.
+ */
+export async function lookupAddress(
+	query: string,
+	fetchFn: typeof fetch = fetch,
+): Promise<AddressLookup> {
+	const address = query.trim();
+	if (address === '') return { kind: 'not-found' };
+
+	const url = new URL(ENDPOINT);
+	url.searchParams.set('address', address);
+	url.searchParams.set('benchmark', 'Public_AR_Current');
+	url.searchParams.set('format', 'json');
+
+	let body: {
+		result?: {
+			addressMatches?: Array<{
+				matchedAddress?: unknown;
+				coordinates?: { x?: unknown; y?: unknown };
+				addressComponents?: { zip?: unknown };
+			}>;
+		};
+	};
+	try {
+		const res = await fetchFn(url.toString(), { signal: AbortSignal.timeout(TIMEOUT_MS) });
+		if (!res.ok) {
+			// No address in the message — see rule 2 in the header.
+			console.warn(`[van] address geocode returned ${res.status}`);
+			return { kind: 'unavailable' };
+		}
+		body = await res.json();
+	} catch (err) {
+		// The timeout lands here. Swallowed, and the error is not logged with it:
+		// an AbortError carries no address, but a URL-bearing fetch error would.
+		console.warn('[van] address geocode failed:', err instanceof Error ? err.name : 'unknown');
+		return { kind: 'unavailable' };
+	}
+	const matches = body?.result?.addressMatches;
+	// A 200 without the list isn't an answer about the address.
+	if (!Array.isArray(matches)) return { kind: 'unavailable' };
+	const match = matches[0];
+	const lng = Number(match?.coordinates?.x);
+	const lat = Number(match?.coordinates?.y);
+	if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { kind: 'not-found' };
+	// Null island means the geocoder answered with nothing useful.
+	if (lat === 0 && lng === 0) return { kind: 'not-found' };
+	return {
+		kind: 'found',
+		point: { lat, lng },
+		zip: normalizeZip(String(match?.addressComponents?.zip ?? '')),
+		matchedAddress: typeof match?.matchedAddress === 'string' ? match.matchedAddress : null,
+	};
+}
+
 /**
  * Where a free-text address is, plus the ZIP the geocoder matched it to.
  *
@@ -198,48 +267,15 @@ async function cacheCentroid(db: Db, zip: string, point: LatLng): Promise<void> 
  * usable ZIP component — and the caller has to cope rather than treat it as a
  * failure, because the coordinates are still good.
  *
+ * Null for no match and for an outage alike; lookupAddress tells them apart.
  * Never throws, per the module header.
  */
 export async function geocodeAddress(
 	query: string,
 	fetchFn: typeof fetch = fetch,
 ): Promise<{ point: LatLng; zip: string | null } | null> {
-	const address = query.trim();
-	if (address === '') return null;
-
-	const url = new URL(ENDPOINT);
-	url.searchParams.set('address', address);
-	url.searchParams.set('benchmark', 'Public_AR_Current');
-	url.searchParams.set('format', 'json');
-
-	try {
-		const res = await fetchFn(url.toString(), { signal: AbortSignal.timeout(TIMEOUT_MS) });
-		if (!res.ok) {
-			// No address in the message — see rule 2 in the header.
-			console.warn(`[van] address geocode returned ${res.status}`);
-			return null;
-		}
-		const body = (await res.json()) as {
-			result?: {
-				addressMatches?: Array<{
-					coordinates?: { x?: unknown; y?: unknown };
-					addressComponents?: { zip?: unknown };
-				}>;
-			};
-		};
-		const match = body?.result?.addressMatches?.[0];
-		const lng = Number(match?.coordinates?.x);
-		const lat = Number(match?.coordinates?.y);
-		if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-		// Null island means the geocoder answered with nothing useful.
-		if (lat === 0 && lng === 0) return null;
-		return { point: { lat, lng }, zip: normalizeZip(String(match?.addressComponents?.zip ?? '')) };
-	} catch (err) {
-		// The timeout lands here. Swallowed, and the error is not logged with it:
-		// an AbortError carries no address, but a URL-bearing fetch error would.
-		console.warn('[van] address geocode failed:', err instanceof Error ? err.name : 'unknown');
-		return null;
-	}
+	const found = await lookupAddress(query, fetchFn);
+	return found.kind === 'found' ? { point: found.point, zip: found.zip } : null;
 }
 
 /**

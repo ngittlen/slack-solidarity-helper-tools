@@ -249,6 +249,8 @@
 				ttlHours={data.settings.vanTurfClaimTtlHours}
 				maxConcurrentClaims={data.settings.vanTurfMaxConcurrentClaims}
 				vanAssignmentTtlHours={data.settings.vanAssignmentTtlHours}
+				mentorWalksVisibility={data.settings.mentorWalksVisibility}
+				volunteerGuidelinesUrl={data.settings.volunteerGuidelinesUrl}
 			/>
 		</section>
 
