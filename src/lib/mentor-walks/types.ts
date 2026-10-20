@@ -1,7 +1,7 @@
 // What the mentor-walks screens are given (specs/015-mentor-walks), built by
 // the pages' loads from the database.
 
-import type { MentorPanelState, MentorWalksVisibility } from './rules.js';
+import type { MentorWalksVisibility } from './rules.js';
 
 /** What the walk form edits. `date` and `time` are campaign-local input
  *  values (`YYYY-MM-DD`, `HH:MM`). */
@@ -55,11 +55,13 @@ export interface ChapterOption {
 	name: string;
 }
 
-/** The mentor area of /turfs, or null for nothing at all. */
+/** The mentor area of /turfs, or null for nothing at all. A mentor asked to
+ *  agree again ('agree') still gets their walks: they can see and cancel
+ *  them, and are asked to agree when they host or edit one (US2, scenario 7). */
 export type MentorPanelView =
-	| { state: Exclude<MentorPanelState, 'mentor'>; guidelinesUrl: string }
+	| { state: 'invite' | 'declined'; guidelinesUrl: string }
 	| {
-			state: 'mentor';
+			state: 'mentor' | 'agree';
 			guidelinesUrl: string;
 			walks: MentorWalkView[];
 			walksHosted: number;

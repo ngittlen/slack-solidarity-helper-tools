@@ -32,22 +32,20 @@
 	let { mentor, chapter, pageQuery, tiles }: Props = $props();
 
 	let error = $state<string | null>(null);
-	// Both of these are kept as the screen they were set on, so they lapse
-	// when it changes: the panel stays mounted across reloads of the page
-	// data, and "Not now" on one screen mustn't hide the next (after the
-	// debug panel's "Start over", say).
-	/** "Not now" on the agree-again screen closes it for this visit. */
-	let dismissedOn = $state<string | null>(null);
-	const dismissed = $derived(dismissedOn === mentor.state);
-	/** A declined person who clicked "Become a mentor". */
+	/** A declined person who clicked "Become a mentor". Kept as the screen it
+	 *  was set on, so it lapses when that changes: the panel stays mounted
+	 *  across reloads of the page data. */
 	let reopenedOn = $state<string | null>(null);
 	const reopened = $derived(reopenedOn === mentor.state);
 	/** Which walk the form is open for: 'new', a walk id, or closed. */
 	let formFor = $state<string | null>(null);
 	let formKey = $state(0);
+	/** A mentor asked to agree again who tapped Host a walk ('new') or Edit (a
+	 *  walk id): the agreement shows, and that form opens once they agree. */
+	let agreeFor = $state<string | null>(null);
 
 	const editing = $derived(
-		mentor.state === 'mentor' && formFor !== null && formFor !== 'new'
+		'walks' in mentor && formFor !== null && formFor !== 'new'
 			? (mentor.walks.find((w) => w.id === formFor) ?? null)
 			: null,
 	);
@@ -55,7 +53,7 @@
 	/** The chapters on offer, plus the walk's own when editing one in a
 	 *  chapter /turfs has stopped offering, so it can be kept. */
 	const formChapters = $derived.by(() => {
-		if (mentor.state !== 'mentor') return [];
+		if (!('chapters' in mentor)) return [];
 		const own = editing?.draft.chapterId;
 		if (own === undefined || mentor.chapters.some((c) => c.chapterId === own)) {
 			return mentor.chapters;
@@ -107,11 +105,27 @@
 		formKey += 1;
 	}
 
+	/** Host or Edit: straight to the form, or first to the agreement for a
+	 *  mentor who must agree again (US2, scenario 7). */
+	function startForm(id: string) {
+		if (mentor.state === 'agree') agreeFor = id;
+		else openForm(id);
+	}
+
 	async function agree() {
 		// The link on screen: what they agreed to, even if it changed since.
 		const result = await post('mentorAgree', { agree: 'on', url: mentor.guidelinesUrl });
-		// Straight on to planning their first walk (US1, scenario 2).
-		if (result.ok) openForm('new');
+		if (result.ok) {
+			// Straight on to planning their first walk (US1, scenario 2), or to
+			// the one they meant to post or edit.
+			openForm(agreeFor ?? 'new');
+			agreeFor = null;
+			return;
+		}
+		// Most likely the link changed while they read: reload so the new one
+		// shows, and keep the agreement open for it.
+		agreeFor ??= 'new';
+		await invalidateAll();
 	}
 
 	async function locate(place: string): Promise<PlaceLookupResult> {
@@ -144,9 +158,11 @@
 	}
 </script>
 
-{#if !dismissed}
-	<div class="mentor-panel">
-		{#if mentor.state === 'invite' || (mentor.state === 'declined' && reopened)}
+<div class="mentor-panel">
+	<!-- The agreement screens are keyed on the link, so a new one starts
+	     with the box unticked. -->
+	{#if mentor.state === 'invite' || (mentor.state === 'declined' && reopened)}
+		{#key mentor.guidelinesUrl}
 			<MentorInvite
 				guidelinesUrl={mentor.guidelinesUrl}
 				onagree={agree}
@@ -156,56 +172,56 @@
 						? (reopenedOn = null)
 						: post('mentorInvite', { answer: 'decline' })}
 			/>
-		{:else if mentor.state === 'agree'}
+		{/key}
+	{:else if mentor.state === 'agree' && agreeFor !== null}
+		{#key mentor.guidelinesUrl}
 			<MentorInvite
 				guidelinesUrl={mentor.guidelinesUrl}
 				agreeOnly
 				onagree={agree}
-				oncancel={() => (dismissedOn = mentor.state)}
+				oncancel={() => (agreeFor = null)}
 			/>
-		{:else if mentor.state === 'declined'}
-			<p class="mentor-reopen">
-				<button
-					type="button"
-					class="mw-btn mw-btn-link"
-					onclick={() => (reopenedOn = mentor.state)}
-				>
-					Become a mentor
-				</button>
-				<span class="mw-muted">and help new canvassers get started.</span>
-			</p>
-		{:else if mentor.state === 'mentor'}
-			{#if formFor !== null}
-				{#key formKey}
-					<WalkForm
-						chapterName={chapter?.name ?? 'your chapter'}
-						chapters={formChapters}
-						defaultChapterId={chapter?.chapterId ?? null}
-						initial={editing?.draft ?? null}
-						seatsTaken={editing?.joined.length ?? 0}
-						defaultPhone={mentor.defaultPhone}
-						{tiles}
-						onlocate={locate}
-						onsave={saveWalk}
-						oncancel={() => (formFor = null)}
-					/>
-				{/key}
-			{:else}
-				<MyWalks
-					walks={mentor.walks}
-					walksHosted={mentor.walksHosted}
-					newPeopleTakenOut={mentor.newPeopleTakenOut}
-					onhost={() => openForm('new')}
-					onedit={(id) => openForm(id)}
-					oncancel={(id) => post('mentorCancelWalk', { walkId: id })}
+		{/key}
+	{:else if mentor.state === 'declined'}
+		<p class="mentor-reopen">
+			<button type="button" class="mw-btn mw-btn-link" onclick={() => (reopenedOn = mentor.state)}>
+				Become a mentor
+			</button>
+			<span class="mw-muted">and help new canvassers get started.</span>
+		</p>
+	{:else if 'walks' in mentor}
+		<!-- An active mentor, agreed or asked to agree again: their walks
+		     stay in reach either way, and the server cancels for both. -->
+		{#if formFor !== null && mentor.state === 'mentor'}
+			{#key formKey}
+				<WalkForm
+					chapterName={chapter?.name ?? 'your chapter'}
+					chapters={formChapters}
+					defaultChapterId={chapter?.chapterId ?? null}
+					initial={editing?.draft ?? null}
+					seatsTaken={editing?.joined.length ?? 0}
+					defaultPhone={mentor.defaultPhone}
+					{tiles}
+					onlocate={locate}
+					onsave={saveWalk}
+					oncancel={() => (formFor = null)}
 				/>
-			{/if}
+			{/key}
+		{:else}
+			<MyWalks
+				walks={mentor.walks}
+				walksHosted={mentor.walksHosted}
+				newPeopleTakenOut={mentor.newPeopleTakenOut}
+				onhost={() => startForm('new')}
+				onedit={(id) => startForm(id)}
+				oncancel={(id) => post('mentorCancelWalk', { walkId: id })}
+			/>
 		{/if}
-		{#if error}
-			<p class="mw-error" role="alert">{error}</p>
-		{/if}
-	</div>
-{/if}
+	{/if}
+	{#if error}
+		<p class="mw-error" role="alert">{error}</p>
+	{/if}
+</div>
 
 <style>
 	.mentor-panel {

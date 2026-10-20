@@ -102,7 +102,7 @@ export async function loadMentorPanel(
 		const state = await panelState(db, ctx);
 		const guidelinesUrl = ctx.settings.volunteerGuidelinesUrl;
 		if (state === null) return null;
-		if (state !== 'mentor') return { state, guidelinesUrl };
+		if (state === 'invite' || state === 'declined') return { state, guidelinesUrl };
 
 		const id = ctx.viewer.slackUserId;
 		const [walks, stats, defaultPhone] = await Promise.all([

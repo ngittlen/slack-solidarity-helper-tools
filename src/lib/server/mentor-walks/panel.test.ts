@@ -172,6 +172,22 @@ describe('the invitation', () => {
 		expect((await loadMentorPanel(db, v2))?.state).toBe('agree');
 		expect((await saveWalk(db, v2, form())).ok).toBe(false);
 	});
+
+	it('keeps their walks in reach while asking again, and lets them cancel one', async () => {
+		await agreeTo(ctx());
+		const saved = await saveWalk(db, ctx(), form());
+		if (!saved.ok) throw new Error('save failed');
+		const v2 = ctx({ url: 'https://example.org/guidelines-v2' });
+		const panel = await loadMentorPanel(db, v2);
+		expect(panel?.state).toBe('agree');
+		expect(panel && 'walks' in panel ? panel.walks.map((w) => w.id) : []).toEqual([
+			String(saved.value),
+		]);
+		expect(await cancelOwnWalk(db, v2, String(saved.value))).toEqual({
+			ok: true,
+			value: saved.value,
+		});
+	});
 });
 
 describe('locatePlace', () => {

@@ -162,7 +162,7 @@
 		display: none;
 	}
 
-	.page-column:has(> *) + :global(main) {
+	.page-column:has(> :global(*)) + :global(main) {
 		margin-top: 0;
 	}
 
