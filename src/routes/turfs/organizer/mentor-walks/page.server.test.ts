@@ -3,9 +3,20 @@ import { actions, load } from './+page.server.js';
 
 const store = vi.hoisted(() => ({
 	appointMentor: vi.fn(),
+	campaignMetrics: vi.fn(async () => ({
+		walksHosted: 0,
+		seatsOffered: 0,
+		seatsTaken: 0,
+		attendanceRate: null,
+		noShowReports: 0,
+		followedOnRate: null,
+	})),
 	listMentors: vi.fn(),
 	listWalksForOrganizer: vi.fn(),
 	loadMentor: vi.fn(),
+	loadWalkByPublicId: vi.fn(async (_db: unknown, publicId: string) =>
+		publicId === 'k3Xq9vR2mT8w' ? { id: 7, publicId } : null,
+	),
 	mentorTotals: vi.fn(),
 	reinstateMentor: vi.fn(),
 	revokeMentor: vi.fn(),
@@ -27,6 +38,9 @@ vi.mock('$lib/server/outside-volunteers.js', () => ({
 	loadBlockableOutsideVolunteers: mockOutside,
 }));
 vi.mock('$lib/server/mentor-walks/store.js', () => store);
+vi.mock('$lib/server/mentor-walks/seats.js', () => ({ heldSeats: async () => new Map() }));
+const mockDispatch = vi.hoisted(() => vi.fn());
+vi.mock('$lib/server/mentor-walks/dispatch.js', () => ({ dispatchSoon: mockDispatch }));
 
 const ADMIN = { slackUserId: 'U_ADMIN', slackUserName: 'Alex', isAdmin: true };
 const VOLUNTEER = { slackUserId: 'U_VOL', slackUserName: 'Vol', isAdmin: false };
@@ -140,7 +154,9 @@ describe('actions', () => {
 
 	it('hides a walk', async () => {
 		store.setWalkStatus.mockResolvedValue(true);
-		expect(await run('hideWalk', ADMIN, { walkId: '7' })).toEqual({ walkHidden: 7 });
+		expect(await run('hideWalk', ADMIN, { walkId: 'k3Xq9vR2mT8w' })).toEqual({
+			walkHidden: 'k3Xq9vR2mT8w',
+		});
 		expect(store.setWalkStatus).toHaveBeenCalledWith(
 			{},
 			7,
@@ -148,5 +164,7 @@ describe('actions', () => {
 			{ id: 'U_ADMIN', name: 'Alex' },
 			expect.any(Date),
 		);
+		// The database id is never taken from the page.
+		expect(await run('hideWalk', ADMIN, { walkId: '7' })).toMatchObject({ status: 409 });
 	});
 });

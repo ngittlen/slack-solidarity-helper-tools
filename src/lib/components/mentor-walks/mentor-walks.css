@@ -165,6 +165,11 @@
 	white-space: nowrap;
 }
 
+.mw-chip-success {
+	background: var(--color-success);
+	color: var(--color-action-text);
+}
+
 .mw-chip-warning {
 	background: var(--color-warning);
 	color: var(--color-near-black);

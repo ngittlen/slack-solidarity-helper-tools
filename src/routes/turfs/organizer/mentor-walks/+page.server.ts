@@ -17,15 +17,19 @@ import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { errMessage } from '$lib/err-message.js';
 import {
 	appointMentor,
+	campaignMetrics,
 	listMentors,
 	listWalksForOrganizer,
 	loadMentor,
+	loadWalkByPublicId,
 	mentorTotals,
 	reinstateMentor,
 	revokeMentor,
 	setWalkStatus,
 } from '$lib/server/mentor-walks/store.js';
 import { MENTOR_WALKS_VISIBILITY_LABELS } from '$lib/mentor-walks/rules.js';
+import { heldSeats } from '$lib/server/mentor-walks/seats.js';
+import { dispatchSoon } from '$lib/server/mentor-walks/dispatch.js';
 import type {
 	OrganizerMentorView,
 	OrganizerPastWalkView,
@@ -65,14 +69,20 @@ export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.session?.isAdmin) redirect(302, '/');
 
 	const now = new Date();
-	const [settings, blockedIds, walks, mentorRows, totals, people] = await Promise.all([
+	const [settings, blockedIds, walks, mentorRows, totals, people, metrics] = await Promise.all([
 		loadSettings(db),
 		loadVanBlockedIds(db),
 		listWalksForOrganizer(db, now),
 		listMentors(db),
 		mentorTotals(db, now),
 		loadPeople(),
+		campaignMetrics(db, now),
 	]);
+	const seats = await heldSeats(
+		db,
+		[...walks.upcoming, ...walks.past].map((w) => w.id),
+	);
+	const seatsOf = (id: number) => seats.get(id) ?? [];
 	const chapterNames = new Map(
 		chaptersFromChannelMap(settings.chapterChannelMap, settings.turfCustomChapters).map((c) => [
 			c.chapterId,
@@ -82,30 +92,28 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const chapterName = (id: number) => chapterNames.get(id) ?? `Chapter ${id}`;
 
 	const upcoming: OrganizerWalkView[] = walks.upcoming.map((w) => ({
-		id: String(w.id),
+		id: w.publicId,
 		mentorName: w.mentorName,
 		chapterName: chapterName(w.chapterId),
 		dayLabel: campaignDayLabel(w.startsAt),
 		timeLabel: campaignTimeLabel(w.startsAt),
 		place: w.place,
 		seats: w.seats,
-		// US3: who holds a seat.
-		joined: [],
+		joined: seatsOf(w.id).map((s) => s.holderName),
 		status: w.status,
 		statusByName: w.statusByName,
 	}));
 
 	const past: OrganizerPastWalkView[] = walks.past.map((w) => ({
-		id: String(w.id),
+		id: w.publicId,
 		mentorName: w.mentorName,
 		chapterName: chapterName(w.chapterId),
 		dayLabel: `${campaignDayLabel(w.startsAt)}, ${campaignTimeLabel(w.startsAt)}`,
 		place: w.place,
 		seats: w.seats,
-		// US3 and US6: seats taken, attendance and no-show reports.
-		taken: null,
-		attended: null,
-		noShowReports: 0,
+		taken: seatsOf(w.id).length,
+		attended: seatsOf(w.id).filter((s) => s.mentorTicked || s.answer === 'went').length,
+		noShowReports: seatsOf(w.id).filter((s) => s.answer === 'no-show').length,
 		status: w.status,
 	}));
 
@@ -129,8 +137,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			source: m.appointedBy ? 'organizer' : 'invited',
 			agreedLabel: m.agreedAt ? DAY_LABEL.format(new Date(m.agreedAt)) : null,
 			walksHosted: total?.walksHosted ?? 0,
-			// US6: new people who attended their walks.
-			newPeopleTakenOut: 0,
+			newPeopleTakenOut: total?.newPeopleTakenOut ?? 0,
 			...(details.length > 0 ? { detail: details.join(' · ') } : {}),
 		};
 	});
@@ -149,8 +156,21 @@ export const load: PageServerLoad = async ({ locals }) => {
 		mentors,
 		candidates,
 		peopleError: people.error,
+		metrics: {
+			walksHosted: metrics.walksHosted,
+			seatsOffered: metrics.seatsOffered,
+			seatsTaken: metrics.seatsTaken,
+			attendanceRate: percent(metrics.attendanceRate),
+			noShowReports: metrics.noShowReports,
+			completedOwnTurfWithin14Days: percent(metrics.followedOnRate),
+		},
 	};
 };
+
+/** "74%", or a dash before there's anything to measure. */
+function percent(rate: number | null): string {
+	return rate === null ? '—' : `${Math.round(rate * 100)}%`;
+}
 
 function editorOf(session: NonNullable<App.Locals['session']>) {
 	return { id: session.slackUserId, name: session.slackUserName };
@@ -165,27 +185,25 @@ export const actions: Actions = {
 	hideWalk: async ({ locals, request }) => {
 		const session = locals.session;
 		if (!session?.isAdmin) return fail(403, { walkError: 'Organizers only.' });
-		const id = Number(await formId(request, 'walkId'));
-		if (
-			!Number.isInteger(id) ||
-			!(await setWalkStatus(db, id, 'hidden', editorOf(session), new Date()))
-		) {
+		const publicId = await formId(request, 'walkId');
+		const walk = await loadWalkByPublicId(db, publicId);
+		if (!walk || !(await setWalkStatus(db, walk.id, 'hidden', editorOf(session), new Date()))) {
 			return fail(409, { walkError: 'That walk has already started, or was hidden or cancelled.' });
 		}
-		return { walkHidden: id };
+		dispatchSoon(db);
+		return { walkHidden: publicId };
 	},
 
 	cancelWalk: async ({ locals, request }) => {
 		const session = locals.session;
 		if (!session?.isAdmin) return fail(403, { walkError: 'Organizers only.' });
-		const id = Number(await formId(request, 'walkId'));
-		if (
-			!Number.isInteger(id) ||
-			!(await setWalkStatus(db, id, 'cancelled', editorOf(session), new Date()))
-		) {
+		const publicId = await formId(request, 'walkId');
+		const walk = await loadWalkByPublicId(db, publicId);
+		if (!walk || !(await setWalkStatus(db, walk.id, 'cancelled', editorOf(session), new Date()))) {
 			return fail(409, { walkError: 'That walk has already started, or was hidden or cancelled.' });
 		}
-		return { walkCancelled: id };
+		dispatchSoon(db);
+		return { walkCancelled: publicId };
 	},
 
 	makeMentor: async ({ locals, request }) => {
@@ -220,6 +238,7 @@ export const actions: Actions = {
 			return fail(409, { mentorError: 'That person isn’t an active mentor.' });
 		}
 		const cancelled = await revokeMentor(db, id, editorOf(session), new Date());
+		dispatchSoon(db);
 		return { mentorRevoked: existing.holderName, walksCancelled: cancelled.length };
 	},
 

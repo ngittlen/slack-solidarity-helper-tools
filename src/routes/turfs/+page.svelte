@@ -8,9 +8,12 @@
 	import NamePrompt from './NamePrompt.svelte';
 	import MentorPanel from './MentorPanel.svelte';
 	import MentorDebug from './MentorDebug.svelte';
+	import WalkFinder from './WalkFinder.svelte';
 	import { enhance } from '$app/forms';
 	import { afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
+	import type { WalkFinderView } from '$lib/mentor-walks/types.js';
+	import { postMentorAction } from './mentor-post.js';
 
 	const { data, form } = $props();
 
@@ -44,7 +47,111 @@
 	const confirmName = $derived(form && 'confirmName' in form ? (form.confirmName ?? null) : null);
 	const nameError = $derived(form && 'nameError' in form ? (form.nameError ?? null) : null);
 	const nameTaken = $derived(form && 'nameTaken' in form ? (form.nameTaken ?? null) : null);
+
+	/** The page's walk cards, or a fresher copy fetched since. A copy is kept
+	 *  with the data it replaced, so new page data always wins. */
+	let refreshed = $state<{ from: WalkFinderView | null; view: WalkFinderView | null } | null>(null);
+	const pageFinder = $derived('walkFinder' in data ? (data.walkFinder ?? null) : null);
+	const walkFinder = $derived(
+		refreshed && refreshed.from === pageFinder ? refreshed.view : pageFinder,
+	);
+
+	/** The "Mentor walks" toggle, remembered on this browser once they've
+	 *  used it. Until then it starts open for someone who has never checked
+	 *  out a turf, and closed for everyone else. */
+	const TOGGLE_KEY = 'mentor-walks-open';
+	let toggleChoice = $state<boolean | null>(null);
+	const toggleOpen = $derived(toggleChoice ?? walkFinder?.cardsStartOpen ?? false);
+	// After hydration, so the server's markup and the first client render agree.
+	$effect(() => {
+		try {
+			const stored = localStorage.getItem(TOGGLE_KEY);
+			if (stored !== null) toggleChoice = stored === '1';
+		} catch {
+			// No storage: the toggle starts as the server says.
+		}
+	});
+	function setToggle(open: boolean) {
+		toggleChoice = open;
+		if (!open) closedLink = linkedWalkId;
+		try {
+			localStorage.setItem(TOGGLE_KEY, open ? '1' : '0');
+		} catch {
+			// Remembered for this visit only.
+		}
+	}
+
+	const stoppingAlerts = $derived(page.url.searchParams.get('mentorAlerts') === 'stop');
+	/** A walk a message linked to (`#walk-12`): its card is opened and shown,
+	 *  even with the toggle closed, as an alert's "Join on /turfs" promises. */
+	const linkedWalkId = $derived(/^#walk-([\w-]+)$/.exec(page.url.hash)?.[1] ?? null);
+	/** Closing the toggle closes it on a linked walk too. */
+	let closedLink = $state<string | null>(null);
+	const showCards = $derived(
+		walkFinder !== null &&
+			(walkFinder.state === 'cards' ||
+				((walkFinder.state === 'toggle' || walkFinder.state === 'declined') &&
+					(toggleOpen || (linkedWalkId !== null && closedLink !== linkedWalkId)))),
+	);
+	// The browser looked for the card before it was drawn, so scroll to it
+	// once it is. Once per link.
+	let scrolledTo: string | null = null;
+	$effect(() => {
+		if (linkedWalkId === null || !showCards || scrolledTo === linkedWalkId) return;
+		const card = document.getElementById(`walk-${linkedWalkId}`);
+		if (!card) return;
+		scrolledTo = linkedWalkId;
+		card.scrollIntoView({ block: 'start' });
+	});
+	const showFinder = $derived(
+		walkFinder !== null &&
+			!data.needsName &&
+			(walkFinder.state !== null ||
+				walkFinder.checkins.length > 0 ||
+				walkFinder.mine.length > 0 ||
+				stoppingAlerts),
+	);
+	const chapter = $derived('chapter' in data ? data.chapter : null);
+
+	let walkError = $state<string | null>(null);
+
+	async function joinWalk(id: string): Promise<void> {
+		walkError = null;
+		const result = await postMentorAction('mentorJoin', { walkId: id }, pageQuery);
+		if (!result.ok) walkError = result.message;
+	}
+
+	async function leaveWalk(id: string): Promise<void> {
+		walkError = null;
+		const result = await postMentorAction('mentorLeave', { walkId: id }, pageQuery);
+		if (!result.ok) walkError = result.message;
+	}
+
+	/** Fetch the chapter's walks again: someone else may have joined, or a walk
+	 *  been cancelled (User Story 8, scenario 3). */
+	async function refreshWalks(): Promise<void> {
+		const chapterId = chapter?.chapterId;
+		if (chapterId === undefined || document.visibilityState !== 'visible') return;
+		const from = pageFinder;
+		try {
+			const res = await fetch(`/api/mentor-walks?chapter=${chapterId}`);
+			if (!res.ok) return;
+			const { finder } = (await res.json()) as { finder: WalkFinderView | null };
+			if (pageFinder === from) refreshed = { from, view: finder };
+		} catch {
+			// The next refresh tries again.
+		}
+	}
+
+	const REFRESH_MS = 2 * 60_000;
+	$effect(() => {
+		if (!showCards) return;
+		const timer = setInterval(refreshWalks, REFRESH_MS);
+		return () => clearInterval(timer);
+	});
 </script>
+
+<svelte:document onvisibilitychange={() => showCards && void refreshWalks()} />
 
 {#if data.mode === 'public'}
 	<PublicTurfTeaser
@@ -75,13 +182,13 @@
 		{/if}
 		{#if data.notices.length > 0}
 			<!-- What a Google or Apple holder would have been DMed: an expiry warning, a
-			     "did MiniVAN sync?" nudge, a re-cut. Kept until dismissed — the
+			     "did MiniVAN sync?" nudge, a re-cut, a mentor walk's news. Kept until dismissed — the
 			     server drops them after a week regardless. Rendered from plain
 			     segments ($lib/van/notice-text.ts), never as HTML. -->
 			{#if dismissError}
 				<p class="turf-notice-error" role="alert">{dismissError}</p>
 			{/if}
-			<ul class="turf-notices" aria-label="Messages about your turf">
+			<ul class="turf-notices" aria-label="Messages for you">
 				{#each data.notices as notice (notice.id)}
 					<li class="turf-notice">
 						<div class="turf-notice-body">
@@ -128,8 +235,27 @@
 			     carry the name they haven't given yet. -->
 			<MentorPanel mentor={data.mentor} chapter={data.chapter} {pageQuery} tiles={data.tiles} />
 		{/if}
+		{#if walkFinder && showFinder}
+			<WalkFinder
+				finder={walkFinder}
+				chapter={data.chapter}
+				{pageQuery}
+				location={data.location}
+				{showCards}
+				ontoggle={setToggle}
+				onjoin={joinWalk}
+				onleave={leaveWalk}
+				{stoppingAlerts}
+				error={walkError}
+			/>
+		{/if}
 	</div>
-	<MemberTurfs {data} />
+	<MemberTurfs
+		{data}
+		mentorWalks={walkFinder && showCards
+			? { cards: walkFinder.cards, onjoin: joinWalk, onleave: leaveWalk }
+			: null}
+	/>
 {/if}
 
 <style>

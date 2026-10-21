@@ -17,6 +17,9 @@ import {
 	cancelWalk,
 	createWalk,
 	eligibilityCounts,
+	hasCheckedOutTurf,
+	latestLookFor,
+	loadWalkByPublicId,
 	latestPhone,
 	listMentorWalks,
 	loadMentor,
@@ -27,14 +30,21 @@ import {
 	type WalkFields,
 } from './store.js';
 import {
+	DEFAULT_LOOK_FOR,
 	featureVisible,
+	finderState,
+	isAlertRadius,
 	isEligible,
+	isNew,
 	mentorPanelState,
 	needsEligibility,
 	normalizePhone,
+	oneLine,
 	PLACE_MAX_LENGTH,
 	validateWalk,
+	walkDayLabel,
 	walkInputsFromStart,
+	walkStarted,
 	walkStartFromInputs,
 	type MentorPanelState,
 } from '../../mentor-walks/rules.js';
@@ -43,8 +53,30 @@ import type {
 	MentorDebugView,
 	MentorPanelView,
 	PlaceLocation,
+	WalkCardView,
+	WalkFinderView,
 } from '../../mentor-walks/types.js';
 import { campaignDayLabel, campaignTimeLabel } from '../../campaign-time.js';
+import { dispatchSoon } from './dispatch.js';
+import {
+	answerWalk,
+	attendedCount,
+	cardWalks,
+	heldSeats,
+	holderSeats,
+	joinWalk,
+	leaveWalk,
+	loadPrompt,
+	saveAttendance,
+	setPrompt,
+	walksAwaitingCheckin,
+	type JoinRefusal,
+	type WalkAnswer,
+} from './seats.js';
+import { queueJoined, queueLeft } from './walk-events.js';
+import { postNoShows, type NoShowDeps } from './no-show.js';
+import type { MentorWalkRow, MentorWalkSeatRow } from '../schema.js';
+import { loadAlerts, saveAlerts, stopAlerts } from './alerts.js';
 import { errMessage } from '../../err-message.js';
 
 export type { MentorDebugView };
@@ -105,22 +137,27 @@ export async function loadMentorPanel(
 		if (state === 'invite' || state === 'declined') return { state, guidelinesUrl };
 
 		const id = ctx.viewer.slackUserId;
-		const [walks, stats, defaultPhone] = await Promise.all([
+		const [walks, stats, defaultPhone, defaultLookFor, awaiting] = await Promise.all([
 			listMentorWalks(db, id, ctx.now),
 			mentorStats(db, id, ctx.now),
 			latestPhone(db, id),
+			latestLookFor(db, id),
+			walksAwaitingCheckin(db, id, ctx.now),
 		]);
+		const seats = await heldSeats(
+			db,
+			[...walks, ...awaiting].map((w) => w.id),
+		);
 		return {
 			state,
 			guidelinesUrl,
 			walks: walks.map((w) => ({
-				id: String(w.id),
+				id: w.publicId,
 				dayLabel: campaignDayLabel(w.startsAt),
 				timeLabel: campaignTimeLabel(w.startsAt),
 				place: w.place,
 				seats: w.seats,
-				// US3: the names of the people holding seats.
-				joined: [],
+				joined: (seats.get(w.id) ?? []).map((s) => s.holderName),
 				chapterName: ctx.chapterNames.get(w.chapterId) ?? `Chapter ${w.chapterId}`,
 				draft: {
 					chapterId: w.chapterId,
@@ -128,13 +165,26 @@ export async function loadMentorPanel(
 					place: w.place,
 					point: { lat: w.lat, lng: w.lng },
 					note: w.note ?? '',
+					lookFor: w.lookFor ?? DEFAULT_LOOK_FOR,
 					seats: w.seats,
 					phone: w.phone ?? '',
 				},
 			})),
 			...stats,
 			defaultPhone,
+			defaultLookFor,
 			chapters: ctx.chapters,
+			checkins: awaiting.map((w) => ({
+				walkId: w.publicId,
+				dayLabel: walkDayLabel(w.startsAt, ctx.now),
+				timeLabel: campaignTimeLabel(w.startsAt),
+				place: w.place,
+				seats: (seats.get(w.id) ?? []).map((s) => ({
+					id: String(s.id),
+					name: s.holderName,
+					ticked: s.mentorTicked,
+				})),
+			})),
 		};
 	} catch (err) {
 		console.error('[mentor-walks] could not load the mentor panel:', errMessage(err));
@@ -211,6 +261,7 @@ export interface WalkForm {
 	lat: string;
 	lng: string;
 	note: string;
+	lookFor: string;
 	seats: string;
 	phone: string;
 }
@@ -265,16 +316,17 @@ export async function saveWalk(
 	db: Db,
 	ctx: PanelContext & { chapterIds: number[] },
 	form: WalkForm,
-): Promise<ActionResult<number> | { ok: false; status: 400; problems: string[] }> {
+): Promise<ActionResult<string> | { ok: false; status: 400; problems: string[] }> {
 	if ((await panelState(db, ctx)) !== 'mentor') return refuse(409, NOT_AVAILABLE);
 	const mentorId = ctx.viewer.slackUserId;
 
-	const walkId = form.walkId ? Number(form.walkId) : null;
+	const existing = form.walkId ? await loadWalkByPublicId(db, form.walkId) : null;
+	if (form.walkId && (!existing || existing.mentorId !== mentorId)) {
+		return refuse(404, 'That walk no longer exists.');
+	}
+	const walkId = existing?.id ?? null;
 	let chapterIds = ctx.chapterIds;
-	if (walkId !== null) {
-		const existing = Number.isInteger(walkId) ? await loadWalk(db, walkId) : null;
-		if (!existing || existing.mentorId !== mentorId)
-			return refuse(404, 'That walk no longer exists.');
+	if (existing) {
 		// A walk keeps its chapter even if /turfs has stopped offering it since.
 		chapterIds = [...chapterIds, existing.chapterId];
 	}
@@ -282,15 +334,15 @@ export async function saveWalk(
 	const input = {
 		chapterId: Number(form.chapterId),
 		startsAt: walkStartFromInputs(form.date, form.time),
-		place: form.place.trim(),
-		note: form.note.trim(),
+		place: oneLine(form.place),
+		note: oneLine(form.note),
+		lookFor: oneLine(form.lookFor),
 		seats: Number(form.seats),
 		phone: form.phone,
 	};
 	const problems = validateWalk(input, {
 		now: ctx.now,
-		// US3: the number of seats taken.
-		seatsTaken: 0,
+		seatsTaken: walkId === null ? 0 : ((await heldSeats(db, [walkId])).get(walkId)?.length ?? 0),
 		otherWalks: await mentorWalkSlots(db, mentorId, walkId),
 		chapterIds,
 	});
@@ -305,6 +357,7 @@ export async function saveWalk(
 		lat: point.lat,
 		lng: point.lng,
 		note: input.note,
+		lookFor: input.lookFor,
 		seats: input.seats,
 		phone: normalizePhone(input.phone) ?? '',
 	};
@@ -313,7 +366,8 @@ export async function saveWalk(
 			? await createWalk(db, person(ctx.viewer), fields, ctx.now)
 			: await updateWalk(db, mentorId, walkId, fields, ctx.now);
 	if (!result.ok) return { ok: false, status: 400, problems: [result.message] };
-	return { ok: true, value: result.id };
+	if (result.changed) dispatchSoon(db);
+	return { ok: true, value: result.publicId };
 }
 
 /** The mentor calls a walk off (FR-010). Allowed for any active mentor, even
@@ -322,17 +376,18 @@ export async function cancelOwnWalk(
 	db: Db,
 	ctx: PanelContext,
 	rawId: string,
-): Promise<ActionResult<number>> {
+): Promise<ActionResult<string>> {
 	if (!visible(ctx)) {
 		return refuse(409, NOT_AVAILABLE);
 	}
 	const row = await loadMentor(db, ctx.viewer.slackUserId);
 	if (row?.status !== 'active') return refuse(409, NOT_AVAILABLE);
-	const id = Number(rawId);
-	if (!Number.isInteger(id) || !(await cancelWalk(db, person(ctx.viewer), id, ctx.now))) {
+	const walk = await loadWalkByPublicId(db, rawId);
+	if (!walk || !(await cancelWalk(db, person(ctx.viewer), walk.id, ctx.now))) {
 		return refuse(409, 'That walk has already started or was cancelled.');
 	}
-	return { ok: true, value: id };
+	dispatchSoon(db);
+	return { ok: true, value: rawId };
 }
 
 /** Null for anyone but an admin. Never throws. */
@@ -357,4 +412,248 @@ export async function loadMentorDebug(
 		console.error('[mentor-walks] could not load the debug panel:', errMessage(err));
 		return null;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Walk cards, seats and alerts (User Stories 3, 6 and 7)
+// ---------------------------------------------------------------------------
+
+/** What a blocked person, or anyone the feature is hidden from, is told about
+ *  any walk: the same as for one that doesn't exist (FR-039). */
+export const WALK_GONE = 'That walk isn’t available any more.';
+
+/** How long "How did your walk go?" stays on /turfs once answered. */
+const ANSWER_SHOWN_MS = 60 * 60_000;
+
+const JOIN_REFUSALS: Record<JoinRefusal, string> = {
+	gone: WALK_GONE,
+	started: 'That walk has already started.',
+	own: 'You can’t join your own walk.',
+	full: 'Sorry, that walk is full.',
+	overlap: 'You already have a seat on a walk at that time.',
+	already: 'You’re already going.',
+	'too-often': 'You’ve joined and left this walk too many times to join it again.',
+};
+
+function cardOf(
+	walk: MentorWalkRow,
+	seats: readonly MentorWalkSeatRow[],
+	viewerId: string,
+	now: Date,
+): WalkCardView {
+	const joined = seats.some((s) => s.holderId === viewerId);
+	return {
+		id: walk.publicId,
+		chapterId: walk.chapterId,
+		mentorName: walk.mentorName,
+		dayLabel: walkDayLabel(walk.startsAt, now),
+		timeLabel: campaignTimeLabel(walk.startsAt),
+		startsAt: walk.startsAt,
+		place: walk.place,
+		note: walk.note ?? '',
+		lookFor: walk.lookFor ?? DEFAULT_LOOK_FOR,
+		seats: walk.seats,
+		seatsLeft: Math.max(0, walk.seats - seats.length),
+		point: { lat: walk.lat, lng: walk.lng },
+		joined,
+		own: walk.mentorId === viewerId,
+		started: walkStarted(walk.startsAt, now),
+		// FR-011: only someone holding a seat ever gets the number.
+		phone: joined ? walk.phone : null,
+	};
+}
+
+/** Whether the viewer counts as new (FR-013), and their prompt state. */
+async function newcomer(db: Db, ctx: PanelContext) {
+	const id = ctx.viewer.slackUserId;
+	const [row, prompt, counts, attended] = await Promise.all([
+		loadMentor(db, id),
+		loadPrompt(db, id),
+		eligibilityCounts(db, id),
+		attendedCount(db, id),
+	]);
+	const newPerson = isNew({ ...counts, attended, isMentor: row?.status === 'active' });
+	return { newPerson, state: finderState(prompt, newPerson, ctx.now) };
+}
+
+/**
+ * The cards for the chapter on screen, the viewer's own seats, the
+ * questions after a walk, and their alerts. Null when the feature is hidden
+ * from them. Never throws.
+ */
+export async function loadWalkFinder(
+	db: Db,
+	ctx: PanelContext & { chapterId: number | null },
+): Promise<WalkFinderView | null> {
+	if (!visible(ctx)) return null;
+	try {
+		const id = ctx.viewer.slackUserId;
+		const [{ state }, alerts, held, chapterWalks, checkedOut] = await Promise.all([
+			newcomer(db, ctx),
+			loadAlerts(db, id),
+			holderSeats(db, id, ctx.now),
+			ctx.chapterId === null ? Promise.resolve([]) : cardWalks(db, ctx.chapterId, ctx.now),
+			hasCheckedOutTurf(db, id),
+		]);
+		const upcoming = held.filter((h) => !walkStarted(h.walk.startsAt, ctx.now));
+		const seats = await heldSeats(db, [
+			...new Set([...chapterWalks, ...upcoming.map((h) => h.walk)].map((w) => w.id)),
+		]);
+		const card = (w: MentorWalkRow) => cardOf(w, seats.get(w.id) ?? [], id, ctx.now);
+		return {
+			state,
+			cards: chapterWalks.map(card),
+			mine: upcoming.map((h) => card(h.walk)),
+			checkins: held
+				.filter(
+					(h) =>
+						walkStarted(h.walk.startsAt, ctx.now) &&
+						// Answered ones stay a while, with the thanks and a way to
+						// change it, so a refresh doesn't snatch them away.
+						(h.seat.answer === null ||
+							(h.seat.answeredAt !== null &&
+								ctx.now.getTime() - new Date(h.seat.answeredAt).getTime() < ANSWER_SHOWN_MS)),
+				)
+				.map((h) => ({
+					walkId: h.walk.publicId,
+					mentorName: h.walk.mentorName,
+					dayLabel: walkDayLabel(h.walk.startsAt, ctx.now),
+					timeLabel: campaignTimeLabel(h.walk.startsAt),
+					place: h.walk.place,
+					answer: h.seat.answer,
+				})),
+			alerts:
+				alerts && isAlertRadius(alerts.radiusMiles)
+					? { zip: alerts.zip, radius: alerts.radiusMiles }
+					: null,
+			cardsStartOpen: !checkedOut,
+		};
+	} catch (err) {
+		console.error('[mentor-walks] could not load the walk cards:', errMessage(err));
+		return null;
+	}
+}
+
+/** "Yes, show me", "Not now" or "No thanks" on the new-person prompt, or
+ *  undoing No thanks (FR-014). */
+export async function answerFinderPrompt(
+	db: Db,
+	ctx: PanelContext,
+	answer: string,
+): Promise<ActionResult<string>> {
+	const status = (
+		{ yes: 'accepted', snooze: 'snoozed', decline: 'declined', reopen: 'accepted' } as const
+	)[answer as 'yes'];
+	if (!status) return refuse(400, 'Unknown answer.');
+	if (!visible(ctx)) return refuse(409, NOT_AVAILABLE);
+	const { state } = await newcomer(db, ctx);
+	const allowed = answer === 'reopen' ? state === 'declined' : state === 'prompt';
+	if (!allowed) return refuse(409, NOT_AVAILABLE);
+	await setPrompt(db, ctx.viewer.slackUserId, status, ctx.now);
+	return { ok: true, value: answer };
+}
+
+/** The database id of the walk a public id names, for someone allowed to
+ *  see walks; null otherwise, which every caller answers as WALK_GONE. */
+async function walkIdFor(db: Db, ctx: PanelContext, publicId: string): Promise<number | null> {
+	if (!visible(ctx)) return null;
+	return (await loadWalkByPublicId(db, publicId))?.id ?? null;
+}
+
+/** Take a seat (FR-018–FR-021), and tell the mentor (FR-023). */
+export async function joinWalkAction(
+	db: Db,
+	ctx: PanelContext,
+	rawId: string,
+): Promise<ActionResult<string>> {
+	const id = await walkIdFor(db, ctx, rawId);
+	if (id === null) return refuse(404, WALK_GONE);
+	const { newPerson } = await newcomer(db, ctx);
+	const result = await joinWalk(db, person(ctx.viewer), id, newPerson, ctx.now);
+	if (!result.ok) return refuse(result.reason === 'gone' ? 404 : 409, JOIN_REFUSALS[result.reason]);
+	const walk = await loadWalk(db, id);
+	if (walk) {
+		await queueJoined(
+			db,
+			walk,
+			{ id: result.seatId, holderName: ctx.viewer.slackUserName, joinedAt: ctx.now.toISOString() },
+			ctx.now,
+		);
+		dispatchSoon(db);
+	}
+	return { ok: true, value: rawId };
+}
+
+/** Give a seat up before the walk (FR-020), and tell the mentor. */
+export async function leaveWalkAction(
+	db: Db,
+	ctx: PanelContext,
+	rawId: string,
+): Promise<ActionResult<string>> {
+	const id = await walkIdFor(db, ctx, rawId);
+	if (id === null) return refuse(404, WALK_GONE);
+	const seat = await leaveWalk(db, ctx.viewer.slackUserId, id, ctx.now);
+	if (!seat) return refuse(409, 'That walk has already started, or you don’t have a seat on it.');
+	const walk = await loadWalk(db, id);
+	if (walk) {
+		await queueLeft(db, walk, seat, ctx.now);
+		dispatchSoon(db);
+	}
+	return { ok: true, value: rawId };
+}
+
+/** I went, Mentor didn't show, or I couldn't make it (FR-030–FR-032). */
+export async function answerWalkAction(
+	db: Db,
+	ctx: PanelContext,
+	rawId: string,
+	rawAnswer: string,
+	noShow: NoShowDeps,
+): Promise<ActionResult<WalkAnswer>> {
+	const answer = (['went', 'no-show', 'missed'] as const).find((a) => a === rawAnswer);
+	if (!answer) return refuse(400, 'Unknown answer.');
+	const id = await walkIdFor(db, ctx, rawId);
+	if (id === null) return refuse(404, WALK_GONE);
+	const result = await answerWalk(db, ctx.viewer.slackUserId, id, answer, ctx.now);
+	if (!result) return refuse(409, NOT_AVAILABLE);
+	if (answer === 'no-show' && result.previous !== 'no-show') void postNoShows(db, id, noShow);
+	return { ok: true, value: answer };
+}
+
+/** The mentor's "Who showed up?" (FR-030, FR-031). */
+export async function saveAttendanceAction(
+	db: Db,
+	ctx: PanelContext,
+	rawId: string,
+	rawSeatIds: string[],
+): Promise<ActionResult<string>> {
+	const id = await walkIdFor(db, ctx, rawId);
+	if (id === null) return refuse(404, WALK_GONE);
+	const row = await loadMentor(db, ctx.viewer.slackUserId);
+	if (row?.status !== 'active') return refuse(409, NOT_AVAILABLE);
+	const seatIds = rawSeatIds.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+	if (!(await saveAttendance(db, ctx.viewer.slackUserId, id, seatIds, ctx.now))) {
+		return refuse(409, NOT_AVAILABLE);
+	}
+	return { ok: true, value: rawId };
+}
+
+/** Turn nearby-walk alerts on or change them (FR-027). */
+export async function saveAlertsAction(
+	db: Db,
+	ctx: PanelContext,
+	zip: string,
+	rawRadius: string,
+	lookup?: Parameters<typeof saveAlerts>[5],
+): Promise<ActionResult<true>> {
+	if (!visible(ctx)) return refuse(409, NOT_AVAILABLE);
+	const result = await saveAlerts(db, person(ctx.viewer), zip, Number(rawRadius), ctx.now, lookup);
+	return result.ok ? { ok: true, value: true } : refuse(400, result.message);
+}
+
+/** Turn them off (FR-027). Allowed whatever the setting: nobody should be
+ *  unable to stop messages. */
+export async function stopAlertsAction(db: Db, ctx: PanelContext): Promise<ActionResult<true>> {
+	await stopAlerts(db, ctx.viewer.slackUserId);
+	return { ok: true, value: true };
 }

@@ -75,6 +75,7 @@
 	<OrganizerWalks
 		upcoming={data.upcoming}
 		past={data.past}
+		metrics={data.metrics}
 		onhide={(id) => post('hideWalk', { walkId: id })}
 		oncancel={(id) => post('cancelWalk', { walkId: id })}
 	/>

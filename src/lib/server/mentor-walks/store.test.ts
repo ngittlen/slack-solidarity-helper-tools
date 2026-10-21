@@ -9,6 +9,7 @@ import {
 	cancelWalk,
 	createWalk,
 	eligibilityCounts,
+	latestLookFor,
 	latestPhone,
 	listMentorWalks,
 	listMentors,
@@ -25,6 +26,9 @@ import {
 	type WalkFields,
 } from './store.js';
 import { blockFromTurfCheckout } from '../van/blocklist.js';
+import { enqueue } from './notify.js';
+import { mentorWalkMessages, turfNotices } from '../schema.js';
+import { eq } from 'drizzle-orm';
 
 // A real in-memory libsql: the overlap and has-it-started rules live in the
 // SQL, so a fake would only answer what the test scripted.
@@ -46,6 +50,7 @@ const fields = (over: Partial<WalkFields> = {}): WalkFields => ({
 	lat: 42.278,
 	lng: -83.746,
 	note: '',
+	lookFor: 'Campaign merch',
 	seats: 3,
 	phone: '(734) 555-0142',
 	...over,
@@ -181,6 +186,12 @@ describe('walks', () => {
 		expect(await latestPhone(db, MENTOR.id)).toBe('(734) 555-0142');
 	});
 
+	it('pre-fills how to spot the mentor from their last walk, campaign merch before that', async () => {
+		expect(await latestLookFor(db, MENTOR.id)).toBe('Campaign merch');
+		await createWalk(db, MENTOR, fields({ lookFor: 'Red cap' }), NOW);
+		expect(await latestLookFor(db, MENTOR.id)).toBe('Red cap');
+	});
+
 	it('refuses an overlapping walk, but not one 2 hours later', async () => {
 		await createWalk(db, MENTOR, fields(), NOW);
 		expect(await createWalk(db, MENTOR, fields({ startsAt: at(27) }), NOW)).toEqual({
@@ -203,7 +214,7 @@ describe('walks', () => {
 			message: 'You already have a walk within 2 hours of that time.',
 		});
 		const ok = await updateWalk(db, MENTOR.id, first.id, fields({ seats: 5 }), NOW);
-		expect(ok).toEqual({ ok: true, id: first.id });
+		expect(ok).toEqual({ ok: true, id: first.id, publicId: first.publicId, changed: false });
 		expect((await loadWalk(db, first.id))?.seats).toBe(5);
 
 		const later = new Date(NOW.getTime() + 27 * HOUR);
@@ -248,7 +259,7 @@ describe('organizers', () => {
 		expect(await setWalkStatus(db, walk.id, 'cancelled', ADMIN, NOW)).toBe(false);
 
 		expect(await mentorTotals(db, NOW)).toEqual(
-			new Map([[MENTOR.id, { walksHosted: 1, lastChapterId: 71 }]]),
+			new Map([[MENTOR.id, { walksHosted: 1, newPeopleTakenOut: 0, lastChapterId: 71 }]]),
 		);
 
 		const { upcoming, past } = await listWalksForOrganizer(db, NOW);
@@ -267,5 +278,46 @@ describe('purgeExpiredPhones', () => {
 		expect(await purgeExpiredPhones(db, NOW)).toBe(1);
 		expect((await loadWalk(db, old.id))?.phone).toBeNull();
 		expect((await loadWalk(db, recent.id))?.phone).toBe('(734) 555-0142');
+	});
+
+	it('takes the number out of reminders and notices too', async () => {
+		const old = await createWalk(db, MENTOR, fields({ startsAt: at(-25) }), new Date(0));
+		const recent = await createWalk(db, MENTOR, fields({ startsAt: at(-23) }), new Date(0));
+		if (!old.ok || !recent.ok) throw new Error('create failed');
+		const text = 'Running late? Text Kimberly at (734) 555-0142.';
+		await enqueue(
+			db,
+			[
+				{ holderId: 'U_A', walkId: old.id, eventKey: 'reminder:a', kind: 'walk-reminder', text },
+				{ holderId: 'U_B', walkId: old.id, eventKey: 'reminder:b', kind: 'walk-reminder', text },
+				{ holderId: 'U_A', walkId: recent.id, eventKey: 'reminder:c', kind: 'walk-reminder', text },
+			],
+			new Date(0),
+		);
+		await db
+			.update(mentorWalkMessages)
+			.set({ status: 'sent' })
+			.where(eq(mentorWalkMessages.eventKey, 'reminder:a'));
+		await db.insert(turfNotices).values([
+			{ userId: 'google:a', kind: 'walk-reminder', text, createdAt: at(-28) },
+			{ userId: 'google:a', kind: 'walk-reminder', text, createdAt: at(-20) },
+			{ userId: 'google:a', kind: 'walk-off', text: 'Off.', createdAt: at(-28) },
+		]);
+		await purgeExpiredPhones(db, NOW);
+		const rows = await db
+			.select({
+				key: mentorWalkMessages.eventKey,
+				text: mentorWalkMessages.text,
+				status: mentorWalkMessages.status,
+			})
+			.from(mentorWalkMessages)
+			.orderBy(mentorWalkMessages.eventKey);
+		expect(rows).toEqual([
+			{ key: 'reminder:a', text: '', status: 'sent' },
+			{ key: 'reminder:b', text: '', status: 'skipped' },
+			{ key: 'reminder:c', text, status: 'pending' },
+		]);
+		const notices = await db.select({ kind: turfNotices.kind }).from(turfNotices);
+		expect(notices).toEqual([{ kind: 'walk-reminder' }, { kind: 'walk-off' }]);
 	});
 });

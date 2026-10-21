@@ -68,6 +68,12 @@ describe('noticeLines', () => {
 		expect(lines.flat()).toContainEqual({ text: 'Open turf checkout', href: '/turfs?chapter=3' });
 	});
 
+	it('keeps a link’s fragment, which opens one mentor walk', () => {
+		expect(noticeLines(`Join on <${APP}/turfs?chapter=71#walk-12|/turfs>.`, APP)).toEqual([
+			[{ text: 'Join on ' }, { text: '/turfs', href: '/turfs?chapter=71#walk-12' }, { text: '.' }],
+		]);
+	});
+
 	it('shows a link to anywhere else as its label only', () => {
 		expect(noticeLines('See <https://evil.example/x|this page>.', APP)).toEqual([
 			[{ text: 'See ' }, { text: 'this page' }, { text: '.' }],

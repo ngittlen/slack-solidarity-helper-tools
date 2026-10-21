@@ -9,7 +9,8 @@ import {
 	MAP_TILE_URL_TEMPLATE,
 	SLACK_SUPERUSER_ID,
 } from '$lib/server/env.js';
-import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
+import { loadSettings, loadVanBlockedIds, type Settings } from '$lib/server/settings.js';
+import { liveNoShowDeps } from '$lib/server/mentor-walks/dispatch.js';
 import { chaptersFromChannelMap, turfChapters } from '$lib/chapter-list.js';
 import { lookupZipCentroid, normalizeZip, resolveLocation } from '$lib/server/van/zip-centroid.js';
 import {
@@ -51,12 +52,20 @@ import {
 	cancelOwnWalk,
 	loadMentorDebug,
 	loadMentorPanel,
+	loadWalkFinder,
 	locatePlace,
 	saveWalk,
+	answerFinderPrompt,
+	answerWalkAction,
+	joinWalkAction,
+	leaveWalkAction,
+	saveAlertsAction,
+	saveAttendanceAction,
+	stopAlertsAction,
 	type MentorDebugView,
 } from '$lib/server/mentor-walks/panel.js';
 import { forgetMentor } from '$lib/server/mentor-walks/store.js';
-import type { MentorPanelView } from '$lib/mentor-walks/types.js';
+import type { MentorPanelView, WalkFinderView } from '$lib/mentor-walks/types.js';
 
 // The volunteer turf page.
 //
@@ -203,6 +212,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			// FR-039).
 			mentor: null as MentorPanelView | null,
 			mentorDebug: null as MentorDebugView | null,
+			walkFinder: null as WalkFinderView | null,
 		};
 	}
 
@@ -226,29 +236,19 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// DMs, so there is nothing to read for them. Like needsSlackHref, shipped on
 	// every branch below.
 	//
-	// And the mentor area (specs/015-mentor-walks, User Stories 1 and 2), which
-	// doesn't depend on the chapter on screen: a mentor's walks can be in any.
-	// Admins also get a debug panel for trying it out on themselves.
-	const [notices, mentor, mentorDebug] = await Promise.all([
-		session.authProvider !== undefined ? turfNoticesFor(session.slackUserId) : [],
-		loadMentorPanel(db, {
-			viewer: session,
-			settings,
-			blocked: false,
-			now: new Date(),
-			chapters,
-			chapterNames: new Map(
-				chaptersFromChannelMap(settings.chapterChannelMap, settings.turfCustomChapters).map((c) => [
-					c.chapterId,
-					c.name,
-				]),
-			),
-		}),
-		loadMentorDebug(db, { viewer: session, settings, blocked: false }),
-	]);
-
+	// And mentor walks (specs/015-mentor-walks): the mentor area, which
+	// doesn't depend on the chapter on screen (a mentor's walks can be in any),
+	// and the walk cards, which do. Admins also get a debug panel for trying
+	// it out on themselves.
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
+	const mentorCtx = { viewer: session, settings, blocked: false, now: new Date() };
+	const [notices, mentor, mentorDebug, walkFinder] = await Promise.all([
+		session.authProvider !== undefined ? turfNoticesFor(session.slackUserId) : [],
+		loadMentorPanel(db, { ...mentorCtx, chapters, chapterNames: chapterNamesOf(settings) }),
+		loadMentorDebug(db, { viewer: session, settings, blocked: false }),
+		loadWalkFinder(db, { ...mentorCtx, chapterId: chapter?.chapterId ?? null }),
+	]);
 
 	const empty = {
 		mode: 'member' as const,
@@ -271,6 +271,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		claimTtlHours: options.ttlHours,
 		mentor,
 		mentorDebug,
+		walkFinder,
 	};
 
 	if (!chapter) return empty;
@@ -295,6 +296,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		console.warn(`[van] turf request budget exhausted (page): user=${session.slackUserId}`);
 		return {
 			...empty,
+			walkFinder: withoutCards(walkFinder),
 			rateLimited: budget.retryAfterSeconds,
 			rateLimitReason: 'requests' as RateLimitReason,
 		};
@@ -311,6 +313,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		);
 		return {
 			...empty,
+			walkFinder: withoutCards(walkFinder),
 			rateLimited: limit.retryAfterSeconds,
 			rateLimitReason: 'chapters' as RateLimitReason,
 		};
@@ -388,6 +391,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		claimTtlHours: options.ttlHours,
 		mentor,
 		mentorDebug,
+		walkFinder,
 	};
 };
 
@@ -439,6 +443,40 @@ async function mentorContext(session: App.Locals['session']) {
 		now: new Date(),
 		chapterIds: chapters.map((c) => c.chapterId),
 	};
+}
+
+/** A chapter's walk cards say where mentors are meeting in it, so a
+ *  rate-limited request gets the rest of the walk finder but not those. */
+function withoutCards(finder: WalkFinderView | null): WalkFinderView | null {
+	return finder && { ...finder, cards: [] };
+}
+
+/** Every chapter's name, hidden ones too, for walks posted before their
+ *  chapter was hidden. */
+function chapterNamesOf(settings: Settings): Map<number, string> {
+	return new Map(
+		chaptersFromChannelMap(settings.chapterChannelMap, settings.turfCustomChapters).map((c) => [
+			c.chapterId,
+			c.name,
+		]),
+	);
+}
+
+/**
+ * The turf request budget, for taking or giving up a seat: each one messages
+ * the mentor, and a joined card shows the mentor's number, so they spend the
+ * same per-user budget as the page and the turf API. Walk ids are random
+ * (store.ts newPublicId), so there's no counting through them to find walks
+ * in other chapters. A failure to return, or null.
+ */
+function seatLimit(viewer: { slackUserId: string; isAdmin: boolean }) {
+	const now = Date.now();
+	pruneRateLimitStores(now);
+	const budget = recordRequest(turfRequests, viewer.slackUserId, now, { exempt: viewer.isAdmin });
+	if (!budget.allowed) {
+		return fail(429, { mentorError: 'Too many requests. Slow down and try again shortly.' });
+	}
+	return null;
 }
 
 const formText = (form: FormData, key: string) => {
@@ -659,6 +697,7 @@ export const actions: Actions = {
 			lat: formText(form, 'lat'),
 			lng: formText(form, 'lng'),
 			note: formText(form, 'note'),
+			lookFor: formText(form, 'lookFor'),
 			seats: formText(form, 'seats'),
 			phone: formText(form, 'phone'),
 		});
@@ -674,6 +713,82 @@ export const actions: Actions = {
 		const result = await cancelOwnWalk(db, ctx, formText(await request.formData(), 'walkId'));
 		if (!result.ok) return fail(result.status, { mentorError: result.message });
 		return { mentorCancelledWalk: result.value };
+	},
+
+	/** The new-person prompt: yes, snooze, decline, or reopen after No thanks. */
+	mentorPrompt: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const result = await answerFinderPrompt(db, ctx, formText(await request.formData(), 'answer'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorPrompted: result.value };
+	},
+
+	/** Take a seat on a walk. */
+	mentorJoin: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const limited = seatLimit(ctx.viewer);
+		if (limited) return limited;
+		const result = await joinWalkAction(db, ctx, formText(await request.formData(), 'walkId'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorJoined: result.value };
+	},
+
+	/** Give a seat up. */
+	mentorLeave: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const limited = seatLimit(ctx.viewer);
+		if (limited) return limited;
+		const result = await leaveWalkAction(db, ctx, formText(await request.formData(), 'walkId'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorLeft: result.value };
+	},
+
+	/** After a walk: I went, Mentor didn't show, or I couldn't make it. */
+	mentorAnswer: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const form = await request.formData();
+		const result = await answerWalkAction(
+			db,
+			ctx,
+			formText(form, 'walkId'),
+			formText(form, 'answer'),
+			liveNoShowDeps(ctx.settings.slackTurfChannelId, chapterNamesOf(ctx.settings)),
+		);
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorWalkAnswer: result.value };
+	},
+
+	/** The mentor's "Who showed up?". */
+	mentorAttendance: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const form = await request.formData();
+		const seatIds = form.getAll('seatId').filter((v): v is string => typeof v === 'string');
+		const result = await saveAttendanceAction(db, ctx, formText(form, 'walkId'), seatIds);
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorAttendance: result.value };
+	},
+
+	/** Turn nearby-walk alerts on, or change them. */
+	mentorAlertsSave: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const form = await request.formData();
+		const result = await saveAlertsAction(db, ctx, formText(form, 'zip'), formText(form, 'radius'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorAlerts: 'on' };
+	},
+
+	/** Turn nearby-walk alerts off. */
+	mentorAlertsOff: async ({ locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		await stopAlertsAction(db, ctx);
+		return { mentorAlerts: 'off' };
 	},
 
 	/**

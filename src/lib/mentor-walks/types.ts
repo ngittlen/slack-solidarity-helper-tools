@@ -1,7 +1,7 @@
 // What the mentor-walks screens are given (specs/015-mentor-walks), built by
 // the pages' loads from the database.
 
-import type { MentorWalksVisibility } from './rules.js';
+import type { AlertRadius, FinderState, MentorWalksVisibility } from './rules.js';
 
 /** What the walk form edits. `date` and `time` are campaign-local input
  *  values (`YYYY-MM-DD`, `HH:MM`). */
@@ -15,6 +15,8 @@ export interface WalkDraft {
 	 *  until it has been looked up, and again whenever the place is edited. */
 	point?: { lat: number; lng: number } | null;
 	note: string;
+	/** How new people will spot the mentor: "Campaign merch". */
+	lookFor: string;
 	seats: number;
 	phone: string;
 }
@@ -68,9 +70,81 @@ export type MentorPanelView =
 			newPeopleTakenOut: number;
 			/** FR-012: from their latest walk that still has one. */
 			defaultPhone: string;
+			/** How they said to spot them last time, or campaign merch. */
+			defaultLookFor: string;
 			/** Chapters a walk can be posted in: the ones /turfs offers. */
 			chapters: ChapterOption[];
+			/** Walks that have started and still need "Who showed up?". */
+			checkins: MentorCheckinView[];
 	  };
+
+/** A walk as a card on /turfs, or in a map marker's popup (FR-016, FR-021). */
+export interface WalkCardView {
+	id: string;
+	chapterId: number;
+	mentorName: string;
+	/** "Today", "Tomorrow", "Sun, Oct 19". */
+	dayLabel: string;
+	timeLabel: string;
+	/** UTC ISO, for the calendar file. */
+	startsAt: string;
+	place: string;
+	note: string;
+	/** "Look for: …" — campaign merch unless the mentor said otherwise. */
+	lookFor: string;
+	seats: number;
+	seatsLeft: number;
+	point: { lat: number; lng: number };
+	/** The viewer holds a seat. */
+	joined: boolean;
+	/** The viewer hosts it, so can't join it (FR-019). */
+	own: boolean;
+	/** It has started: no joining or giving up seats any more. */
+	started: boolean;
+	/** Only ever sent to someone holding a seat (FR-011). */
+	phone: string | null;
+}
+
+/** "How did your walk go?", for someone who held a seat (FR-030). */
+export interface WalkCheckinView {
+	walkId: string;
+	mentorName: string;
+	dayLabel: string;
+	timeLabel: string;
+	place: string;
+	answer: 'went' | 'no-show' | 'missed' | null;
+}
+
+/** "Who showed up?", for the mentor (FR-030). */
+export interface MentorCheckinView {
+	walkId: string;
+	dayLabel: string;
+	timeLabel: string;
+	place: string;
+	seats: { id: string; name: string; ticked: boolean }[];
+}
+
+export interface AlertsView {
+	zip: string;
+	radius: AlertRadius;
+}
+
+/** Walk cards and everything around them on /turfs (User Stories 3, 6, 7). */
+export interface WalkFinderView {
+	/** How the cards are offered; null for a new person who said "Not now". */
+	state: FinderState | null;
+	/** The chapter on screen's walks (FR-015). */
+	cards: WalkCardView[];
+	/** Walks the viewer holds a seat on that haven't started, in any chapter. */
+	mine: WalkCardView[];
+	/** Walks they held a seat on that have started and they haven't answered. */
+	checkins: WalkCheckinView[];
+	alerts: AlertsView | null;
+	/** The "Mentor walks" toggle starts open: someone who has never checked
+	 *  out a turf is likely looking for a way to start. Their own choice on
+	 *  the toggle, once made, wins. */
+	cardsStartOpen: boolean;
+}
 
 /** An upcoming walk in the organizer view. */
 export interface OrganizerWalkView {

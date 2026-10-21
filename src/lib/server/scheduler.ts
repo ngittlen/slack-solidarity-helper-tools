@@ -268,12 +268,14 @@ const vanDailyReport: Job = {
 	},
 };
 
-/** Mentor walk housekeeping: deleting phone numbers a day after their walk
- *  starts (specs/015-mentor-walks, FR-011). Hourly, so none outlives the
- *  limit by more than an hour. No workflow mirrors it. */
+/** Mentor walk housekeeping (specs/015-mentor-walks): reminders, post-walk
+ *  questions, nearby-walk alerts and anything else waiting to be sent, and
+ *  deleting phone numbers a day after their walk starts (FR-011). Every 15
+ *  minutes, so a "3 hours before" reminder is never far off. No workflow
+ *  mirrors it. */
 const mentorWalksSweep: Job = {
 	name: 'mentor-walks-sweep',
-	schedule: [{ hours: EVERY_HOUR, minutes: [20] }],
+	schedule: [{ hours: EVERY_HOUR, minutes: [5, 20, 35, 50] }],
 	run: async (_slot, call) => {
 		await call('/api/internal/mentor-walks-sweep', {}, MINUTE);
 	},

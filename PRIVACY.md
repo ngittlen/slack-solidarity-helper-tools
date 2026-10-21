@@ -202,6 +202,34 @@ per-person detail this app copies out of VAN — no voter name, address, date of
 phone number, email or VAN ID is ever stored, and the code that reads VAN's export files drops
 those columns as it passes over them (`src/lib/server/van/hull-extract.ts`).
 
+### Mentor walks
+
+Experienced canvassers can host walks that new canvassers join. It is off unless an organizer
+switches it on. What it keeps:
+
+- **Mentor status** (`mentors`): whether you were invited, said not now or no thanks, became a
+  mentor or had it ended, when you agreed to the volunteer guidelines and which link you agreed
+  to, and which organizer appointed or ended it.
+- **Walks** (`mentor_walks`): the mentor's name, the chapter, the time, the meeting place (a public
+  place, never a home address) and its map point, an optional note, how new people will spot the
+  mentor ("campaign merch", say), and an optional phone number.
+  **The phone number is shown only to the mentor and to people holding a seat, and is deleted
+  automatically a day after the walk starts** — along with the copy in the reminder sent before
+  the walk, both the queued message here and the notice on `/turfs`. A reminder already sent as a
+  Slack DM stays in Slack, like any other DM.
+- **Seats** (`mentor_walk_seats`): who took a seat on which walk, when, whether they gave it up,
+  whether the mentor ticked them as there, and their own answer afterwards (I went, the mentor
+  didn't show, or I couldn't make it). Nothing here adds doors to anyone's count.
+- **The new-canvasser prompt** (`mentor_walk_prompts`): your answer to it.
+- **Alerts for walks near you, if you turn them on** (`mentor_walk_alerts`): your ZIP code, its
+  centroid and how far you'll travel, until you turn them off.
+- **Messages** (`mentor_walk_messages`): each message the feature sends you or queued for you — who
+  joined your walk, a change or cancellation, a reminder, an alert — so none goes twice.
+
+A "mentor didn't show" report is posted in the campaign's Turf sync Slack channel with the
+reporter's name, the mentor's name, and the walk's time, place and chapter. No contact details are
+exchanged through the site: the only number anyone sees is one a mentor chose to leave.
+
 ### Location, when you use `/turfs`
 
 Three deliberate limits here, all verifiable in the code:
@@ -306,7 +334,8 @@ exists to run one campaign, and the records below have no purpose once it is ove
 days of the election every record identifying a volunteer, canvasser or organizer is deleted —
 the help-to-join queue, notes and warnings, Slack join rows, account links, the turf checkout
 ledger and block list, Google and Apple sign-in records, push notification settings,
-per-canvasser door-knock rows, stored admin tokens, and any sessions still open. What survives is aggregate: daily and weekly counts per chapter and date, which name
+per-canvasser door-knock rows, mentor walks and everything kept with them, stored admin tokens,
+and any sessions still open. What survives is aggregate: daily and weekly counts per chapter and date, which name
 nobody.
 
 Nothing in the code enforces that date. It is a commitment the Tools for Abdul team carries out
@@ -333,10 +362,13 @@ and asking for it means asking them, not us.
 | Slack invite sightings                      | Kept after a link is removed — deleting them would erase the record of the fix. Names pages, not people                                                                                                                                                                                                                                                           |
 | Daily signup / door-knock snapshots         | Kept indefinitely. These are counts per (date, chapter), not per person                                                                                                                                                                                                                                                                                           |
 | Geocoded ZIP centroids                      | Kept indefinitely. Not linked to anyone                                                                                                                                                                                                                                                                                                                           |
+| Mentor walk phone numbers                   | Deleted automatically a day after the walk starts, with the reminder that carried it                                                                                                                                                                                                                                                                              |
+| Mentor walks, seats, status and messages    | Kept until the election, as the record of who hosted and joined which walk                                                                                                                                                                                                                                                                                        |
+| Nearby walk alerts                          | Until you turn them off, and in any case the election                                                                                                                                                                                                                                                                                                             |
 
-Apart from session expiry, the week-old turf messages for Google and Apple sign-ins, and push
-notification settings on devices that stop accepting them or past the limit of 10, no deletion is
-automated — including the
+Apart from session expiry, the week-old turf messages for Google and Apple sign-ins, push
+notification settings on devices that stop accepting them or past the limit of 10, and mentor
+walk phone numbers a day after the walk, no deletion is automated — including the
 post-election wipe above. Earlier removal is done on request, by hand.
 
 ## Your choices

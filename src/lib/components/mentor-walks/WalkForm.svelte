@@ -10,6 +10,7 @@
 
 	import './mentor-walks.css';
 	import PlacePreview from './PlacePreview.svelte';
+	import { DEFAULT_LOOK_FOR, LOOK_FOR_MAX_LENGTH } from '$lib/mentor-walks/rules.js';
 	import type {
 		ChapterOption,
 		PlaceLocation,
@@ -30,6 +31,8 @@
 		seatsTaken?: number;
 		/** From the mentor's most recent walk that still has one (FR-012). */
 		defaultPhone?: string;
+		/** How they said to spot them last time, or campaign merch. */
+		defaultLookFor?: string;
 		/** Basemap for the place preview, as /turfs is given it. */
 		tiles?: { urlTemplate: string; attribution: string };
 		/** Finds the meeting place on the map. */
@@ -47,6 +50,7 @@
 		initial = null,
 		seatsTaken = 0,
 		defaultPhone = '',
+		defaultLookFor = DEFAULT_LOOK_FOR,
 		tiles,
 		onlocate,
 		onsave,
@@ -63,6 +67,8 @@
 	let time = $state(start?.time ?? '');
 	let place = $state(start?.place ?? '');
 	let note = $state(start?.note ?? '');
+	// svelte-ignore state_referenced_locally
+	let lookFor = $state(start?.lookFor ?? defaultLookFor);
 	// svelte-ignore state_referenced_locally
 	let seats = $state(start?.seats ?? Math.max(2, seatsTaken));
 	// svelte-ignore state_referenced_locally
@@ -90,6 +96,8 @@
 		if (chapters.length > 0 && chapterId === undefined) problems.push('Pick a chapter.');
 		if (!date || !time) problems.push('Pick a date and start time.');
 		if (!place.trim()) problems.push('Add a meeting place.');
+		if (!lookFor.trim())
+			problems.push('Say how new people will spot you, like “Campaign merch” or “Red cap”.');
 		if (seats < 1 || seats > 6) problems.push('Open seats must be between 1 and 6.');
 		if (seats < seatsTaken)
 			problems.push(
@@ -112,6 +120,7 @@
 					place,
 					point: located.point,
 					note,
+					lookFor,
 					seats,
 					phone,
 				})) ?? [];
@@ -195,8 +204,25 @@
 		<div class="mw-callout">
 			<ul>
 				<li><strong>Pick a public place</strong>, never a home address.</li>
-				<li><strong>Wear campaign merch</strong> so new people can spot you.</li>
+				<li>
+					<strong>Wear campaign merch</strong> if you have some, so new people can spot you.
+				</li>
 			</ul>
+		</div>
+
+		<div class="mw-field">
+			<label for="mw-look-for">How will new people spot you?</label>
+			<input
+				id="mw-look-for"
+				type="text"
+				bind:value={lookFor}
+				maxlength={LOOK_FOR_MAX_LENGTH}
+				placeholder="Red cap and a clipboard"
+				aria-describedby="mw-look-for-hint"
+			/>
+			<p id="mw-look-for-hint" class="mw-muted">
+				Shown on your walk as “Look for: {lookFor.trim() || '…'}”.
+			</p>
 		</div>
 
 		<div class="mw-field">

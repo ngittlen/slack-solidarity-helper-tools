@@ -17,6 +17,8 @@ const mockUpdateSession = vi.hoisted(() => vi.fn());
 const mockMentorPanel = vi.hoisted(() => vi.fn(async () => null as unknown));
 const mockAgree = vi.hoisted(() => vi.fn());
 const mockLocatePlace = vi.hoisted(() => vi.fn());
+const mockWalkFinder = vi.hoisted(() => vi.fn(async () => null as unknown));
+const mockJoinWalk = vi.hoisted(() => vi.fn());
 
 // Its own tests run it against real SQLite (mentor-walks/panel.test.ts).
 vi.mock('$lib/server/mentor-walks/panel.js', () => ({
@@ -27,6 +29,18 @@ vi.mock('$lib/server/mentor-walks/panel.js', () => ({
 	cancelOwnWalk: vi.fn(),
 	locatePlace: mockLocatePlace,
 	saveWalk: vi.fn(),
+	loadWalkFinder: mockWalkFinder,
+	answerFinderPrompt: vi.fn(),
+	answerWalkAction: vi.fn(),
+	joinWalkAction: mockJoinWalk,
+	leaveWalkAction: vi.fn(),
+	saveAlertsAction: vi.fn(),
+	saveAttendanceAction: vi.fn(),
+	stopAlertsAction: vi.fn(),
+}));
+vi.mock('$lib/server/mentor-walks/dispatch.js', () => ({
+	liveNoShowDeps: () => ({}),
+	dispatchSoon: vi.fn(),
 }));
 const mockForgetMentor = vi.hoisted(() => vi.fn());
 vi.mock('$lib/server/mentor-walks/store.js', () => ({ forgetMentor: mockForgetMentor }));
@@ -1165,7 +1179,7 @@ describe('/turfs mentor debug actions', () => {
 describe('/turfs mentor actions', () => {
 	const VOLUNTEER_SESSION = { slackUserId: 'U_VOL', slackUserName: 'Kim', isAdmin: false };
 	const runAction = (
-		name: 'mentorAgree' | 'mentorLocate' | 'mentorSaveWalk',
+		name: 'mentorAgree' | 'mentorLocate' | 'mentorSaveWalk' | 'mentorJoin' | 'mentorAlertsOff',
 		session: unknown,
 		fields: Record<string, string>,
 	) => {
@@ -1200,6 +1214,33 @@ describe('/turfs mentor actions', () => {
 			status: 503,
 			data: { mentorError: 'down' },
 		});
+	});
+
+	it('joins a walk, passing on a refusal with its status', async () => {
+		mockJoinWalk.mockResolvedValueOnce({ ok: true, value: 12 });
+		expect(await runAction('mentorJoin', VOLUNTEER_SESSION, { walkId: '12' })).toEqual({
+			mentorJoined: 12,
+		});
+		expect(mockJoinWalk).toHaveBeenCalledWith(expect.anything(), expect.anything(), '12');
+		mockJoinWalk.mockResolvedValueOnce({ ok: false, status: 404, message: 'gone' });
+		expect(await runAction('mentorJoin', VOLUNTEER_SESSION, { walkId: '12' })).toMatchObject({
+			status: 404,
+			data: { mentorError: 'gone' },
+		});
+		expect(await runAction('mentorJoin', null, { walkId: '12' })).toMatchObject({ status: 401 });
+	});
+
+	it('spends the turf request budget on joins, so walks can’t be joined in a loop', async () => {
+		mockJoinWalk.mockResolvedValue({ ok: true, value: 12 });
+		const looper = { ...VOLUNTEER_SESSION, slackUserId: 'U_LOOPER' };
+		const results = [];
+		for (let i = 0; i < 61; i++)
+			results.push(await runAction('mentorJoin', looper, { walkId: '12' }));
+		expect(
+			results.slice(0, 60).every((r) => (r as { mentorJoined?: number }).mentorJoined === 12),
+		).toBe(true);
+		expect(results[60]).toMatchObject({ status: 429 });
+		mockJoinWalk.mockReset();
 	});
 
 	it('refuses everything until an outside volunteer has chosen a name', async () => {

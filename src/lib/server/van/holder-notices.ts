@@ -15,6 +15,7 @@
 // does a failed DM; one for a holder with no devices is simply done.
 
 import { and, desc, eq, gte, lt } from 'drizzle-orm';
+import type { KnownBlock } from '@slack/web-api';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { turfNotices } from '../schema.js';
 import { isOutsideUserId } from '../identity.js';
@@ -23,14 +24,24 @@ import { APP_URL } from '../env.js';
 import { sendPush } from '../push.js';
 import { errMessage } from '../../err-message.js';
 import { noticePushText } from '../../van/notice-text.js';
+import { WALK_MESSAGE_TITLES, type WalkMessageKind } from '../../mentor-walks/messages.js';
 
 type Database = ReturnType<typeof drizzle>;
 
 export type HolderNoticeKind =
-	'expiry' | 'unsynced' | 'list-number' | 'walked-out' | 'recut' | 'lapsed' | 'doors-counted';
+	| 'expiry'
+	| 'unsynced'
+	| 'list-number'
+	| 'walked-out'
+	| 'recut'
+	| 'lapsed'
+	| 'doors-counted'
+	// Mentor walks (specs/015-mentor-walks, User Story 5), sent the same ways.
+	| WalkMessageKind;
 
 /** The notification's title; the message itself is its body. */
 const PUSH_TITLES: Record<HolderNoticeKind, string> = {
+	...WALK_MESSAGE_TITLES,
 	expiry: 'Your turf expires soon',
 	unsynced: "VAN doesn't have your doors yet",
 	'list-number': 'Your list number changed',
@@ -67,6 +78,8 @@ export async function notifyHolder(
 	text: string,
 	logTag: string,
 	now: Date = new Date(),
+	/** Blocks after a Slack DM's message, such as a button. */
+	slackBlocks: readonly KnownBlock[] = [],
 ): Promise<boolean> {
 	const { body, url } = noticePushText(text, APP_URL);
 	const push = await sendPush(
@@ -78,7 +91,7 @@ export async function notifyHolder(
 	if (!isOutsideUserId(holderId)) {
 		if (push === 'sent') return true;
 		if (PUSH_ONLY.has(kind)) return push === 'no-devices';
-		return sendDm(holderId, text, logTag);
+		return sendDm(holderId, text, logTag, slackBlocks);
 	}
 	try {
 		await db

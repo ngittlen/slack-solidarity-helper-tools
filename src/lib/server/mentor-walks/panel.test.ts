@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
+import { vanTurfCheckouts } from '../schema.js';
 import {
 	agree,
 	answerInvitation,
@@ -14,8 +15,21 @@ import {
 	PLACE_NOT_FOUND,
 	PLACE_NOT_LOCATED,
 	saveWalk,
+	answerFinderPrompt,
+	answerWalkAction,
+	joinWalkAction,
+	leaveWalkAction,
+	loadWalkFinder,
+	saveAttendanceAction,
+	stopAlertsAction,
+	WALK_GONE,
 	type WalkForm,
 } from './panel.js';
+import { createWalk } from './store.js';
+import type { NoShowDeps } from './no-show.js';
+
+// Sending is notify.ts's, tested there; here nothing leaves the process.
+vi.mock('./dispatch.js', () => ({ dispatchSoon: vi.fn(), liveNoShowDeps: vi.fn() }));
 import { appointMentor, forgetMentor, listMentorWalks, loadMentor, revokeMentor } from './store.js';
 import type { MentorWalksVisibility } from '../../mentor-walks/rules.js';
 
@@ -64,6 +78,7 @@ const form = (over: Partial<WalkForm> = {}): WalkForm => ({
 	lat: '42.24',
 	lng: '-83.61',
 	note: 'By the front doors',
+	lookFor: 'Campaign merch',
 	seats: '3',
 	phone: '734 555 0142',
 	...over,
@@ -283,7 +298,10 @@ describe('walks', () => {
 	it('keeps a walk in a chapter /turfs has stopped offering', async () => {
 		const created = await saveWalk(db, ctx(), form());
 		if (!created.ok) throw new Error('save failed');
-		await client.execute(`UPDATE mentor_walks SET chapter_id = 72 WHERE id = ${created.value}`);
+		await client.execute({
+			sql: 'UPDATE mentor_walks SET chapter_id = 72 WHERE public_id = ?',
+			args: [created.value],
+		});
 		const panel = await loadMentorPanel(db, ctx());
 		if (panel?.state !== 'mentor') throw new Error('not a mentor');
 		expect(panel.walks[0]).toMatchObject({
@@ -365,6 +383,157 @@ describe('admin simulation', () => {
 			guidelinesSet: true,
 			completed: 0,
 			doors: 0,
+		});
+	});
+});
+
+describe('walk cards, seats and alerts', () => {
+	const NEWCOMER = { slackUserId: 'U_NEW', slackUserName: 'Taylor S.', isAdmin: false };
+	const MENTOR = { id: 'U_MENTOR', name: 'Kimberly B.' };
+	const asNewcomer = (over: Parameters<typeof ctx>[0] = {}) => ({
+		...ctx({ viewer: NEWCOMER, ...over }),
+		chapterId: 71 as number | null,
+	});
+	const noShow: NoShowDeps = {
+		post: vi.fn(async () => '1.2'),
+		channelId: '',
+		chapterName: () => 'Washtenaw County',
+		appUrl: 'https://turf.example.org',
+	};
+	let walkId: string;
+
+	beforeEach(async () => {
+		await appointMentor(db, MENTOR, ADMIN, NOW);
+		const walk = await createWalk(
+			db,
+			MENTOR,
+			{
+				chapterId: 71,
+				startsAt: new Date(NOW.getTime() + 26 * 3_600_000).toISOString(),
+				place: 'Ypsilanti District Library, 229 W Michigan Ave',
+				lat: 42.24,
+				lng: -83.61,
+				note: '',
+				lookFor: 'Campaign merch',
+				seats: 2,
+				phone: '(734) 555-0142',
+			},
+			NOW,
+		);
+		if (!walk.ok) throw new Error('create failed');
+		walkId = walk.publicId;
+	});
+
+	it('asks a new person once, then shows the cards, with no phone number before joining', async () => {
+		const first = await loadWalkFinder(db, asNewcomer());
+		expect(first?.state).toBe('prompt');
+		expect(first?.cards.map((c) => [c.id, c.seatsLeft, c.phone])).toEqual([[walkId, 2, null]]);
+		expect(await answerFinderPrompt(db, asNewcomer(), 'yes')).toEqual({ ok: true, value: 'yes' });
+		expect((await answerFinderPrompt(db, asNewcomer(), 'snooze')).ok).toBe(false);
+		expect((await loadWalkFinder(db, asNewcomer()))?.state).toBe('cards');
+	});
+
+	it('only finds a walk by its random id, never by counting', async () => {
+		expect(walkId).toMatch(/^[\w-]{12}$/);
+		for (const guess of ['1', '2', 'walk-1', '']) {
+			expect(await joinWalkAction(db, asNewcomer(), guess)).toEqual({
+				ok: false,
+				status: 404,
+				message: WALK_GONE,
+			});
+		}
+	});
+
+	it('shows the number once they hold a seat, and frees the seat when they give it up', async () => {
+		expect(await joinWalkAction(db, asNewcomer(), walkId)).toEqual({
+			ok: true,
+			value: walkId,
+		});
+		const joined = await loadWalkFinder(db, asNewcomer());
+		expect(joined?.cards[0]).toMatchObject({ joined: true, seatsLeft: 1, phone: '(734) 555-0142' });
+		expect(joined?.mine.map((w) => w.id)).toEqual([walkId]);
+		expect((await leaveWalkAction(db, asNewcomer(), walkId)).ok).toBe(true);
+		expect((await loadWalkFinder(db, asNewcomer()))?.cards[0]).toMatchObject({
+			joined: false,
+			seatsLeft: 2,
+			phone: null,
+		});
+	});
+
+	it('answers a blocked person, or one the feature is hidden from, as if the walk didn’t exist', async () => {
+		const gone = { ok: false, status: 404, message: WALK_GONE };
+		expect(await joinWalkAction(db, asNewcomer({ blocked: true }), walkId)).toEqual(gone);
+		expect(await joinWalkAction(db, asNewcomer({ visibility: 'staff' }), walkId)).toEqual(gone);
+		expect(await joinWalkAction(db, asNewcomer(), '999')).toEqual(gone);
+		expect(await loadWalkFinder(db, asNewcomer({ blocked: true }))).toBeNull();
+	});
+
+	it('refuses the mentor their own walk, and says a full walk is full', async () => {
+		const mentor = { slackUserId: MENTOR.id, slackUserName: MENTOR.name, isAdmin: false };
+		expect(await joinWalkAction(db, { ...ctx({ viewer: mentor }) }, walkId)).toMatchObject({
+			ok: false,
+			message: 'You can’t join your own walk.',
+		});
+		const other = (id: string) => ({ ...ctx({ viewer: { ...NEWCOMER, slackUserId: id } }) });
+		await joinWalkAction(db, other('U_A'), walkId);
+		await joinWalkAction(db, other('U_B'), walkId);
+		expect(await joinWalkAction(db, asNewcomer(), walkId)).toMatchObject({
+			ok: false,
+			message: 'Sorry, that walk is full.',
+		});
+	});
+
+	it('after the walk, asks the joiner how it went, and the mentor who came', async () => {
+		await joinWalkAction(db, asNewcomer(), walkId);
+		const after = new Date(NOW.getTime() + 27 * 3_600_000);
+		const later = { ...asNewcomer(), now: after };
+		expect((await loadWalkFinder(db, later))?.checkins.map((c) => c.walkId)).toEqual([walkId]);
+
+		const mentorView = await loadMentorPanel(db, {
+			...ctx({ viewer: { slackUserId: MENTOR.id, slackUserName: MENTOR.name, isAdmin: false } }),
+			now: after,
+		});
+		const checkins = mentorView && 'checkins' in mentorView ? mentorView.checkins : [];
+		expect(checkins.map((c) => c.seats.map((s) => s.name))).toEqual([['Taylor S.']]);
+
+		expect((await answerWalkAction(db, later, walkId, 'went', noShow)).ok).toBe(true);
+		// The answer stays an hour, so a refresh keeps the thanks and the way
+		// to change it; then it goes.
+		expect((await loadWalkFinder(db, later))?.checkins).toEqual([
+			expect.objectContaining({ walkId, answer: 'went' }),
+		]);
+		const hourOn = { ...later, now: new Date(after.getTime() + 61 * 60_000) };
+		expect((await loadWalkFinder(db, hourOn))?.checkins).toEqual([]);
+		// Attending ends being new: the toggle, not the prompt. It starts open
+		// until they've checked out a turf of their own.
+		expect(await loadWalkFinder(db, later)).toMatchObject({
+			state: 'toggle',
+			cardsStartOpen: true,
+		});
+		await db.insert(vanTurfCheckouts).values({
+			turfId: 1,
+			slackUserId: NEWCOMER.slackUserId,
+			slackUserName: NEWCOMER.slackUserName,
+			claimedAt: after.toISOString(),
+			expiresAt: new Date(after.getTime() + 48 * 3_600_000).toISOString(),
+		});
+		expect((await loadWalkFinder(db, later))?.cardsStartOpen).toBe(false);
+
+		const mentorCtx = {
+			...ctx({ viewer: { slackUserId: MENTOR.id, slackUserName: MENTOR.name, isAdmin: false } }),
+			now: after,
+		};
+		expect(await saveAttendanceAction(db, mentorCtx, walkId, [checkins[0].seats[0].id])).toEqual({
+			ok: true,
+			value: walkId,
+		});
+		expect(await saveAttendanceAction(db, later, walkId, [])).toMatchObject({ ok: false });
+	});
+
+	it('lets anyone stop alerts, whatever the setting', async () => {
+		expect(await stopAlertsAction(db, asNewcomer({ visibility: 'off' }))).toEqual({
+			ok: true,
+			value: true,
 		});
 	});
 });

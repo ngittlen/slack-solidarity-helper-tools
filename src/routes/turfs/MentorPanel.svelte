@@ -1,13 +1,14 @@
 <script lang="ts">
 	// The mentor area of /turfs (specs/015-mentor-walks, User Stories 1 and
-	// 2): the invitation, the guidelines agreement, and a mentor's walks.
+	// 2): the invitation, the guidelines agreement, a mentor's walks, and
+	// "Who showed up?" after one (User Story 6).
 	//
 	// The screens' components take callbacks. Here each callback posts to the
 	// page's `mentor*` form action and reloads the page data, so what's shown
 	// always comes from the server. /turfs needs JavaScript for its map anyway.
 
-	import { deserialize } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
+	import MentorCheckin from '$lib/components/mentor-walks/MentorCheckin.svelte';
 	import MentorInvite from '$lib/components/mentor-walks/MentorInvite.svelte';
 	import MyWalks from '$lib/components/mentor-walks/MyWalks.svelte';
 	import WalkForm from '$lib/components/mentor-walks/WalkForm.svelte';
@@ -18,6 +19,7 @@
 		PlaceLookupResult,
 		WalkDraft,
 	} from '$lib/mentor-walks/types.js';
+	import { postMentorAction, SOMETHING_WRONG, type Posted } from './mentor-post.js';
 
 	interface Props {
 		mentor: MentorPanelView;
@@ -61,43 +63,22 @@
 		return [...mentor.chapters, { chapterId: own, name: editing?.chapterName ?? '' }];
 	});
 
-	const SOMETHING_WRONG = 'Something went wrong. Please try again.';
-
-	type Posted =
-		{ ok: true; data: Record<string, unknown> } | { ok: false; data: Record<string, unknown> };
-
-	/** Posts to a form action. On success the page data reloads, unless
-	 *  `reload` is false; a failure's message shows below the panel, unless
-	 *  `quiet`, when the caller shows it. */
+	/** Posts to a form action (mentor-post.ts). A failure's message shows
+	 *  below the panel, unless `quiet`, when the caller shows it, or the walk
+	 *  form's own problems list carries it. */
 	async function post(
 		action: string,
-		fields: Record<string, string>,
+		fields: Record<string, string | string[]>,
 		{ reload = true, quiet = false } = {},
 	): Promise<Posted> {
 		error = null;
-		const body = new FormData();
-		for (const [key, value] of Object.entries(fields)) body.set(key, value);
-		try {
-			const res = await fetch(`?/${action}${pageQuery ? `&${pageQuery}` : ''}`, {
-				method: 'POST',
-				body,
-				headers: { 'x-sveltekit-action': 'true' },
-			});
-			const result = deserialize(await res.text());
-			if (result.type === 'success') {
-				if (reload) await invalidateAll();
-				return { ok: true, data: result.data ?? {} };
-			}
-			if (result.type === 'failure') {
-				const data = result.data ?? {};
-				if (typeof data.mentorError === 'string' && !quiet) error = data.mentorError;
-				return { ok: false, data };
-			}
-		} catch {
-			// Falls through to the generic message.
-		}
-		if (!quiet) error = SOMETHING_WRONG;
-		return { ok: false, data: {} };
+		const result = await postMentorAction(action, fields, pageQuery, { reload });
+		if (!result.ok && !quiet && !('mentorProblems' in result.data)) error = result.message;
+		return result;
+	}
+
+	async function saveAttendance(walkId: string, seatIds: string[]): Promise<boolean> {
+		return (await post('mentorAttendance', { walkId, seatId: seatIds })).ok;
 	}
 
 	function openForm(id: string) {
@@ -132,8 +113,7 @@
 		const result = await post('mentorLocate', { place }, { reload: false, quiet: true });
 		const location = result.data.mentorLocated as PlaceLocation | undefined;
 		if (result.ok && location) return { ok: true, location };
-		const message = result.data.mentorError;
-		return { ok: false, message: typeof message === 'string' ? message : SOMETHING_WRONG };
+		return { ok: false, message: result.ok ? SOMETHING_WRONG : result.message };
 	}
 
 	async function saveWalk(draft: WalkDraft): Promise<string[]> {
@@ -146,6 +126,7 @@
 			lat: draft.point ? String(draft.point.lat) : '',
 			lng: draft.point ? String(draft.point.lng) : '',
 			note: draft.note,
+			lookFor: draft.lookFor,
 			seats: String(draft.seats),
 			phone: draft.phone,
 		});
@@ -192,6 +173,9 @@
 	{:else if 'walks' in mentor}
 		<!-- An active mentor, agreed or asked to agree again: their walks
 		     stay in reach either way, and the server cancels for both. -->
+		{#each mentor.checkins as walk (walk.walkId)}
+			<MentorCheckin {walk} onsave={(seatIds) => saveAttendance(walk.walkId, seatIds)} />
+		{/each}
 		{#if formFor !== null && mentor.state === 'mentor'}
 			{#key formKey}
 				<WalkForm
@@ -201,6 +185,7 @@
 					initial={editing?.draft ?? null}
 					seatsTaken={editing?.joined.length ?? 0}
 					defaultPhone={mentor.defaultPhone}
+					defaultLookFor={mentor.defaultLookFor}
 					{tiles}
 					onlocate={locate}
 					onsave={saveWalk}

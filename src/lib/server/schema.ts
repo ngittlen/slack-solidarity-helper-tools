@@ -1711,6 +1711,10 @@ export const mentorWalks = sqliteTable(
 	'mentor_walks',
 	{
 		id: integer('id').primaryKey({ autoIncrement: true }),
+		/** The id pages, actions and links use: random, so walks can't be
+		 *  found by counting through ids (newPublicId in store.ts). `id` never
+		 *  leaves the server. */
+		publicId: text('public_id').notNull(),
 		mentorId: text('mentor_id').notNull(),
 		mentorName: text('mentor_name').notNull(),
 		chapterId: integer('chapter_id').notNull(),
@@ -1720,6 +1724,9 @@ export const mentorWalks = sqliteTable(
 		lat: real('lat').notNull(),
 		lng: real('lng').notNull(),
 		note: text('note'),
+		/** How new people spot the mentor: "Look for: …". Null on walks posted
+		 *  before it could be set, which mean campaign merch. */
+		lookFor: text('look_for'),
 		seats: integer('seats').notNull(),
 		phone: text('phone'),
 		status: text('status')
@@ -1729,14 +1736,119 @@ export const mentorWalks = sqliteTable(
 		/** Who cancelled or hid it: the mentor, or an organizer. */
 		statusBy: text('status_by'),
 		statusByName: text('status_by_name'),
+		/** When the mentor saved "Who showed up?" (FR-030). */
+		checkedInAt: text('checked_in_at'),
+		/** The Turf sync channel post for the first no-show report, which
+		 *  later reports reply under (FR-032). */
+		noShowChannel: text('no_show_channel'),
+		noShowTs: text('no_show_ts'),
+		/** When a request started posting that first report. A claim this
+		 *  leaves behind, if the server stops mid-post, is taken over once
+		 *  it's stale (no-show.ts). */
+		noShowClaimedAt: text('no_show_claimed_at'),
 		createdAt: text('created_at').notNull(),
 		updatedAt: text('updated_at').notNull(),
 	},
 	(table) => [
+		uniqueIndex('mentor_walks_public_id').on(table.publicId),
 		index('mentor_walks_mentor').on(table.mentorId, table.startsAt),
 		index('mentor_walks_chapter').on(table.chapterId, table.startsAt),
 	],
 );
 
+// A seat on a walk (FR-018–FR-021, FR-030–FR-031): one row per person per
+// walk. Giving it up stamps `left_at` rather than deleting, and joining again
+// clears it, so the row keeps what happened after the walk.
+export const mentorWalkSeats = sqliteTable(
+	'mentor_walk_seats',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		walkId: integer('walk_id').notNull(),
+		holderId: text('holder_id').notNull(),
+		holderName: text('holder_name').notNull(),
+		joinedAt: text('joined_at').notNull(),
+		/** Set when they gave the seat up; null while they hold it. */
+		leftAt: text('left_at'),
+		/** How many times they've taken this seat. Each join and each leave
+		 *  messages the mentor, so a seat can only be taken MAX_JOINS_PER_WALK
+		 *  times (seats.ts). */
+		joinCount: integer('join_count').notNull().default(1),
+		/** Whether they were new when they joined, for "new people taken out"
+		 *  (FR-033). Attending ends being new, so it can't be worked out later. */
+		wasNew: integer('was_new', { mode: 'boolean' }).notNull().default(false),
+		/** The mentor ticked them on "Who showed up?". */
+		mentorTicked: integer('mentor_ticked', { mode: 'boolean' }).notNull().default(false),
+		/** Their own answer after the walk. */
+		answer: text('answer').$type<'went' | 'no-show' | 'missed'>(),
+		answeredAt: text('answered_at'),
+		/** When their "Mentor didn't show" reached the Turf sync channel. Null
+		 *  until it has, so a failed post is tried again (FR-032). */
+		reportPostedAt: text('report_posted_at'),
+	},
+	(table) => [
+		uniqueIndex('mentor_walk_seats_walk_holder').on(table.walkId, table.holderId),
+		index('mentor_walk_seats_holder').on(table.holderId),
+	],
+);
+
+// The new-person prompt (FR-014): one row per person who has answered it.
+// No row means not asked yet.
+export const mentorWalkPrompts = sqliteTable('mentor_walk_prompts', {
+	holderId: text('holder_id').primaryKey(),
+	status: text('status').$type<'snoozed' | 'accepted' | 'declined'>().notNull(),
+	snoozedUntil: text('snoozed_until'),
+	updatedAt: text('updated_at').notNull(),
+});
+
+// Nearby-walk alerts (FR-027–FR-029): one row per person who turned them on.
+// Deleted when they turn them off; nothing else ends them.
+export const mentorWalkAlerts = sqliteTable('mentor_walk_alerts', {
+	holderId: text('holder_id').primaryKey(),
+	holderName: text('holder_name').notNull(),
+	zip: text('zip').notNull(),
+	/** The ZIP's centroid, which distances are measured from. */
+	lat: real('lat').notNull(),
+	lng: real('lng').notNull(),
+	radiusMiles: integer('radius_miles').notNull(),
+	createdAt: text('created_at').notNull(),
+	updatedAt: text('updated_at').notNull(),
+});
+
+// Every mentor-walk message to a person (FR-022–FR-028): queued, then sent.
+// The unique (holder, event) key is what makes each one go at most once
+// (FR-026), however often the event is processed.
+export const mentorWalkMessages = sqliteTable(
+	'mentor_walk_messages',
+	{
+		id: integer('id').primaryKey({ autoIncrement: true }),
+		holderId: text('holder_id').notNull(),
+		walkId: integer('walk_id'),
+		/** What it's about, e.g. `join:12:<joinedAt>`, `off:5`, `alert:5`. */
+		eventKey: text('event_key').notNull(),
+		kind: text('kind').notNull(),
+		/** Slack mrkdwn, as notifyHolder takes it. */
+		text: text('text').notNull(),
+		/** `sending`: claimed by a dispatcher, so a second one leaves it alone.
+		 *  `held`: an alert over the daily limit, waiting to be summarized in
+		 *  the next one. `skipped`: the person can't see the feature now. */
+		status: text('status')
+			.$type<'pending' | 'sending' | 'sent' | 'skipped' | 'failed' | 'held' | 'summarized'>()
+			.notNull()
+			.default('pending'),
+		attempts: integer('attempts').notNull().default(0),
+		createdAt: text('created_at').notNull(),
+		/** When a dispatcher claimed it. A claim older than a few minutes was
+		 *  abandoned (the process stopped mid-send), and is tried again. */
+		claimedAt: text('claimed_at'),
+		sentAt: text('sent_at'),
+	},
+	(table) => [
+		uniqueIndex('mentor_walk_messages_event').on(table.holderId, table.eventKey),
+		index('mentor_walk_messages_status').on(table.status),
+	],
+);
+
 export type MentorRow = typeof mentors.$inferSelect;
 export type MentorWalkRow = typeof mentorWalks.$inferSelect;
+export type MentorWalkSeatRow = typeof mentorWalkSeats.$inferSelect;
+export type MentorWalkAlertRow = typeof mentorWalkAlerts.$inferSelect;

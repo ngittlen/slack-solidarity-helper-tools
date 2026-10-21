@@ -22,8 +22,9 @@
 		currentPushSubscription,
 		forgetPushClaim,
 		madeWithKey,
-		pushKeyBytes,
-		tellServiceWorker,
+		pushNeedsInstall,
+		pushSupported,
+		turnOnPush,
 	} from '$lib/push-client.js';
 
 	type Status =
@@ -46,35 +47,6 @@
 	 *  tells the server, even if the browser has since dropped it. */
 	let knownEndpoint: string | null = null;
 
-	/** iPhone and iPad Safari allow push only to a site added to the Home
-	 *  Screen and opened from there. */
-	function needsInstall(): boolean {
-		const ios =
-			/iPhone|iPad|iPod/.test(navigator.userAgent) ||
-			(navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-		const standalone =
-			window.matchMedia('(display-mode: standalone)').matches ||
-			(navigator as Navigator & { standalone?: boolean }).standalone === true;
-		return ios && !standalone;
-	}
-
-	function supported(): boolean {
-		return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
-	}
-
-	async function enable(subscription: PushSubscription): Promise<boolean> {
-		forgetPushClaim();
-		const res = await fetch('/api/push', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ action: 'on', subscription: subscription.toJSON() }),
-		});
-		if (!res.ok) return false;
-		const { recipient } = (await res.json()) as { recipient: string };
-		await tellServiceWorker(recipient);
-		return true;
-	}
-
 	async function load(): Promise<void> {
 		try {
 			const res = await fetch('/api/push');
@@ -89,11 +61,11 @@
 				status = 'hidden';
 				return;
 			}
-			if (needsInstall()) {
+			if (pushNeedsInstall()) {
 				status = 'install';
 				return;
 			}
-			if (!supported()) {
+			if (!pushSupported()) {
 				status = 'unsupported';
 				return;
 			}
@@ -119,30 +91,10 @@
 		error = null;
 		status = 'turning-on';
 		try {
-			const permission = await Notification.requestPermission();
-			if (permission !== 'granted') {
+			const { permission, subscription } = await turnOnPush(publicKey);
+			if (!subscription) {
 				status = permission === 'denied' ? 'denied' : 'off';
 				return;
-			}
-			// The browser's existing subscription, if someone else on it already
-			// has notifications on; a new one otherwise. One made with a VAPID
-			// key since replaced can never be sent to, so it is replaced too;
-			// anyone else on this browser then turns theirs on again.
-			const registration = await navigator.serviceWorker.ready;
-			let existing = await registration.pushManager.getSubscription();
-			if (existing && !madeWithKey(existing, publicKey)) {
-				await existing.unsubscribe();
-				existing = null;
-			}
-			const subscription =
-				existing ??
-				(await registration.pushManager.subscribe({
-					userVisibleOnly: true,
-					applicationServerKey: pushKeyBytes(publicKey),
-				}));
-			if (!(await enable(subscription))) {
-				if (!existing) await subscription.unsubscribe().catch(() => {});
-				throw new Error('save failed');
 			}
 			knownEndpoint = subscription.endpoint;
 			status = 'on';
