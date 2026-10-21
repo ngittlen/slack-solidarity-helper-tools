@@ -17,11 +17,18 @@
 // outage retries on the next tick instead of silently burning the one message
 // that stops a volunteer losing their turf.
 
+import type { KnownBlock } from '@slack/web-api';
 import { slack } from './slack.js';
 import { errMessage } from '../err-message.js';
 import { isOutsideUserId } from './identity.js';
 
-export async function sendDm(slackUserId: string, text: string, logTag: string): Promise<boolean> {
+export async function sendDm(
+	slackUserId: string,
+	text: string,
+	logTag: string,
+	/** Blocks after the message, such as a button. */
+	extraBlocks: readonly KnownBlock[] = [],
+): Promise<boolean> {
 	// A Google or Apple sign-in holds turf under a `google:` / `apple:` id Slack
 	// has never heard of (see identity.ts), and there is no Slack account to
 	// reach. The turf sweeps
@@ -46,7 +53,7 @@ export async function sendDm(slackUserId: string, text: string, logTag: string):
 			text,
 			// Same shape as every other DM in the app: the section block renders
 			// the mrkdwn, and `text` stays as the notification fallback.
-			blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+			blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }, ...extraBlocks],
 		});
 		return true;
 	} catch (err) {

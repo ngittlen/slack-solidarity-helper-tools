@@ -78,6 +78,20 @@
 		/** Campaign id → badge, for turf carrying `campaignId`. Spoken with each
 		 *  shape's label, as the list row beside the map shows it. */
 		campaignBadges?: CampaignBadges;
+		/** Mentor walks (specs/015-mentor-walks, User Story 8), drawn as round
+		 *  badges that can't be mistaken for turf. */
+		walks?: MapWalk[];
+		selectedWalkId?: string | null;
+		onselectwalk?: (id: string) => void;
+	}
+
+	interface MapWalk {
+		id: string;
+		point: LatLng;
+		/** Spoken: "Mentor walk with Sam R., Today at 5:30 PM". */
+		label: string;
+		/** The viewer holds a seat on it. */
+		joined: boolean;
 	}
 
 	let {
@@ -88,7 +102,12 @@
 		tiles = { urlTemplate: TILE_URL_TEMPLATE, attribution: TILE_ATTRIBUTION },
 		onviewport,
 		campaignBadges = {},
+		walks = [],
+		selectedWalkId = null,
+		onselectwalk,
 	}: Props = $props();
+
+	const walkMarkers = $derived(walks.map((walk) => ({ walk, at: view.project(walk.point) })));
 
 	/** Fallback viewport, used for SSR and for the first frame before the
 	 *  element has been measured. Matches the desktop aspect ratio the
@@ -435,10 +454,18 @@
 	 *  not an option: it is what keeps a drag alive when the pointer leaves the
 	 *  svg mid-pan. */
 	let pressedTurfId: number | null = null;
+	/** The same for a mentor walk's marker. */
+	let pressedWalkId: string | null = null;
 
 	function turfIdAt(target: EventTarget | null): number | null {
 		const el = (target as Element | null)?.closest?.('[data-turf-id]');
 		return el ? Number(el.getAttribute('data-turf-id')) : null;
+	}
+
+	function walkIdAt(target: EventTarget | null): string | null {
+		return (
+			(target as Element | null)?.closest?.('[data-walk-id]')?.getAttribute('data-walk-id') ?? null
+		);
 	}
 
 	function onPointerDown(event: PointerEvent) {
@@ -451,6 +478,7 @@
 			// Second finger down: stop panning, start pinching.
 			dragging = false;
 			pressedTurfId = null;
+			pressedWalkId = null;
 			pinch = { distance: distanceBetween(pair[0], pair[1]), zoom: view.zoom };
 			pinchMidpoint = midpointOf(pair);
 			return;
@@ -464,6 +492,7 @@
 		// svg, so this is the last point at which the shape under the finger is
 		// still the event target.
 		pressedTurfId = turfIdAt(event.target);
+		pressedWalkId = walkIdAt(event.target);
 		if (pageOwnsSwipe(event)) return;
 
 		dragging = true;
@@ -566,7 +595,11 @@
 		if (!dragMoved && pressedTurfId !== null && activePointers.length === 1) {
 			onselect(pressedTurfId);
 		}
+		if (!dragMoved && pressedWalkId !== null && activePointers.length === 1) {
+			onselectwalk?.(pressedWalkId);
+		}
 		pressedTurfId = null;
+		pressedWalkId = null;
 
 		activePointers = activePointers.filter((p) => p.id !== event.pointerId);
 		(event.currentTarget as SVGSVGElement).releasePointerCapture?.(event.pointerId);
@@ -589,6 +622,7 @@
 	 *  Not a tap, whatever the pointer did before it was cancelled. */
 	function onPointerCancel(event: PointerEvent) {
 		pressedTurfId = null;
+		pressedWalkId = null;
 		onPointerUp(event);
 	}
 
@@ -926,6 +960,32 @@
 						{/if}
 					{/each}
 				</g>
+
+				<!-- Mentor walks: round badges, above the turf and its numbers so
+				     they can always be tapped, under the "you" dot. -->
+				{#each walkMarkers as { walk, at } (walk.id)}
+					<g
+						class={[
+							'walk-marker',
+							walk.joined && 'is-joined',
+							walk.id === selectedWalkId && 'is-selected',
+						]}
+						data-walk-id={walk.id}
+						role="button"
+						aria-label={walk.label}
+						aria-pressed={walk.id === selectedWalkId}
+						tabindex="0"
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								onselectwalk?.(walk.id);
+							}
+						}}
+					>
+						<circle cx={at.x} cy={at.y} r="17" />
+						<text x={at.x} y={at.y} text-anchor="middle" dominant-baseline="central">👟</text>
+					</g>
+				{/each}
 
 				<g class="me" aria-hidden="true">
 					{#if me}
@@ -1386,6 +1446,35 @@
 		fill: var(--color-coral);
 		stroke: var(--color-surface);
 		stroke-width: 2.5;
+	}
+
+	.walk-marker {
+		cursor: pointer;
+	}
+
+	.walk-marker circle {
+		fill: var(--color-action);
+		stroke: var(--color-surface);
+		stroke-width: 3;
+	}
+
+	.walk-marker.is-joined circle {
+		fill: var(--color-success);
+	}
+
+	.walk-marker.is-selected circle,
+	.walk-marker:focus-visible circle {
+		stroke: var(--color-border-focus);
+		stroke-width: 4;
+	}
+
+	.walk-marker:focus {
+		outline: none;
+	}
+
+	.walk-marker text {
+		font-size: 16px;
+		pointer-events: none;
 	}
 
 	.me-halo {

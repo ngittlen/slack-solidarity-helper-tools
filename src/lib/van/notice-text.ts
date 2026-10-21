@@ -43,7 +43,8 @@ function ownPath(url: string, appUrl: string): string | null {
 	// sanitizeRedirectTarget: a rooted path, never a protocol-relative one.
 	const path = parsed.pathname + parsed.search;
 	if (path.startsWith('//') || path.startsWith('/\\')) return null;
-	return path;
+	// The fragment too: a mentor walk message's `#walk-12` opens that walk.
+	return path + parsed.hash;
 }
 
 /** Split one mrkdwn line into segments. */

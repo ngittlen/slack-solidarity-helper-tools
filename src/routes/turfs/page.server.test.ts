@@ -14,6 +14,36 @@ const mockLoadNotices = vi.hoisted(() => vi.fn());
 const mockDismissNotice = vi.hoisted(() => vi.fn());
 const mockSetNameOnce = vi.hoisted(() => vi.fn());
 const mockUpdateSession = vi.hoisted(() => vi.fn());
+const mockMentorPanel = vi.hoisted(() => vi.fn(async () => null as unknown));
+const mockAgree = vi.hoisted(() => vi.fn());
+const mockLocatePlace = vi.hoisted(() => vi.fn());
+const mockWalkFinder = vi.hoisted(() => vi.fn(async () => null as unknown));
+const mockJoinWalk = vi.hoisted(() => vi.fn());
+
+// Its own tests run it against real SQLite (mentor-walks/panel.test.ts).
+vi.mock('$lib/server/mentor-walks/panel.js', () => ({
+	loadMentorPanel: mockMentorPanel,
+	loadMentorDebug: async () => null,
+	agree: mockAgree,
+	answerInvitation: vi.fn(),
+	cancelOwnWalk: vi.fn(),
+	locatePlace: mockLocatePlace,
+	saveWalk: vi.fn(),
+	loadWalkFinder: mockWalkFinder,
+	answerFinderPrompt: vi.fn(),
+	answerWalkAction: vi.fn(),
+	joinWalkAction: mockJoinWalk,
+	leaveWalkAction: vi.fn(),
+	saveAlertsAction: vi.fn(),
+	saveAttendanceAction: vi.fn(),
+	stopAlertsAction: vi.fn(),
+}));
+vi.mock('$lib/server/mentor-walks/dispatch.js', () => ({
+	liveNoShowDeps: () => ({}),
+	dispatchSoon: vi.fn(),
+}));
+const mockForgetMentor = vi.hoisted(() => vi.fn());
+vi.mock('$lib/server/mentor-walks/store.js', () => ({ forgetMentor: mockForgetMentor }));
 
 // Both have their own tests (outside-volunteers.test.ts on real SQLite).
 vi.mock('$lib/server/outside-volunteers.js', async (importOriginal) => ({
@@ -569,6 +599,24 @@ describe('/turfs load', () => {
 		expect(result.chapters).toEqual([]);
 	});
 
+	describe('the mentor panel', () => {
+		const PANEL = { state: 'invite', guidelinesUrl: 'https://example.org/g' };
+
+		it('ships the panel with or without a chapter picked', async () => {
+			mockMentorPanel.mockResolvedValue(PANEL);
+			expect((await run(event(VOLUNTEER))).mentor).toEqual(PANEL);
+			expect((await run(event(VOLUNTEER, 'chapter=71'))).mentor).toEqual(PANEL);
+		});
+
+		it('never asks for it, or ships it, for a blocked volunteer', async () => {
+			mockMentorPanel.mockResolvedValue(PANEL);
+			mockBlockedIds.mockResolvedValue(new Set(['U_VOL']));
+			const result = await run(event(VOLUNTEER, 'chapter=71'));
+			expect(result.mentor).toBeNull();
+			expect(mockMentorPanel).not.toHaveBeenCalled();
+		});
+	});
+
 	it('does not block an admin', async () => {
 		mockBlockedIds.mockResolvedValue(new Set(['U_ADMIN']));
 		const result = await run(
@@ -1076,5 +1124,133 @@ describe('/turfs nearby action', () => {
 
 		address = '203.0.113.200';
 		expect(await actions.nearby(post({ q: '48104' }))).toHaveProperty('nearby');
+	});
+});
+
+describe('/turfs mentor debug actions', () => {
+	const ADMIN_SESSION = { slackUserId: 'U_ADMIN', slackUserName: 'Alex', isAdmin: true };
+	const runAction = (name: 'mentorDebugStart' | 'mentorDebugStop', session: unknown) => {
+		const locals = { session };
+		return {
+			locals,
+			result: (actions[name] as (e: unknown) => Promise<unknown>)({ locals, cookies: {} }),
+		};
+	};
+
+	beforeEach(() => {
+		mockForgetMentor.mockReset();
+		mockUpdateSession.mockReset();
+		mockUpdateSession.mockResolvedValue(true);
+	});
+
+	it('refuses anyone but an admin, touching nothing', async () => {
+		const { result } = runAction('mentorDebugStart', { ...ADMIN_SESSION, isAdmin: false });
+		expect(await result).toMatchObject({ status: 403 });
+		expect(mockForgetMentor).not.toHaveBeenCalled();
+		expect(mockUpdateSession).not.toHaveBeenCalled();
+	});
+
+	it('starts over and marks the session as simulating', async () => {
+		const { locals, result } = runAction('mentorDebugStart', ADMIN_SESSION);
+		expect(await result).toEqual({ mentorDebug: 'started' });
+		expect(mockForgetMentor).toHaveBeenCalledWith(
+			expect.anything(),
+			{ id: 'U_ADMIN', name: 'Alex' },
+			expect.any(Date),
+		);
+		expect(mockUpdateSession).toHaveBeenCalledWith(
+			{},
+			{ ...ADMIN_SESSION, mentorSimulation: true },
+		);
+		expect(locals.session).toEqual({ ...ADMIN_SESSION, mentorSimulation: true });
+	});
+
+	it('stops simulating without forgetting anything', async () => {
+		const { locals, result } = runAction('mentorDebugStop', {
+			...ADMIN_SESSION,
+			mentorSimulation: true,
+		});
+		expect(await result).toEqual({ mentorDebug: 'stopped' });
+		expect(mockForgetMentor).not.toHaveBeenCalled();
+		expect(locals.session).toEqual(ADMIN_SESSION);
+	});
+});
+
+describe('/turfs mentor actions', () => {
+	const VOLUNTEER_SESSION = { slackUserId: 'U_VOL', slackUserName: 'Kim', isAdmin: false };
+	const runAction = (
+		name: 'mentorAgree' | 'mentorLocate' | 'mentorSaveWalk' | 'mentorJoin' | 'mentorAlertsOff',
+		session: unknown,
+		fields: Record<string, string>,
+	) => {
+		const body = new FormData();
+		for (const [key, value] of Object.entries(fields)) body.set(key, value);
+		const request = new Request('http://localhost/turfs', { method: 'POST', body });
+		return (actions[name] as (e: unknown) => Promise<unknown>)({ locals: { session }, request });
+	};
+
+	beforeEach(() => {
+		mockAgree.mockReset();
+		mockLocatePlace.mockReset();
+	});
+
+	it('records the guidelines link the page showed', async () => {
+		mockAgree.mockResolvedValue({ ok: true, value: true });
+		const shown = 'https://example.org/guidelines';
+		expect(await runAction('mentorAgree', VOLUNTEER_SESSION, { agree: 'on', url: shown })).toEqual({
+			mentorAgreed: true,
+		});
+		expect(mockAgree).toHaveBeenCalledWith(expect.anything(), expect.anything(), true, shown);
+	});
+
+	it('finds a place, and passes on why it couldn’t', async () => {
+		const location = { point: { lat: 42.24, lng: -83.61 }, matchedAddress: '229 W MICHIGAN AVE' };
+		mockLocatePlace.mockResolvedValueOnce({ ok: true, value: location });
+		expect(await runAction('mentorLocate', VOLUNTEER_SESSION, { place: '229 W Michigan' })).toEqual(
+			{ mentorLocated: location },
+		);
+		mockLocatePlace.mockResolvedValueOnce({ ok: false, status: 503, message: 'down' });
+		expect(await runAction('mentorLocate', VOLUNTEER_SESSION, { place: 'x' })).toMatchObject({
+			status: 503,
+			data: { mentorError: 'down' },
+		});
+	});
+
+	it('joins a walk, passing on a refusal with its status', async () => {
+		mockJoinWalk.mockResolvedValueOnce({ ok: true, value: 12 });
+		expect(await runAction('mentorJoin', VOLUNTEER_SESSION, { walkId: '12' })).toEqual({
+			mentorJoined: 12,
+		});
+		expect(mockJoinWalk).toHaveBeenCalledWith(expect.anything(), expect.anything(), '12');
+		mockJoinWalk.mockResolvedValueOnce({ ok: false, status: 404, message: 'gone' });
+		expect(await runAction('mentorJoin', VOLUNTEER_SESSION, { walkId: '12' })).toMatchObject({
+			status: 404,
+			data: { mentorError: 'gone' },
+		});
+		expect(await runAction('mentorJoin', null, { walkId: '12' })).toMatchObject({ status: 401 });
+	});
+
+	it('spends the turf request budget on joins, so walks can’t be joined in a loop', async () => {
+		mockJoinWalk.mockResolvedValue({ ok: true, value: 12 });
+		const looper = { ...VOLUNTEER_SESSION, slackUserId: 'U_LOOPER' };
+		const results = [];
+		for (let i = 0; i < 61; i++)
+			results.push(await runAction('mentorJoin', looper, { walkId: '12' }));
+		expect(
+			results.slice(0, 60).every((r) => (r as { mentorJoined?: number }).mentorJoined === 12),
+		).toBe(true);
+		expect(results[60]).toMatchObject({ status: 429 });
+		mockJoinWalk.mockReset();
+	});
+
+	it('refuses everything until an outside volunteer has chosen a name', async () => {
+		const unnamed = { ...VOLUNTEER_SESSION, slackUserName: 'Apple volunteer', needsName: true };
+		for (const name of ['mentorAgree', 'mentorLocate', 'mentorSaveWalk'] as const) {
+			expect(await runAction(name, unnamed, { agree: 'on', url: 'x' })).toMatchObject({
+				status: 403,
+			});
+		}
+		expect(mockAgree).not.toHaveBeenCalled();
+		expect(mockLocatePlace).not.toHaveBeenCalled();
 	});
 });

@@ -16,6 +16,8 @@
 	import { KNOCKED_LABEL, rampStyle, turfShade } from '$lib/van/turf-shade.js';
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
+	import WalkCard from '$lib/components/mentor-walks/WalkCard.svelte';
+	import type { WalkCardView } from '$lib/mentor-walks/types.js';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import { formatRelative } from '$lib/components/settings/format-relative.js';
 	import {
@@ -30,7 +32,31 @@
 
 	// Rendered by +page.svelte for a signed-in viewer; the signed-out teaser is
 	// PublicTurfTeaser. Split so this file's `data` is only ever the member shape.
-	const { data }: { data: Extract<PageData, { mode: 'member' }> } = $props();
+	const {
+		data,
+		mentorWalks = null,
+	}: {
+		data: Extract<PageData, { mode: 'member' }>;
+		/** Mentor walks to mark on the map, when the walk cards are showing
+		 *  (specs/015-mentor-walks, User Story 8). */
+		mentorWalks?: {
+			cards: WalkCardView[];
+			onjoin: (id: string) => Promise<unknown>;
+			onleave: (id: string) => Promise<unknown>;
+		} | null;
+	} = $props();
+
+	/** The walk marker last tapped: its card shows under the map. */
+	let selectedWalkId = $state<string | null>(null);
+	const selectedWalk = $derived(mentorWalks?.cards.find((w) => w.id === selectedWalkId) ?? null);
+	const mapWalks = $derived(
+		(mentorWalks?.cards ?? []).map((w) => ({
+			id: w.id,
+			point: w.point,
+			label: `Mentor walk with ${w.mentorName}, ${w.dayLabel} at ${w.timeLabel}`,
+			joined: w.joined,
+		})),
+	);
 
 	let selectedId = $state<number | null>(null);
 	let copied = $state<Record<number, boolean>>({});
@@ -776,6 +802,9 @@
 						tiles={data.tiles}
 						onviewport={loadViewport}
 						campaignBadges={badges}
+						walks={mapWalks}
+						{selectedWalkId}
+						onselectwalk={(id) => (selectedWalkId = selectedWalkId === id ? null : id)}
 					/>
 					<ul class="legend">
 						<!-- The ramp is only useful if it can be read off, so it is
@@ -796,7 +825,19 @@
 						<li><span class="swatch swatch-mine"></span> Yours</li>
 						<li><span class="swatch swatch-other"></span> Checked out</li>
 						{#if location}<li><span class="swatch swatch-me"></span> You</li>{/if}
+						{#if mapWalks.length > 0}<li><span aria-hidden="true">👟</span> Mentor walk</li>{/if}
 					</ul>
+					<!-- The tapped walk marker's card, under the legend. -->
+					{#if selectedWalk && mentorWalks}
+						<div class="walk-popup">
+							<WalkCard
+								walk={selectedWalk}
+								shownIn="map"
+								onjoin={mentorWalks.onjoin}
+								onleave={mentorWalks.onleave}
+							/>
+						</div>
+					{/if}
 					<!-- Constraint A, said out loud. A convex hull swallows territory
 					     the turf does not contain, so it is a browsing aid and MiniVAN
 					     is the authority on which doors are in the list. -->

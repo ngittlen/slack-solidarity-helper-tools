@@ -28,14 +28,28 @@
 		MIN_VAN_ASSIGNMENT_TTL_HOURS,
 		VAN_ASSIGNMENT_NEVER_RELEASED,
 	} from '$lib/van/checkout.js';
+	import {
+		MENTOR_WALKS_VISIBILITIES,
+		MENTOR_WALKS_VISIBILITY_LABELS,
+		type MentorWalksVisibility,
+	} from '$lib/mentor-walks/rules.js';
 
 	interface Props {
 		ttlHours: number;
 		maxConcurrentClaims: number;
 		vanAssignmentTtlHours: number;
+		/** specs/015-mentor-walks, FR-040 and FR-036. */
+		mentorWalksVisibility: MentorWalksVisibility;
+		volunteerGuidelinesUrl: string;
 	}
 
-	let { ttlHours, maxConcurrentClaims, vanAssignmentTtlHours }: Props = $props();
+	let {
+		ttlHours,
+		maxConcurrentClaims,
+		vanAssignmentTtlHours,
+		mentorWalksVisibility,
+		volunteerGuidelinesUrl,
+	}: Props = $props();
 
 	async function postAppConfig(patch: Record<string, unknown>): Promise<void> {
 		const res = await fetch('/api/settings/app-config', {
@@ -65,10 +79,29 @@
 		save: (value) => postAppConfig({ vanAssignmentTtlHours: value }),
 	});
 
+	const visibilitySave = createFieldAutosave<MentorWalksVisibility>({
+		initial: mentorWalksVisibility,
+		parse: (raw) => raw as MentorWalksVisibility,
+		save: (value) => postAppConfig({ mentorWalksVisibility: value }),
+		// A radio is a decision, not typing: save it straight away.
+		debounceMs: 0,
+	});
+
+	// Saved when the field is left, not as it's typed: every save is a new link
+	// all mentors must agree to again, and a mentor agreeing during a pause in
+	// the typing would agree to half a URL.
+	const guidelinesSave = createFieldAutosave<string>({
+		initial: volunteerGuidelinesUrl,
+		save: (value) => postAppConfig({ volunteerGuidelinesUrl: value }),
+		debounceMs: 0,
+	});
+
 	$effect(() => () => {
 		ttlSave.destroy();
 		capSave.destroy();
 		vanTtlSave.destroy();
+		visibilitySave.destroy();
+		guidelinesSave.destroy();
 	});
 
 	/** Hours read as days once they stop being a number of hours anyone counts.
@@ -164,7 +197,85 @@
 	</p>
 </SettingsRow>
 
+<SettingsRow
+	label="Mentor walks"
+	status={visibilitySave.status}
+	error={visibilitySave.error}
+	onRetry={visibilitySave.status === 'error' ? visibilitySave.retry : undefined}
+>
+	<fieldset class="turf-choices" aria-label="Who sees mentor walks">
+		{#each MENTOR_WALKS_VISIBILITIES as value (value)}
+			<label>
+				<input
+					type="radio"
+					name="mentor-walks-visibility"
+					{value}
+					checked={visibilitySave.value === value}
+					onchange={visibilitySave.oninput}
+				/>
+				{MENTOR_WALKS_VISIBILITY_LABELS[value]}
+			</label>
+		{/each}
+	</fieldset>
+	<p class="app-config-note">
+		Experienced canvassers host walks new volunteers can join, from /turfs. "Admins and moderators
+		only" lets you try it out first: everyone else sees /turfs exactly as before. Blocked people
+		never see it. Mentors and walks are managed from the organizer view.
+	</p>
+</SettingsRow>
+
+<SettingsRow
+	label="Volunteer guidelines link"
+	status={guidelinesSave.status}
+	error={guidelinesSave.error}
+	onRetry={guidelinesSave.status === 'error' ? guidelinesSave.retry : undefined}
+>
+	<input
+		class="turf-url"
+		type="url"
+		placeholder="https://"
+		value={guidelinesSave.value}
+		onchange={guidelinesSave.oninput}
+		aria-label="Volunteer guidelines link"
+	/>
+	<p class="app-config-note">
+		Mentors agree to these before hosting a walk, and are asked again if the link changes. While
+		it's empty nobody can become a mentor, though walks already posted carry on.
+	</p>
+</SettingsRow>
+
 <style>
+	.turf-choices {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		margin: 0;
+		padding: 0;
+		border: 0;
+	}
+
+	.turf-choices label {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.turf-url {
+		width: 100%;
+		max-width: 32rem;
+		padding: var(--space-2) var(--space-3);
+		font: inherit;
+		color: var(--color-text);
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+	}
+
+	.turf-url:focus-visible {
+		outline: 2px solid var(--color-border-focus);
+		outline-offset: 1px;
+	}
+
 	.turf-number {
 		display: flex;
 		align-items: baseline;

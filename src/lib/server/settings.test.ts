@@ -219,6 +219,9 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			// Off with no row: a re-cut can leave turf unclaimable.
 			// DB-only; no row means no "Join our chat" button.
 			publicJoinUrl: '',
+			// Mentor walks ship dark, and without guidelines nobody can sign up.
+			mentorWalksVisibility: 'off',
+			volunteerGuidelinesUrl: '',
 		});
 
 		// Restore the module-level mock for subsequent tests.
@@ -523,6 +526,8 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'vanTurfMaxConcurrentClaims',
 				'vanAssignmentTtlHours',
 				'publicJoinUrl',
+				'mentorWalksVisibility',
+				'volunteerGuidelinesUrl',
 			].sort(),
 		);
 	});
