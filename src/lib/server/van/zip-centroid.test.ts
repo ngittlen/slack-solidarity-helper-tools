@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
 	geocodeAddress,
+	lookupAddress,
 	geocodeZip,
 	lookupZipCentroid,
 	normalizeZip,
@@ -413,5 +414,49 @@ describe('the ZIP cache on a real database', () => {
 			lng: -83.7166908,
 		});
 		expect(unused).not.toHaveBeenCalled();
+	});
+});
+
+describe('lookupAddress', () => {
+	it('returns the matched address with the point', async () => {
+		const body = {
+			result: {
+				addressMatches: [
+					{
+						matchedAddress: '229 W MICHIGAN AVE, YPSILANTI, MI, 48197',
+						coordinates: { x: -83.61, y: 42.24 },
+						addressComponents: { zip: '48197' },
+					},
+				],
+			},
+		};
+		const fetchFn = vi.fn().mockResolvedValue(res(200, body));
+		await expect(lookupAddress(ADDRESS, fetchFn as never)).resolves.toEqual({
+			kind: 'found',
+			point: { lat: 42.24, lng: -83.61 },
+			zip: '48197',
+			matchedAddress: '229 W MICHIGAN AVE, YPSILANTI, MI, 48197',
+		});
+	});
+
+	it('tells no match apart from an outage', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const answer = (body: unknown) => vi.fn().mockResolvedValue(res(200, body)) as never;
+		await expect(
+			lookupAddress(ADDRESS, answer({ result: { addressMatches: [] } })),
+		).resolves.toEqual({ kind: 'not-found' });
+		await expect(lookupAddress(ADDRESS, answer({ errors: ['x'] }))).resolves.toEqual({
+			kind: 'unavailable',
+		});
+		await expect(
+			lookupAddress(ADDRESS, vi.fn().mockResolvedValue(res(503, {})) as never),
+		).resolves.toEqual({ kind: 'unavailable' });
+		await expect(
+			lookupAddress(
+				ADDRESS,
+				vi.fn().mockRejectedValue(Object.assign(new Error('x'), { name: 'TimeoutError' })) as never,
+			),
+		).resolves.toEqual({ kind: 'unavailable' });
+		warn.mockRestore();
 	});
 });

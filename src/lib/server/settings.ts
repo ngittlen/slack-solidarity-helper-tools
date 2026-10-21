@@ -11,6 +11,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 
 import { normaliseSheetKey, orderSheetTargets, type SheetTarget } from '../van/sheet-routing.js';
+import { parseVisibility, type MentorWalksVisibility } from '../mentor-walks/rules.js';
 
 import {
 	chapterChannelMap,
@@ -189,6 +190,11 @@ export interface Settings {
 	/** Where the signed-out /turfs page's "Join our chat" button goes. DB-only;
 	 *  '' means "no button". */
 	publicJoinUrl: string;
+	/** Who sees mentor walks (specs/015-mentor-walks, FR-040). */
+	mentorWalksVisibility: MentorWalksVisibility;
+	/** The volunteer guidelines mentors agree to. '' means mentor sign-up is
+	 *  unavailable (FR-036). */
+	volunteerGuidelinesUrl: string;
 }
 
 export interface Editor {
@@ -229,6 +235,9 @@ export type AppConfigPatch = Partial<{
 	themeTokens: string;
 	/** "Join our chat" link on the signed-out /turfs page. '' hides it. */
 	publicJoinUrl: string;
+	mentorWalksVisibility: MentorWalksVisibility;
+	/** '' turns mentor sign-up off. */
+	volunteerGuidelinesUrl: string;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -389,6 +398,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		vanTurfMaxConcurrentClaims: claimOptions.maxConcurrentClaims,
 		vanAssignmentTtlHours: claimOptions.vanAssignmentTtlHours,
 		publicJoinUrl: cfg?.publicJoinUrl?.trim() ?? '',
+		mentorWalksVisibility: parseVisibility(cfg?.mentorWalksVisibility),
+		volunteerGuidelinesUrl: cfg?.volunteerGuidelinesUrl?.trim() ?? '',
 	};
 }
 
@@ -1065,6 +1076,8 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'vanAssignmentTtlHours',
 	'themeTokens',
 	'publicJoinUrl',
+	'mentorWalksVisibility',
+	'volunteerGuidelinesUrl',
 ]);
 
 export async function saveAppConfig(

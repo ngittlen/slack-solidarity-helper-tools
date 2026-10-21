@@ -105,3 +105,90 @@ export function madeWithKey(subscription: PushSubscription, publicKey: string): 
 	const b = pushKeyBytes(publicKey);
 	return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
+
+/** iPhone and iPad Safari allow push only to a site added to the Home Screen
+ *  and opened from there. */
+export function pushNeedsInstall(): boolean {
+	const ios =
+		/iPhone|iPad|iPod/.test(navigator.userAgent) ||
+		(navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+	const standalone =
+		window.matchMedia('(display-mode: standalone)').matches ||
+		(navigator as Navigator & { standalone?: boolean }).standalone === true;
+	return ios && !standalone;
+}
+
+export function pushSupported(): boolean {
+	return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+/** Tell the server this browser should get the signed-in person's
+ *  notifications. */
+async function enablePush(subscription: PushSubscription): Promise<boolean> {
+	forgetPushClaim();
+	const res = await fetch('/api/push', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ action: 'on', subscription: subscription.toJSON() }),
+	});
+	if (!res.ok) return false;
+	const { recipient } = (await res.json()) as { recipient: string };
+	await tellServiceWorker(recipient);
+	return true;
+}
+
+/**
+ * Turn notifications on for the signed-in person on this browser: ask
+ * permission, subscribe (reusing the browser's subscription when someone
+ * else on it already has one), and tell the server. The permission the
+ * browser gave, with the subscription when it worked. Throws when saving
+ * failed.
+ */
+export async function turnOnPush(
+	publicKey: string,
+): Promise<{ permission: NotificationPermission; subscription: PushSubscription | null }> {
+	const permission = await Notification.requestPermission();
+	if (permission !== 'granted') return { permission, subscription: null };
+	// One made with a VAPID key since replaced can never be sent to, so it is
+	// replaced too; anyone else on this browser then turns theirs on again.
+	const registration = await navigator.serviceWorker.ready;
+	let existing = await registration.pushManager.getSubscription();
+	if (existing && !madeWithKey(existing, publicKey)) {
+		await existing.unsubscribe();
+		existing = null;
+	}
+	const subscription =
+		existing ??
+		(await registration.pushManager.subscribe({
+			userVisibleOnly: true,
+			applicationServerKey: pushKeyBytes(publicKey),
+		}));
+	if (!(await enablePush(subscription))) {
+		if (!existing) await subscription.unsubscribe().catch(() => {});
+		throw new Error('save failed');
+	}
+	return { permission, subscription };
+}
+
+/**
+ * The VAPID key, when this browser could take notifications for the signed-in
+ * person but doesn't yet: what the nearby-walk alerts offer (specs/015-
+ * mentor-walks, User Story 7). Null when it already does, can't, or was
+ * refused. Never throws.
+ */
+export async function pushOfferKey(): Promise<string | null> {
+	try {
+		if (!pushSupported() || pushNeedsInstall() || Notification.permission === 'denied') {
+			return null;
+		}
+		const res = await fetch('/api/push');
+		if (!res.ok) return null;
+		const { publicKey } = (await res.json()) as { publicKey: string | null };
+		if (!publicKey) return null;
+		const existing = await currentPushSubscription();
+		const claimed = existing ? await claimPushDevice(existing) : null;
+		return existing && claimed?.enabled && madeWithKey(existing, publicKey) ? null : publicKey;
+	} catch {
+		return null;
+	}
+}

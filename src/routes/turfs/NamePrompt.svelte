@@ -82,8 +82,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
-		max-width: 640px;
-		margin: var(--space-3) auto 0;
+		margin: 0;
 		padding: var(--space-3);
 		border: 1px solid var(--color-border);
 		border-left: 3px solid var(--color-warning);

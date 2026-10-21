@@ -84,6 +84,32 @@ export async function postAlert(channelId: string, text: string, logTag: string)
 	}
 }
 
+/**
+ * Post to a channel, or as a reply in a thread when `threadTs` is given, and
+ * return the message's `ts` — what a later reply threads under. Null when it
+ * didn't land. Same message shape as postAlert.
+ */
+export async function postToChannel(
+	channelId: string,
+	text: string,
+	logTag: string,
+	threadTs?: string,
+): Promise<string | null> {
+	if (!channelId) return null;
+	try {
+		const res = await slack.chat.postMessage({
+			channel: channelId,
+			text,
+			blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+			...(threadTs ? { thread_ts: threadTs } : {}),
+		});
+		return typeof res.ts === 'string' ? res.ts : null;
+	} catch (err) {
+		console.error(`${logTag} Slack post to ${channelId} failed:`, errMessage(err));
+		return null;
+	}
+}
+
 export function alertFor(tag: string, channelId: string): (text: string) => Promise<void> {
 	return async (text: string) => {
 		if (!channelId) return;

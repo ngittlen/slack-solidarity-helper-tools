@@ -31,6 +31,7 @@ import {
 import { parseOverrides } from '$lib/styles/theme-css.js';
 import { SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
 import { extractSpreadsheetId, isSpreadsheetId } from '$lib/google-sheet-id.js';
+import { MENTOR_WALKS_VISIBILITIES } from '$lib/mentor-walks/rules.js';
 
 export interface FieldContext {
 	slack: WebClient;
@@ -188,6 +189,14 @@ function publicUrlField(label: string, maxLength: number): FieldValidator<string
 		if (parsed.protocol !== 'https:') return fail(`${label} must start with https://`);
 		return { ok: true, value: parsed.toString() };
 	};
+}
+
+/** One of a fixed set of strings. */
+function enumField<T extends string>(label: string, values: readonly T[]): FieldValidator<T> {
+	return (value) =>
+		typeof value === 'string' && (values as readonly string[]).includes(value)
+			? { ok: true, value: value as T }
+			: fail(`${label} must be one of: ${values.join(', ')}`);
 }
 
 /** ISO datetime, re-serialized to canonical form so every reader gets the same
@@ -361,6 +370,8 @@ export const APP_CONFIG_FIELDS: {
 	themeTokens: themeTokensField('themeTokens'),
 
 	publicJoinUrl: publicUrlField('publicJoinUrl', PUBLIC_URL_MAX_LENGTH),
+	mentorWalksVisibility: enumField('mentorWalksVisibility', MENTOR_WALKS_VISIBILITIES),
+	volunteerGuidelinesUrl: publicUrlField('volunteerGuidelinesUrl', PUBLIC_URL_MAX_LENGTH),
 
 	siteName: boundedTextField('siteName', SITE_NAME_MAX_LENGTH),
 	countdownLabel: boundedTextField('countdownLabel', COUNTDOWN_LABEL_MAX_LENGTH),

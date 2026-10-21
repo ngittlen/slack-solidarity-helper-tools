@@ -46,7 +46,7 @@ const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
 describe('notifyHolder', () => {
 	it('DMs a Slack holder, storing nothing', async () => {
 		expect(await notifyHolder(db, 'U123', 'expiry', 'hello', '[test]', NOW)).toBe(true);
-		expect(mockSendDm).toHaveBeenCalledWith('U123', 'hello', '[test]');
+		expect(mockSendDm).toHaveBeenCalledWith('U123', 'hello', '[test]', []);
 		expect(await loadHolderNotices(db, 'U123', NOW)).toEqual([]);
 	});
 
@@ -101,7 +101,7 @@ describe('notifyHolder with push', () => {
 	// A wiped phone, or push not set up: nobody loses the warning.
 	it('falls back to the DM when no device took the push', async () => {
 		expect(await notifyHolder(db, 'U123', 'expiry', EXPIRY, '[test]', NOW)).toBe(true);
-		expect(mockSendDm).toHaveBeenCalledWith('U123', EXPIRY, '[test]');
+		expect(mockSendDm).toHaveBeenCalledWith('U123', EXPIRY, '[test]', []);
 	});
 
 	// Lapse and doors-counted arrived with push and were never DMs.
@@ -121,7 +121,7 @@ describe('notifyHolder with push', () => {
 	it('falls back to the DM when every device failed', async () => {
 		mockSendPush.mockResolvedValue('failed');
 		expect(await notifyHolder(db, 'U123', 'expiry', EXPIRY, '[test]', NOW)).toBe(true);
-		expect(mockSendDm).toHaveBeenCalledWith('U123', EXPIRY, '[test]');
+		expect(mockSendDm).toHaveBeenCalledWith('U123', EXPIRY, '[test]', []);
 	});
 
 	it('pushes to a Google holder and keeps the notice for the page as well', async () => {

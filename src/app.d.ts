@@ -15,6 +15,8 @@ declare global {
 				/** An outside volunteer who has not given a name yet — see
 				 *  SessionData in $lib/server/db.ts. */
 				needsName?: true;
+				/** An admin simulating mentor walks — see SessionData. */
+				mentorSimulation?: true;
 			} | null;
 		}
 	}

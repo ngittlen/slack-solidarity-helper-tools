@@ -95,6 +95,7 @@
 			</div>
 		{/if}
 		<a class="cross-link" href={resolve('/turfs/activity')}>See what already happened →</a>
+		<a class="cross-link" href={resolve('/turfs/organizer/mentor-walks')}>Mentor walks →</a>
 	</form>
 
 	<!-- For turf just cut in VAN to answer a request: pull the catalog now

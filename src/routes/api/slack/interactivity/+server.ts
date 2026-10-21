@@ -25,6 +25,8 @@ import {
 } from '$lib/server/slack-modal.js';
 import { displayName } from '$lib/server/slack-display-name.js';
 import { respondToSlack } from '$lib/server/slack-response-url.js';
+import { stopAlerts } from '$lib/server/mentor-walks/alerts.js';
+import { STOP_ALERTS_ACTION_ID } from '$lib/mentor-walks/messages.js';
 import {
 	decodeTurfAction,
 	TURF_CLAIM_ACTION_ID,
@@ -203,6 +205,27 @@ async function handleBlockActions(payload: SlackPayload): Promise<Response> {
 			a.action_id === TURF_PAGE_ACTION_ID,
 	);
 	if (turfAction) return handleTurfAction(payload, turfAction);
+
+	// An alert's "Stop these alerts" (specs/015-mentor-walks, FR-027). Only
+	// ever stops the alerts of the person who pressed it.
+	if (payload.actions?.some((a) => a.action_id === STOP_ALERTS_ACTION_ID)) {
+		const userId = payload.user?.id ?? '';
+		if (userId) {
+			try {
+				await stopAlerts(db, userId);
+				respondToSlack(
+					payload.response_url,
+					{
+						text: 'Done. You won’t get any more mentor walk alerts. You can turn them back on from /turfs.',
+					},
+					{ logTag: LOG },
+				);
+			} catch (err) {
+				console.error(`${LOG} stopping walk alerts failed:`, errMessage(err));
+			}
+		}
+		return ok();
+	}
 
 	const changedKind = payload.actions?.some((a) => a.action_id === KIND_ACTION_ID);
 	if (!changedKind || payload.view?.callback_id !== NOTE_MODAL_CALLBACK_ID) return ok();
