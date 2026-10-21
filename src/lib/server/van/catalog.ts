@@ -8,7 +8,14 @@
 
 import type { NewVanTurfRow, VanTurfRow } from '../schema.js';
 import type { VanMapRegion, VanMinivanExport, VanPrintedList } from './types.js';
-import { campaignWallClockToUtc } from '../../campaign-time.js';
+import {
+	campaignDayBounds,
+	campaignDayKey,
+	campaignHour,
+	campaignWallClockToUtc,
+} from '../../campaign-time.js';
+import { NIGHTLY_WINDOW_END_HOUR } from '../../van/refresh-policy.js';
+import { listExpiresAt } from '../../van/list-expiry.js';
 
 /** One folder's worth of fetched data, already resolved to a chapter. */
 export interface CatalogFolder {
@@ -75,9 +82,97 @@ export interface CatalogPlan {
 	/** Claims whose list was just seen loaded in MiniVAN, to stamp
 	 *  `loadedInMinivanAt` on. Only claims not already stamped. */
 	claimsLoaded: Array<{ checkoutId: number; loadedAt: string }>;
+	/** turfIds VAN no longer returns whose retirement waits for midnight, and
+	 *  which have no `vanChangedAt` yet — the sync stamps it with now. */
+	holdsStarted: number[];
+	/** The retirements whose hold ran out: turf kept live through the day
+	 *  after VAN dropped it. Its claims are released quietly, with nothing
+	 *  handed over in their place — the day those volunteers were out for is
+	 *  over, and a midnight DM moving them onto new turf would only wake them. */
+	holdsEnded: number[];
+	/** Every turf whose change is held, gone or not. VAN may already have
+	 *  deleted the saved list such a turf still has, so its waiting exports
+	 *  are dropped and none are queued until the change lands. */
+	heldTurfIds: number[];
+	/** Held turf VAN no longer returns whose outside assignment moved — the
+	 *  route loop never sees it, so it is written apart from the upserts. */
+	heldAssignments: Array<{
+		turfId: number;
+		vanDistributedTo: string | null;
+		vanAssignedAt: string | null;
+	}>;
+	/** What this run kept back until midnight (changeHeld): stored turf whose
+	 *  VAN change is held — gone, or its list changed — and new routes not
+	 *  added because they replace turf being held. */
+	held: { turfs: number; newRoutes: number };
 	/** Operator-facing conditions. Logged under `[van]`; the sync route
 	 *  forwards them to Slack the way the door-knock snapshot does. */
 	warnings: string[];
+}
+
+// A change VAN makes to turf already handed out — a re-cut that replaces its
+// routes, or a new list on the same route — waits for the campaign's
+// midnight. Until then the turf stays as volunteers were given it: on the map,
+// claimable, with its old list number, which goes on loading in MiniVAN for
+// the rest of the day. The routes that replace it are left out until then too,
+// or the same doors would be on the map twice, claimable by two people.
+//
+// Not for a change first seen before HOLD_FROM_HOUR: that is the nightly
+// re-cut window (refresh-policy.ts), when nobody is out, and a change seen
+// then would otherwise wait out the whole day it was made for. Nor for turf
+// with no list a volunteer can load (holdable), and not for new counts on an
+// unchanged list: those describe the list volunteers already have.
+export const HOLD_FROM_HOUR = NIGHTLY_WINDOW_END_HOUR;
+
+/** Whether a VAN change first seen at `since` (ISO) is still held at `now`. */
+export function changeHeld(since: string, now: Date): boolean {
+	const hour = campaignHour(since);
+	if (hour === null || hour < HOLD_FROM_HOUR) return false;
+	const day = campaignDayBounds(campaignDayKey(since));
+	return day !== null && now < day.end;
+}
+
+/** Whether turf has a list worth keeping until midnight: a number and a saved
+ *  list, and the list not expired. Held without one, a newly printed turf
+ *  would stay unclaimable all day, and an expired one would go on handing out
+ *  a number that loads nothing. An unreadable date is "can't tell", and holds. */
+function holdable(prior: VanTurfRow, now: Date): boolean {
+	if (!prior.printedListNumber || prior.savedListId === null) return false;
+	if (!prior.printedListCreatedAt) return true;
+	const expires = listExpiresAt(prior.printedListCreatedAt);
+	return expires === null || now < expires;
+}
+
+/** The fields a held turf keeps from before VAN changed it: the list a
+ *  volunteer was given, its counts, and the shape drawn from it. */
+function heldFields(prior: VanTurfRow): Partial<NewVanTurfRow> {
+	return {
+		name: prior.name,
+		savedListId: prior.savedListId,
+		printedListNumber: prior.printedListNumber,
+		printedListCreatedAt: prior.printedListCreatedAt,
+		routeNumber: prior.routeNumber,
+		routeSize: prior.routeSize,
+		doorCount: prior.doorCount,
+		phoneCount: prior.phoneCount,
+		centroidLat: prior.centroidLat,
+		centroidLng: prior.centroidLng,
+		hullJson: prior.hullJson,
+		hullSourceRouteSize: prior.hullSourceRouteSize,
+		lastRefreshedAt: prior.lastRefreshedAt,
+		cutAt: prior.cutAt,
+	};
+}
+
+/** The region keys a turf belongs to, for holding back the routes that
+ *  replace it. By name as well as id, given a name: an organizer may
+ *  regenerate a region as a new one under the same name rather than refresh
+ *  it in place. */
+function regionKeys(folderId: number, mapRegionId: number, regionName: string | null): string[] {
+	const keys = [`${folderId}:id:${mapRegionId}`];
+	const name = nameKey(regionName);
+	if (name) keys.push(`${folderId}:name:${name}`);
+	return keys;
 }
 
 // A hull is computed from the addresses in a route. Routes SHRINK as a matter
@@ -281,6 +376,23 @@ function exportsByList(exports: VanMinivanExport[]): Map<string, DatedExport[]> 
 	return index;
 }
 
+/** Our own volunteers loading the list: the first export inside each claim
+ *  that has not been stamped yet. */
+function claimLoads(
+	exports: readonly DatedExport[],
+	claims: readonly CatalogClaim[],
+): CatalogPlan['claimsLoaded'] {
+	const loads: CatalogPlan['claimsLoaded'] = [];
+	for (const claim of claims) {
+		if (claim.loadedInMinivanAt) continue;
+		const loaded = exports.find((e) => insideClaim(e.at, [claim]));
+		if (loaded) {
+			loads.push({ checkoutId: claim.checkoutId, loadedAt: new Date(loaded.at).toISOString() });
+		}
+	}
+	return loads;
+}
+
 /** Whether an export falls inside one of our claims on the route. */
 function insideClaim(at: number, claims: readonly CatalogClaim[]): boolean {
 	return claims.some(
@@ -392,7 +504,42 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 	const unretirements: number[] = [];
 	const geometryQueue: CatalogPlan['geometryQueue'] = [];
 	const seen = new Set<number>();
+	for (const folder of folders) {
+		for (const region of folder.regions) {
+			for (const route of region.mapRoutes ?? []) {
+				if (typeof route.mapRouteId === 'number') seen.add(route.mapRouteId);
+			}
+		}
+	}
 	const syncedFolderIds = new Set(folders.map((f) => f.folderId));
+	const regionsRead = new Set(
+		folders.flatMap((f) => f.regions.map((r) => `${f.folderId}:${r.mapRegionId}`)),
+	);
+
+	// Live turf VAN no longer returns, in a folder read this run. Retired —
+	// unless its change is held until midnight, and then the routes replacing
+	// it wait too (see changeHeld).
+	const gone = existing.filter(
+		(row) =>
+			row.retiredAt === null && syncedFolderIds.has(row.folderId) && !seen.has(row.vanMapRouteId),
+	);
+	const goneHeld = gone.filter(
+		(row) => holdable(row, now) && changeHeld(row.vanChangedAt ?? nowIso, now),
+	);
+	// By name only for a region VAN no longer returns. One still there was
+	// refreshed in place, and its id says which routes replace it; matched by
+	// name too, it would also hold back another region that shares the name.
+	const heldRegions = new Set(
+		goneHeld.flatMap((row) =>
+			regionKeys(
+				row.folderId,
+				row.mapRegionId,
+				regionsRead.has(`${row.folderId}:${row.mapRegionId}`) ? null : row.regionName,
+			),
+		),
+	);
+	const heldTurfIds = goneHeld.map((row) => row.turfId);
+	let heldNewRoutes = 0;
 
 	for (const folder of folders) {
 		// Two regions under one name means their turfs share names too — the
@@ -414,8 +561,16 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 		for (const region of folder.regions) {
 			for (const route of region.mapRoutes ?? []) {
 				if (typeof route.mapRouteId !== 'number') continue;
-				seen.add(route.mapRouteId);
 				const prior = existingByRoute.get(route.mapRouteId);
+				if (
+					prior === undefined &&
+					regionKeys(folder.folderId, region.mapRegionId, region.name ?? null).some((key) =>
+						heldRegions.has(key),
+					)
+				) {
+					heldNewRoutes++;
+					continue;
+				}
 
 				// The Map Region response is authoritative for the list number;
 				// /printedLists only fills a gap, and only when the name points
@@ -439,8 +594,20 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				);
 
 				const routeSize = route.routeSize ?? 0;
+				// VAN's list for this route is not the one volunteers were given.
+				// Held until midnight, the turf keeps what it had (heldFields).
+				// Counts alone are not a change: they describe the same list.
+				const listChanged =
+					prior !== undefined &&
+					prior.retiredAt === null &&
+					(prior.savedListId !== (route.savedListId ?? null) ||
+						prior.printedListNumber !== printedListNumber);
+				const changedSince = prior?.vanChangedAt ?? nowIso;
+				const held = listChanged && holdable(prior, now) && changeHeld(changedSince, now);
+				if (held) heldTurfIds.push(prior.turfId);
 				const hullSourceRouteSize = prior?.hullSourceRouteSize ?? null;
 				const staleHull =
+					!held &&
 					prior !== undefined &&
 					prior.hullJson !== null &&
 					needsGeometry({
@@ -449,8 +616,10 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 						routeSize,
 					});
 
-				// Joined on the list number, which is what the export names.
-				const routeExports = printedListNumber ? (exportIndex.get(printedListNumber) ?? []) : [];
+				// Joined on the list number, which is what the export names — the
+				// one volunteers have, while a change is held.
+				const issuedListNumber = held ? (prior?.printedListNumber ?? null) : printedListNumber;
+				const routeExports = issuedListNumber ? (exportIndex.get(issuedListNumber) ?? []) : [];
 				// The turf keeps the id it has. A new one takes VAN's route id,
 				// which keeps ids in logs matching VAN, unless another campaign's
 				// turf already has that id — then it gets the next free one.
@@ -461,18 +630,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				// Claims are on turfIds. A newly numbered turf has none yet.
 				const routeClaims = claimsByRoute.get(turfId) ?? [];
 				const assignment = outsideAssignment(routeExports, routeClaims, prior);
-				// Our own volunteer loading the list: the first export inside
-				// each claim that has not been stamped yet.
-				for (const claim of routeClaims) {
-					if (claim.loadedInMinivanAt) continue;
-					const loaded = routeExports.find((e) => insideClaim(e.at, [claim]));
-					if (loaded) {
-						claimsLoaded.push({
-							checkoutId: claim.checkoutId,
-							loadedAt: new Date(loaded.at).toISOString(),
-						});
-					}
-				}
+				claimsLoaded.push(...claimLoads(routeExports, routeClaims));
 
 				const row: NewVanTurfRow = {
 					turfId,
@@ -518,24 +676,30 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 						null,
 					retiredAt: null,
 				};
+				if (held && prior) Object.assign(row, heldFields(prior), { vanChangedAt: changedSince });
+				else row.vanChangedAt = null;
 				upserts.push(row);
 
 				if (prior?.retiredAt) unretirements.push(prior.turfId);
 
+				// From the row rather than the route: a held turf is exported for
+				// the list it still has, and VAN's new one waits with the rest.
+				const savedListId = row.savedListId ?? null;
+				const rowRouteSize = row.routeSize ?? 0;
 				const wantsGeometry = needsGeometry({
 					hullJson: row.hullJson ?? null,
 					hullSourceRouteSize: row.hullSourceRouteSize ?? null,
-					routeSize,
+					routeSize: rowRouteSize,
 				});
-				const wantsRoster = input.roster === true && prior?.rosterSavedListId !== route.savedListId;
+				const wantsRoster = input.roster === true && prior?.rosterSavedListId !== savedListId;
 				// A route with no doors has nothing to draw or roster, and VAN never
 				// finishes exporting its empty list: queued, it held its place for
 				// hours of resubmits before dead-lettering. runCatalogSync unqueues one
-				// already waiting.
-				if (route.savedListId && routeSize > 0 && (wantsGeometry || wantsRoster)) {
+				// already waiting. Nor a held turf: VAN may have deleted its list.
+				if (!held && savedListId && rowRouteSize > 0 && (wantsGeometry || wantsRoster)) {
 					geometryQueue.push({
 						vanMapRouteId: route.mapRouteId,
-						savedListId: route.savedListId,
+						savedListId,
 						roster: wantsRoster,
 					});
 				}
@@ -570,12 +734,38 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 		);
 	}
 
-	const retirements = existing
-		.filter(
-			(row) =>
-				row.retiredAt === null && syncedFolderIds.has(row.folderId) && !seen.has(row.vanMapRouteId),
-		)
+	// Held turf VAN no longer returns is still handed out on its old list
+	// number, so loads of that list go on being matched to it: our volunteers'
+	// (claimsLoaded, which the Packet Tracker reads) and anyone else's.
+	const heldAssignments: CatalogPlan['heldAssignments'] = [];
+	for (const row of goneHeld) {
+		const exports = row.printedListNumber ? (exportIndex.get(row.printedListNumber) ?? []) : [];
+		const claims = claimsByRoute.get(row.turfId) ?? [];
+		claimsLoaded.push(...claimLoads(exports, claims));
+		const assignment = outsideAssignment(exports, claims, row);
+		if (assignment.vanAssignedAt !== row.vanAssignedAt) {
+			heldAssignments.push({ turfId: row.turfId, ...assignment });
+		}
+	}
+
+	const goneHeldIds = new Set(goneHeld.map((row) => row.turfId));
+	const retirements = gone.filter((row) => !goneHeldIds.has(row.turfId)).map((row) => row.turfId);
+	const holdsStarted = goneHeld.filter((row) => !row.vanChangedAt).map((row) => row.turfId);
+	const holdsEnded = gone
+		.filter((row) => row.vanChangedAt && !changeHeld(row.vanChangedAt, now))
 		.map((row) => row.turfId);
 
-	return { upserts, retirements, unretirements, geometryQueue, claimsLoaded, warnings };
+	return {
+		upserts,
+		retirements,
+		unretirements,
+		geometryQueue,
+		claimsLoaded,
+		holdsStarted,
+		holdsEnded,
+		heldTurfIds,
+		heldAssignments,
+		held: { turfs: heldTurfIds.length, newRoutes: heldNewRoutes },
+		warnings,
+	};
 }

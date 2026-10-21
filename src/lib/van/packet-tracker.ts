@@ -144,10 +144,12 @@ function statusFor(checkout: PacketCheckout): PacketStatus | null {
 		// Given back, whether or not the list was opened: the packet is free
 		// again, so it is left as though it had not been handed out.
 		if (checkout.releaseReason === 'volunteer') return null;
-		// Lapsed: kept only if the volunteer knocked something. Until the doors
-		// are counted (or on turf with no roster to count them), whether the
-		// list was ever loaded stands in.
-		if (checkout.releaseReason === 'expired' && checkout.doorsKnocked !== null) {
+		// Lapsed, or the turf retired under it (at midnight, for turf held
+		// through a re-cut): kept only if the volunteer knocked something.
+		// Until the doors are counted (or on turf with no roster to count
+		// them), whether the list was ever loaded stands in.
+		const ended = checkout.releaseReason === 'expired' || checkout.releaseReason === 'retired';
+		if (ended && checkout.doorsKnocked !== null) {
 			return checkout.doorsKnocked > 0 ? 'Incomplete' : null;
 		}
 		return checkout.loadedInMinivanAt ? 'Incomplete' : null;

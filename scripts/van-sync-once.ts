@@ -103,6 +103,9 @@ async function main(): Promise<void> {
 	console.log(`  turfs upserted      ${result.turfsUpserted}`);
 	console.log(`  turfs retired       ${result.turfsRetired}`);
 	console.log(`  turfs unretired     ${result.turfsUnretired}`);
+	console.log(
+		`  held to midnight    ${result.turfsHeld} turf, ${result.newTurfsHeld} new route(s)`,
+	);
 	console.log(`  queued for geometry ${result.geometryQueued}`);
 	const rosterQueued = result.plan?.geometryQueue.filter((item) => item.roster).length ?? 0;
 	console.log(`  of those, rosters   ${rosterQueued}`);

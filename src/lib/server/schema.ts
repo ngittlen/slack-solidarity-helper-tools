@@ -1099,6 +1099,12 @@ export const vanTurfs = sqliteTable(
 		driftAlertedKind: text('drift_alerted_kind'),
 		firstSeenAt: text('first_seen_at').notNull(),
 		lastSeenAt: text('last_seen_at').notNull(),
+		/** When the catalog sync first saw VAN differ from this row — the route
+		 *  gone, or its list changed — while that change is held back until the
+		 *  campaign's midnight, so turf stays as volunteers were given it for the
+		 *  rest of the day. Null when nothing is held. See changeHeld in
+		 *  van/catalog.ts. */
+		vanChangedAt: text('van_changed_at'),
 		lastRefreshedAt: text('last_refreshed_at'),
 		/** When VAN cut this route: the region's `dateRefreshed`, else its
 		 *  `dateCreated`, as real UTC. Contact attempts before this are about a

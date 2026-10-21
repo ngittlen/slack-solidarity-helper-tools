@@ -502,7 +502,9 @@ export function checkoutKnockWindow(checkout: string): { from: SQL; until: SQL }
  * doors figures count per volunteer.
  *
  * Lapsed claims are counted too, between the claim and its expiry, with no
- * trailing hour — the turf is someone else's by then. The dashboard reads
+ * trailing hour — the turf is someone else's by then. So are claims released
+ * because VAN retired the turf, which on turf held until midnight
+ * (catalog.ts, changeHeld) is the end of a day's canvass. The dashboard reads
  * completions only; the count is for the Packet Tracker, which clears a lapsed
  * claim's entry when it comes to 0. So a lapsed claim is not counted until
  * KNOCK_TRAIL_MS after it ended: a volunteer still walking when it lapsed,
@@ -550,7 +552,7 @@ export async function stampDoorsKnocked(
 		UPDATE van_turf_checkouts SET doors_knocked = ${knocked}
 		WHERE (
 				(completed_at IS NOT NULL AND completed_at >= ${since} AND completed_at < ${nowIso})
-				OR (completed_at IS NULL AND release_reason = 'expired'
+				OR (completed_at IS NULL AND release_reason IN ('expired', 'retired')
 					AND released_at >= ${since} AND released_at < ${lapsedBefore})
 			)
 			AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.turf_id = van_turf_checkouts.turf_id)

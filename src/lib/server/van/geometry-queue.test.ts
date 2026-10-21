@@ -69,6 +69,9 @@ function vanClientWith(savedListId: number, routeSize = 76): VanClient {
 }
 
 const MAPPINGS = [{ chapterId: 71, chapterName: 'Orange County', folderIds: [2731] }];
+/** 03:00 in Detroit: a re-cut seen then applies at once rather than waiting
+ *  for midnight (changeHeld in catalog.ts). */
+const OVERNIGHT = { now: new Date('2026-09-28T07:00:00.000Z') };
 
 async function queueRow() {
 	const res = await client.execute('SELECT * FROM van_geometry_queue WHERE turf_id = 56456');
@@ -106,7 +109,7 @@ describe('geometry queue re-arming', () => {
 		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS);
 		await markDone(585052);
 
-		await runCatalogSync(db, vanClientWith(585484), 1, MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585484), 1, MAPPINGS, OVERNIGHT);
 
 		const row = await queueRow();
 		expect(row!.saved_list_id).toBe(585484);
@@ -156,7 +159,7 @@ describe('geometry queue re-arming', () => {
 			`UPDATE van_geometry_queue SET status='failed', attempts=4, last_error='boom' WHERE turf_id=56456`,
 		);
 
-		await runCatalogSync(db, vanClientWith(585484), 1, MAPPINGS);
+		await runCatalogSync(db, vanClientWith(585484), 1, MAPPINGS, OVERNIGHT);
 
 		const row = await queueRow();
 		expect(row!.status).toBe('pending');
@@ -247,7 +250,8 @@ describe('geometry queue roster re-arming', () => {
 	// retires the route, and that completion's % walked is derived from its
 	// roster afterwards.
 	it('drops a retired turf’s roster a day after it retires', async () => {
-		const t0 = new Date('2026-09-28T12:00:00.000Z');
+		// 03:00 in Detroit, so the retirement is not held until midnight.
+		const t0 = new Date('2026-09-28T07:00:00.000Z');
 		await runCatalogSync(db, vanClientWith(585052), 1, MAPPINGS, { now: t0 });
 		await client.execute(
 			`INSERT INTO van_turf_roster (turf_id, person_hash, door_hash) VALUES (56456, x'01', x'02')`,

@@ -3,6 +3,7 @@ import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import { runCatalogSync } from './sync.js';
+import { reconcileClaims } from './reconcile-store.js';
 import { recomputeUncontacted, upsertContacts } from './contact-sync.js';
 import type { VanClient } from './client.js';
 import type { VanMapRegion, VanMapRoute } from './types.js';
@@ -135,13 +136,126 @@ describe('two campaigns with identical VAN ids', () => {
 		await runCatalogSync(db, vanWith(B_ROUTES), B, MAPPINGS);
 
 		// B's Turf 02 is gone from B's VAN; A still has a Turf 02 on the same id.
-		await runCatalogSync(db, vanWith([B_ROUTES[0]!]), B, MAPPINGS);
+		// At 03:00 in Detroit, so the retirement is not held until midnight.
+		await runCatalogSync(db, vanWith([B_ROUTES[0]!]), B, MAPPINGS, {
+			now: new Date('2026-09-28T07:00:00.000Z'),
+		});
 
 		expect((await turfs(B)).map((t) => [t.name, t.retired_at !== null])).toEqual([
 			['B Turf 01', false],
 			['B Turf 02', true],
 		]);
 		expect((await turfs(A)).every((t) => t.retired_at === null)).toBe(true);
+	});
+
+	it('keeps a dropped route live until midnight, then retires it', async () => {
+		// Campaign time is Detroit, UTC-4 in September.
+		const afternoon = new Date('2026-09-28T18:00:00.000Z');
+		const late = new Date('2026-09-29T03:30:00.000Z');
+		const afterMidnight = new Date('2026-09-29T04:30:00.000Z');
+		const turf02 = async () =>
+			(
+				await client.execute({
+					sql: `SELECT retired_at, van_changed_at FROM van_turfs
+					      WHERE campaign_id = ? AND van_map_route_id = 56457`,
+					args: [B],
+				})
+			).rows[0]!;
+		await runCatalogSync(db, vanWith(B_ROUTES), B, MAPPINGS, { now: afternoon });
+
+		await runCatalogSync(db, vanWith([B_ROUTES[0]!]), B, MAPPINGS, { now: afternoon });
+		expect(await turf02()).toMatchObject({
+			retired_at: null,
+			van_changed_at: afternoon.toISOString(),
+		});
+
+		await runCatalogSync(db, vanWith([B_ROUTES[0]!]), B, MAPPINGS, { now: late });
+		expect((await turf02()).van_changed_at).toBe(afternoon.toISOString());
+
+		await runCatalogSync(db, vanWith([B_ROUTES[0]!]), B, MAPPINGS, { now: afterMidnight });
+		expect(await turf02()).toMatchObject({
+			retired_at: afterMidnight.toISOString(),
+			van_changed_at: null,
+		});
+	});
+
+	it('releases claims on a held route at midnight, without moving them to its replacement', async () => {
+		const afternoon = new Date('2026-09-28T18:00:00.000Z');
+		const afterMidnight = new Date('2026-09-29T04:30:00.000Z');
+		await runCatalogSync(db, vanWith(B_ROUTES), B, MAPPINGS, { now: afternoon });
+		const turfId = (
+			await client.execute({
+				sql: 'SELECT turf_id FROM van_turfs WHERE campaign_id = ? AND van_map_route_id = 56457',
+				args: [B],
+			})
+		).rows[0]!.turf_id as number;
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+			      VALUES (?, 'U1', 'Dana', '2026-09-28T17:00:00.000Z', '2026-09-29T17:00:00.000Z')`,
+			args: [turfId],
+		});
+
+		// Re-cut in the afternoon: B Turf 02 comes back as route 56460.
+		const recut = vanWith([B_ROUTES[0]!, route(56460, 'B Turf 02', 703)]);
+		await runCatalogSync(db, recut, B, MAPPINGS, { now: afternoon });
+		await runCatalogSync(db, recut, B, MAPPINGS, { now: afterMidnight });
+
+		const claims = await client.execute(
+			'SELECT turf_id, release_reason, recut_notified_at FROM van_turf_checkouts',
+		);
+		expect(claims.rows.map((r) => ({ ...r }))).toEqual([
+			{
+				turf_id: turfId,
+				release_reason: 'retired',
+				recut_notified_at: afterMidnight.toISOString(),
+			},
+		]);
+		const reconciled = await reconcileClaims(db, { now: afterMidnight, appUrl: 'https://x' });
+		expect(reconciled).toMatchObject({ recutReplaced: 0, recutGone: 0, dmFailed: 0 });
+		expect((await client.execute('SELECT count(*) AS n FROM van_turf_checkouts')).rows[0]!.n).toBe(
+			1,
+		);
+	});
+
+	it('drops a held route’s waiting export, and goes on matching loads of its old list', async () => {
+		const afternoon = new Date('2026-09-28T18:00:00.000Z');
+		await runCatalogSync(db, vanWith(B_ROUTES), B, MAPPINGS, { now: afternoon });
+		const turfId = (
+			await client.execute({
+				sql: 'SELECT turf_id FROM van_turfs WHERE campaign_id = ? AND van_map_route_id = 56457',
+				args: [B],
+			})
+		).rows[0]!.turf_id as number;
+		const queued = async () =>
+			(
+				await client.execute({
+					sql: 'SELECT count(*) AS n FROM van_geometry_queue WHERE turf_id = ?',
+					args: [turfId],
+				})
+			).rows[0]!.n;
+		expect(await queued()).toBe(1);
+
+		// Claimed at 13:00 Detroit; its list loaded at 13:30, which VAN writes
+		// with a Z.
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+			      VALUES (?, 'U1', 'Dana', '2026-09-28T17:00:00.000Z', '2026-09-29T17:00:00.000Z')`,
+			args: [turfId],
+		});
+		await client.execute({
+			sql: `INSERT INTO van_minivan_exports (campaign_id, minivan_export_id, name, list_number, date_created, canvassers_json, fetched_at)
+			      VALUES (?, 5, 'List list-701', 'list-701', '2026-09-28T13:30:00.00Z', '[{"canvassserId":1}]', ?)`,
+			args: [B, afternoon.toISOString()],
+		});
+
+		// VAN drops route 56457, and with it the list it no longer reports.
+		await runCatalogSync(db, vanWith([B_ROUTES[0]!]), B, MAPPINGS, { now: afternoon });
+		expect(await queued()).toBe(0);
+		const checkout = await client.execute({
+			sql: 'SELECT loaded_in_minivan_at FROM van_turf_checkouts WHERE turf_id = ?',
+			args: [turfId],
+		});
+		expect(checkout.rows[0]!.loaded_in_minivan_at).toBe('2026-09-28T17:30:00.000Z');
 	});
 
 	it('updates its own turf in place on a later sync, keeping the turf id', async () => {

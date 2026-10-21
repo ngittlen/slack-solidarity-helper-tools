@@ -28,11 +28,14 @@
  * index for the run and builds it again at the end — kept up row by row it
  * was most of the drain's time; see roster-index.ts.
  *
- * Its VAN client allows VAN_CONCURRENCY calls at once, against the app's two.
+ * `--concurrency` is both the turfs in flight and the VAN calls its client
+ * allows at once, against the app's two. Watch "backoff" in the per-turf line
+ * when raising it: that is VAN pushing back.
  *
  * Usage (from project root):
  *   npm run van:drain                      # 30 minutes, 4 at a time
  *   npm run van:drain -- --minutes 60
+ *   npm run van:drain -- --concurrency 8   # raise while backoff stays at 0
  *   npm run van:drain -- --concurrency 2   # lower if VAN pushes back
  *   npm run van:drain -- --max 50          # a taste, then stop
  *
@@ -56,7 +59,12 @@ import { dbConfig } from '../bin/db-config.js';
 import { createVanClient } from '../src/lib/server/van/client.js';
 import { runGeometryQueue, type GeometryTimings } from '../src/lib/server/van/geometry-worker.js';
 import type { VanClientStats } from '../src/lib/server/van/client.js';
-import { VAN_ROSTER_BULK_LOCK, vanContactLock, vanSyncLock } from '../src/lib/server/van/locks.js';
+import {
+	VAN_ROSTER_BULK_LOCK,
+	vanContactLock,
+	vanSyncLock,
+	vanSyncWaiting,
+} from '../src/lib/server/van/locks.js';
 import {
 	createRosterPersonIndex,
 	dropRosterPersonIndex,
@@ -89,10 +97,13 @@ const flag = (name: string, fallback: number): number => {
 };
 
 const MINUTES = flag('minutes', 30);
-const CONCURRENCY = flag('concurrency', 4);
-/** VAN calls in flight at once. Turfs past this many queue for VAN rather
- *  than adding to it, so --concurrency above it overlaps downloads only. */
-const VAN_CONCURRENCY = 4;
+/** A ceiling on --concurrency, so a slipped digit cannot open 80 VAN calls. */
+const MAX_CONCURRENCY = 16;
+/** Turfs in flight, and VAN calls in flight: one each. A turf makes its VAN
+ *  calls one at a time, so with fewer VAN slots than turfs the extra turfs
+ *  only queue for one, and with more the slots sit idle — the number of turfs
+ *  is what sets the pace, and "queued" in the per-turf line stays at zero. */
+const CONCURRENCY = Math.min(Math.floor(flag('concurrency', 4)), MAX_CONCURRENCY);
 /** Queued turfs, with rosters on, worth dropping the person index for: below
  *  this, rebuilding it costs more than the rows would. */
 const ROSTER_BULK_MIN = 500;
@@ -125,7 +136,7 @@ const client = createVanClient({
 	appName: credential.appName,
 	apiKey: credential.apiKey,
 	databaseMode: credential.databaseMode,
-	maxConcurrency: VAN_CONCURRENCY,
+	maxConcurrency: CONCURRENCY,
 });
 
 /** Set by main() once the campaign row is read. */
@@ -143,8 +154,10 @@ const FINISH_GRACE_MS = 2 * 60 * 1000;
  *  export it a second time. Short, so a crashed run frees the lock soon. */
 const LOCK_TTL_MS = 2 * 60 * 1000;
 const LOCK_HEARTBEAT_MS = 30 * 1000;
-/** Pause after each slice, longer than the sync route's lock poll. */
+/** Pause after a slice when a scheduled sync is waiting for the lock, longer
+ *  than the sync route's lock poll. */
 const SLICE_GAP_MS = 10 * 1000;
+
 /** How long to wait for a scheduled sync to let go of the lock. */
 const LOCK_RETRY_MS = 15 * 1000;
 
@@ -222,8 +235,9 @@ function formatDuration(ms: number): string {
  * minutes-long lumps every half hour, so counting them would swing the
  * estimate by however recently one happened — a wait in the first slice made
  * the whole run look several times slower than it was. The cost is that the
- * estimate leaves out the syncs still to come, which is a few percent. Slice
- * gaps do count: they are steady, and part of the real speed.
+ * estimate leaves out the syncs still to come, which is a few percent. The
+ * pauses for a waiting sync between slices do count: they are short, and part
+ * of the real speed.
  *
  * Net of rows a scheduled sync queued meanwhile, which is the number that
  * matters. Empty until something has cleared.
@@ -541,11 +555,14 @@ async function main(): Promise<void> {
 				heldToken = null;
 				await releaseSyncLock(db, vanSyncLock(campaignId), token);
 			}
-			// Let a scheduled sync in. It polls for the lock while this holds it,
-			// and without a pause the next slice re-takes the lock before the
-			// sync's next poll — every scheduled sync then skips for the whole
-			// drain, which is what froze the counts during the first roster pass.
-			if (!stopping) await new Promise((r) => setTimeout(r, SLICE_GAP_MS));
+			// Let a waiting scheduled sync in. It polls for the lock while this
+			// holds it, and without a pause the next slice re-takes the lock
+			// before the sync's next poll — every scheduled sync then skips for
+			// the whole drain, which is what froze the counts during the first
+			// roster pass. Only when one is waiting, which most slices it is not.
+			if (!stopping && (await vanSyncWaiting(db, campaignId))) {
+				await new Promise((r) => setTimeout(r, SLICE_GAP_MS));
+			}
 			totals.rostersStored += result.rostersStored;
 			totals.rostersUnavailable += result.rostersUnavailable;
 

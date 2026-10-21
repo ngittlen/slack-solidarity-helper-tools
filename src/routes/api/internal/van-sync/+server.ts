@@ -23,7 +23,7 @@ import {
 import type { VanClient } from '$lib/server/van/client.js';
 import { runContactStage } from '$lib/server/van/contact-live.js';
 import { runCatalogSync } from '$lib/server/van/sync.js';
-import { VAN_LEDGER_LOCK, vanSyncLock } from '$lib/server/van/locks.js';
+import { VAN_LEDGER_LOCK, vanSyncLock, vanSyncWaitingLock } from '$lib/server/van/locks.js';
 import { runGeometryQueue } from '$lib/server/van/geometry-worker.js';
 import { exportCallbackUrl } from '$lib/server/van/webhook-token.js';
 import { sweepExpiredClaims } from '$lib/server/van/checkout-store.js';
@@ -116,7 +116,8 @@ const LEDGER_LOCK_TTL_MS = 2 * 60 * 1000;
 // roster or geometry drain run from the command line holds it in one-minute
 // slices with a pause between them (scripts/van-geometry-drain.ts), so this
 // outlasts one slice. Counted against REQUEST_BUDGET_MS, which the catalog's
-// own budget leaves room for.
+// own budget leaves room for. The drain pauses for it only while it says it
+// is waiting (vanSyncWaitingLock).
 const LOCK_WAIT_MS = 75 * 1000;
 const LOCK_POLL_MS = 2 * 1000;
 
@@ -353,9 +354,28 @@ async function syncCampaign(
 
 	let token = await acquireSyncLock(db, lock, LOCK_TTL_MS);
 	const waitUntil = Math.min(Date.now() + LOCK_WAIT_MS, requestDeadline - MIN_CAMPAIGN_BUDGET_MS);
+	// Say so while waiting: a drain pauses between slices only for a waiter.
+	// Null when another request already says it, which serves as well; best
+	// effort, since without it the wait is only less likely to succeed.
+	const waitingLock = vanSyncWaitingLock(campaign.id);
+	let waiting: string | null = null;
+	if (!token && Date.now() < waitUntil) {
+		try {
+			waiting = await acquireSyncLock(db, waitingLock, waitUntil - Date.now() + LOCK_POLL_MS);
+		} catch {
+			// Waited for anyway, with only the drain's next pause to rely on.
+		}
+	}
 	while (!token && Date.now() < waitUntil) {
 		await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
 		token = await acquireSyncLock(db, lock, LOCK_TTL_MS);
+	}
+	if (waiting) {
+		try {
+			await releaseSyncLock(db, waitingLock, waiting);
+		} catch {
+			// It lapses on its own within a poll of the wait's end.
+		}
 	}
 	if (!token) {
 		// Not an error: overlapping cron attempts are expected (the workflow
@@ -401,7 +421,10 @@ async function syncCampaign(
 		});
 		console.log(
 			`${logPrefix} catalog sync: ${result.turfsUpserted} turfs across ${result.foldersSynced} folder(s), ` +
-				`${result.turfsRetired} retired, ${result.geometryQueued} queued for geometry`,
+				`${result.turfsRetired} retired, ${result.geometryQueued} queued for geometry` +
+				(result.turfsHeld + result.newTurfsHeld > 0
+					? `, held to midnight: ${result.turfsHeld} turf, ${result.newTurfsHeld} new route(s)`
+					: ''),
 			{ skipped: result.foldersSkipped, degraded: result.degraded },
 		);
 

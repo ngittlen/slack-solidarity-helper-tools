@@ -27,6 +27,10 @@ vi.mock('./minivan-export-store.js', () => ({
 // A recording stub of the drizzle chains sync.ts actually uses. Enough to
 // assert what was written without standing up SQLite; the storage-level
 // guarantees (the partial unique index) are covered by their own tests.
+/** 03:00 in Detroit: a retirement seen then applies at once rather than
+ *  waiting for midnight (changeHeld in catalog.ts). */
+const OVERNIGHT = { now: new Date('2026-09-28T07:00:00.000Z') };
+
 function makeDb(existing: unknown[] = [], deletedRows: unknown[] = [{ turfId: 100 }]) {
 	const inserted: unknown[] = [];
 	const updates: unknown[] = [];
@@ -329,7 +333,7 @@ describe('runCatalogSync', () => {
 			},
 		];
 		const { db, updates } = makeDb(existing);
-		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING, OVERNIGHT);
 
 		expect(result.turfsRetired).toBe(1);
 		expect(result.claimsReleased).toBe(1);
@@ -352,7 +356,7 @@ describe('runCatalogSync', () => {
 			},
 		];
 		const { db, deletedFrom } = makeDb(existing, [{ turfId: 500 }]);
-		const result = await runCatalogSync(db, makeClient(), 1, MAPPING);
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING, OVERNIGHT);
 
 		expect(result.turfsRetired).toBe(1);
 		expect(result.geometryQueueDropped).toBe(1);
