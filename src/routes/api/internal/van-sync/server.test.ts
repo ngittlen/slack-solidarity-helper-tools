@@ -676,6 +676,33 @@ describe('POST /api/internal/van-sync', () => {
 			expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync:1', 'lock-token');
 		});
 
+		// A drain pauses between slices only while this marker says a sync is
+		// waiting; held for the wait, let go once the lock is had.
+		it('says it is waiting while it waits, and stops saying so after', async () => {
+			let campaignTries = 0;
+			mockAcquire.mockImplementation(async (_db: unknown, name: string) => {
+				if (name === 'van-ledger') return 'ledger-token';
+				if (name === 'van-catalog-sync-waiting:1') return 'waiting-token';
+				return campaignTries++ < 2 ? null : 'lock-token';
+			});
+			const res = await postWaiting();
+			expect(res.status).toBe(200);
+			expect(mockRunCatalogSync).toHaveBeenCalledOnce();
+			const names = mockAcquire.mock.calls.map((c) => c[1]);
+			expect(names.filter((n) => n === 'van-catalog-sync-waiting:1')).toHaveLength(1);
+			// Taken after the first try fails, not before.
+			expect(names.indexOf('van-catalog-sync-waiting:1')).toBe(
+				names.indexOf('van-catalog-sync:1') + 1,
+			);
+			expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync-waiting:1', 'waiting-token');
+		});
+
+		it('does not say it is waiting when the lock is free', async () => {
+			mockAcquire.mockResolvedValue('lock-token');
+			await POST(event());
+			expect(mockAcquire.mock.calls.map((c) => c[1])).not.toContain('van-catalog-sync-waiting:1');
+		});
+
 		// The counts have their own lock; a drain must not freeze them.
 		it('still pulls contacts when it has to skip', async () => {
 			campaignLockHeld();

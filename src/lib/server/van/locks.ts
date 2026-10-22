@@ -1,3 +1,8 @@
+import type { drizzle } from 'drizzle-orm/libsql';
+import { heldSyncLocks } from '../sync-lock.js';
+
+type Db = ReturnType<typeof drizzle>;
+
 /**
  * The advisory lock both halves of a campaign's VAN sync take.
  *
@@ -16,6 +21,27 @@
  */
 export function vanSyncLock(campaignId: number): string {
 	return `van-catalog-sync:${campaignId}`;
+}
+
+/**
+ * Left by a scheduled sync while it waits for a campaign's vanSyncLock. A
+ * drain holding that lock in slices pauses between them only when this is
+ * held (scripts/van-geometry-drain.ts) — a pause after every slice was a
+ * sixth of the drain's time, for a sync that comes every forty minutes.
+ * Short-lived, so a waiter that dies stops holding the drain up on its own.
+ */
+export function vanSyncWaitingLock(campaignId: number): string {
+	return `van-catalog-sync-waiting:${campaignId}`;
+}
+
+/** Whether a scheduled sync is waiting for the campaign's vanSyncLock. Yes
+ *  when it cannot tell: a pause costs seconds, a skipped sync a cadence. */
+export async function vanSyncWaiting(db: Db, campaignId: number): Promise<boolean> {
+	try {
+		return (await heldSyncLocks(db, [vanSyncWaitingLock(campaignId)])).length > 0;
+	} catch {
+		return true;
+	}
 }
 
 /**

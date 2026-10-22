@@ -174,6 +174,19 @@ describe('desiredCells', () => {
 			Status: 'Incomplete',
 		});
 	});
+
+	// Turf held through a re-cut retires at midnight, which ends the day's
+	// canvass on it: judged by its doors, like a lapse.
+	it('keeps a retired claim that knocked doors, loaded or not, and drops one that knocked none', () => {
+		const retired = { releasedAt: RELEASED, releaseReason: 'retired' };
+		expect(desiredCells(checkout({ ...retired, doorsKnocked: 9 }))).toMatchObject({
+			Status: 'Incomplete',
+			'Knocked #': '9',
+		});
+		expect(
+			desiredCells(checkout({ ...retired, loadedInMinivanAt: LOADED, doorsKnocked: 0 })),
+		).toBeNull();
+	});
 });
 
 describe('sheetDate', () => {

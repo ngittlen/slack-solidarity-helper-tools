@@ -54,6 +54,12 @@ export interface CatalogSyncResult {
 	turfsUpserted: number;
 	turfsRetired: number;
 	turfsUnretired: number;
+	/** Stored turf whose VAN change waits for midnight — gone from VAN, or
+	 *  its list changed — kept as volunteers were given it (changeHeld in
+	 *  catalog.ts). */
+	turfsHeld: number;
+	/** New routes not added yet because they replace turf being held. */
+	newTurfsHeld: number;
 	geometryQueued: number;
 	claimsReleased: number;
 	/** Queue rows deleted because their turf was retired, or has no doors and
@@ -148,6 +154,8 @@ export async function runCatalogSync(
 			turfsUpserted: 0,
 			turfsRetired: 0,
 			turfsUnretired: 0,
+			turfsHeld: 0,
+			newTurfsHeld: 0,
 			geometryQueued: 0,
 			claimsReleased: 0,
 			// Nothing is mapped, so nothing was read and nothing can be retired —
@@ -279,16 +287,6 @@ export async function runCatalogSync(
 			);
 		}
 	}
-	const minivanExports = await loadMinivanExports(
-		db,
-		campaignId,
-		candidateListNumbers(folders, printedLists),
-	);
-	// Our own claims, so an export made while one of our volunteers held the
-	// turf reads as them loading it rather than as the turf being handed out
-	// elsewhere (catalog.ts, outsideAssignment).
-	const claims = await loadClaimsForExports(db, campaignId, now);
-
 	// Live turf in full; retired turf only as far as each use needs it.
 	//
 	// Every re-cut retires a region's routes and keeps the rows, so retired turf
@@ -318,6 +316,18 @@ export async function runCatalogSync(
 	for (const batch of chunked(returning)) {
 		existing.push(...(await db.select().from(vanTurfs).where(inArray(vanTurfs.turfId, batch))));
 	}
+	// With the numbers live turf has, which VAN may no longer list: a turf
+	// held until midnight is still handed out on its old one (catalog.ts,
+	// changeHeld).
+	const minivanExports = await loadMinivanExports(db, campaignId, [
+		...candidateListNumbers(folders, printedLists),
+		...live.flatMap((row) => (row.printedListNumber ? [row.printedListNumber] : [])),
+	]);
+	// Our own claims, so an export made while one of our volunteers held the
+	// turf reads as them loading it rather than as the turf being handed out
+	// elsewhere (catalog.ts, outsideAssignment).
+	const claims = await loadClaimsForExports(db, campaignId, now);
+
 	// Every campaign's ids, so a new turf never takes an id another one holds.
 	const takenTurfIds = new Set(
 		(await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs)).map((r) => r.turfId),
@@ -351,6 +361,8 @@ export async function runCatalogSync(
 			turfsUpserted: plan.upserts.length,
 			turfsRetired: plan.retirements.length,
 			turfsUnretired: plan.unretirements.length,
+			turfsHeld: plan.held.turfs,
+			newTurfsHeld: plan.held.newRoutes,
 			geometryQueued: plan.geometryQueue.length,
 			claimsReleased: 0,
 			// A dry run cannot know how many queue rows exist without reading them,
@@ -446,7 +458,11 @@ export async function runCatalogSync(
 	];
 
 	const retireStatements = chunked(plan.retirements).map((batch) =>
-		db.update(vanTurfs).set({ retiredAt }).where(inArray(vanTurfs.turfId, batch)),
+		// A hold that ran out ends here: the change it held is the retirement.
+		db
+			.update(vanTurfs)
+			.set({ retiredAt, vanChangedAt: null })
+			.where(inArray(vanTurfs.turfId, batch)),
 	);
 
 	// Retirement releases live claims: a volunteer holding turf that no longer
@@ -454,10 +470,15 @@ export async function runCatalogSync(
 	// the claim in place hides that from both of them. The volunteer is told by
 	// reconcile-store.ts on this same run, which pairs the dead route to
 	// whatever VAN cut in its place.
-	const releaseStatements = chunked(plan.retirements).map((batch) =>
+	//
+	// Except where a hold ran out (plan.holdsEnded): released at midnight with
+	// the re-cut already stamped as dealt with, so reconcile-store neither
+	// hands them new turf nor DMs them.
+	const quiet = new Set(plan.holdsEnded);
+	const release = (batch: number[], fields: { recutNotifiedAt?: string }) =>
 		db
 			.update(vanTurfCheckouts)
-			.set({ releasedAt: retiredAt, releaseReason: 'retired' })
+			.set({ releasedAt: retiredAt, releaseReason: 'retired', ...fields })
 			.where(
 				and(
 					inArray(vanTurfCheckouts.turfId, batch),
@@ -465,8 +486,13 @@ export async function runCatalogSync(
 					isNull(vanTurfCheckouts.completedAt),
 				),
 			)
-			.returning({ id: vanTurfCheckouts.id }),
-	);
+			.returning({ id: vanTurfCheckouts.id });
+	const releaseStatements = [
+		...chunked(plan.retirements.filter((id) => !quiet.has(id))).map((batch) => release(batch, {})),
+		...chunked(plan.retirements.filter((id) => quiet.has(id))).map((batch) =>
+			release(batch, { recutNotifiedAt: retiredAt }),
+		),
+	];
 
 	// Turf with no doors is no longer queued (planCatalogSync), and VAN never
 	// finishes exporting its empty list. Any row still waiting — queued before
@@ -484,7 +510,9 @@ export async function runCatalogSync(
 				.where(inArray(vanGeometryQueue.turfId, batch))
 				.returning({ turfId: vanGeometryQueue.turfId }),
 		),
-		...chunked(emptyTurfIds).map((batch) =>
+		// And held turf's: VAN may already have deleted the saved list it keeps
+		// until midnight, and the planner queues none for it meanwhile.
+		...chunked([...emptyTurfIds, ...plan.heldTurfIds]).map((batch) =>
 			db
 				.delete(vanGeometryQueue)
 				.where(
@@ -512,6 +540,20 @@ export async function runCatalogSync(
 	const rosterStatements = chunked(rosterExpired).map((batch) =>
 		db.delete(vanTurfRoster).where(inArray(vanTurfRoster.turfId, batch)),
 	);
+	// Turf VAN has dropped, kept live until midnight: when the hold began, which
+	// is what says which midnight. Only where none is stamped, so a later run
+	// cannot push it back. Last, and not counted, like the roster deletes.
+	const holdStatements = chunked(plan.holdsStarted).map((batch) =>
+		db
+			.update(vanTurfs)
+			.set({ vanChangedAt: now.toISOString() })
+			.where(and(inArray(vanTurfs.turfId, batch), isNull(vanTurfs.vanChangedAt))),
+	);
+	// Held turf VAN no longer returns gets no upsert, so who has it outside the
+	// app is written here. Last and not counted, with the holds.
+	const assignmentStatements = plan.heldAssignments.map(({ turfId, ...assignment }) =>
+		db.update(vanTurfs).set(assignment).where(eq(vanTurfs.turfId, turfId)),
+	);
 
 	let claimsReleased = 0;
 	let geometryQueueDropped = 0;
@@ -520,6 +562,8 @@ export async function runCatalogSync(
 		...releaseStatements,
 		...dropStatements,
 		...rosterStatements,
+		...holdStatements,
+		...assignmentStatements,
 	];
 	if (statements.length > 0) {
 		const results = (await db.batch(
@@ -644,6 +688,8 @@ export async function runCatalogSync(
 		turfsUpserted: plan.upserts.length,
 		turfsRetired: plan.retirements.length,
 		turfsUnretired: plan.unretirements.length,
+		turfsHeld: plan.held.turfs,
+		newTurfsHeld: plan.held.newRoutes,
 		geometryQueued: plan.geometryQueue.length,
 		claimsReleased,
 		geometryQueueDropped,

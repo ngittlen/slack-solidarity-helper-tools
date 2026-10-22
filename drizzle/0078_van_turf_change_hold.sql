@@ -1,0 +1,1 @@
+ALTER TABLE `van_turfs` ADD `van_changed_at` text;

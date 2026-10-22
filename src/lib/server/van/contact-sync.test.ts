@@ -974,6 +974,21 @@ describe('stampDoorsKnocked', () => {
 		expect(await knocked(1)).toBeNull();
 	});
 
+	// Turf held through a re-cut retires at midnight, releasing its claims.
+	it('counts a claim released by its turf retiring, up to the release', async () => {
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts
+			        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+			         released_at, release_reason)
+			      VALUES (1, 1, 'U1', 'Dana', ?, ?, ?, 'retired')`,
+			args: [CLAIMED, '2026-09-29T12:00:00.000Z', COMPLETED],
+		});
+		await contact('a', '2026-09-28T13:00:00.000Z');
+		await contact('c', '2026-09-28T15:20:00.000Z');
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
+		expect(await knocked(1)).toBe(1);
+	});
+
 	it('leaves a claim given back alone', async () => {
 		await client.execute({
 			sql: `INSERT INTO van_turf_checkouts

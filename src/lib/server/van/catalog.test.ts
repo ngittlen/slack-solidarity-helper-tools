@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+	changeHeld,
 	planCatalogSync,
 	vanTimestamp,
 	needsGeometry,
@@ -10,6 +11,9 @@ import type { VanTurfRow } from '../schema.js';
 import type { VanMapRegion, VanMinivanExport } from './types.js';
 
 const NOW = new Date('2026-08-21T12:00:00.000Z');
+/** 03:00 in Detroit, before HOLD_FROM_HOUR: a VAN change seen now applies at
+ *  once, so the tests of what a change does are not held until midnight. */
+const OVERNIGHT = new Date('2026-08-21T07:00:00.000Z');
 
 function route(over: Record<string, unknown> = {}) {
 	return {
@@ -74,6 +78,7 @@ function existingRow(over: Partial<VanTurfRow> = {}): VanTurfRow {
 		firstSeenAt: '2026-08-01T00:00:00.000Z',
 		lastSeenAt: '2026-08-20T00:00:00.000Z',
 		lastRefreshedAt: '2026-08-20T00:00:00.000Z',
+		vanChangedAt: null,
 		retiredAt: null,
 		...over,
 	} as VanTurfRow;
@@ -105,13 +110,14 @@ describe('planCatalogSync', () => {
 	it('preserves firstSeenAt and existing geometry across syncs', () => {
 		const plan = planCatalogSync({
 			...base,
+			now: OVERNIGHT,
 			folders: [folder([region([route({ doorCount: 200 })])])],
 			existing: [existingRow()],
 		});
 
 		const row = plan.upserts[0]!;
 		expect(row.firstSeenAt).toBe('2026-08-01T00:00:00.000Z');
-		expect(row.lastSeenAt).toBe(NOW.toISOString());
+		expect(row.lastSeenAt).toBe(OVERNIGHT.toISOString());
 		expect(row.hullJson).toBe('[{"lat":42.37,"lng":-71.11}]');
 		expect(row.doorCount).toBe(200);
 		expect(plan.geometryQueue).toHaveLength(0);
@@ -293,6 +299,7 @@ describe('planCatalogSync', () => {
 		it('retires a route that stopped appearing in a folder we synced', () => {
 			const plan = planCatalogSync({
 				...base,
+				now: OVERNIGHT,
 				folders: [folder([region([route()])])],
 				existing: [existingRow(), existingRow({ turfId: 101, name: 'Turf 02' })],
 			});
@@ -354,6 +361,7 @@ describe('planCatalogSync', () => {
 		it('re-queues and drops the hull when a route grows', () => {
 			const plan = planCatalogSync({
 				...base,
+				now: OVERNIGHT,
 				folders: [folder([region([route({ routeSize: 460 })])])],
 				existing: [existingRow({ hullSourceRouteSize: 400 })],
 			});
@@ -366,6 +374,7 @@ describe('planCatalogSync', () => {
 		it('re-queues when a route collapses to less than half its hull size', () => {
 			const plan = planCatalogSync({
 				...base,
+				now: OVERNIGHT,
 				folders: [folder([region([route({ routeSize: 150 })])])],
 				existing: [existingRow({ hullSourceRouteSize: 400 })],
 			});
@@ -598,6 +607,8 @@ describe('planCatalogSync', () => {
 
 		it('restarts the clock on a re-export, and names the newest outside holder', () => {
 			const result = plan({
+				// 03:00 in Detroit: the new list number applies at once.
+				now: new Date('2026-09-30T07:00:00.000Z'),
 				folders: [folder([region([route({ printedList: { number: '11111111-22222' } })])])],
 				minivanExports: [
 					exportOf({
@@ -741,6 +752,11 @@ describe('planCatalogSync', () => {
 			unretirements: [],
 			geometryQueue: [],
 			claimsLoaded: [],
+			holdsStarted: [],
+			holdsEnded: [],
+			heldTurfIds: [],
+			heldAssignments: [],
+			held: { turfs: 0, newRoutes: 0 },
 			warnings: [],
 		});
 	});
@@ -821,6 +837,7 @@ describe('planCatalogSync — uncontacted doors', () => {
 
 		const recut = planCatalogSync({
 			...base,
+			now: OVERNIGHT,
 			roster: true,
 			existing: [existingRow({ rosterSavedListId: 900 })],
 			folders: [folder([region([route({ savedListId: 901 })])])],
@@ -862,5 +879,284 @@ describe('planCatalogSync — uncontacted doors', () => {
 			],
 		});
 		expect(refreshed.upserts[0]!.cutAt).toBe(vanTimestamp('2026-09-20T09:00:00Z'));
+	});
+});
+
+// Detroit is UTC-4 in August.
+describe('planCatalogSync — VAN changes held until midnight', () => {
+	/** 14:00 on the 21st, campaign time: canvassing hours. */
+	const AFTERNOON = new Date('2026-08-21T18:00:00.000Z');
+	/** 23:30 on the 21st. */
+	const LATE = new Date('2026-08-22T03:30:00.000Z');
+	/** 00:30 on the 22nd. */
+	const AFTER_MIDNIGHT = new Date('2026-08-22T04:30:00.000Z');
+	const since = AFTERNOON.toISOString();
+
+	describe('changeHeld', () => {
+		it('holds a change seen in the day until the campaign’s midnight', () => {
+			expect(changeHeld(since, AFTERNOON)).toBe(true);
+			expect(changeHeld(since, LATE)).toBe(true);
+			expect(changeHeld(since, AFTER_MIDNIGHT)).toBe(false);
+		});
+
+		it('does not hold one first seen overnight, when the nightly re-cut runs', () => {
+			// Held, it would wait out the whole day it was made for.
+			expect(changeHeld(OVERNIGHT.toISOString(), OVERNIGHT)).toBe(false);
+		});
+	});
+
+	describe('a route VAN stopped returning', () => {
+		const run = (now: Date, gone: Partial<VanTurfRow> = {}) =>
+			planCatalogSync({
+				...base,
+				now,
+				folders: [folder([region([route()])])],
+				existing: [existingRow(), existingRow({ turfId: 101, name: 'Turf 02', ...gone })],
+			});
+
+		it('stays live through the day, and says when its hold began', () => {
+			const plan = run(AFTERNOON);
+			expect(plan.retirements).toEqual([]);
+			expect(plan.holdsStarted).toEqual([101]);
+			expect(plan.held).toEqual({ turfs: 1, newRoutes: 0 });
+		});
+
+		it('keeps the hold it has rather than starting another', () => {
+			const plan = run(LATE, { vanChangedAt: since });
+			expect(plan.retirements).toEqual([]);
+			expect(plan.holdsStarted).toEqual([]);
+		});
+
+		it('retires after midnight, as a hold that ran out', () => {
+			const plan = run(AFTER_MIDNIGHT, { vanChangedAt: since });
+			expect(plan.retirements).toEqual([101]);
+			expect(plan.holdsEnded).toEqual([101]);
+			expect(plan.held).toEqual({ turfs: 0, newRoutes: 0 });
+		});
+
+		it('is no hold ending when it retires without having been held', () => {
+			expect(run(OVERNIGHT).holdsEnded).toEqual([]);
+			expect(run(AFTERNOON, { printedListNumber: null }).holdsEnded).toEqual([]);
+		});
+
+		it('names it for its waiting exports to be dropped: VAN deleted its saved list', () => {
+			expect(run(AFTERNOON).heldTurfIds).toEqual([101]);
+			expect(run(AFTER_MIDNIGHT, { vanChangedAt: since }).heldTurfIds).toEqual([]);
+		});
+
+		it('retires at once when it has no list number, so nobody could claim it anyway', () => {
+			const plan = run(AFTERNOON, { printedListNumber: null });
+			expect(plan.retirements).toEqual([101]);
+			expect(plan.held.turfs).toBe(0);
+		});
+
+		it('retires at once when its list has expired', () => {
+			const plan = run(AFTERNOON, { printedListCreatedAt: '2026-07-20T12:00:00.000Z' });
+			expect(plan.retirements).toEqual([101]);
+		});
+
+		describe('loads of its old list', () => {
+			const OLD_LIST = '35536745-88799';
+			// 13:30 Detroit, which VAN writes with a Z — 17:30 UTC.
+			const loaded = (over: Partial<VanMinivanExport> = {}): VanMinivanExport => ({
+				minivanExportId: 5,
+				name: `List ${OLD_LIST}`,
+				dateCreated: '2026-08-21T13:30:00.00Z',
+				createdBy: null,
+				canvassers: [{ canvassserId: 1, firstName: 'Dana', lastName: 'Ruiz' }],
+				databaseMode: 0,
+				...over,
+			});
+			const claim: CatalogClaim = {
+				checkoutId: 7,
+				turfId: 101,
+				claimedAt: '2026-08-21T17:00:00.000Z',
+				endedAt: '2026-08-22T17:00:00.000Z',
+				loadedInMinivanAt: null,
+			};
+			const withLoads = (exports: VanMinivanExport[], claims: CatalogClaim[]) =>
+				planCatalogSync({
+					...base,
+					now: AFTERNOON,
+					folders: [folder([region([route()])])],
+					existing: [
+						existingRow(),
+						existingRow({ turfId: 101, name: 'Turf 02', printedListNumber: OLD_LIST }),
+					],
+					minivanExports: exports,
+					claims,
+				});
+
+			it('stamp our volunteer’s claim as loaded, which the Packet Tracker reads', () => {
+				const plan = withLoads([loaded()], [claim]);
+				expect(plan.claimsLoaded).toEqual([
+					{ checkoutId: 7, loadedAt: '2026-08-21T17:30:00.000Z' },
+				]);
+				expect(plan.heldAssignments).toEqual([]);
+			});
+
+			it('record someone else’s as the turf handed out in VAN', () => {
+				const plan = withLoads([loaded()], []);
+				expect(plan.heldAssignments).toEqual([
+					{ turfId: 101, vanDistributedTo: 'Dana Ruiz', vanAssignedAt: '2026-08-21T17:30:00.000Z' },
+				]);
+			});
+		});
+	});
+
+	describe('the routes that replace it', () => {
+		// A re-cut rotates route ids: VAN returns route 200 where 100 was.
+		const recut = (now: Date, replacement: VanMapRegion, prior: Partial<VanTurfRow> = {}) =>
+			planCatalogSync({
+				...base,
+				now,
+				folders: [folder([replacement])],
+				existing: [existingRow(prior)],
+			});
+
+		it('waits too, so the same doors are not on the map twice', () => {
+			const plan = recut(AFTERNOON, region([route({ mapRouteId: 200, savedListId: 950 })]));
+			expect(plan.upserts).toEqual([]);
+			expect(plan.geometryQueue).toEqual([]);
+			expect(plan.retirements).toEqual([]);
+			expect(plan.holdsStarted).toEqual([100]);
+			expect(plan.held).toEqual({ turfs: 1, newRoutes: 1 });
+		});
+
+		it('waits when the region was cut again as a new one under the same name', () => {
+			const plan = recut(
+				AFTERNOON,
+				region([route({ mapRouteId: 200, savedListId: 950 })], { mapRegionId: 11 }),
+			);
+			expect(plan.upserts).toEqual([]);
+			expect(plan.held.newRoutes).toBe(1);
+		});
+
+		it('does not hold a region that shares the name of one refreshed in place', () => {
+			// Region 10 is still in VAN, so its id says which routes replace
+			// turf 101; region 11 only shares its name.
+			const plan = planCatalogSync({
+				...base,
+				now: AFTERNOON,
+				folders: [
+					folder([
+						region([route()]),
+						region([route({ mapRouteId: 200, savedListId: 950 })], { mapRegionId: 11 }),
+					]),
+				],
+				existing: [existingRow(), existingRow({ turfId: 101, name: 'Turf 02' })],
+			});
+			expect(plan.upserts.map((row) => row.vanMapRouteId)).toEqual([100, 200]);
+			expect(plan.held).toEqual({ turfs: 1, newRoutes: 0 });
+		});
+
+		it('does not hold a new route somewhere else', () => {
+			const plan = recut(
+				AFTERNOON,
+				region([route({ mapRouteId: 200, savedListId: 950 })], {
+					mapRegionId: 11,
+					name: 'Somerville East',
+				}),
+			);
+			expect(plan.upserts.map((row) => row.vanMapRouteId)).toEqual([200]);
+			expect(plan.held.newRoutes).toBe(0);
+		});
+
+		it('takes over at midnight, as the old turf retires', () => {
+			const plan = recut(AFTER_MIDNIGHT, region([route({ mapRouteId: 200, savedListId: 950 })]), {
+				vanChangedAt: since,
+			});
+			expect(plan.upserts.map((row) => row.vanMapRouteId)).toEqual([200]);
+			expect(plan.retirements).toEqual([100]);
+			expect(plan.geometryQueue).toEqual([{ vanMapRouteId: 200, savedListId: 950, roster: false }]);
+		});
+	});
+
+	describe('a list regenerated on the same route', () => {
+		const regenerated = route({
+			savedListId: 901,
+			printedList: { number: '99999999-11111' },
+			routeSize: 300,
+			doorCount: 180,
+		});
+		const run = (now: Date, prior: Partial<VanTurfRow> = {}) =>
+			planCatalogSync({
+				...base,
+				now,
+				roster: true,
+				folders: [folder([region([regenerated])])],
+				existing: [existingRow({ rosterSavedListId: 900, ...prior })],
+			});
+
+		it('keeps the list volunteers were given, its counts and its shape', () => {
+			const plan = run(AFTERNOON);
+			expect(plan.upserts[0]).toMatchObject({
+				savedListId: 900,
+				printedListNumber: '35536745-88712',
+				routeSize: 400,
+				doorCount: 250,
+				hullJson: '[{"lat":42.37,"lng":-71.11}]',
+				vanChangedAt: since,
+			});
+			// Not exported for VAN's new list until that list is the turf's,
+			// nor for the old one, which VAN may have deleted.
+			expect(plan.geometryQueue).toEqual([]);
+			expect(plan.heldTurfIds).toEqual([100]);
+			expect(plan.held).toEqual({ turfs: 1, newRoutes: 0 });
+		});
+
+		it('is not held when the turf had no list number: a new one makes it claimable', () => {
+			const plan = run(AFTERNOON, { printedListNumber: null });
+			expect(plan.upserts[0]).toMatchObject({
+				printedListNumber: '99999999-11111',
+				vanChangedAt: null,
+			});
+			expect(plan.held.turfs).toBe(0);
+		});
+
+		it('is not held when the turf’s list has expired', () => {
+			const plan = run(AFTERNOON, { printedListCreatedAt: '2026-07-20T12:00:00.000Z' });
+			expect(plan.upserts[0]!.printedListNumber).toBe('99999999-11111');
+			expect(plan.held.turfs).toBe(0);
+		});
+
+		it('keeps the time its hold began', () => {
+			const plan = run(LATE, { vanChangedAt: since });
+			expect(plan.upserts[0]!.vanChangedAt).toBe(since);
+		});
+
+		it('takes VAN’s list after midnight, and queues its export', () => {
+			const plan = run(AFTER_MIDNIGHT, { vanChangedAt: since });
+			expect(plan.upserts[0]).toMatchObject({
+				savedListId: 901,
+				printedListNumber: '99999999-11111',
+				doorCount: 180,
+				vanChangedAt: null,
+			});
+			expect(plan.geometryQueue).toEqual([{ vanMapRouteId: 100, savedListId: 901, roster: true }]);
+		});
+	});
+
+	it('does not hold new counts on the same list: they describe the list volunteers have', () => {
+		const plan = planCatalogSync({
+			...base,
+			now: AFTERNOON,
+			folders: [folder([region([route({ routeSize: 300, doorCount: 180 })])])],
+			existing: [existingRow()],
+		});
+		expect(plan.upserts[0]).toMatchObject({ routeSize: 300, doorCount: 180, vanChangedAt: null });
+		expect(plan.held.turfs).toBe(0);
+		expect(plan.heldTurfIds).toEqual([]);
+	});
+
+	it('ends a hold when VAN goes back to what the turf already has', () => {
+		const plan = planCatalogSync({
+			...base,
+			now: AFTERNOON,
+			folders: [folder([region([route()])])],
+			existing: [existingRow({ vanChangedAt: since })],
+		});
+		expect(plan.upserts[0]!.vanChangedAt).toBeNull();
+		expect(plan.held.turfs).toBe(0);
 	});
 });
