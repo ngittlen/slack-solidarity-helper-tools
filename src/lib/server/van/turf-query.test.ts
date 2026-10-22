@@ -1,14 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { loadChapterTurfs } from './turf-query.js';
-import { latestWalkReports } from './checkout-store.js';
-import { gatedByFreshTurf } from './fresh-nearby.js';
+import { lastCheckedOutBy, latestWalkReports } from './checkout-store.js';
 
 // Walk reports have their own tests on real SQLite (checkout-store.test.ts);
 // the stubbed db below answers only the select chains this module scripts.
-vi.mock('./checkout-store.js', () => ({ latestWalkReports: vi.fn(async () => new Map()) }));
-// The neighbour search has its own tests on real SQLite (fresh-nearby.test.ts);
-// here it holds nothing back unless a test says otherwise.
-vi.mock('./fresh-nearby.js', () => ({ gatedByFreshTurf: vi.fn(async () => new Set<number>()) }));
+vi.mock('./checkout-store.js', () => ({
+	latestWalkReports: vi.fn(async () => new Map()),
+	lastCheckedOutBy: vi.fn(async () => []),
+}));
 vi.mock('./contact-sync.js', async (importOriginal) => ({
 	// The real lookup, over no marks: no campaign's pull has run.
 	marksFor: (await importOriginal<typeof import('./contact-sync.js')>()).marksFor,
@@ -189,6 +188,25 @@ describe('loadChapterTurfs', () => {
 		});
 		expect(turfs.map((t) => t.name)).toEqual(['Far']);
 		expect(omitted).toBe(1);
+	});
+
+	it('marks knocked turf the viewer checked out last, and asks only about that turf', async () => {
+		const knocked = { knockedBeforeCut: 4, rosterSavedListId: 585052 };
+		vi.mocked(lastCheckedOutBy).mockResolvedValueOnce([1]);
+		const rows = [
+			turfRow({ turfId: 1, name: 'Mine', ...knocked }),
+			turfRow({ turfId: 2, name: 'Theirs', ...knocked }),
+			turfRow({ turfId: 3, name: 'Fresh' }),
+		];
+		const { db } = makeDb([rows, []]);
+		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
+		const byName = Object.fromEntries(turfs.map((t) => [t.name, t]));
+		expect(byName.Mine).toMatchObject({ contactHistory: true, lastCheckedOutByYou: true });
+		expect(byName.Theirs).toMatchObject({ contactHistory: true });
+		expect(byName.Theirs).not.toHaveProperty('lastCheckedOutByYou');
+		expect(byName.Fresh).not.toHaveProperty('lastCheckedOutByYou');
+		// Only striped turf is looked up.
+		expect(vi.mocked(lastCheckedOutBy)).toHaveBeenCalledWith(db, [1, 2], VIEWER.slackUserId);
 	});
 
 	// The reason densest is sorted here and not only in the browser: in a
@@ -373,18 +391,6 @@ describe('loadChapterTurfs', () => {
 			expect(free!.claimBlockedReason).toContain('You can hold 1');
 		});
 
-		it('leaves out striped turf held back for fresh turf nearby', async () => {
-			vi.mocked(gatedByFreshTurf).mockResolvedValueOnce(new Set([1]));
-			const { db } = makeDb([[turfRow({ turfId: 1 }), turfRow({ turfId: 2 })], []]);
-			const result = await loadChapterTurfs(db, {
-				chapterId: 71,
-				viewer: VIEWER,
-				claimableOnly: true,
-			});
-			expect(result.turfs.map((t) => t.turfId)).toEqual([2]);
-			expect(result.unavailable).toBe(1);
-		});
-
 		it('leaves out turf walked to 100%', async () => {
 			vi.mocked(latestWalkReports).mockResolvedValueOnce(
 				new Map([[1, { percent: 100, at: '2026-09-23T18:00:00.000Z', awaitingCount: false }]]),
@@ -398,14 +404,6 @@ describe('loadChapterTurfs', () => {
 			expect(result.turfs).toEqual([]);
 			expect(result.unavailable).toBe(1);
 		});
-	});
-
-	it('shows striped turf held back for fresh turf nearby as available but not claimable', async () => {
-		vi.mocked(gatedByFreshTurf).mockResolvedValueOnce(new Set([100]));
-		const { db } = makeDb([[turfRow()], []]);
-		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
-		expect(turfs[0]).toMatchObject({ status: 'available', claimable: false });
-		expect(turfs[0]!.claimBlockedReason).toContain('fresh turf within 2 miles');
 	});
 
 	it('issues the list number on turf the viewer holds', async () => {

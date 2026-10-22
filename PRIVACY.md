@@ -290,6 +290,9 @@ by this app.
   `google` or `apple` — so the sign-in page can mark that button "Last used". It stays in your
   browser after you sign out, lasts a year, and is never sent anywhere else; clear your cookies to
   remove it.
+- A **last chapter cookie** remembers which chapter you last opened at `/turfs` — just its
+  chapter number — so the chapter list can show it first. It is only sent to the turf pages, lasts
+  a year, and is never sent anywhere else; clear your cookies to remove it.
 - For admins and moderators who turn it on at `/post-as-you`, the app stores a **Slack user
   token, encrypted with AES-256-GCM**, so info commands can post as you rather than as the bot.
   Signing in alone stores no token. **Turn off** on the same page deletes it and asks Slack to

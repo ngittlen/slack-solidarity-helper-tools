@@ -20,11 +20,11 @@ import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
 import { loadContactMarks, marksFor } from './contact-sync.js';
-import { gatedByFreshTurf } from './fresh-nearby.js';
-import { turfSnapshot } from '../../van/turf-view.js';
+import { hasContactHistory, turfSnapshot } from '../../van/turf-view.js';
 import {
 	canClaim,
 	DEFAULT_MAX_CONCURRENT_CLAIMS,
+	KNOCKED_CLAIM_WARNING,
 	type ClaimOptions,
 	type ClaimSnapshot,
 } from '../../van/checkout.js';
@@ -33,7 +33,15 @@ type Db = ReturnType<typeof drizzle>;
 
 export type ClaimResult =
 	| { ok: true; expiresAt: string; printedListNumber: string }
-	| { ok: false; status: 404 | 409; message: string };
+	| {
+			ok: false;
+			status: 404 | 409;
+			message: string;
+			/** Refused only because the turf was knocked before its cut and the
+			 *  volunteer has not agreed to that yet. Asking and resending with
+			 *  `acknowledgedKnocked` goes through. */
+			needsAcknowledgement?: true;
+	  };
 
 export type ReleaseResult = { ok: true } | { ok: false; status: 400 | 404 | 409; message: string };
 
@@ -137,6 +145,31 @@ async function relevantClaims(
 	}));
 }
 
+/** The routes among `turfIds` whose most recent checkout, live or ended, was
+ *  `slackUserId`'s. */
+export async function lastCheckedOutBy(
+	db: Db,
+	turfIds: readonly number[],
+	slackUserId: string,
+): Promise<number[]> {
+	const mine: number[] = [];
+	for (const batch of chunked(turfIds)) {
+		const rows = await db
+			.select({ turfId: vanTurfCheckouts.turfId, slackUserId: vanTurfCheckouts.slackUserId })
+			.from(vanTurfCheckouts)
+			.where(inArray(vanTurfCheckouts.turfId, batch))
+			.orderBy(desc(vanTurfCheckouts.claimedAt), desc(vanTurfCheckouts.id));
+		const seen = new Set<number>();
+		for (const row of rows) {
+			// Newest first, so the first row per route is the last checkout.
+			if (seen.has(row.turfId)) continue;
+			seen.add(row.turfId);
+			if (row.slackUserId === slackUserId) mine.push(row.turfId);
+		}
+	}
+	return mine;
+}
+
 /** Claim `turfId` for `session`. */
 export async function claimTurf(
 	db: Db,
@@ -146,6 +179,9 @@ export async function claimTurf(
 		slackUserName: string;
 		now: Date;
 		options?: ClaimOptions;
+		/** The volunteer was shown KNOCKED_CLAIM_WARNING and agreed. Required
+		 *  for turf knocked before its cut, unless they checked it out last. */
+		acknowledgedKnocked?: boolean;
 		/** A live look at the campaign's Packet Tracker: who it says has this
 		 *  turf, null for nobody, undefined for "could not tell". See
 		 *  packet-tracker-live.ts. Omitted, the last sync's record stands. */
@@ -181,13 +217,26 @@ export async function claimTurf(
 	const snapshot = turfSnapshot(row, now, {
 		walkReports: await latestWalkReports(db, [turfId]),
 		vanAssignmentTtlHours: input.options?.vanAssignmentTtlHours,
-		freshTurfNearby: await gatedByFreshTurf(db, [row], slackUserId, now, input.options),
 	});
 
 	const options = input.options ?? {};
 	const claims = await relevantClaims(db, turfId, slackUserId);
 	const decision = canClaim(snapshot, claims, slackUserId, now, options);
 	if (!decision.ok) return { ok: false, status: 409, message: decision.message };
+
+	// Turf knocked before its cut goes out only to someone who has been told.
+	// Here rather than in canClaim, which decides what the page offers: this
+	// turf is offered, just behind a question. Enforced here so a page left
+	// open from before the turf was striped, or a hand-built request, cannot
+	// skip it. The volunteer who checked it out last is not asked: those are
+	// their own knocks.
+	if (
+		hasContactHistory(row) &&
+		input.acknowledgedKnocked !== true &&
+		(await lastCheckedOutBy(db, [turfId], slackUserId)).length === 0
+	) {
+		return { ok: false, status: 409, message: KNOCKED_CLAIM_WARNING, needsAcknowledgement: true };
+	}
 
 	// The tracker double-check, only once everything else says yes: it is a
 	// round trip to Google, and a claim refused for another reason should not

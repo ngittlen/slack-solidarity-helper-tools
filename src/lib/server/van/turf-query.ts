@@ -32,7 +32,7 @@ import {
 	type TurfCampaigns,
 } from './campaigns.js';
 import { refreshingRegionIds } from './refresh.js';
-import { latestWalkReports } from './checkout-store.js';
+import { lastCheckedOutBy, latestWalkReports } from './checkout-store.js';
 import { loadContactMarks, marksFor, type ContactMarks } from './contact-sync.js';
 import { chunked } from './sql-chunk.js';
 import {
@@ -58,7 +58,6 @@ import {
 	type TurfView,
 } from '../../van/turf-view.js';
 import { visibleToChapter } from './chapter-visibility.js';
-import { gatedByFreshTurf } from './fresh-nearby.js';
 import { loadHolderAccounts } from '../outside-volunteers.js';
 import type { VanTurfRow } from '../schema.js';
 
@@ -217,29 +216,21 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	let judged: {
 		claims: ClaimSnapshot[];
 		walkReports: Awaited<ReturnType<typeof latestWalkReports>>;
-		freshTurfNearby: Set<number>;
 	} | null = null;
 	if (claimableOnly) {
 		const ids = boxed.map((r) => r.turfId);
 		const claims = await claimsFor(db, ids, viewer.slackUserId);
 		const walkReports = await latestWalkReports(db, ids);
-		const freshTurfNearby = await gatedByFreshTurf(
-			db,
-			boxed,
-			viewer.slackUserId,
-			now,
-			claimOptions,
-		);
 		// No cap: see `claimableOnly` for why being at the limit does not hide a turf.
 		const ignoringCap = { ...claimOptions, maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
 		candidates = boxed.filter((row) => {
-			const snapshot = turfSnapshot(row, now, { ...claimOptions, walkReports, freshTurfNearby });
+			const snapshot = turfSnapshot(row, now, { ...claimOptions, walkReports });
 			return (
 				canClaim(snapshot, claims, viewer.slackUserId, now, ignoringCap).ok ||
 				activeClaimFor(row.turfId, claims, now)?.slackUserId === viewer.slackUserId
 			);
 		});
-		judged = { claims, walkReports, freshTurfNearby };
+		judged = { claims, walkReports };
 	}
 
 	// The viewer's own turf is pinned to the first page: it carries their list
@@ -271,11 +262,12 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<string>();
 	// What volunteers last reported walking, for this page's turf only.
 	const walkReports = judged?.walkReports ?? (await latestWalkReports(db, selectedIds));
-	// Striped turf on this page that waits for fresh turf nearby. Free when the
-	// page has none, which is most pages.
-	const freshTurfNearby =
-		judged?.freshTurfNearby ??
-		(await gatedByFreshTurf(db, selected, viewer.slackUserId, now, claimOptions));
+	// Striped turf on this page the viewer checked out last, which checks out
+	// without the knocked-before question. Skipped when none is striped.
+	const striped = selected.filter(hasContactHistory).map((r) => r.turfId);
+	const lastCheckedOutByViewer = new Set(
+		striped.length > 0 ? await lastCheckedOutBy(db, striped, viewer.slackUserId) : [],
+	);
 	// The uncontacted count's "as of" — per campaign, since each pulls its own
 	// ContactHistory. One small read, skipped for an empty page.
 	const contactMarks =
@@ -313,7 +305,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				showCampaign: badged.has(row.campaignId),
 				disabledCampaigns: campaigns.disabled,
 				holderAccounts,
-				freshTurfNearby,
+				lastCheckedOutByViewer,
 			}),
 		),
 		total: claimableOnly ? candidates.length : rows.length,

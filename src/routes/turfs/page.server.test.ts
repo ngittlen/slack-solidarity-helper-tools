@@ -135,10 +135,22 @@ function stubQueries(turfRows: unknown[], claimRows: unknown[] = []) {
 	}));
 }
 
-const event = (session: unknown, query?: string) =>
+/** A cookie jar that starts with `jar` and keeps what the load sets. */
+function cookieJar(jar: Record<string, string> = {}) {
+	return {
+		jar,
+		get: (name: string) => jar[name],
+		set: vi.fn((name: string, value: string) => {
+			jar[name] = value;
+		}),
+	};
+}
+
+const event = (session: unknown, query?: string, cookies = cookieJar()) =>
 	({
 		locals: { session },
 		url: new URL(`https://app.example/turfs${query ? `?${query}` : ''}`),
+		cookies,
 	}) as never;
 
 const VOLUNTEER = { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false };
@@ -663,6 +675,28 @@ describe('/turfs load', () => {
 		// aggregate: one request revealing where the field operation runs.
 		const result = await run(event(VOLUNTEER));
 		expect(result.chapters.map((c: { chapterId: number }) => c.chapterId)).toEqual([71, 72]);
+	});
+
+	it('lists the chapter this browser opened last first, and only that one', async () => {
+		const cookies = cookieJar();
+		await run(event(VOLUNTEER, 'chapter=72', cookies));
+		expect(cookies.jar.turf_chapter).toBe('72');
+
+		const result = await run(event(VOLUNTEER, undefined, cookies));
+		expect(result.chapters.map((c: { chapterId: number }) => c.chapterId)).toEqual([72, 71]);
+		expect(result.lastChapterId).toBe(72);
+	});
+
+	it('ignores a remembered chapter the picker no longer lists', async () => {
+		const result = await run(event(VOLUNTEER, undefined, cookieJar({ turf_chapter: '4242' })));
+		expect(result.chapters.map((c: { chapterId: number }) => c.chapterId)).toEqual([71, 72]);
+		expect(result.lastChapterId).toBeNull();
+	});
+
+	it('remembers nothing for a chapter it does not list', async () => {
+		const cookies = cookieJar();
+		await run(event(VOLUNTEER, 'chapter=4242', cookies));
+		expect(cookies.set).not.toHaveBeenCalled();
 	});
 
 	it('does not ship the Slack channel id with the chapter list', async () => {

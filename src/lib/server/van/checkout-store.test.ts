@@ -2,7 +2,13 @@ import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import { claimTurf, endClaim, latestWalkReports, sweepExpiredClaims } from './checkout-store.js';
+import {
+	claimTurf,
+	endClaim,
+	lastCheckedOutBy,
+	latestWalkReports,
+	sweepExpiredClaims,
+} from './checkout-store.js';
 
 // A real in-memory libsql rather than a chained-db fake, for the same reason
 // activity-store.test.ts uses one: the behaviour under test is a collaboration
@@ -179,6 +185,65 @@ describe('claimTurf', () => {
 
 		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 1');
 		expect(await claim()).toMatchObject({ ok: true });
+	});
+});
+
+describe('claimTurf — turf knocked before its cut', () => {
+	beforeEach(async () => {
+		await client.execute(
+			'UPDATE van_turfs SET knocked_before_cut = 4, saved_list_id = 900, roster_saved_list_id = 900',
+		);
+	});
+
+	const claim = (slackUserId: string, acknowledgedKnocked?: boolean) =>
+		claimTurf(db, {
+			turfId: 100,
+			slackUserId,
+			slackUserName: 'Sam',
+			now: NOW,
+			acknowledgedKnocked,
+		});
+
+	it('asks first, and claims nothing until the volunteer has agreed', async () => {
+		expect(await claim('U_SECOND')).toMatchObject({
+			ok: false,
+			status: 409,
+			needsAcknowledgement: true,
+		});
+		expect(await rows()).toEqual([]);
+		expect(await claim('U_SECOND', true)).toMatchObject({ ok: true });
+	});
+
+	it('does not ask the volunteer who checked it out last', async () => {
+		await insertClaim({ slack_user_id: 'U_FIRST', released_at: CLAIMED });
+		expect(await claim('U_FIRST')).toMatchObject({ ok: true });
+	});
+
+	it('asks the earlier volunteer once someone else has checked it out since', async () => {
+		await insertClaim({ slack_user_id: 'U_FIRST', released_at: CLAIMED });
+		await insertClaim({
+			slack_user_id: 'U_OTHER',
+			claimed_at: '2026-08-21T12:00:00.000Z',
+			released_at: '2026-08-21T13:00:00.000Z',
+		});
+		expect(await claim('U_FIRST')).toMatchObject({ needsAcknowledgement: true });
+	});
+
+	it('gives the refusal for a held turf before asking about knocks', async () => {
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+		const result = await claim('U_SECOND');
+		expect(result).toMatchObject({ ok: false, status: 409 });
+		expect(result).not.toHaveProperty('needsAcknowledgement');
+	});
+});
+
+describe('lastCheckedOutBy', () => {
+	it('names only routes whose newest checkout, live or ended, is theirs', async () => {
+		await insertClaim({ slack_user_id: 'U_ME', released_at: CLAIMED });
+		expect(await lastCheckedOutBy(db, [100], 'U_ME')).toEqual([100]);
+		await insertClaim({ slack_user_id: 'U_OTHER', claimed_at: '2026-08-21T12:00:00.000Z' });
+		expect(await lastCheckedOutBy(db, [100], 'U_ME')).toEqual([]);
+		expect(await lastCheckedOutBy(db, [100], 'U_OTHER')).toEqual([100]);
 	});
 });
 

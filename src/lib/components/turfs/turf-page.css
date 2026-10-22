@@ -66,6 +66,15 @@ main {
 	font-size: 1.2rem;
 }
 
+/* The chapter this browser opened last, which the server lists first. Pushed
+   right beside the arrow so the names still line up down the list. */
+.chapter-last {
+	margin-left: auto;
+	margin-right: var(--space-3);
+	color: var(--color-text-muted);
+	font-size: 0.85rem;
+}
+
 /* --- Chapter bar -------------------------------------------------------- */
 
 /* Medium Blue, not the Deep Blue of the app header above it. On a desktop the

@@ -114,6 +114,17 @@ export function hasContactHistory(
 }
 
 /**
+ * Whether checking this turf out asks first (KNOCKED_CLAIM_WARNING): it was
+ * knocked before its cut, by someone other than the viewer. The page's dialog
+ * and the Slack button's confirm both go by this; `claimTurf` enforces it.
+ */
+export function needsKnockedConfirm(
+	turf: Pick<TurfView, 'contactHistory' | 'lastCheckedOutByYou'>,
+): boolean {
+	return turf.contactHistory === true && turf.lastCheckedOutByYou !== true;
+}
+
+/**
  * Whether a hand-out outside this app still keeps the turf from being claimed.
  *
  * For `ttlHours` after the last export, always (the admin setting, resolved by
@@ -303,6 +314,12 @@ export interface TurfView {
 	 */
 	contactHistory?: true;
 	/**
+	 * Alongside `contactHistory` only: the viewer checked this turf out last,
+	 * so the knocks are theirs and checking it out again asks nothing. See
+	 * `needsKnockedConfirm`. Omitted when false, like `updating`.
+	 */
+	lastCheckedOutByYou?: true;
+	/**
 	 * The turf's VAN campaign, for its badge — looked up in the payload's
 	 * `campaignBadges` rather than repeated as text on every row. Present only
 	 * when the badge is shown: while more than one campaign is enabled, and on
@@ -355,9 +372,9 @@ export type TurfViewOptions = ClaimOptions & {
 	 *  an admin viewer; and even if passed for anyone else it is not used,
 	 *  because it rides on `heldBy`, which only admins get. */
 	holderAccounts?: ReadonlyMap<string, HolderAccount>;
-	/** Routes knocked before their cut that wait while fresh turf nearby is
-	 *  free. See `TurfSnapshot.freshTurfNearby`. */
-	freshTurfNearby?: ReadonlySet<number>;
+	/** Routes the viewer checked out last, for `TurfView.lastCheckedOutByYou`.
+	 *  Only read for turf with `contactHistory`. */
+	lastCheckedOutByViewer?: ReadonlySet<number>;
 };
 
 /** Campaign id → the badge text volunteers see beside its turf. Sent once per
@@ -391,6 +408,29 @@ export type MappableTurf = TurfView & { centre: LatLng; bounds: BoundingBox };
  *  without export-job access). */
 export function mappableTurfs(turfs: readonly TurfView[]): MappableTurf[] {
 	return turfs.filter((t): t is MappableTurf => t.centre !== null && t.bounds !== null);
+}
+
+/**
+ * Whether the map draws this turf. Turf with no doors left is left off: there
+ * is nothing to knock, and a map full of grey fills hides the turf that does
+ * need walking. Kept are turf the viewer holds (it carries their list number,
+ * whatever the count), the turf they picked from the list, and everything when
+ * an admin or moderator ticks "Show turf with no doors left". The list keeps
+ * them all either way.
+ */
+export function shownOnMap(
+	turf: Pick<TurfView, 'turfId' | 'doorsRemaining' | 'status'>,
+	{
+		showCleared = false,
+		selectedId = null,
+	}: { showCleared?: boolean; selectedId?: number | null } = {},
+): boolean {
+	return (
+		showCleared ||
+		turf.doorsRemaining > 0 ||
+		turf.status === 'held-by-you' ||
+		turf.turfId === selectedId
+	);
 }
 
 /**
@@ -480,11 +520,9 @@ export function turfSnapshot(
 	options: {
 		walkReports?: ReadonlyMap<number, WalkReportInput>;
 		vanAssignmentTtlHours?: number;
-		/** Routes held back for fresh turf nearby (van/fresh-nearby.ts). */
-		freshTurfNearby?: ReadonlySet<number>;
 	} = {},
 ): TurfSnapshot {
-	const { walkReports, vanAssignmentTtlHours, freshTurfNearby } = options;
+	const { walkReports, vanAssignmentTtlHours } = options;
 	return {
 		turfId: row.turfId,
 		printedListNumber: row.printedListNumber,
@@ -507,7 +545,6 @@ export function turfSnapshot(
 		reportedPercent: walkReports?.get(row.turfId)?.percent ?? null,
 		walked: walkReports?.has(row.turfId) ?? false,
 		walkAwaitingCount: walkReports?.get(row.turfId)?.awaitingCount ?? false,
-		freshTurfNearby: freshTurfNearby?.has(row.turfId) ?? false,
 	};
 }
 
@@ -586,6 +623,9 @@ export function toTurfView(
 			? { walkReport: { percent: report.percent, dayLabel: campaignDayLabel(report.at) } }
 			: {}),
 		...(hasContactHistory(row) ? { contactHistory: true as const } : {}),
+		...(hasContactHistory(row) && options.lastCheckedOutByViewer?.has(row.turfId)
+			? { lastCheckedOutByYou: true as const }
+			: {}),
 		...(options.showCampaign ? { campaignId: row.campaignId } : {}),
 		...(options.disabledCampaigns?.has(row.campaignId) ? { campaignDisabled: true as const } : {}),
 		...(viewer.isAdmin && row.hiddenAt != null ? { hidden: true as const } : {}),

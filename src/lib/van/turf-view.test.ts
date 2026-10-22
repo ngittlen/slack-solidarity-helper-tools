@@ -7,6 +7,8 @@ import {
 	claimDoorsLeft,
 	doorDensity,
 	hasContactHistory,
+	needsKnockedConfirm,
+	shownOnMap,
 	vanAssignmentBlocks,
 	regionRefreshKey,
 	type TurfRowInput,
@@ -437,6 +439,34 @@ describe('doorsLeft after a re-cut', () => {
 		);
 		expect(view.doorsRemaining).toBe(40);
 		expect(view).not.toHaveProperty('contactHistory');
+	});
+});
+
+describe('shownOnMap', () => {
+	const cleared = { turfId: 1, doorsRemaining: 0, status: 'available' as const };
+
+	it('leaves turf with no doors left off the map', () => {
+		expect(shownOnMap(cleared)).toBe(false);
+		expect(shownOnMap({ ...cleared, status: 'checked-out' })).toBe(false);
+		expect(shownOnMap({ ...cleared, doorsRemaining: 1 })).toBe(true);
+	});
+
+	it('keeps it when it is yours, picked from the list, or staff asked for it', () => {
+		expect(shownOnMap({ ...cleared, status: 'held-by-you' })).toBe(true);
+		expect(shownOnMap(cleared, { selectedId: 1 })).toBe(true);
+		expect(shownOnMap(cleared, { selectedId: 2 })).toBe(false);
+		expect(shownOnMap(cleared, { showCleared: true })).toBe(true);
+	});
+});
+
+describe('needsKnockedConfirm', () => {
+	it('asks before checking out turf knocked by someone else', () => {
+		expect(needsKnockedConfirm({ contactHistory: true })).toBe(true);
+	});
+
+	it('does not ask the volunteer who checked it out last, or about fresh turf', () => {
+		expect(needsKnockedConfirm({ contactHistory: true, lastCheckedOutByYou: true })).toBe(false);
+		expect(needsKnockedConfirm({})).toBe(false);
 	});
 });
 
