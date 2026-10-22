@@ -19,11 +19,14 @@
 	import WalkCard from '$lib/components/mentor-walks/WalkCard.svelte';
 	import type { WalkCardView } from '$lib/mentor-walks/types.js';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
+	import KnockedClaimDialog from '$lib/components/turfs/KnockedClaimDialog.svelte';
 	import { formatRelative } from '$lib/components/settings/format-relative.js';
 	import {
 		campaignStoppedNote,
 		doorDensity,
 		mappableTurfs,
+		needsKnockedConfirm,
+		shownOnMap,
 		type CampaignBadges,
 		type TurfView,
 	} from '$lib/van/turf-view.js';
@@ -65,6 +68,9 @@
 	 *  `busy`, which the claim button reads as "Checking out…". */
 	let hiding = $state<Record<number, boolean>>({});
 	let error = $state<string | null>(null);
+	/** Turf knocked before its cut whose checkout waits on the volunteer's
+	 *  say-so (KnockedClaimDialog). */
+	let confirmingKnocked = $state<TurfView | null>(null);
 	/** List numbers handed back by a successful claim this session. The load
 	 *  function only issues one for turf you already held when the page
 	 *  rendered, so a fresh claim needs somewhere to put it until the
@@ -215,6 +221,16 @@
 	}
 
 	const drawable = $derived(mappableTurfs(turfs));
+	/** Admins and moderators may put turf with no doors left back on the map;
+	 *  everyone else never sees it there (`shownOnMap`). */
+	const canShowCleared = $derived(data.isAdmin || data.isModerator);
+	let showCleared = $state(false);
+	const onMap = $derived(
+		drawable.filter((t) =>
+			shownOnMap(t, { showCleared: canShowCleared && showCleared, selectedId }),
+		),
+	);
+	const clearedCount = $derived(drawable.filter((t) => t.doorsRemaining <= 0).length);
 	const unmappable = $derived(turfs.length - drawable.length);
 	const total = $derived(totalNow ?? data.total ?? 0);
 	const shown = $derived(turfs.length);
@@ -467,7 +483,11 @@
 		card.focus({ preventScroll: true });
 	}
 
-	async function act(turf: TurfView, action: 'claim' | 'release' | 'complete') {
+	async function act(
+		turf: TurfView,
+		action: 'claim' | 'release' | 'complete',
+		{ acknowledgedKnocked = false } = {},
+	) {
 		busy[turf.turfId] = true;
 		error = null;
 		try {
@@ -475,10 +495,19 @@
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(
-					action === 'complete' ? { action, synced: synced[turf.turfId] === true } : { action },
+					action === 'complete'
+						? { action, synced: synced[turf.turfId] === true }
+						: action === 'claim' && acknowledgedKnocked
+							? { action, acknowledgedKnocked }
+							: { action },
 				),
 			});
 			const body = await res.json().catch(() => ({}));
+			if (action === 'claim' && res.status === 409 && body.needsAcknowledgement === true) {
+				// Striped since this page loaded: ask now, as if it always had been.
+				confirmingKnocked = turf;
+				return;
+			}
 			if (!res.ok) {
 				// The server's refusals are written for volunteers (see canClaim
 				// in checkout.ts), so they are shown verbatim rather than mapped
@@ -507,6 +536,13 @@
 		} finally {
 			delete busy[turf.turfId];
 		}
+	}
+
+	/** "Check out this turf": straight through, unless the turf was knocked
+	 *  before its cut, which asks first. */
+	function claim(turf: TurfView) {
+		if (needsKnockedConfirm(turf)) confirmingKnocked = turf;
+		else act(turf, 'claim');
 	}
 
 	/** An admin's "Hide from volunteers" box. Its own request rather than
@@ -627,6 +663,9 @@
 					<li>
 						<a class="chapter-choice" href="{resolve('/turfs')}?chapter={chapter.chapterId}">
 							<span class="chapter-name">{chapter.name}</span>
+							{#if chapter.chapterId === data.lastChapterId}
+								<span class="chapter-last">Last picked</span>
+							{/if}
 							<span class="chapter-go" aria-hidden="true">→</span>
 						</a>
 					</li>
@@ -794,18 +833,23 @@
 		<div class="turf-layout">
 			<div class="map-col">
 				{#if drawable.length > 0}
-					<TurfMap
-						turfs={drawable}
-						{selectedId}
-						{location}
-						onselect={select}
-						tiles={data.tiles}
-						onviewport={loadViewport}
-						campaignBadges={badges}
-						walks={mapWalks}
-						{selectedWalkId}
-						onselectwalk={(id) => (selectedWalkId = selectedWalkId === id ? null : id)}
-					/>
+					{#if onMap.length === 0}
+						<!-- TurfMap needs at least one turf to frame. -->
+						<p class="gate-help">Every turf mapped here has no doors left.</p>
+					{:else}
+						<TurfMap
+							turfs={onMap}
+							{selectedId}
+							{location}
+							onselect={select}
+							tiles={data.tiles}
+							onviewport={loadViewport}
+							campaignBadges={badges}
+							walks={mapWalks}
+							{selectedWalkId}
+							onselectwalk={(id) => (selectedWalkId = selectedWalkId === id ? null : id)}
+						/>
+					{/if}
 					<ul class="legend">
 						<!-- The ramp is only useful if it can be read off, so it is
 						     shown rather than described: one continuous bar, the same
@@ -819,7 +863,9 @@
 							<span class="ramp-end">many</span>
 							Doors left
 						</li>
-						<li><span class="swatch swatch-cleared"></span> None left</li>
+						{#if canShowCleared && showCleared}
+							<li><span class="swatch swatch-cleared"></span> None left</li>
+						{/if}
 						<li><span class="swatch swatch-knocked"></span> Knocked recently</li>
 						<li><span class="swatch swatch-no-list"></span> No list number</li>
 						<li><span class="swatch swatch-mine"></span> Yours</li>
@@ -827,6 +873,14 @@
 						{#if location}<li><span class="swatch swatch-me"></span> You</li>{/if}
 						{#if mapWalks.length > 0}<li><span aria-hidden="true">👟</span> Mentor walk</li>{/if}
 					</ul>
+					{#if canShowCleared && clearedCount > 0}
+						<!-- Staff only: volunteers have nothing to do on turf with no
+						     doors left, so the map leaves it off for them. -->
+						<label class="hide-check admin-only">
+							<input type="checkbox" bind:checked={showCleared} />
+							Show turf with no doors left ({clearedCount})
+						</label>
+					{/if}
 					<!-- The tapped walk marker's card, under the legend. -->
 					{#if selectedWalk && mentorWalks}
 						<div class="walk-popup">
@@ -1116,7 +1170,7 @@
 											class="claim-btn"
 											class:is-no-list={turf.noListNumber}
 											disabled={data.needsName || !turf.claimable || busy[turf.turfId]}
-											onclick={() => act(turf, 'claim')}
+											onclick={() => claim(turf)}
 										>
 											{busy[turf.turfId] ? 'Checking out…' : 'Check out this turf'}
 										</button>
@@ -1179,6 +1233,16 @@
 		</div>
 	{/if}
 </main>
+
+<KnockedClaimDialog
+	turfName={confirmingKnocked?.name ?? null}
+	onconfirm={() => {
+		const turf = confirmingKnocked;
+		confirmingKnocked = null;
+		if (turf) act(turf, 'claim', { acknowledgedKnocked: true });
+	}}
+	oncancel={() => (confirmingKnocked = null)}
+/>
 
 <!-- Always rendered, shown by class. The CSS uses `visibility` rather than
      opacity alone, so while hidden it is out of the tab order too — a

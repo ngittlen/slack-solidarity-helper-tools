@@ -7,7 +7,6 @@ import {
 	DEFAULT_MAX_CONCURRENT_CLAIMS,
 	DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 	expiryFor,
-	FRESH_TURF_RADIUS_MILES,
 	hoursRemaining,
 	isActive,
 	lapsedClaims,
@@ -160,34 +159,6 @@ describe('canClaim', () => {
 		expect(canClaim(turf({ vanDistributedTo: 'Marcus T.' }), [], 'U_BOB', NOW)).toMatchObject({
 			ok: false,
 			reason: 'assigned-in-van',
-		});
-	});
-
-	it('holds back turf knocked before its cut while fresh turf is free nearby', () => {
-		const d = canClaim(turf({ freshTurfNearby: true }), [], 'U_BOB', NOW);
-		expect(d).toMatchObject({ ok: false, reason: 'fresh-turf-nearby' });
-		if (!d.ok) expect(d.message).toContain(`within ${FRESH_TURF_RADIUS_MILES} miles`);
-		expect(canClaim(turf({ freshTurfNearby: false }), [], 'U_BOB', NOW).ok).toBe(true);
-	});
-
-	it('says the turf is taken before saying fresh turf is nearby', () => {
-		const gated = turf({ freshTurfNearby: true });
-		expect(canClaim(gated, [claim()], 'U_BOB', NOW)).toMatchObject({ reason: 'already-held' });
-		expect(canClaim({ ...gated, vanDistributedTo: 'Marcus T.' }, [], 'U_BOB', NOW)).toMatchObject({
-			reason: 'assigned-in-van',
-		});
-		expect(canClaim({ ...gated, hidden: true }, [], 'U_BOB', NOW)).toMatchObject({
-			reason: 'hidden',
-		});
-	});
-
-	it('says fresh turf is nearby before blaming the claim cap', () => {
-		const held = [
-			claim({ turfId: 4200, slackUserId: 'U_BOB' }),
-			claim({ turfId: 4201, slackUserId: 'U_BOB' }),
-		];
-		expect(canClaim(turf({ freshTurfNearby: true }), held, 'U_BOB', NOW)).toMatchObject({
-			reason: 'fresh-turf-nearby',
 		});
 	});
 

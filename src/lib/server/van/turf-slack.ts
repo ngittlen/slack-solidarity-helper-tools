@@ -147,7 +147,14 @@ async function buildList(
 /** Claim a turf, then show the volunteer their list number. */
 export async function claimFromSlack(
 	db: Db,
-	ctx: TurfRequestContext & { turfId: number },
+	ctx: TurfRequestContext & {
+		turfId: number;
+		/** The Claim button carried the knocked-before confirm, and Slack only
+		 *  sends it once that is accepted. A button posted before the turf was
+		 *  striped carries none: claimTurf refuses, and the list shown again
+		 *  asks. */
+		acknowledgedKnocked?: boolean;
+	},
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
 	const gate = await passGates(db, ctx, now);
@@ -160,6 +167,7 @@ export async function claimFromSlack(
 		slackUserName: await displayName(ctx.slackUserId),
 		now: new Date(now),
 		options: gate.claimOptions,
+		acknowledgedKnocked: ctx.acknowledgedKnocked === true,
 		sheetCheck: packetTrackerCheck(db),
 	});
 

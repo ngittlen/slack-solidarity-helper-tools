@@ -118,6 +118,34 @@ describe('POST /api/turfs/[turfId]', () => {
 		expect((await res.json()).error).toMatch(/already walking/);
 	});
 
+	it('passes the knocked-before agreement through only when it is literally true', async () => {
+		await POST(event(VOLUNTEER, { action: 'claim', acknowledgedKnocked: true }));
+		expect(mockClaim).toHaveBeenLastCalledWith(
+			{},
+			expect.objectContaining({ acknowledgedKnocked: true }),
+		);
+		await POST(event(VOLUNTEER, { action: 'claim', acknowledgedKnocked: 'yes' }));
+		expect(mockClaim).toHaveBeenLastCalledWith(
+			{},
+			expect.objectContaining({ acknowledgedKnocked: false }),
+		);
+	});
+
+	it('tells the page to ask when the claim needs the knocked-before agreement', async () => {
+		mockClaim.mockResolvedValue({
+			ok: false,
+			status: 409,
+			message: 'This turf has been knocked.',
+			needsAcknowledgement: true,
+		});
+		const res = await POST(event(VOLUNTEER, { action: 'claim' }));
+		expect(res.status).toBe(409);
+		expect(await res.json()).toEqual({
+			error: 'This turf has been knocked.',
+			needsAcknowledgement: true,
+		});
+	});
+
 	it.each([
 		['release', 'release'],
 		['complete', 'complete'],

@@ -20,6 +20,7 @@ import {
 	type Block,
 } from './turf-command.js';
 import type { TurfView } from '../../van/turf-view.js';
+import { KNOCKED_CLAIM_WARNING } from '../../van/checkout.js';
 
 const APP_URL = 'https://app.example.org';
 const CHAPTER = { chapterId: 71, name: 'Washtenaw County' };
@@ -109,6 +110,14 @@ describe('turf action values', () => {
 		});
 	});
 
+	it('carries the knocked-before agreement, and only as the exact flag', () => {
+		const value = { turfId: 100, chapterId: 71, offset: 0, acknowledgedKnocked: true as const };
+		expect(decodeTurfAction(encodeTurfAction(value))).toMatchObject({ acknowledgedKnocked: true });
+		expect(decodeTurfAction(JSON.stringify({ c: 71, o: 0, r: 100, k: 'yes' }))).not.toHaveProperty(
+			'acknowledgedKnocked',
+		);
+	});
+
 	it('omits the route id for a paging button', () => {
 		const decoded = decodeTurfAction(encodeTurfAction({ chapterId: 71, offset: 5 }));
 		expect(decoded).toEqual({ chapterId: 71, offset: 5 });
@@ -187,6 +196,37 @@ describe('buildTurfListBlocks', () => {
 		expect(body).toContain('250 doors');
 		expect(body).toContain('Available');
 		expect(text).toContain('Washtenaw County');
+	});
+
+	it('asks before claiming turf knocked before its cut, and only that turf', () => {
+		const { blocks } = buildTurfListBlocks({
+			...base,
+			turfs: [view({ contactHistory: true }), view({ turfId: 101, name: 'Turf 02' })],
+		});
+		const [knocked, fresh] = blocks.flatMap((b) =>
+			b.type === 'section' && b.accessory ? [b.accessory] : [],
+		);
+		expect(knocked).toMatchObject({
+			action_id: TURF_CLAIM_ACTION_ID,
+			confirm: { text: { text: KNOCKED_CLAIM_WARNING } },
+		});
+		// The confirm is the agreement: Slack sends the action only once it is accepted.
+		expect(decodeTurfAction(knocked!.value)).toMatchObject({ acknowledgedKnocked: true });
+		expect(fresh).toMatchObject({ action_id: TURF_CLAIM_ACTION_ID });
+		expect(fresh).not.toHaveProperty('confirm');
+		expect(decodeTurfAction(fresh!.value)).not.toHaveProperty('acknowledgedKnocked');
+	});
+
+	it('does not ask the volunteer who checked the knocked turf out last', () => {
+		const { blocks } = buildTurfListBlocks({
+			...base,
+			turfs: [view({ contactHistory: true, lastCheckedOutByYou: true })],
+		});
+		const [button] = blocks.flatMap((b) =>
+			b.type === 'section' && b.accessory ? [b.accessory] : [],
+		);
+		expect(button).not.toHaveProperty('confirm');
+		expect(decodeTurfAction(button!.value)).not.toHaveProperty('acknowledgedKnocked');
 	});
 
 	// specs/012-multi-van-campaigns: while more than one campaign is enabled.

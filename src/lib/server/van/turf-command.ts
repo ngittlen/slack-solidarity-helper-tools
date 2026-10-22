@@ -31,8 +31,14 @@
 import { formatDistance, haversineMeters, type LatLng } from '../../van/geometry.js';
 import { escapeMrkdwn } from '../../slack-mrkdwn.js';
 import { statusLabel } from '../../van/turf-status.js';
+import { KNOCKED_CLAIM_WARNING } from '../../van/checkout.js';
 import { describeAge, oldestRefreshMinutes } from '../../van/turf-freshness.js';
-import { campaignStoppedNote, type CampaignBadges, type TurfView } from '../../van/turf-view.js';
+import {
+	campaignStoppedNote,
+	needsKnockedConfirm,
+	type CampaignBadges,
+	type TurfView,
+} from '../../van/turf-view.js';
 import { normalizeZip } from './zip-centroid.js';
 import { TURFS_PER_PAYLOAD } from '../../van/turf-paging.js';
 
@@ -101,6 +107,9 @@ export interface TurfActionValue {
 	chapterId: number;
 	offset: number;
 	location?: LatLng | null;
+	/** On a Claim button behind the knocked-before confirm. Slack sends the
+	 *  action only once that is accepted, so this is the volunteer's yes. */
+	acknowledgedKnocked?: true;
 }
 
 /** Pack a button's state. Coordinates are rounded to 3 dp (~100 m) — enough to
@@ -109,6 +118,7 @@ export interface TurfActionValue {
 export function encodeTurfAction(value: TurfActionValue): string {
 	const payload: Record<string, number> = { c: value.chapterId, o: value.offset };
 	if (value.turfId !== undefined) payload.r = value.turfId;
+	if (value.acknowledgedKnocked) payload.k = 1;
 	if (value.location) {
 		payload.lat = round3(value.location.lat);
 		payload.lng = round3(value.location.lng);
@@ -144,6 +154,7 @@ export function decodeTurfAction(raw: string | null | undefined): TurfActionValu
 	};
 	const turfId = asInt(p.r);
 	if (turfId !== null) value.turfId = turfId;
+	if (p.k === 1) value.acknowledgedKnocked = true;
 
 	const lat = asFinite(p.lat);
 	const lng = asFinite(p.lng);
@@ -390,12 +401,29 @@ function turfSection(
 	};
 
 	if (turf.claimable) {
+		const askFirst = needsKnockedConfirm(turf);
 		section.accessory = {
 			type: 'button',
 			text: { type: 'plain_text', text: 'Claim' },
 			style: 'primary',
 			action_id: TURF_CLAIM_ACTION_ID,
-			value: encodeTurfAction({ turfId: turf.turfId, chapterId, offset, location }),
+			value: encodeTurfAction({
+				turfId: turf.turfId,
+				chapterId,
+				offset,
+				location,
+				...(askFirst ? { acknowledgedKnocked: true as const } : {}),
+			}),
+			...(askFirst
+				? {
+						confirm: {
+							title: { type: 'plain_text', text: 'Knocked before' },
+							text: mrkdwn(KNOCKED_CLAIM_WARNING),
+							confirm: { type: 'plain_text', text: 'Check it out' },
+							deny: { type: 'plain_text', text: 'Pick another' },
+						},
+					}
+				: {}),
 		};
 	} else if (turf.status === 'held-by-you') {
 		section.accessory = {

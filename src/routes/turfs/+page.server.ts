@@ -1,4 +1,5 @@
 import { fail } from '@sveltejs/kit';
+import { dev } from '$app/environment';
 import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import {
@@ -128,7 +129,19 @@ function offeredChapterIds(settings: {
 	).map((c) => c.chapterId);
 }
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+/** The chapter this browser last opened turf in, so the picker can put it
+ *  first. A cookie rather than a column: it is a convenience for the next
+ *  visit on this device, and an id the picker already lists to everyone. */
+const LAST_CHAPTER_COOKIE = 'turf_chapter';
+const LAST_CHAPTER_MAX_AGE = 365 * 24 * 60 * 60;
+
+/** `chapters` with `lastId` moved to the front, the rest in their order. */
+function lastChapterFirst<T extends { chapterId: number }>(chapters: T[], lastId: number): T[] {
+	const last = chapters.find((c) => c.chapterId === lastId);
+	return last ? [last, ...chapters.filter((c) => c !== last)] : chapters;
+}
+
+export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 	const session = locals.session;
 	const tiles = tileSource();
 
@@ -199,6 +212,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			rateLimited: 0,
 			rateLimitReason: null as RateLimitReason | null,
 			chapters: [],
+			lastChapterId: null as number | null,
 			chapter: null,
 			turfs: [] as TurfView[],
 			total: 0,
@@ -242,6 +256,21 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// it out on themselves.
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
+	// Remembered whenever one opens, so the picker the next time round leads
+	// with it. Only an id the picker lists: an unknown or hidden one is never
+	// written, and a stale one read back matches nothing and is ignored.
+	if (chapter) {
+		cookies.set(LAST_CHAPTER_COOKIE, String(chapter.chapterId), {
+			path: '/turfs',
+			httpOnly: true,
+			secure: !dev,
+			sameSite: 'lax',
+			maxAge: LAST_CHAPTER_MAX_AGE,
+		});
+	}
+	const lastChapterId = chapter
+		? chapter.chapterId
+		: Number(cookies.get(LAST_CHAPTER_COOKIE) ?? Number.NaN);
 	const mentorCtx = { viewer: session, settings, blocked: false, now: new Date() };
 	const [notices, mentor, mentorDebug, walkFinder] = await Promise.all([
 		session.authProvider !== undefined ? turfNoticesFor(session.slackUserId) : [],
@@ -259,7 +288,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		notices,
 		rateLimited: 0,
 		rateLimitReason: null as RateLimitReason | null,
-		chapters,
+		chapters: lastChapterFirst(chapters, lastChapterId),
+		/** Leads the picker; null when this browser has none, or one no longer listed. */
+		lastChapterId: chapters.some((c) => c.chapterId === lastChapterId)
+			? lastChapterId
+			: (null as number | null),
 		chapter: null,
 		turfs: [] as TurfView[],
 		total: 0,
@@ -368,6 +401,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		rateLimited: 0,
 		rateLimitReason: null as RateLimitReason | null,
 		chapters,
+		lastChapterId: chapter.chapterId as number | null,
 		chapter,
 		turfs,
 		// The chapter's total, not this payload's remainder. Reporting the

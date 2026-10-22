@@ -103,8 +103,15 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	// "I synced MiniVAN" — required when marking walked, and checked by endClaim
 	// rather than here so the Slack path shares the same rule.
 	let synced: unknown;
+	// "Check out this turf" on turf knocked before its cut, past the page's
+	// KnockedClaimDialog. Checked by claimTurf, so the Slack path shares it.
+	let acknowledgedKnocked: unknown;
 	try {
-		({ action, synced } = (await request.json()) as { action?: unknown; synced?: unknown });
+		({ action, synced, acknowledgedKnocked } = (await request.json()) as {
+			action?: unknown;
+			synced?: unknown;
+			acknowledgedKnocked?: unknown;
+		});
 	} catch {
 		return json({ error: 'Malformed request' }, { status: 400 });
 	}
@@ -153,9 +160,20 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 				maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
 				vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
 			},
+			acknowledgedKnocked: acknowledgedKnocked === true,
 			sheetCheck: packetTrackerCheck(db),
 		});
-		if (!result.ok) return json({ error: result.message }, { status: result.status });
+		if (!result.ok) {
+			// `needsAcknowledgement` tells the page to ask and resend, for turf
+			// it did not know was striped (rendered before the contact sync).
+			return json(
+				{
+					error: result.message,
+					...(result.needsAcknowledgement ? { needsAcknowledgement: true } : {}),
+				},
+				{ status: result.status },
+			);
+		}
 		nudgePacketTracker(db, turfId);
 		return json({
 			expiresAt: result.expiresAt,

@@ -515,6 +515,7 @@ describe('claimFromSlack', () => {
 			expect.anything(),
 			expect.objectContaining({
 				options: { ttlHours: 12, maxConcurrentClaims: 1, vanAssignmentTtlHours: 72 },
+				acknowledgedKnocked: false,
 			}),
 		);
 		// The list rendered alongside has to agree, or a Claim button offers

@@ -308,7 +308,11 @@ function handleTurfAction(
 		const routeId = decoded.turfId;
 		const message =
 			action.action_id === TURF_CLAIM_ACTION_ID && routeId !== undefined
-				? await claimFromSlack(db, { ...ctx, turfId: routeId })
+				? await claimFromSlack(db, {
+						...ctx,
+						turfId: routeId,
+						acknowledgedKnocked: decoded.acknowledgedKnocked === true,
+					})
 				: action.action_id === TURF_RELEASE_ACTION_ID && routeId !== undefined
 					? await releaseFromSlack(db, { ...ctx, turfId: routeId })
 					: action.action_id === TURF_RELEASE_MINE_ACTION_ID && routeId !== undefined
