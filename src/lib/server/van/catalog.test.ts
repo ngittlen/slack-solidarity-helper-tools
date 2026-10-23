@@ -87,6 +87,44 @@ function existingRow(over: Partial<VanTurfRow> = {}): VanTurfRow {
 const base = { campaignId: 1, printedLists: [], existing: [], now: NOW };
 
 describe('planCatalogSync', () => {
+	// Requested turf is placed turf by turf (turf-placement.ts); the sync must
+	// keep that label rather than stamp the folder's placeholder over it.
+	describe('the requested-turf folder', () => {
+		const requested = folder([region([route()])], {
+			chapterId: 0,
+			chapterName: 'Requested turf (not placed yet)',
+			requested: true,
+		});
+
+		it('keeps a placed turf’s chapter as its label', () => {
+			const plan = planCatalogSync({
+				...base,
+				existing: [existingRow({ chapterId: 0 })],
+				folders: [requested],
+				placements: new Map([[100, { chapterId: 72, chapterName: 'Wayne County' }]]),
+			});
+			expect(plan.upserts[0]).toMatchObject({ chapterId: 72, chapterName: 'Wayne County' });
+		});
+
+		it('labels turf not placed yet with the placeholder', () => {
+			const plan = planCatalogSync({ ...base, folders: [requested], placements: new Map() });
+			expect(plan.upserts[0]).toMatchObject({
+				chapterId: 0,
+				chapterName: 'Requested turf (not placed yet)',
+			});
+		});
+
+		it('ignores placements for a mapped folder', () => {
+			const plan = planCatalogSync({
+				...base,
+				existing: [existingRow()],
+				folders: [folder([region([route()])])],
+				placements: new Map([[100, { chapterId: 72, chapterName: 'Wayne County' }]]),
+			});
+			expect(plan.upserts[0]).toMatchObject({ chapterId: 71 });
+		});
+	});
+
 	it('maps a route to a turf row with its chapter and counts', () => {
 		const plan = planCatalogSync({ ...base, folders: [folder([region([route()])])] });
 

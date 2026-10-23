@@ -214,6 +214,16 @@ describe('the switches and fields', () => {
 		expect((await patch({ exportJobTypeId: '5' })).status).toBe(400);
 	});
 
+	it('saves the requested-turf folder, or none', async () => {
+		await patch({ requestedFolderId: 68298 });
+		expect((await row()).requested_folder_id).toBe(68298);
+		await patch({ requestedFolderId: null });
+		expect((await row()).requested_folder_id).toBeNull();
+		expect((await patch({ requestedFolderId: 0 })).status).toBe(400);
+		expect((await patch({ requestedFolderId: '68298' })).status).toBe(400);
+		expect((await patch({ requestedFolderId: 1.5 })).status).toBe(400);
+	});
+
 	it('refuses a body that changes nothing', async () => {
 		expect((await patch({})).status).toBe(400);
 		expect((await patch({ apiKey: 'x' })).status).toBe(400);
@@ -226,6 +236,33 @@ describe('enabling', () => {
 		expect(res.status).toBe(409);
 		expect((await res.json()).error).toContain('Map at least one VAN folder');
 		expect((await row()).enabled).toBe(0);
+	});
+
+	// A requested-turf folder is read without being mapped, so it is turf to sync.
+	it('enables a campaign whose only folder is its requested-turf folder', async () => {
+		await patch({ requestedFolderId: 68298 });
+		const res = await patch({ enabled: true });
+		expect(res.status).toBe(200);
+		expect((await row()).enabled).toBe(1);
+	});
+
+	it('will not clear the only folder of a campaign that is on', async () => {
+		await patch({ requestedFolderId: 68298 });
+		await patch({ enabled: true });
+		const res = await patch({ requestedFolderId: null });
+		expect(res.status).toBe(409);
+		expect((await res.json()).error).toContain('only folder');
+		expect((await row()).requested_folder_id).toBe(68298);
+		// Off, or with a mapped folder, it may go.
+		await patch({ enabled: false });
+		expect((await patch({ requestedFolderId: null })).status).toBe(200);
+	});
+
+	it('clears the requested folder of a campaign that is on with a mapped folder', async () => {
+		await mapFolder();
+		await patch({ requestedFolderId: 68298 });
+		await patch({ enabled: true });
+		expect((await patch({ requestedFolderId: null })).status).toBe(200);
 	});
 
 	it('refuses without working credentials', async () => {

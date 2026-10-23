@@ -16,10 +16,16 @@
 // A correlated subquery rather than a join, so callers keep their existing
 // `select()` shape and cannot accidentally multiply rows: a turf visible to
 // three chapters is still one row.
+//
+// The one exception to "by folder": a campaign's requested-turf folder is
+// mapped to no chapter, and each turf in it is placed in one by where it is
+// (van_turf_placements, van/turf-placement.ts). So a chapter also sees the
+// turf placed in it. Until a turf is placed, no chapter sees it; the
+// organizer-wide view (null) sees it like everything else.
 
 import { eq, sql, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanTurfs, vanChapterFolders } from '../schema.js';
+import { vanTurfs, vanChapterFolders, vanTurfPlacements } from '../schema.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -37,10 +43,13 @@ export function visibleToChapter(chapterId: number | null): SQL | undefined {
 	// The (campaign, folder) pair: folder ids are VAN's, unique only within one
 	// committee, so a chapter mapped to campaign A's folder 7 must not see
 	// campaign B's folder 7.
-	return sql`(${vanTurfs.campaignId}, ${vanTurfs.folderId}) in (
+	return sql`((${vanTurfs.campaignId}, ${vanTurfs.folderId}) in (
 		select ${vanChapterFolders.campaignId}, ${vanChapterFolders.folderId} from ${vanChapterFolders}
 		where ${vanChapterFolders.chapterId} = ${chapterId}
-	)`;
+	) or ${vanTurfs.turfId} in (
+		select ${vanTurfPlacements.turfId} from ${vanTurfPlacements}
+		where ${vanTurfPlacements.chapterId} = ${chapterId}
+	))`;
 }
 
 /**
@@ -52,13 +61,17 @@ export function visibleToChapter(chapterId: number | null): SQL | undefined {
  */
 export function visibleToAnyChapter(chapterIds: readonly number[]): SQL {
 	if (chapterIds.length === 0) return sql`0`;
-	return sql`(${vanTurfs.campaignId}, ${vanTurfs.folderId}) in (
+	const ids = sql.join(
+		chapterIds.map((id) => sql`${id}`),
+		sql`, `,
+	);
+	return sql`((${vanTurfs.campaignId}, ${vanTurfs.folderId}) in (
 		select ${vanChapterFolders.campaignId}, ${vanChapterFolders.folderId} from ${vanChapterFolders}
-		where ${vanChapterFolders.chapterId} in (${sql.join(
-			chapterIds.map((id) => sql`${id}`),
-			sql`, `,
-		)})
-	)`;
+		where ${vanChapterFolders.chapterId} in (${ids})
+	) or ${vanTurfs.turfId} in (
+		select ${vanTurfPlacements.turfId} from ${vanTurfPlacements}
+		where ${vanTurfPlacements.chapterId} in (${ids})
+	))`;
 }
 
 /**
@@ -75,5 +88,15 @@ export async function foldersForChapter(db: Db, chapterId: number): Promise<stri
 		.select({ campaignId: vanChapterFolders.campaignId, folderId: vanChapterFolders.folderId })
 		.from(vanChapterFolders)
 		.where(eq(vanChapterFolders.chapterId, chapterId));
-	return rows.map((r) => `${r.campaignId}:${r.folderId}`);
+	const keys = rows.map((r) => `${r.campaignId}:${r.folderId}`);
+	// Requested turf placed here is this chapter's alone, so it counts as a
+	// folder of its own — but only when there is some, or every chapter would
+	// look new to the limiter.
+	const [placed] = await db
+		.select({ turfId: vanTurfPlacements.turfId })
+		.from(vanTurfPlacements)
+		.where(eq(vanTurfPlacements.chapterId, chapterId))
+		.limit(1);
+	if (placed) keys.push(`placed:${chapterId}`);
+	return keys;
 }

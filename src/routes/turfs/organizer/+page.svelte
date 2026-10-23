@@ -16,6 +16,8 @@
 	/** Hidden turf whose "show again" is in flight, so its box cannot be
 	 *  ticked back mid-request. */
 	let unhiding = $state<Record<number, boolean>>({});
+	/** Requested turf whose chapter change is in flight. */
+	let placing = $state<Record<number, boolean>>({});
 
 	/** While a turf history search is in flight. */
 	let historyLoading = $state(false);
@@ -118,11 +120,15 @@
 		<p class="van-sync-status" class:is-error={form?.syncError} role="status">
 			{#if form?.syncError}
 				{form.syncError}
+			{:else if form?.syncJoined}
+				A sync is already running. It will read VAN again within a couple of minutes and pick up
+				your new turf — no need to press again.
 			{:else if form?.syncQueued}
-				A scheduled sync is running now. Your new turf will load automatically once it finishes — no
-				need to press again.
+				A scheduled sync is running now. Your new turf will load automatically once it finishes,
+				then its map shapes — no need to press again.
 			{:else if form?.syncStarted}
-				Sync started. New turf usually shows up within a few minutes — reload to check.
+				Sync started. New turf usually shows up within a few minutes, then appears on the map as its
+				shape loads — reload to check.
 			{:else if data.lastVanSync.perCampaign}
 				VAN last synced:
 				{#each data.lastVanSync.perCampaign as campaign, i (campaign.id)}
@@ -404,6 +410,93 @@
 			</div>
 		{/if}
 	</section>
+
+	{#if data.requestedTurf.length > 0}
+		<section class="board">
+			<h2>Requested turf</h2>
+			{#if form?.placeError}
+				<p class="section-note is-error" role="alert">{form.placeError}</p>
+			{/if}
+			<p class="section-note">
+				Turf cut into a campaign's requested-turf folder goes to the chapter where it is: the ZIP it
+				falls in, or failing that the chapter most of the turf around it belongs to — and to any
+				chapter the folder is mapped to as well. Pick a chapter to move one; <strong
+					>Automatic</strong
+				>
+				hands it back. Until it is placed, only a chapter the folder is mapped to sees it.
+			</p>
+			{#if data.requestedTotal > data.requestedTurf.length}
+				<p class="section-note">
+					Showing {data.requestedTurf.length} of {data.requestedTotal.toLocaleString('en-US')},
+					those not placed yet first.
+				</p>
+			{/if}
+			<div class="table-wrap">
+				<table>
+					<thead>
+						<tr>
+							<th>Turf</th>
+							<th>How</th>
+							<th>Chapter</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each data.requestedTurf as turf (turf.turfId)}
+							<tr>
+								<td>
+									<span class="turf-name">{turf.name}</span>
+									{#if turf.regionName}
+										<span class="turf-sub">{turf.regionName}{campaignSuffix(turf.campaignId)}</span>
+									{/if}
+								</td>
+								<td>{turf.placedLabel}</td>
+								<td>
+									<!-- One form per row, sent as soon as the choice changes. A
+									     refusal resets the form, which puts the old choice back:
+									     `selected` is the default, not a binding. -->
+									<form
+										method="POST"
+										action="?/placeTurf"
+										use:enhance={() => {
+											placing[turf.turfId] = true;
+											return async ({ result, update, formElement }) => {
+												await update();
+												if (result.type !== 'success') formElement.reset();
+												delete placing[turf.turfId];
+											};
+										}}
+									>
+										<input type="hidden" name="turfId" value={turf.turfId} />
+										<select
+											name="chapterId"
+											disabled={placing[turf.turfId]}
+											aria-label="Chapter for {turf.name}"
+											onchange={(e) => e.currentTarget.form?.requestSubmit()}
+										>
+											<option value="" selected={turf.placement?.source !== 'organizer'}>
+												Automatic{turf.placement && turf.placement.source !== 'organizer'
+													? ` (${turf.placement.chapterName})`
+													: ''}
+											</option>
+											{#each data.placementChoices as choice (choice.chapterId)}
+												<option
+													value={choice.chapterId}
+													selected={turf.placement?.source === 'organizer' &&
+														turf.placement.chapterId === choice.chapterId}
+												>
+													{choice.name}
+												</option>
+											{/each}
+										</select>
+									</form>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</section>
+	{/if}
 
 	<section class="board">
 		<h2>Hidden from volunteers</h2>

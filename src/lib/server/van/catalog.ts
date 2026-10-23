@@ -24,6 +24,11 @@ export interface CatalogFolder {
 	chapterId: number;
 	chapterName: string;
 	regions: VanMapRegion[];
+	/** The campaign's requested-turf folder: its turf's label comes from
+	 *  `placements` (van/turf-placement.ts), and `chapterId`/`chapterName`
+	 *  here are only the label until then — a chapter it is also mapped to,
+	 *  or the not-yet-placed placeholder. */
+	requested?: true;
 }
 
 export interface CatalogInput {
@@ -51,6 +56,9 @@ export interface CatalogInput {
 	 *  build a roster, queuing for one would re-submit the same export every
 	 *  sync, forever. */
 	roster?: boolean;
+	/** Requested turf's placements, by turfId: its display label, kept rather
+	 *  than overwritten with the folder's placeholder. */
+	placements?: ReadonlyMap<number, { chapterId: number; chapterName: string }>;
 	now: Date;
 }
 
@@ -638,8 +646,12 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 					vanMapRouteId: route.mapRouteId,
 					mapRegionId: region.mapRegionId,
 					folderId: folder.folderId,
-					chapterId: folder.chapterId,
-					chapterName: folder.chapterName,
+					...(folder.requested && prior && input.placements?.has(prior.turfId)
+						? {
+								chapterId: input.placements.get(prior.turfId)!.chapterId,
+								chapterName: input.placements.get(prior.turfId)!.chapterName,
+							}
+						: { chapterId: folder.chapterId, chapterName: folder.chapterName }),
 					regionName: region.name ?? '',
 					name: route.name ?? `Turf ${route.routeNumber ?? route.mapRouteId}`,
 					savedListId: route.savedListId ?? null,

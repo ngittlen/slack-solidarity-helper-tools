@@ -79,6 +79,12 @@ vi.mock('$lib/server/van/geometry-worker.js', () => ({
 	runGeometryQueue: mockRunGeometryQueue,
 }));
 vi.mock('$lib/server/van/sync.js', () => ({ runCatalogSync: mockRunCatalogSync }));
+const PLACED = { byZip: 1, byNearby: 0, unplaced: 0, cleared: 0, budgetLapsed: false };
+const mockPlace = vi.hoisted(() => vi.fn());
+vi.mock('$lib/server/van/turf-placement.js', () => ({ placeRequestedTurf: mockPlace }));
+vi.mock('$lib/server/van/placement-chapters.js', () => ({
+	placementChapters: async () => [{ chapterId: 71, name: 'Washtenaw County' }],
+}));
 vi.mock('$lib/server/van/checkout-store.js', () => ({ sweepExpiredClaims: mockSweep }));
 vi.mock('$lib/server/van/expiry-warning-store.js', () => ({ sendExpiryWarnings: mockWarn }));
 vi.mock('$lib/server/van/holder-notices.js', () => ({ pruneHolderNotices: mockPrune }));
@@ -219,6 +225,7 @@ describe('POST /api/internal/van-sync', () => {
 		vi.clearAllMocks();
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockPlace.mockResolvedValue(PLACED);
 		mockEnv.INTERNAL_CRON_SECRET = 'cron-secret';
 		mockVanClient.mockReturnValue({ ok: true, client: {} });
 		mockAcquire.mockResolvedValue('lock-token');
@@ -400,6 +407,7 @@ describe('POST /api/internal/van-sync', () => {
 					campaignId: 1,
 					...result,
 					geometry: geometryResult,
+					placement: PLACED,
 					refreshesSettled: 0,
 					refresh: refreshResult,
 					contacts: { disabled: true },
@@ -424,6 +432,34 @@ describe('POST /api/internal/van-sync', () => {
 			{ timeBudgetMs: 3 * 60 * 1000, roster: false },
 		);
 		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync:1', 'lock-token');
+	});
+
+	// Requested turf shaped since the last run goes to its chapter, with the
+	// chapters the turf pickers offer.
+	it('places the campaign’s requested turf, before geometry', async () => {
+		const order: string[] = [];
+		mockPlace.mockImplementation(async () => {
+			order.push('place');
+			return PLACED;
+		});
+		mockRunGeometryQueue.mockImplementation(async () => {
+			order.push('geometry');
+			return geometryResult;
+		});
+		await POST(event());
+		expect(mockPlace).toHaveBeenCalledWith(
+			{},
+			expect.objectContaining({ id: 1 }),
+			expect.objectContaining({ chapters: [{ chapterId: 71, name: 'Washtenaw County' }] }),
+		);
+		expect(order).toEqual(['place', 'geometry']);
+	});
+
+	it('does not fail the sync when placement fails', async () => {
+		mockPlace.mockRejectedValue(new Error('census down'));
+		const res = await POST(event());
+		expect(res.status).toBe(200);
+		expect((await res.json()).campaigns[0].placement).toBeNull();
 	});
 
 	// The catalog writes `van_distributed_to`, which is VAN's half of the drift

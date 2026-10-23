@@ -6,6 +6,7 @@ import {
 	lookupZipCentroid,
 	normalizeZip,
 	resolveLocation,
+	zipForPoint,
 } from './zip-centroid.js';
 
 function res(status: number, body: unknown): Response {
@@ -68,6 +69,41 @@ describe('normalizeZip', () => {
 		['null', null],
 	])('rejects %s', (_label, raw) => {
 		expect(normalizeZip(raw)).toBeNull();
+	});
+});
+
+describe('zipForPoint', () => {
+	const ANN_ARBOR = { lat: 42.2808, lng: -83.743 };
+	beforeEach(() => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+
+	// The shape verified live against TIGERweb on 2026-10-22.
+	it('answers the ZIP a point falls in', async () => {
+		const fetchFn = vi.fn(async () =>
+			res(200, { features: [{ attributes: { ZCTA5: '48104' } }] }),
+		) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, fetchFn)).toEqual({ ok: true, zip: '48104' });
+		const url = new URL(
+			(fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string,
+		);
+		expect(url.searchParams.get('geometry')).toBe('-83.743,42.2808');
+		expect(url.searchParams.get('inSR')).toBe('4326');
+	});
+
+	it('tells a point in no ZIP from a Census that did not answer', async () => {
+		const none = vi.fn(async () => res(200, { features: [] })) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, none)).toEqual({ ok: true, zip: null });
+		const down = vi.fn(async () => res(503, {})) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, down)).toEqual({ ok: false });
+		const rejected = vi.fn(async () =>
+			res(200, { error: { code: 400 } }),
+		) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, rejected)).toEqual({ ok: false });
+		const thrown = vi.fn(async () => {
+			throw new Error('ECONNRESET');
+		}) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, thrown)).toEqual({ ok: false });
 	});
 });
 

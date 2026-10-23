@@ -215,6 +215,37 @@ describe('runCatalogSync', () => {
 		expect(spy).not.toHaveBeenCalled();
 	});
 
+	// Mapped to no chapter, but read anyway: its turf is placed one by one
+	// (turf-placement.ts), labelled "not placed yet" until then.
+	it('reads the requested-turf folder though no chapter is mapped to it', async () => {
+		const client = makeClient();
+		const spy = vi.spyOn(client, 'mapRegions');
+		const { db, inserted } = makeDb();
+
+		const result = await runCatalogSync(db, client, 1, [], { requestedFolderId: 1152 });
+		expect(spy).toHaveBeenCalledWith(1152);
+		expect(result.turfsUpserted).toBe(1);
+		const turfRows = inserted.filter((row) => (row as { vanMapRouteId?: number }).vanMapRouteId);
+		expect(turfRows[0]).toMatchObject({
+			turfId: 100,
+			chapterId: 0,
+			chapterName: 'Requested turf (not placed yet)',
+		});
+	});
+
+	// Mapped as well, its mapped chapter labels turf not placed yet; placed
+	// turf keeps its placement (catalog.test.ts), so the label cannot flip
+	// between the two from one sync to the next.
+	it('labels unplaced turf in a requested folder that is also mapped with its chapter', async () => {
+		const client = makeClient();
+		const spy = vi.spyOn(client, 'mapRegions');
+		const { db, inserted } = makeDb();
+		await runCatalogSync(db, client, 1, MAPPING, { requestedFolderId: 1152 });
+		expect(spy).toHaveBeenCalledTimes(1);
+		const turfRows = inserted.filter((row) => (row as { vanMapRouteId?: number }).vanMapRouteId);
+		expect(turfRows[0]).toMatchObject({ chapterId: 71 });
+	});
+
 	// The whole point for a demo/sandbox key: Tier 3 endpoints 403, and the
 	// catalog still lands. Failing the sync here would mean nothing works
 	// until the security review clears.

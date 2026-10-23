@@ -362,9 +362,14 @@ export async function runGeometryQueue(
 			),
 		)
 		.orderBy(
-			// Resumable (has a job id) before fresh, then fewest attempts first
-			// so a poison row cannot monopolise every run.
+			// Resumable (has a job id) before fresh; then turf that is not on the
+			// map at all (no centroid, so `mappableTurfs` leaves it off) before
+			// turf already drawn and queued again for a roster or a re-cut shape
+			// — new turf an organizer cut is what someone is waiting to see. Then
+			// fewest attempts first so a poison row cannot monopolise every run;
+			// it dead-letters at MAX_ATTEMPTS, so jumping the queue is bounded.
 			sql`case when ${vanGeometryQueue.exportJobId} is null then 1 else 0 end`,
+			sql`case when ${vanTurfs.centroidLat} is null then 0 else 1 end`,
 			vanGeometryQueue.attempts,
 			vanGeometryQueue.turfId,
 		)) as QueueItem[];

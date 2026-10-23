@@ -21,9 +21,11 @@ import {
 	vanGeometryQueue,
 	vanTurfs,
 	vanTurfCheckouts,
+	vanTurfPlacements,
 	vanSyncState,
 	vanTurfRoster,
 } from '../schema.js';
+import { UNPLACED_LABEL } from './turf-placement.js';
 import { planCatalogSync, vanTimestamp, type CatalogFolder, type CatalogPlan } from './catalog.js';
 import { chunked } from './sql-chunk.js';
 import { RETIRED_ROSTER_KEEP_MS } from './contact-sync.js';
@@ -104,6 +106,9 @@ export interface CatalogSyncOptions {
 	dryRun?: boolean;
 	/** Queue turfs for a roster export too (see CatalogInput.roster). */
 	roster?: boolean;
+	/** The campaign's requested-turf folder: read too, though no chapter is
+	 *  mapped to it. Its turf is placed by van/turf-placement.ts. */
+	requestedFolderId?: number | null;
 }
 
 /** Every printed list number this run's catalog could assign a turf: the
@@ -147,7 +152,8 @@ export async function runCatalogSync(
 	const deadline = Date.now() + (options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
 	const degraded: string[] = [];
 
-	if (mappings.length === 0) {
+	const requestedFolderId = options.requestedFolderId ?? null;
+	if (mappings.length === 0 && requestedFolderId === null) {
 		return {
 			foldersSynced: 0,
 			foldersSkipped: 0,
@@ -201,7 +207,10 @@ export async function runCatalogSync(
 	// board credits, and mapping a custom entry onto a chapter's folder must
 	// not move that chapter's doors to it. A custom entry labels only a folder
 	// no real chapter is mapped to.
-	const folderOwners = new Map<number, { chapterId: number; chapterName: string }>();
+	const folderOwners = new Map<
+		number,
+		{ chapterId: number; chapterName: string; requested?: true }
+	>();
 	for (const mapping of mappings) {
 		for (const folderId of mapping.folderIds) {
 			const current = folderOwners.get(folderId);
@@ -212,6 +221,19 @@ export async function runCatalogSync(
 				});
 			}
 		}
+	}
+
+	// Placed turf by turf (turf-placement.ts), and labelled with the chapter it
+	// is placed in. Mapped to chapters as well, those chapters see all of it
+	// too, and the first of them labels turf not placed yet; otherwise it is
+	// labelled "not placed yet" until it is.
+	if (requestedFolderId !== null) {
+		const mapped = folderOwners.get(requestedFolderId);
+		folderOwners.set(requestedFolderId, {
+			chapterId: mapped?.chapterId ?? 0,
+			chapterName: mapped?.chapterName ?? UNPLACED_LABEL,
+			requested: true,
+		});
 	}
 
 	for (const [folderId, owner] of folderOwners) {
@@ -227,6 +249,7 @@ export async function runCatalogSync(
 				chapterId: owner.chapterId,
 				chapterName: owner.chapterName,
 				regions,
+				...(owner.requested ? { requested: true as const } : {}),
 			});
 		} catch (err) {
 			// One unreadable folder must not retire another chapter's turf,
@@ -332,8 +355,20 @@ export async function runCatalogSync(
 	const takenTurfIds = new Set(
 		(await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs)).map((r) => r.turfId),
 	);
+	const placements = new Map(
+		(
+			await db
+				.select({
+					turfId: vanTurfPlacements.turfId,
+					chapterId: vanTurfPlacements.chapterId,
+					chapterName: vanTurfPlacements.chapterName,
+				})
+				.from(vanTurfPlacements)
+		).map((p) => [p.turfId, p]),
+	);
 	const plan = planCatalogSync({
 		campaignId,
+		placements,
 		takenTurfIds,
 		folders,
 		printedLists,

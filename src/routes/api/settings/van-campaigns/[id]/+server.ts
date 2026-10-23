@@ -35,6 +35,7 @@ interface CampaignBody {
 	sheetsEnabled?: unknown;
 	sheetTabName?: unknown;
 	dailyReportSpreadsheetId?: unknown;
+	requestedFolderId?: unknown;
 	enabled?: unknown;
 }
 
@@ -108,6 +109,19 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 		patch.exportJobTypeId = value;
 	}
 
+	// Not checked against VAN, like the folder mapping: a wrong id yields no
+	// turf, nothing unsafe. The next sync reads it and places its turf.
+	if ('requestedFolderId' in body) {
+		const value = body.requestedFolderId;
+		if (value !== null && (typeof value !== 'number' || !Number.isInteger(value) || value <= 0)) {
+			return json(
+				{ error: 'requestedFolderId must be a positive integer, or null for none' },
+				{ status: 400 },
+			);
+		}
+		patch.requestedFolderId = value;
+	}
+
 	for (const key of ['refreshEnabled', 'sheetsEnabled'] as const) {
 		if (!(key in body)) continue;
 		const parsed = checkBoolean(key, body[key]);
@@ -138,7 +152,12 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 		const parsed = checkBoolean('enabled', body.enabled);
 		if (!parsed.ok) return json({ error: parsed.error }, { status: 400 });
 		if (parsed.value && !campaign.enabled) {
-			const refusal = await whyNotEnable(campaign);
+			// With any requested-turf folder this same request sets.
+			const refusal = await whyNotEnable(
+				'requestedFolderId' in patch
+					? { ...campaign, requestedFolderId: patch.requestedFolderId ?? null }
+					: campaign,
+			);
 			if (refusal) return json({ error: refusal }, { status: 409 });
 		}
 		if (parsed.value !== campaign.enabled) {
@@ -146,6 +165,23 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 			patch.disabledAt = parsed.value ? null : now;
 			patch.disabledByName = parsed.value ? null : editorName;
 		}
+	}
+
+	// The other side of whyNotEnable: a campaign left on with no folder at all
+	// would sync nothing and say so in the turf channel every half hour.
+	if (
+		patch.requestedFolderId === null &&
+		campaign.requestedFolderId !== null &&
+		(patch.enabled ?? campaign.enabled) &&
+		(await loadCampaignStatus(db, campaign.id, new Date())).mappedFolders === 0
+	) {
+		return json(
+			{
+				error:
+					'This is its only folder. Map a folder to a chapter, or turn the campaign off, before clearing it.',
+			},
+			{ status: 409 },
+		);
 	}
 
 	if (Object.keys(patch).length === 0) {
@@ -190,8 +226,9 @@ async function whyNotEnable(campaign: NonNullable<Awaited<ReturnType<typeof load
 	const configured = vanClientFor(campaign);
 	if (!configured.ok) return `It has no working credentials: ${configured.error}`;
 	const status = await loadCampaignStatus(db, campaign.id, new Date());
-	if (status.mappedFolders === 0) {
-		return 'Map at least one VAN folder to a chapter first — with none, it would sync no turf.';
+	// A requested-turf folder counts: it is read without being mapped.
+	if (status.mappedFolders === 0 && campaign.requestedFolderId === null) {
+		return 'Map at least one VAN folder to a chapter, or set its requested-turf folder, first — with neither, it would sync no turf.';
 	}
 	try {
 		await configured.client.folders();

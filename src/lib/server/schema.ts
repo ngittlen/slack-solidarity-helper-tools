@@ -896,6 +896,11 @@ export const vanCampaigns = sqliteTable(
 		 *  admin shared with it counts against the admin's storage. Null means no
 		 *  report for this campaign. */
 		dailyReportSpreadsheetId: text('daily_report_spreadsheet_id'),
+		/** The VAN folder organizers cut volunteers' turf requests into. Read by
+		 *  the catalog sync without being mapped to any chapter: each turf in it
+		 *  is placed in a chapter by where it is (van/turf-placement.ts,
+		 *  van_turf_placements). Null means no such folder. */
+		requestedFolderId: integer('requested_folder_id'),
 		disabledAt: text('disabled_at'),
 		disabledByName: text('disabled_by_name'),
 		lastEditedBy: text('last_edited_by').notNull(),
@@ -1648,6 +1653,37 @@ export const vanSyncState = sqliteTable('van_sync_state', {
 // zip -> lat/lng cache for the "no geolocation" fallback. Deliberately shaped
 // like mobilize_geocoded_zips, including the never-throw contract of the
 // geocoder that fills it: a lookup failure yields no row, never an exception.
+// Which chapter each turf in a campaign's requested-turf folder belongs to
+// (van_campaigns.requested_folder_id). That folder is mapped to no chapter —
+// requests come from all over — so its turf is placed one by one, by where it
+// is: the ZIP its location falls in, through the members' zip_chapter_map;
+// failing that, the chapter most of the nearest regular turf belongs to; or an
+// organizer's choice, which nothing automatic overwrites. See
+// van/turf-placement.ts. Chapter visibility reads this alongside the folder
+// mapping (chapter-visibility.ts).
+export const vanTurfPlacements = sqliteTable('van_turf_placements', {
+	turfId: integer('turf_id').primaryKey(),
+	chapterId: integer('chapter_id').notNull(),
+	chapterName: text('chapter_name').notNull(),
+	/** 'zip' | 'nearby' | 'organizer' */
+	source: text('source').notNull(),
+	/** The ZIP the location fell in, when the Census answered. */
+	zip: text('zip'),
+	/** Whether the Census answered at all. A 'nearby' placement made because
+	 *  it did not is tried by ZIP again on the next run. */
+	zipChecked: integer('zip_checked', { mode: 'boolean' }).notNull().default(false),
+	/** The turf's location when it was placed; a different one now (a re-cut,
+	 *  a new shape) places it again. Null for an organizer's placement of turf
+	 *  with no location yet. */
+	centroidLat: real('centroid_lat'),
+	centroidLng: real('centroid_lng'),
+	placedAt: text('placed_at').notNull(),
+	/** The organizer, for an organizer's placement. */
+	placedByName: text('placed_by_name'),
+});
+
+export type VanTurfPlacementRow = typeof vanTurfPlacements.$inferSelect;
+
 export const vanZipCentroids = sqliteTable('van_zip_centroids', {
 	zip: text('zip').primaryKey(),
 	lat: real('lat').notNull(),

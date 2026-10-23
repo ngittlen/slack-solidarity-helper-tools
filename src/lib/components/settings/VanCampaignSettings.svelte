@@ -1,7 +1,8 @@
 <script lang="ts">
-	// A VAN campaign's own switches: its name, whether the sync may re-cut its
-	// regions, whether its checkouts go to a Packet Tracker
-	// (specs/012-multi-van-campaigns), and where its nightly door report goes.
+	// A VAN campaign's own switches: its name, its requested-turf folder,
+	// whether the sync may re-cut its regions, whether its checkouts go to a
+	// Packet Tracker (specs/012-multi-van-campaigns), and where its nightly door
+	// report goes.
 	// Each row autosaves on its own, like the App config rows, through PATCH
 	// /api/settings/van-campaigns/<id>.
 
@@ -28,6 +29,8 @@
 		sheetsEnabled: boolean;
 		sheetTabName: string;
 		dailyReportSpreadsheetId: string;
+		/** The folder id as typed, '' for none. */
+		requestedFolderId: string;
 		targets: TargetEntry[];
 		serviceAccountEmail: string | null;
 		/** After each successful save — so the page can re-read what it shows
@@ -44,6 +47,7 @@
 		sheetsEnabled,
 		sheetTabName,
 		dailyReportSpreadsheetId,
+		requestedFolderId,
 		targets,
 		serviceAccountEmail,
 		onSaved,
@@ -85,6 +89,18 @@
 		const id = extractSpreadsheetId(reportSave.value);
 		return isSpreadsheetId(id) ? `https://docs.google.com/spreadsheets/d/${id}/edit` : null;
 	});
+	// Digits only reach the server; anything else is said here rather than
+	// saved as a different folder than the one typed.
+	const requestedSave = createFieldAutosave<string>({
+		initial: untrack(() => requestedFolderId),
+		save: (value) => {
+			const trimmed = value.trim();
+			if (trimmed !== '' && !/^[1-9]\d*$/.test(trimmed)) {
+				return Promise.reject(new Error('A folder id is a number, like 68298.'));
+			}
+			return patch({ requestedFolderId: trimmed === '' ? null : Number(trimmed) });
+		},
+	});
 	const refreshSave = createFieldAutosave<boolean>({
 		initial: untrack(() => refreshEnabled),
 		parse: (raw) => raw === 'true',
@@ -110,6 +126,7 @@
 		badgeSave.destroy();
 		tabSave.destroy();
 		reportSave.destroy();
+		requestedSave.destroy();
 		refreshSave.destroy();
 		sheetsSave.destroy();
 	});
@@ -157,6 +174,32 @@
 		shown while more than one campaign is enabled, so volunteers know which campaign's VAN a list
 		number is from, and on this campaign's turf still being walked after it is disabled. Left empty,
 		it uses the name above.
+	</p>
+</SettingsRow>
+
+<SettingsRow
+	id="requested-folder"
+	label="Requested-turf folder"
+	status={requestedSave.status}
+	error={requestedSave.error}
+	onRetry={requestedSave.status === 'error' ? requestedSave.retry : undefined}
+>
+	<input
+		class="text-input"
+		type="text"
+		inputmode="numeric"
+		placeholder="None"
+		value={requestedSave.value}
+		oninput={requestedSave.oninput}
+		aria-label="Requested-turf folder id"
+	/>
+	<p class="app-config-note">
+		The VAN folder organizers cut volunteers' turf requests into. Each turf in it goes to the
+		chapter where it is — the ZIP it falls in, by where members live, or failing that the chapter
+		most of the turf around it belongs to — once VAN has given it a shape, usually minutes after
+		<strong>Sync VAN now</strong>. It needn't be mapped to any chapter above; any chapter it is
+		mapped to sees all of it as well. Organizers can move one to another chapter on the organizer
+		page. Leave empty for none.
 	</p>
 </SettingsRow>
 
