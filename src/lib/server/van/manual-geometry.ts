@@ -32,9 +32,10 @@
 //
 // Requested turf (van/turf-placement.ts) is placed in its chapter after each
 // slice that put turf on the map, so a request shows up where the volunteer
-// is looking as soon as it has a shape, not at the next scheduled sync. Once
-// the shapes are done the drain places whatever requested turf is still
-// waiting, shaped by this press or not: a scheduled sync places only what its
+// is looking as soon as it has a shape, not at the next scheduled sync. The
+// drain also places whatever requested turf is waiting, shaped by this press
+// or not — first, since a backlog of shapes can take the whole drain, and
+// again once the shapes are done: a scheduled sync places only what its
 // budget reaches, and a folder can hold hundreds.
 //
 // A press while this runs asks for VAN to be read again (manual-sync.ts). The
@@ -53,7 +54,7 @@ import { campaignName } from './campaigns.js';
 import { runGeometryQueue, type GeometryWorkerResult } from './geometry-worker.js';
 import { vanSyncLock } from './locks.js';
 import { exportCallbackUrl } from './webhook-token.js';
-import { placeRequestedTurf } from './turf-placement.js';
+import { placeRequestedTurf, type PlacementResult } from './turf-placement.js';
 import { placementChapters } from './placement-chapters.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -83,8 +84,11 @@ const MAX_DRAIN_MS = 30 * MINUTE;
 const CONCURRENCY = 4;
 /** Placing what a slice shaped: a Census lookup per turf. */
 const PLACEMENT_BUDGET_MS = 15 * SECOND;
-/** Placing what is still waiting once the shapes are done. */
-const FINAL_PLACEMENT_BUDGET_MS = 5 * 60 * SECOND;
+/** Placing what is waiting, before the shapes and once they are done. */
+const WAITING_PLACEMENT_BUDGET_MS = 5 * 60 * SECOND;
+/** The longest a press waits for another run's placement: a scheduled
+ *  sync's placement, with its lookups in flight. */
+const PLACE_BUSY_WAIT_MS = 60 * SECOND;
 
 export interface CampaignDrain {
 	campaignId: number;
@@ -115,7 +119,10 @@ export interface ManualGeometryDeps {
 		campaign: VanCampaignRow,
 		timeBudgetMs: number,
 		retryMisses?: boolean,
-	) => Promise<unknown>;
+		shouldStop?: () => Promise<boolean>,
+	) => Promise<PlacementResult | void>;
+	/** Between tries while another run holds the placement lock. */
+	placeBusyPollMs?: number;
 }
 
 async function placeNow(
@@ -123,11 +130,13 @@ async function placeNow(
 	campaign: VanCampaignRow,
 	timeBudgetMs: number,
 	retryMisses = false,
-): Promise<unknown> {
+	shouldStop?: () => Promise<boolean>,
+): Promise<PlacementResult> {
 	return placeRequestedTurf(db, campaign, {
 		chapters: await placementChapters(db),
 		timeBudgetMs,
 		retryMisses,
+		shouldStop,
 	});
 }
 
@@ -182,6 +191,12 @@ export async function drainGeometryForPress(
 		return turn;
 	});
 
+	// Before any shapes: what is waiting already has a location, and a long
+	// shape queue would otherwise leave it no time at the end. Misses too: the
+	// press is how an organizer who fixed what kept a turf out asks for it to
+	// be tried again.
+	await placeWaiting(db, turns, deadline, deps, true);
+
 	let sliced = false;
 	rotation: while (turns.some((t) => !t.done)) {
 		for (const turn of turns) {
@@ -218,23 +233,10 @@ export async function drainGeometryForPress(
 	}
 
 	// Not when a resync was asked for: its pass places too, and the drain that
-	// follows it comes back here.
+	// follows it comes back here. Not the misses, tried at the start: this is
+	// for turf the drain shaped.
 	if (!turns.some((t) => t.drained.stopped === 'resync requested')) {
-		for (const turn of turns) {
-			if (turn.failed || turn.campaign.requestedFolderId === null) continue;
-			const timeBudgetMs = Math.min(FINAL_PLACEMENT_BUDGET_MS, deadline - Date.now());
-			if (timeBudgetMs <= 0) break;
-			try {
-				// Misses too: the press is how an organizer who fixed what kept a
-				// turf out asks for it to be tried again.
-				await (deps.place ?? placeNow)(db, turn.campaign, timeBudgetMs, true);
-			} catch (err) {
-				console.error(
-					`${turn.tag} manual sync: placement failed:`,
-					err instanceof Error ? err.message : err,
-				);
-			}
-		}
+		await placeWaiting(db, turns, deadline, deps, false);
 	}
 
 	for (const { tag, drained, failed } of turns) {
@@ -245,6 +247,51 @@ export async function drainGeometryForPress(
 		);
 	}
 	return turns.filter((t) => !t.failed).map((t) => t.drained);
+}
+
+/**
+ * Place each campaign's waiting requested turf. Needs neither VAN nor the
+ * sync lock, so a campaign VAN cannot be read for is placed too. Stops for a
+ * resync as the slices do; waits out another run placing the same campaign —
+ * a scheduled sync's twenty seconds — rather than leave the press's turf to
+ * the next one.
+ */
+async function placeWaiting(
+	db: Db,
+	turns: readonly Turn[],
+	deadline: number,
+	deps: ManualGeometryDeps,
+	retryMisses: boolean,
+): Promise<void> {
+	for (const turn of turns) {
+		if (turn.failed || turn.campaign.requestedFolderId === null) continue;
+		if (await deps.shouldStop?.()) return;
+		const waitUntil = Math.min(deadline, Date.now() + PLACE_BUSY_WAIT_MS);
+		try {
+			for (;;) {
+				const timeBudgetMs = Math.min(WAITING_PLACEMENT_BUDGET_MS, deadline - Date.now());
+				if (timeBudgetMs <= 0) return;
+				const result = await (deps.place ?? placeNow)(
+					db,
+					turn.campaign,
+					timeBudgetMs,
+					retryMisses,
+					deps.shouldStop,
+				);
+				if (result?.busy && Date.now() < waitUntil) {
+					await new Promise((r) => setTimeout(r, deps.placeBusyPollMs ?? LOCK_POLL_MS));
+					continue;
+				}
+				if (result) console.log(`${turn.tag} manual sync: requested turf placed:`, result);
+				break;
+			}
+		} catch (err) {
+			console.error(
+				`${turn.tag} manual sync: placement failed:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
+	}
 }
 
 /** One slice of one campaign's queue, under its lock. Marks the turn done

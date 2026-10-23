@@ -221,31 +221,83 @@ describe('drainGeometryForPress', () => {
 			{ attempted: 1, hullsStored: 0 },
 		]);
 		await drainGeometryForPress(db, { ...configured, run, place });
-		// After the first slice — the second mapped nothing — and once at the end.
-		expect(place).toHaveBeenCalledTimes(2);
+		// Before the shapes, after the first slice — the second mapped nothing —
+		// and once at the end.
+		expect(place).toHaveBeenCalledTimes(3);
 		expect(place).toHaveBeenNthCalledWith(
-			1,
+			2,
 			db,
 			expect.objectContaining({ id: 1, requestedFolderId: 900 }),
 			15_000,
 		);
 	});
 
-	// A scheduled sync places only what its budget reaches; the press finishes
-	// the rest, though it mapped none of it.
-	it('places what is still waiting once the shapes are done', async () => {
+	// A scheduled sync places only what its budget reaches; the press places
+	// the rest, though it maps none of it — first, so a long shape queue cannot
+	// leave it no time, and again at the end. Misses too: a press is how an
+	// organizer asks for them again.
+	it('places what is waiting before the shapes and once they are done', async () => {
 		await client.execute('UPDATE van_campaigns SET requested_folder_id = 900 WHERE id = 1');
-		const place = vi.fn(async () => {});
-		const { run } = worker([{ attempted: 0 }]);
-		await drainGeometryForPress(db, { ...configured, run, place });
-		expect(place).toHaveBeenCalledOnce();
-		// Misses too: a press is how an organizer asks for them again.
-		expect(place).toHaveBeenCalledWith(
+		const order: string[] = [];
+		const place = vi.fn(async () => {
+			order.push('place');
+		});
+		const run = vi.fn(async () => {
+			order.push('slice');
+			return slice({ attempted: 0 });
+		});
+		await drainGeometryForPress(db, { ...configured, run: run as never, place });
+		expect(order).toEqual(['place', 'slice', 'place']);
+		// Misses at the start only: the end is for turf the drain shaped.
+		const calls = place.mock.calls as unknown[][];
+		expect(calls.map((c) => c[3])).toEqual([true, false]);
+		expect(calls[0]!.slice(0, 3)).toEqual([
 			db,
 			expect.objectContaining({ id: 1 }),
 			expect.any(Number),
-			true,
+		]);
+	});
+
+	// A scheduled sync's twenty seconds, rather than leave the press's turf
+	// to the next one.
+	it('waits out another run placing the same campaign', async () => {
+		await client.execute('UPDATE van_campaigns SET requested_folder_id = 900 WHERE id = 1');
+		const busy = { byZip: 0, byNearby: 0, unplaced: 0, cleared: 0, budgetLapsed: false };
+		const place = vi
+			.fn()
+			.mockResolvedValueOnce({ ...busy, busy: true })
+			.mockResolvedValueOnce({ ...busy, byZip: 3 })
+			.mockResolvedValue(busy);
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const { run } = worker([{ attempted: 0 }]);
+		await drainGeometryForPress(db, { ...configured, run, place, placeBusyPollMs: 1 });
+		expect(place).toHaveBeenCalledTimes(3);
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining('requested turf placed'),
+			expect.objectContaining({ byZip: 3 }),
 		);
+	});
+
+	it('places even when the drain runs out of time on shapes', async () => {
+		await client.execute('UPDATE van_campaigns SET requested_folder_id = 900 WHERE id = 1');
+		const place = vi.fn(async () => {});
+		// The slice takes the drain past its deadline — by the clock, so a slow
+		// machine cannot make it so before the first placement.
+		const realNow = Date.now;
+		const run = vi.fn(async () => {
+			const later = realNow() + 60 * 60 * 1000;
+			vi.spyOn(Date, 'now').mockImplementation(() => later);
+			return slice({ attempted: 5, budgetLapsed: true });
+		});
+		await drainGeometryForPress(db, {
+			...configured,
+			run: run as never,
+			place,
+			deadline: realNow() + 30 * 60 * 1000,
+			yieldMs: 0,
+		});
+		expect(run).toHaveBeenCalledOnce();
+		expect(place).toHaveBeenCalledOnce();
 	});
 
 	it('leaves the placing to the pass when a resync is asked for', async () => {
@@ -258,6 +310,7 @@ describe('drainGeometryForPress', () => {
 			place,
 			shouldStop: async () => true,
 		});
+		// The pass the resync runs places them.
 		expect(place).not.toHaveBeenCalled();
 	});
 
