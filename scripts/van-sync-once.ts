@@ -109,6 +109,7 @@ async function main(): Promise<void> {
 	console.log(`  folders synced      ${result.foldersSynced}`);
 	console.log(`  folders skipped     ${result.foldersSkipped}`);
 	console.log(`  turfs upserted      ${result.turfsUpserted}`);
+	console.log(`  of those, changed   ${result.turfsWritten}`);
 	console.log(`  turfs retired       ${result.turfsRetired}`);
 	console.log(`  turfs unretired     ${result.turfsUnretired}`);
 	console.log(
@@ -129,7 +130,7 @@ async function main(): Promise<void> {
 		for (const line of result.warnings) console.log(`  • ${line}`);
 	}
 
-	const rows = result.plan?.upserts ?? [];
+	const rows = result.plan?.writes ?? [];
 	if (rows.length > 0) {
 		console.log(`\n${DRY_RUN ? 'Would write' : 'Wrote'} ${rows.length} turf row(s)`);
 		for (const row of rows.slice(0, 20)) {

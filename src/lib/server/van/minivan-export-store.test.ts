@@ -114,6 +114,35 @@ describe('pullMinivanExports', () => {
 		expect(JSON.parse(String(rows.rows[0]!.canvassers_json))).toEqual([{ firstName: 'Sam' }]);
 	});
 
+	// Each rewrite bills as a row written, and the overlap day is re-read 37
+	// times a day. Only a changed export is rewritten — fetched_at shows which.
+	it('leaves an export read again unchanged as it was', async () => {
+		const later = new Date(NOW.getTime() + 30 * 60 * 1000);
+		const first = [
+			exp(1, '2026-09-22T11:52:28.15Z'),
+			exp(2, '2026-09-22T12:00:00.00Z'),
+			{ ...exp(3, '2026-09-22T12:00:00.00Z'), dateCreated: null, name: null },
+		];
+		await pullMinivanExports(db, vanReturning(first).client, { campaignId: 1, now: NOW });
+		await pullMinivanExports(
+			db,
+			vanReturning([
+				first[0]!,
+				exp(2, '2026-09-22T12:00:00.00Z', 'List 2-00000', [{ firstName: 'Sam' }]),
+				first[2]!,
+			]).client,
+			{ campaignId: 1, now: later },
+		);
+		const rows = await client.execute(
+			'SELECT minivan_export_id, fetched_at FROM van_minivan_exports ORDER BY minivan_export_id',
+		);
+		expect(rows.rows.map((r) => r.fetched_at)).toEqual([
+			NOW.toISOString(),
+			later.toISOString(),
+			NOW.toISOString(),
+		]);
+	});
+
 	it('passes through an incomplete walk so the sync keeps drift unavailable', async () => {
 		const result = await pullMinivanExports(
 			db,

@@ -53,7 +53,11 @@ const WRITE_BATCH_SIZE = 100;
 export interface CatalogSyncResult {
 	foldersSynced: number;
 	foldersSkipped: number;
+	/** Turfs VAN listed this run, written or not. */
 	turfsUpserted: number;
+	/** Of those, the ones whose row actually changed and was written. The rest
+	 *  matched what was stored and cost no write (turfRowChanged). */
+	turfsWritten: number;
 	turfsRetired: number;
 	turfsUnretired: number;
 	/** Stored turf whose VAN change waits for midnight — gone from VAN, or
@@ -158,6 +162,7 @@ export async function runCatalogSync(
 			foldersSynced: 0,
 			foldersSkipped: 0,
 			turfsUpserted: 0,
+			turfsWritten: 0,
 			turfsRetired: 0,
 			turfsUnretired: 0,
 			turfsHeld: 0,
@@ -394,6 +399,7 @@ export async function runCatalogSync(
 			foldersSynced: folders.length,
 			foldersSkipped,
 			turfsUpserted: plan.upserts.length,
+			turfsWritten: plan.writes.length,
 			turfsRetired: plan.retirements.length,
 			turfsUnretired: plan.unretirements.length,
 			turfsHeld: plan.held.turfs,
@@ -426,7 +432,10 @@ export async function runCatalogSync(
 	// exposure a chunk boundary creates is unchanged from before — a reader can
 	// see some turfs' new door counts beside others' old ones, which the UI
 	// already labels with the timestamp those counts came from.
-	for (const rows of chunked(plan.upserts, WRITE_BATCH_SIZE)) {
+	//
+	// Only the rows that changed: rewriting an identical row still bills as a
+	// row written, and on most runs nearly every turf is identical.
+	for (const rows of chunked(plan.writes, WRITE_BATCH_SIZE)) {
 		// Matched on VAN's id within the campaign, never on turfId: that is the
 		// route's identity, and a colliding turf's turfId is not VAN's. Two
 		// campaigns' syncs planning the same free id at the same instant fail one
@@ -721,6 +730,7 @@ export async function runCatalogSync(
 		foldersSynced: folders.length,
 		foldersSkipped,
 		turfsUpserted: plan.upserts.length,
+		turfsWritten: plan.writes.length,
 		turfsRetired: plan.retirements.length,
 		turfsUnretired: plan.unretirements.length,
 		turfsHeld: plan.held.turfs,

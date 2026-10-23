@@ -4,6 +4,7 @@ import {
 	planCatalogSync,
 	vanTimestamp,
 	needsGeometry,
+	turfRowChanged,
 	type CatalogClaim,
 	type CatalogFolder,
 } from './catalog.js';
@@ -786,6 +787,7 @@ describe('planCatalogSync', () => {
 		const plan = planCatalogSync({ ...base, folders: [] });
 		expect(plan).toEqual({
 			upserts: [],
+			writes: [],
 			retirements: [],
 			unretirements: [],
 			geometryQueue: [],
@@ -823,6 +825,53 @@ describe('planCatalogSync', () => {
 			folders: [folder([region([route({ name: null, routeNumber: 7 })])])],
 		});
 		expect(plan.upserts[0]!.name).toBe('Turf 7');
+	});
+});
+
+// Every rewrite of an identical row still bills as a row written, and the
+// catalog runs 37 times a day over every live turf.
+describe('planCatalogSync — unchanged turf is not rewritten', () => {
+	const later = new Date(OVERNIGHT.getTime() + 30 * 60 * 1000);
+	const folders = [folder([region([route()], { dateRefreshed: '2026-08-20T09:00:00Z' })])];
+	/** What the first sync stored, read back as the second sync's `existing`. */
+	function stored(): VanTurfRow {
+		const first = planCatalogSync({ ...base, now: OVERNIGHT, folders });
+		expect(first.writes).toEqual(first.upserts);
+		return existingRow(first.upserts[0] as Partial<VanTurfRow>);
+	}
+
+	it('plans no write for a turf VAN reports as it was', () => {
+		const plan = planCatalogSync({ ...base, now: later, existing: [stored()], folders });
+		expect(plan.upserts).toHaveLength(1);
+		expect(plan.writes).toEqual([]);
+	});
+
+	it('writes a turf whose counts moved, stamping lastSeenAt with it', () => {
+		const moved = [
+			folder([region([route({ doorCount: 240 })], { dateRefreshed: '2026-08-20T09:00:00Z' })]),
+		];
+		const plan = planCatalogSync({ ...base, now: later, existing: [stored()], folders: moved });
+		expect(plan.writes).toHaveLength(1);
+		expect(plan.writes[0]).toMatchObject({ doorCount: 240, lastSeenAt: later.toISOString() });
+	});
+
+	it('writes a retired turf VAN lists again', () => {
+		const retired = { ...stored(), retiredAt: '2026-08-20T00:00:00.000Z' };
+		const plan = planCatalogSync({ ...base, now: later, existing: [retired], folders });
+		expect(plan.unretirements).toEqual([100]);
+		expect(plan.writes).toHaveLength(1);
+	});
+
+	it('writes a new turf', () => {
+		const plan = planCatalogSync({ ...base, now: later, folders });
+		expect(plan.writes).toEqual(plan.upserts);
+	});
+
+	// Drizzle leaves an undefined key out of `set`, so it can change nothing.
+	it('ignores a key left undefined', () => {
+		const prior = { ...stored(), hullJson: '[{"lat":42.37,"lng":-71.11}]' };
+		expect(turfRowChanged({ ...prior, lastSeenAt: 'x', hullJson: undefined }, prior)).toBe(false);
+		expect(turfRowChanged({ ...prior, hullJson: null }, prior)).toBe(true);
 	});
 });
 
@@ -1141,6 +1190,27 @@ describe('planCatalogSync — VAN changes held until midnight', () => {
 			expect(plan.geometryQueue).toEqual([]);
 			expect(plan.heldTurfIds).toEqual([100]);
 			expect(plan.held).toEqual({ turfs: 1, newRoutes: 0 });
+		});
+
+		// A held row is built from the stored one (heldFields) plus the hold's
+		// start, so once the hold is written, later runs that day find it as it
+		// was and write nothing.
+		it('is written when its hold starts, and not again while it lasts', () => {
+			const started = run(AFTERNOON);
+			expect(started.writes).toHaveLength(1);
+			const held = existingRow({
+				rosterSavedListId: 900,
+				...started.upserts[0],
+			} as Partial<VanTurfRow>);
+			const later = planCatalogSync({
+				...base,
+				now: LATE,
+				roster: true,
+				folders: [folder([region([regenerated])])],
+				existing: [held],
+			});
+			expect(later.held.turfs).toBe(1);
+			expect(later.writes).toEqual([]);
 		});
 
 		it('is not held when the turf had no list number: a new one makes it claimable', () => {

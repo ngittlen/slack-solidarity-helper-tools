@@ -453,7 +453,7 @@ async function syncCampaign(
 			requestedFolderId: campaign.requestedFolderId,
 		});
 		console.log(
-			`${logPrefix} catalog sync: ${result.turfsUpserted} turfs across ${result.foldersSynced} folder(s), ` +
+			`${logPrefix} catalog sync: ${result.turfsUpserted} turfs (${result.turfsWritten} changed) across ${result.foldersSynced} folder(s), ` +
 				`${result.turfsRetired} retired, ${result.geometryQueued} queued for geometry` +
 				(result.turfsHeld + result.newTurfsHeld > 0
 					? `, held to midnight: ${result.turfsHeld} turf, ${result.newTurfsHeld} new route(s)`
