@@ -99,13 +99,32 @@ export interface Job {
  * Exported for the organizers' "Sync VAN now" button (van/manual-sync.ts),
  * which runs exactly this pass between slots.
  */
-export async function runVanSync(call: Caller, db: Db): Promise<void> {
+export async function runVanSync(call: Caller, db: Db): Promise<VanSyncAnswer[]> {
+	const answers = await vanSyncPass(call, db);
+	const failures = answers.flatMap((a) =>
+		a.error === undefined ? [] : [`campaign ${a.campaignId}: ${a.error}`],
+	);
+	if (failures.length > 0) throw new Error(failures.join('; '));
+	return answers;
+}
+
+/** What one campaign's call answered: the endpoint's body for it, or why the
+ *  call failed. */
+export interface VanSyncAnswer {
+	campaignId: number;
+	body?: Record<string, unknown>;
+	error?: string;
+}
+
+/** runVanSync's pass, answering for each campaign rather than throwing — for
+ *  the "Sync VAN now" button, which reports each campaign's outcome. */
+export async function vanSyncPass(call: Caller, db: Db): Promise<VanSyncAnswer[]> {
 	const campaigns = await campaignsStalestFirst(db);
 	if (campaigns.length === 0) {
 		await call('/api/internal/van-sync', {}, 5 * MINUTE);
-		return;
+		return [];
 	}
-	const failures: string[] = [];
+	const answers: VanSyncAnswer[] = [];
 	for (const [i, campaign] of campaigns.entries()) {
 		// The cross-campaign stages — reconciliation, alerts, the Packet
 		// Tracker — run once a pass, on the last call, after every campaign's
@@ -113,16 +132,21 @@ export async function runVanSync(call: Caller, db: Db): Promise<void> {
 		// campaign (see runSharedStages in the endpoint).
 		const last = i === campaigns.length - 1;
 		try {
-			await call(
+			const response = await call(
 				'/api/internal/van-sync',
 				{ campaign: String(campaign.id), ...(last ? {} : { shared: '0' }) },
 				5 * MINUTE,
 			);
+			const [body] = Array.isArray(response.campaigns) ? response.campaigns : [];
+			answers.push({ campaignId: campaign.id, body: body as Record<string, unknown> | undefined });
 		} catch (err) {
-			failures.push(`campaign ${campaign.id}: ${err instanceof Error ? err.message : err}`);
+			answers.push({
+				campaignId: campaign.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
 		}
 	}
-	if (failures.length > 0) throw new Error(failures.join('; '));
+	return answers;
 }
 
 /** Mirrors van-catalog-sync.yml: every 30 minutes by day, hourly overnight. No
@@ -133,7 +157,9 @@ const vanSync: Job = {
 		{ hours: hoursFrom(11, 23), minutes: [7, 37] },
 		{ hours: hoursFrom(0, 10), minutes: [7] },
 	],
-	run: (_slot, call, db) => runVanSync(call, db),
+	run: async (_slot, call, db) => {
+		await runVanSync(call, db);
+	},
 };
 
 /** The 07:40 UTC pass: no signup window, and routine event edits reported. */

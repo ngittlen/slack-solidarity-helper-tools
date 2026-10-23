@@ -558,6 +558,74 @@ describe('loadRequestedTurf', () => {
 		expect(turfs).toHaveLength(2);
 		expect(total).toBe(3);
 	});
+
+	// Each of these used to read "waiting for its shape" for as long as it
+	// stayed in the folder.
+	it('says why turf with no location has none', async () => {
+		for (const id of [500, 501, 502, 503, 504]) await turf(id, REQUESTED, null);
+		// 500: nobody in it. The rest have people and a list.
+		await client.execute(
+			'UPDATE van_turfs SET saved_list_id = 1, route_size = 40 WHERE turf_id IN (501, 502, 503, 504)',
+		);
+		const queue = (id: number, status: string, error: string | null) =>
+			client.execute({
+				sql: 'INSERT INTO van_geometry_queue (turf_id, saved_list_id, status, attempts, last_error) VALUES (?, 1, ?, 4, ?)',
+				args: [id, status, error],
+			});
+		await queue(501, 'pending', null);
+		await queue(502, 'failed', 'export job errored');
+		await queue(503, 'done', null);
+		// 504: not queued yet.
+		const { turfs } = await loadRequestedTurf(db);
+		const shape = Object.fromEntries(turfs.map((t) => [t.turfId, [t.shape, t.shapeError]]));
+		expect(shape).toEqual({
+			500: ['empty', null],
+			501: ['waiting', null],
+			502: ['failed', 'export job errored'],
+			503: ['unmapped', null],
+			504: ['waiting', null],
+		});
+	});
+
+	it('says whether it can be claimed, never with which number', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		await turf(501, REQUESTED, ANN_ARBOR);
+		await client.execute(
+			`UPDATE van_turfs SET printed_list_number = 'L123', hidden_at = '${AT}' WHERE turf_id = 501`,
+		);
+		const { turfs } = await loadRequestedTurf(db);
+		const row = Object.fromEntries(turfs.map((t) => [t.turfId, t]));
+		expect(row[500]).toMatchObject({ claimable: false, hidden: false, shape: null });
+		expect(row[501]).toMatchObject({ claimable: true, hidden: true });
+		expect(JSON.stringify(turfs)).not.toContain('L123');
+	});
+
+	it('lists the newest first among the unplaced, and only new turf when asked', async () => {
+		await turf(500, REQUESTED, null);
+		await turf(501, REQUESTED, null);
+		await turf(502, REQUESTED, null);
+		await client.execute(
+			"UPDATE van_turfs SET first_seen_at = '2026-10-23T10:00:00.000Z' WHERE turf_id = 501",
+		);
+		await client.execute(
+			"UPDATE van_turfs SET first_seen_at = '2026-10-23T11:00:00.000Z' WHERE turf_id = 502",
+		);
+		expect((await loadRequestedTurf(db)).turfs.map((t) => t.turfId)).toEqual([502, 501, 500]);
+
+		const since = await loadRequestedTurf(db, 300, { firstSeenSince: '2026-10-23T10:30:00.000Z' });
+		expect(since.turfs.map((t) => t.turfId)).toEqual([502]);
+		expect(since.total).toBe(1);
+	});
+
+	// A route moved into the folder keeps the firstSeenAt it had, so what a
+	// press picked up is what was not there when it was pressed.
+	it('leaves out the turf a press found already in the folder', async () => {
+		await turf(500, REQUESTED, null);
+		await turf(501, REQUESTED, null);
+		const found = await loadRequestedTurf(db, 300, { excludeTurfIds: [500] });
+		expect(found.turfs.map((t) => t.turfId)).toEqual([501]);
+		expect(found.total).toBe(1);
+	});
 });
 
 describe('nearbyVote', () => {

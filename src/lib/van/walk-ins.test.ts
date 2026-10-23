@@ -15,7 +15,7 @@ import {
 
 const HEADER = [
 	'Name',
-	'Shift Start Time',
+	'Shift Start',
 	'Phone',
 	'Email',
 	'Zip Code',
@@ -33,11 +33,19 @@ describe('findWalkInLayout', () => {
 		]);
 		expect(layout).toEqual({
 			headerRowIndex: 1,
-			columns: { Name: 0, 'Shift Start Time': 1, Phone: 2 },
+			columns: { Name: 0, 'Shift Start': 1, Phone: 2 },
 		});
 	});
 
-	it('needs Name and Shift Start Time', () => {
+	it('reads the tab’s current header, Shift Start', () => {
+		expect(findWalkInLayout([HEADER])?.columns).toMatchObject({
+			Name: 0,
+			'Shift Start': 1,
+			'Final Status': 6,
+		});
+	});
+
+	it('needs Name and Shift Start', () => {
 		expect(findWalkInLayout([['Name', 'Phone']])).toBeNull();
 		expect(findWalkInLayout([])).toBeNull();
 	});

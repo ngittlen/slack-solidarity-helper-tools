@@ -8,7 +8,7 @@
 //
 // What the app fills in:
 //   Name              the volunteer's display name
-//   Shift Start Time  a drop-down ("10am", "1pm", …): the latest shift start
+//   Shift Start       a drop-down ("10am", "1pm", …): the latest shift start
 //                     at or before the claim, the first when it is earlier
 //   Final Status      a drop-down: "Completed" once the turf is marked walked;
 //                     otherwise the campaign's to set
@@ -36,7 +36,7 @@ export const WALK_IN_TAB_NAME = 'Walk Ins';
  *  our row, and a row is empty only when all of them are. */
 export const WALK_IN_COLUMNS = [
 	'Name',
-	'Shift Start Time',
+	'Shift Start',
 	'Phone',
 	'Email',
 	'Zip Code',
@@ -48,7 +48,12 @@ export const WALK_IN_COLUMNS = [
 
 export type WalkInColumn = (typeof WALK_IN_COLUMNS)[number];
 
-/** One option of the Shift Start Time drop-down: what it shows, and whether
+/** Older headers a column has gone by, still recognised. */
+const WALK_IN_ALIASES: Partial<Record<WalkInColumn, readonly string[]>> = {
+	'Shift Start': ['Shift Start Time'],
+};
+
+/** One option of the Shift Start drop-down: what it shows, and whether
  *  the cell holds it as text (written with an apostrophe to stay text) or as
  *  a real time (written as typed, for Sheets to read as one). */
 export interface ShiftOption {
@@ -96,13 +101,13 @@ export function highlightSweepDay(now: Date): string | null {
 
 export interface WalkInLayout {
 	headerRowIndex: number;
-	/** 0-based index per column the tab has. Name and Shift Start Time always. */
-	columns: Partial<Record<WalkInColumn, number>> & Record<'Name' | 'Shift Start Time', number>;
+	/** 0-based index per column the tab has. Name and Shift Start always. */
+	columns: Partial<Record<WalkInColumn, number>> & Record<'Name' | 'Shift Start', number>;
 }
 
 /**
  * Find the header row: the one, within the first few, naming the most of the
- * tab's columns. Null when it lacks Name or Shift Start Time.
+ * tab's columns. Null when it lacks Name or Shift Start.
  */
 export function findWalkInLayout(values: readonly (readonly string[])[]): WalkInLayout | null {
 	let best: { row: number; found: Map<WalkInColumn, number> } | null = null;
@@ -114,12 +119,14 @@ export function findWalkInLayout(values: readonly (readonly string[])[]): WalkIn
 		});
 		const found = new Map<WalkInColumn, number>();
 		for (const column of WALK_IN_COLUMNS) {
-			const index = byName.get(normaliseHeader(column));
+			const index = [column, ...(WALK_IN_ALIASES[column] ?? [])]
+				.map((name) => byName.get(normaliseHeader(name)))
+				.find((i) => i !== undefined);
 			if (index !== undefined) found.set(column, index);
 		}
 		if (!best || found.size > best.found.size) best = { row, found };
 	}
-	if (!best?.found.has('Name') || !best.found.has('Shift Start Time')) return null;
+	if (!best?.found.has('Name') || !best.found.has('Shift Start')) return null;
 	return {
 		headerRowIndex: best.row,
 		columns: Object.fromEntries(best.found) as WalkInLayout['columns'],
@@ -195,13 +202,13 @@ export function shiftFor(claimedAt: string, options: readonly ShiftOption[]): Sh
 }
 
 /** The cells a checkout fills in on its row: Name (marked as ours), and
- *  Shift Start Time when it has one. Final Status comes later, once walked. */
+ *  Shift Start when it has one. Final Status comes later, once walked. */
 export function walkInCells(
 	checkout: { slackUserName: string },
 	shift: string | null,
 ): Array<[WalkInColumn, string]> {
 	const cells: Array<[WalkInColumn, string]> = [['Name', markedName(checkout.slackUserName)]];
-	if (shift !== null) cells.push(['Shift Start Time', shift]);
+	if (shift !== null) cells.push(['Shift Start', shift]);
 	return cells;
 }
 
@@ -221,7 +228,7 @@ export function walkInWrites(
 	return cells.flatMap(([column, value]) => {
 		const index = layout.columns[column];
 		if (index === undefined) return [];
-		const asText = value !== '' && !(column === 'Shift Start Time' && options.shiftAsTyped);
+		const asText = value !== '' && !(column === 'Shift Start' && options.shiftAsTyped);
 		return [[index, asText ? `'${value}` : value] as [number, string]];
 	});
 }
@@ -245,7 +252,7 @@ export function isOurWalkIn(
 	ours: WalkInMark,
 ): boolean {
 	if (cell(row, layout, 'Name') !== ours.name.trim()) return false;
-	return ours.shift === null || sameText(cell(row, layout, 'Shift Start Time'), ours.shift);
+	return ours.shift === null || sameText(cell(row, layout, 'Shift Start'), ours.shift);
 }
 
 /** The row's Final Status, as displayed. */
@@ -256,7 +263,7 @@ export function walkInStatus(row: readonly string[] | undefined, layout: WalkInL
 /**
  * Where our row went, when it is no longer at the row recorded: the campaign
  * may have deleted, inserted or sorted rows since. The one row with our Name
- * — and our Shift Start Time, when we wrote one — that is not `exclude`d (the
+ * — and our Shift Start, when we wrote one — that is not `exclude`d (the
  * rows other checkouts hold). Null when there is none, or more than one: a
  * guess could clear somebody else's walk-in.
  */

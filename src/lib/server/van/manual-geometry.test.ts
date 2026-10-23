@@ -321,13 +321,14 @@ describe('drainGeometryForPress', () => {
 		expect(place).not.toHaveBeenCalled();
 	});
 
+	// Reported with its error, for the press's record to say.
 	it('frees the lock and carries on when a slice throws', async () => {
 		const run = vi.fn(async () => {
 			throw new Error('database is gone');
 		});
-		await expect(drainGeometryForPress(db, { ...configured, run: run as never })).resolves.toEqual(
-			[],
-		);
+		await expect(drainGeometryForPress(db, { ...configured, run: run as never })).resolves.toEqual([
+			{ campaignId: 1, attempted: 0, mapped: 0, failed: 'database is gone' },
+		]);
 		expect(await acquireSyncLock(db, vanSyncLock(1), 1000)).not.toBeNull();
 	});
 });

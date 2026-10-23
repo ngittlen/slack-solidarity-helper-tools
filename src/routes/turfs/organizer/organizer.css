@@ -90,6 +90,67 @@ main {
 	color: var(--color-error);
 }
 
+/* What the latest press found, under the button. */
+.van-sync-report {
+	margin: calc(-1 * var(--space-3)) 0 var(--space-5);
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+}
+
+.van-sync-notes,
+.van-sync-new {
+	margin: 0 0 var(--space-3);
+	padding-left: var(--space-5);
+}
+
+.van-sync-notes li + li,
+.van-sync-new li + li {
+	margin-top: var(--space-1);
+}
+
+.van-sync-notes li.is-error {
+	color: var(--color-error);
+}
+
+.van-sync-notes a {
+	margin-left: var(--space-1);
+	font-weight: 600;
+}
+
+.van-sync-new-heading {
+	margin: 0 0 var(--space-2);
+	font-weight: 600;
+	color: var(--color-text);
+}
+
+.van-sync-new {
+	list-style: none;
+	padding-left: 0;
+}
+
+.van-sync-new li {
+	padding-left: var(--space-3);
+	border-left: 3px solid var(--color-border);
+}
+
+.van-sync-new li.is-ready {
+	border-left-color: var(--color-gold);
+}
+
+.van-sync-new .turf-name {
+	color: var(--color-text);
+}
+
+.van-sync-new-status,
+.van-sync-new-caveat {
+	display: block;
+}
+
+.van-sync-new-caveat,
+.turf-sub.is-caveat {
+	color: var(--color-error);
+}
+
 /* --- Summary counts ------------------------------------------------------- */
 
 .summary {

@@ -30,9 +30,11 @@
 // one, and the running press does another pass, then drains again — new turf
 // first, since the queue takes turf not on the map first. Every pass clears the
 // request as it starts, so any number of presses meanwhile cost one pass.
-// After MAX_PASSES the press lets go with the request still standing, and it
-// is taken up by a fresh run (see the end of runHolding), so drains are
-// bounded per run but no press goes unanswered.
+// After MAX_PASSES the press hands the request still standing to a fresh run
+// (see the end of runHolding), so drains are bounded per run but no press goes
+// unanswered. The fresh run keeps the lock and the press's record, so the
+// page goes on following one press, and counts what it picked up from when
+// it was first pressed.
 //
 // A press that finds the lock held by a press that has since died — the
 // machine restarted mid-run — would leave a request nobody answers until the
@@ -44,14 +46,20 @@
 // before the next slot, so it is nearly always taken. Short and kept alive
 // while the pass runs, so a crash frees it in minutes while no pass, however
 // many campaigns it walks, outlives it.
+//
+// Each press that takes the lock keeps a record of what it is doing and what
+// it found (manual-sync-report.ts), which the page polls: the pass runs long
+// after the form has answered.
 
 import { and, eq, gt } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { acquireSyncLock, extendSyncLock, heldSyncLocks, releaseSyncLock } from '../sync-lock.js';
-import { runVanSync, type Caller } from '../scheduler.js';
+import { vanSyncPass, type Caller } from '../scheduler.js';
 import { syncLocks, vanCampaigns, vanSyncState } from '../schema.js';
 import { campaignName } from './campaigns.js';
 import { VAN_LEDGER_LOCK, vanSyncLock } from './locks.js';
+import type { CampaignDrain } from './manual-geometry.js';
+import { latestManualSync, ManualSyncRecord, type ManualSyncRun } from './manual-sync-report.js';
 
 type Db = LibSQLDatabase<Record<string, unknown>>;
 
@@ -94,8 +102,10 @@ export interface AfterPassContext {
 
 export interface ManualSyncOptions {
 	/** Run after each pass, under the same lock. Its failure is logged, never
-	 *  thrown. */
-	afterPass?: (ctx: AfterPassContext) => Promise<unknown>;
+	 *  thrown. What it returns goes in the press's record. */
+	afterPass?: (ctx: AfterPassContext) => Promise<CampaignDrain[] | void>;
+	/** Who pressed, for the record. */
+	startedByName?: string | null;
 	/** For tests. */
 	pollMs?: number;
 	maxWaitMs?: number;
@@ -214,6 +224,8 @@ async function runHolding(
 	call: Caller,
 	options: ManualSyncOptions,
 	token: string,
+	/** The press's record, when this run carries on for it. */
+	carried?: ManualSyncRecord,
 ): Promise<{ status: 'started' | 'queued'; done: Promise<void> }> {
 	const pollMs = options.pollMs ?? WAIT_POLL_MS;
 	const maxWaitMs = options.maxWaitMs ?? MAX_WAIT_MS;
@@ -228,6 +240,17 @@ async function runHolding(
 	}
 
 	const queued = running.length > 0;
+	let record: ManualSyncRecord;
+	if (carried) {
+		record = carried;
+		await record.reopen(queued ? 'waiting' : 'reading');
+	} else {
+		record = await ManualSyncRecord.start(
+			db,
+			options.startedByName ?? null,
+			queued ? 'waiting' : 'reading',
+		);
+	}
 	const heartbeat = setInterval(() => {
 		extendSyncLock(db, MANUAL_VAN_SYNC_LOCK, token, LOCK_TTL_MS).catch((err) =>
 			console.error('[van] manual sync: could not extend the lock:', err),
@@ -236,6 +259,7 @@ async function runHolding(
 	heartbeat.unref();
 
 	const done = (async () => {
+		let handOver = false;
 		try {
 			if (queued) {
 				console.log('[van] manual sync: waiting for the running sync to finish');
@@ -251,27 +275,48 @@ async function runHolding(
 					clearLooks = running.length === 0 ? clearLooks + 1 : 0;
 				}
 			}
-			await passes(db, call, options);
+			await passes(db, call, options, record);
 		} catch (err) {
 			console.error('[van] manual sync: failed:', err instanceof Error ? err.message : err);
 		} finally {
 			clearInterval(heartbeat);
+			// A press still waiting — past the last pass — is a fresh run's,
+			// under this lock and record. Letting go first would leave the
+			// record unfinished beside a free lock, which reads as a press that
+			// died.
 			try {
-				await releaseSyncLock(db, MANUAL_VAN_SYNC_LOCK, token);
+				handOver = await resyncRequested(db);
 			} catch (err) {
-				// The TTL frees it anyway.
-				console.error('[van] manual sync: could not release the lock:', err);
+				console.error('[van] manual sync: could not look for a press:', err);
+			}
+			if (!handOver) {
+				// Before the lock goes, for the same reason.
+				await record.finish();
+				try {
+					await releaseSyncLock(db, MANUAL_VAN_SYNC_LOCK, token);
+				} catch (err) {
+					// The TTL frees it anyway.
+					console.error('[van] manual sync: could not release the lock:', err);
+				}
 			}
 		}
 
-		// A press between our last look and the release above found the lock
-		// held, left its request and went. Nobody would answer it: take it here.
 		try {
+			if (handOver) {
+				await (
+					await runHolding(db, call, options, token, record)
+				).done;
+				return;
+			}
+			// A press between our last look and the release above found the lock
+			// held, left its request and went. Nobody would answer it: take it here.
 			if (await resyncRequested(db)) {
 				const again = await acquireSyncLock(db, MANUAL_VAN_SYNC_LOCK, LOCK_TTL_MS);
-				if (again) await (await runHolding(db, call, options, again)).done;
+				if (again) await (await runHolding(db, call, options, again, record)).done;
 			}
 		} catch (err) {
+			// runHolding let go of the lock: the record must not read as running.
+			await record.finish();
 			console.error(
 				'[van] manual sync: could not answer a late press:',
 				err instanceof Error ? err.message : err,
@@ -282,7 +327,12 @@ async function runHolding(
 }
 
 /** The pass, then the after-pass; again while presses keep asking. */
-async function passes(db: Db, call: Caller, options: ManualSyncOptions): Promise<void> {
+async function passes(
+	db: Db,
+	call: Caller,
+	options: ManualSyncOptions,
+	record: ManualSyncRecord,
+): Promise<void> {
 	const started = Date.now();
 	const hardStop = started + MAX_RUN_MS;
 	let deadline = started + AFTER_PASS_MS;
@@ -290,12 +340,21 @@ async function passes(db: Db, call: Caller, options: ManualSyncOptions): Promise
 		// This pass reads VAN after every press so far, so it answers them all.
 		await takeResync(db);
 		console.log(`[van] manual sync: pass ${pass} started`);
+		await record.passStarted();
 		const passStarted = Date.now();
 		try {
-			await runVanSync(call, db);
+			const answers = await vanSyncPass(call, db);
+			const failures = answers.filter((a) => a.error !== undefined);
+			if (failures.length > 0) {
+				console.error(
+					'[van] manual sync: failed:',
+					failures.map((a) => `campaign ${a.campaignId}: ${a.error}`).join('; '),
+				);
+			}
 			console.log(
 				`[van] manual sync: pass ${pass} done in ${Math.round((Date.now() - passStarted) / 1000)}s`,
 			);
+			await record.pass(answers);
 		} catch (err) {
 			console.error('[van] manual sync: failed:', err instanceof Error ? err.message : err);
 		}
@@ -305,8 +364,13 @@ async function passes(db: Db, call: Caller, options: ManualSyncOptions): Promise
 				deadline = Math.min(hardStop, Math.max(deadline, Date.now() + MIN_AFTER_RESYNC_MS));
 			}
 			const after = Date.now();
+			await record.phase('shapes');
 			try {
-				await options.afterPass({ deadline, shouldStop: () => resyncRequested(db) });
+				const drained = await options.afterPass({
+					deadline,
+					shouldStop: () => resyncRequested(db),
+				});
+				if (drained) await record.drain(drained);
 				console.log(
 					`[van] manual sync: after-pass done in ${Math.round((Date.now() - after) / 1000)}s`,
 				);
@@ -326,6 +390,11 @@ async function passes(db: Db, call: Caller, options: ManualSyncOptions): Promise
 			return;
 		}
 	}
+}
+
+/** The latest press's record, for the page. */
+export function latestManualVanSync(db: Db): Promise<ManualSyncRun | null> {
+	return latestManualSync(db, MANUAL_VAN_SYNC_LOCK);
 }
 
 export interface CampaignLastSync {

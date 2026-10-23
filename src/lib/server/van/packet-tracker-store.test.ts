@@ -76,7 +76,7 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 		);
 	const failing = new Map<string, { status: number; error: string }>();
 	const calls: string[] = [];
-	/** The Walk Ins tab's Shift Start Time drop-down. */
+	/** The Walk Ins tab's Shift Start drop-down. */
 	let dropdown: Array<{ label: string; text: boolean }> | null = ['10am', '1pm', '4pm', '6pm'].map(
 		(label) => ({ label, text: true }),
 	);
@@ -1018,7 +1018,7 @@ describe('parseSheetState', () => {
 describe('the Walk Ins tab', () => {
 	const WALK_IN_HEADER = [
 		'Name',
-		'Shift Start Time',
+		'Shift Start',
 		'Phone',
 		'Email',
 		'Zip Code',
@@ -1514,7 +1514,7 @@ describe('the Walk Ins tab', () => {
 		expect(result.filled).toBe(1);
 		expect(result.failed).toBe(1);
 		const [, text] = vi.mocked(postAlert).mock.calls.at(-1)!;
-		expect(text).toContain('Walk Ins tab: it has no "Name" or "Shift Start Time" column');
+		expect(text).toContain('Walk Ins tab: it has no "Name" or "Shift Start" column');
 		expect(text).toContain('1 checkout(s) are waiting');
 	});
 

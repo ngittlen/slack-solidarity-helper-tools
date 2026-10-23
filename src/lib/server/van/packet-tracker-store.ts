@@ -768,11 +768,11 @@ const walkInFailure = (error: string, status: number): SheetFailure => ({
 	status,
 });
 
-/** How far down the tab the Shift Start Time drop-down is looked for. */
+/** How far down the tab the Shift Start drop-down is looked for. */
 const DROPDOWN_SEARCH_ROWS = 20;
 
 /**
- * The options of the tab's Shift Start Time drop-down, or the ones it had when
+ * The options of the tab's Shift Start drop-down, or the ones it had when
  * this was written if it has none or cannot be read. Only a lapsed budget or
  * the minute's quota stops the run.
  */
@@ -787,13 +787,13 @@ async function shiftOptions(
 		tabName: WALK_IN_TAB_NAME,
 		rowIndex: layout.headerRowIndex + 1,
 		rows: DROPDOWN_SEARCH_ROWS,
-		columnIndex: layout.columns['Shift Start Time'],
+		columnIndex: layout.columns['Shift Start'],
 		deadline,
 	});
 	if (!res.ok) {
 		if (isDeferral(res)) return res;
 		console.warn(
-			`${LOG} could not read the Shift Start Time options in ${spreadsheetId}: ${res.status}`,
+			`${LOG} could not read the Shift Start options in ${spreadsheetId}: ${res.status}`,
 		);
 	} else if (res.value && res.value.length > 0) {
 		return res.value;
@@ -894,7 +894,7 @@ async function syncWalkIns(
 	}
 	const layout = findWalkInLayout(read.value);
 	if (!layout) {
-		return fail({ status: 0, error: 'it has no "Name" or "Shift Start Time" column' }, jobs.length);
+		return fail({ status: 0, error: 'it has no "Name" or "Shift Start" column' }, jobs.length);
 	}
 	let shifts: readonly ShiftOption[] = DEFAULT_SHIFT_STARTS;
 	if (jobs.some((j) => j.work === 'fill')) {
@@ -1083,7 +1083,7 @@ async function syncWalkIns(
 		// Only what we wrote and is still as we wrote it: a Final Status the
 		// campaign has picked since stays. Name and shift were just checked.
 		const blanks: Array<[WalkInColumn, string]> = [['Name', '']];
-		if (ours.shift !== null) blanks.push(['Shift Start Time', '']);
+		if (ours.shift !== null) blanks.push(['Shift Start', '']);
 		if (state!.status !== undefined && walkInStatus(fresh.value, layout) === state!.status) {
 			blanks.push(['Final Status', '']);
 		}

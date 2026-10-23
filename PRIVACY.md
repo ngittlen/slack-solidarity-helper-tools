@@ -280,6 +280,10 @@ tried in `van_turf_placement_misses`), and nothing about any voter. When an orga
 turf's chapter by hand instead, it also records the organizer's display name there, as it does for
 other organizer changes.
 
+When an organizer presses **Sync VAN now**, the app keeps a record of that sync in
+`van_manual_sync_runs` — when it started and finished, the organizer's display name, and how each
+campaign's sync went — so the organizer page can show its progress. Only the last ten are kept.
+
 ### Canvassing results
 
 Door counts now come from the turf checkout ledger above: the doors that left a turf in VAN

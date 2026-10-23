@@ -35,11 +35,12 @@
 // Free of settings and env imports so the sync, the press and the tests can
 // all run it: the chapters turf may go to are passed in.
 
-import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import {
 	vanCampaigns,
 	vanChapterFolders,
+	vanGeometryQueue,
 	vanTurfPlacementMisses,
 	vanTurfPlacements,
 	vanTurfs,
@@ -600,8 +601,24 @@ export interface RequestedTurfRow {
 	campaignId: number;
 	name: string;
 	regionName: string;
+	/** When the catalog sync first read it from VAN. */
+	firstSeenAt: string;
 	/** It has a location, so the automatic placement can work on it. */
 	located: boolean;
+	/** Why turf with no location has none yet; null once it has one.
+	 *  `waiting`: its shape is queued, or will be on the next sync. `failed`:
+	 *  the geometry worker gave up on it. `empty`: VAN lists nobody in it (or
+	 *  no list at all), so there is nothing to draw and it is never queued.
+	 *  `unmapped`: its export came back with no address that could be put on
+	 *  the map. */
+	shape: 'waiting' | 'failed' | 'empty' | 'unmapped' | null;
+	/** The geometry worker's last error, with `failed`. */
+	shapeError: string | null;
+	/** It has a MiniVAN list number. Whether, never which: the number is the
+	 *  credential (see holdings-store.ts). */
+	claimable: boolean;
+	/** An admin hid it from volunteers on its /turfs card. */
+	hidden: boolean;
 	/** The automatic placement tried it where it is now and nothing fit.
 	 *  False for located turf no run has reached yet. */
 	missed: boolean;
@@ -611,17 +628,35 @@ export interface RequestedTurfRow {
 	> | null;
 }
 
-/** Every enabled campaign's live requested turf, unplaced first: at most
- *  `limit` rows, and how many there are in all, so the page can say what it
- *  left out. */
+/** Which requested turf a "Sync VAN now" press picked up: what is in the
+ *  folder now and was not in `excludeTurfIds` when it started — or, with no
+ *  such list, what the catalog first read since `firstSeenSince`, which
+ *  misses turf moved into the folder. */
+export interface RequestedTurfFilter {
+	excludeTurfIds?: readonly number[];
+	firstSeenSince?: string;
+}
+
+/** Every enabled campaign's live requested turf, unplaced first and then
+ *  newest: at most `limit` rows, and how many there are in all, so the page
+ *  can say what it left out. */
 export async function loadRequestedTurf(
 	db: Db,
 	limit = 300,
+	filter: RequestedTurfFilter = {},
 ): Promise<{ turfs: RequestedTurfRow[]; total: number }> {
 	const scope = and(
 		eq(vanCampaigns.enabled, true),
 		eq(vanCampaigns.requestedFolderId, vanTurfs.folderId),
 		isNull(vanTurfs.retiredAt),
+		// One bound parameter, not one per turf: a folder can hold more turf
+		// than an old SQLite takes parameters (see sql-chunk.ts).
+		filter.excludeTurfIds?.length
+			? sql`${vanTurfs.turfId} not in (select value from json_each(${JSON.stringify(filter.excludeTurfIds)}))`
+			: undefined,
+		filter.firstSeenSince === undefined
+			? undefined
+			: gte(vanTurfs.firstSeenAt, filter.firstSeenSince),
 	);
 	const rows = await db
 		.select({
@@ -629,7 +664,14 @@ export async function loadRequestedTurf(
 			campaignId: vanTurfs.campaignId,
 			name: vanTurfs.name,
 			regionName: vanTurfs.regionName,
+			firstSeenAt: vanTurfs.firstSeenAt,
 			centroidLat: vanTurfs.centroidLat,
+			savedListId: vanTurfs.savedListId,
+			routeSize: vanTurfs.routeSize,
+			hasListNumber: sql<number>`${vanTurfs.printedListNumber} is not null`,
+			hiddenAt: vanTurfs.hiddenAt,
+			queueStatus: vanGeometryQueue.status,
+			queueError: vanGeometryQueue.lastError,
 			missed: sql<number>`${missedWhereItIs()}`,
 			placement: vanTurfPlacements,
 		})
@@ -637,8 +679,13 @@ export async function loadRequestedTurf(
 		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
 		.leftJoin(vanTurfPlacements, eq(vanTurfPlacements.turfId, vanTurfs.turfId))
 		.leftJoin(vanTurfPlacementMisses, eq(vanTurfPlacementMisses.turfId, vanTurfs.turfId))
+		.leftJoin(vanGeometryQueue, eq(vanGeometryQueue.turfId, vanTurfs.turfId))
 		.where(scope)
-		.orderBy(sql`${vanTurfPlacements.turfId} is not null`, vanTurfs.name)
+		.orderBy(
+			sql`${vanTurfPlacements.turfId} is not null`,
+			desc(vanTurfs.firstSeenAt),
+			vanTurfs.name,
+		)
 		.limit(limit);
 	const total =
 		rows.length < limit
@@ -657,7 +704,12 @@ export async function loadRequestedTurf(
 		campaignId: r.campaignId,
 		name: r.name,
 		regionName: r.regionName,
+		firstSeenAt: r.firstSeenAt,
 		located: r.centroidLat !== null,
+		shape: shapeState(r),
+		shapeError: r.queueStatus === 'failed' ? r.queueError : null,
+		claimable: Boolean(r.hasListNumber),
+		hidden: r.hiddenAt !== null,
 		missed: r.centroidLat !== null && Boolean(r.missed),
 		placement: r.placement
 			? {
@@ -671,4 +723,62 @@ export async function loadRequestedTurf(
 			: null,
 	}));
 	return { turfs, total };
+}
+
+/** See RequestedTurfRow.shape. The emptiness test is the catalog's own for
+ *  not queuing a turf (planCatalogSync). */
+function shapeState(r: {
+	centroidLat: number | null;
+	savedListId: number | null;
+	routeSize: number;
+	queueStatus: string | null;
+}): RequestedTurfRow['shape'] {
+	if (r.centroidLat !== null) return null;
+	if (r.savedListId === null || r.routeSize <= 0) return 'empty';
+	if (r.queueStatus === 'failed') return 'failed';
+	if (r.queueStatus === 'done') return 'unmapped';
+	return 'waiting';
+}
+
+/**
+ * How a requested turf came to be where it is — or what is keeping it off
+ * volunteers' maps — for its row on /turfs/organizer and in a press's report.
+ */
+export function requestedTurfLabel(turf: RequestedTurfRow): string {
+	const p = turf.placement;
+	if (!p) {
+		switch (turf.shape) {
+			case 'empty':
+				return 'Not placed: VAN lists nobody in it, so it has no shape to place it by — pick a chapter for it';
+			case 'failed':
+				return (
+					'Not placed: its shape failed to load from VAN' +
+					(turf.shapeError ? ` (${truncate(turf.shapeError, 140)})` : '')
+				);
+			case 'unmapped':
+				return 'Not placed: none of its addresses could be put on the map — pick a chapter for it';
+			case 'waiting':
+				return 'Not placed yet: waiting for its shape from VAN';
+		}
+		return turf.missed
+			? 'Not placed: no chapter fits where it is'
+			: 'Not placed yet: placed on the next sync';
+	}
+	if (p.source === 'organizer') return `Set by ${p.placedByName ?? 'an organizer'}`;
+	if (p.source === 'zip') return `By ZIP ${p.zip ?? ''}`.trim();
+	return 'By the turf around it';
+}
+
+/** What still stops volunteers taking a requested turf once it is placed. */
+export function requestedTurfCaveats(turf: RequestedTurfRow): string[] {
+	const caveats: string[] = [];
+	if (!turf.claimable) {
+		caveats.push('No MiniVAN list number yet: not claimable until its printed list is made in VAN');
+	}
+	if (turf.hidden) caveats.push('Hidden from volunteers');
+	return caveats;
+}
+
+function truncate(text: string, max: number): string {
+	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }

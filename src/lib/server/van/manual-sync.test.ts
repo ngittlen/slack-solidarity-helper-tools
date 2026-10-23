@@ -9,8 +9,10 @@ import {
 	MANUAL_VAN_RESYNC,
 	MANUAL_VAN_SYNC_LOCK,
 	lastVanSyncs,
+	latestManualVanSync,
 	startManualVanSync,
 } from './manual-sync.js';
+import { failureReason } from './manual-sync-report.js';
 
 // A real in-memory libsql with the real schema, like scheduler.test.ts: what
 // stops two presses running two passes is the lock's atomic upsert, and the
@@ -327,5 +329,196 @@ describe('lastVanSyncs', () => {
 			{ id: 1, name: expect.any(String), lastSyncAt: '2026-10-06T10:00:00.000Z', failed: true },
 			{ id: 2, name: 'Partner', lastSyncAt: null, failed: false },
 		]);
+	});
+});
+
+describe('failureReason', () => {
+	it('takes the reason from a short answer', () => {
+		expect(
+			failureReason('/api/internal/van-sync answered 500: {"error":"SQLITE_BUSY"}', 'old'),
+		).toBe('SQLITE_BUSY');
+		expect(
+			failureReason(
+				'/api/internal/van-sync answered 500: {"campaigns":[{"campaignId":1,"error":"HTTP 401"}]}',
+				'old',
+			),
+		).toBe('HTTP 401');
+	});
+
+	it('takes the campaign’s stored reason when the answer was cut short', () => {
+		expect(
+			failureReason('/api/internal/van-sync answered 500: {"expired":3,"campaig', 'HTTP 401'),
+		).toBe('HTTP 401');
+		expect(failureReason('/api/internal/van-sync answered 502: <html>', null)).toBe(
+			'the sync request failed (HTTP 502)',
+		);
+	});
+
+	it('says a timeout as it is, without the path', () => {
+		expect(failureReason('/api/internal/van-sync took longer than 5 minutes', 'old')).toBe(
+			'the sync request took longer than 5 minutes',
+		);
+	});
+});
+
+// What the page shows while a press runs and after (manual-sync-report.ts).
+describe('the press record', () => {
+	const PARTNER = `INSERT INTO van_campaigns (id, credential_key, label, enabled, last_edited_by, last_edited_by_name, last_edited_at)
+		VALUES (2, 'other', 'Partner', 1, 's', 's', 'x')`;
+
+	it('follows the press from reading VAN to done, naming who pressed', async () => {
+		const pass = hanging();
+		const phases: string[] = [];
+		const result = await startManualVanSync(db, pass.call, {
+			...FAST,
+			startedByName: 'Alex',
+			afterPass: async () => {
+				phases.push((await latestManualVanSync(db))!.phase);
+				return [{ campaignId: 1, attempted: 3, mapped: 2, stopped: 'out of time' }];
+			},
+		});
+		await vi.waitFor(() => expect(pass.reached()).toBe(true));
+		expect(await latestManualVanSync(db)).toMatchObject({
+			phase: 'reading',
+			passes: 1,
+			startedByName: 'Alex',
+			finishedAt: null,
+			stalled: false,
+		});
+		pass.finish();
+		await result.done;
+		expect(phases).toEqual(['shapes']);
+		expect(await latestManualVanSync(db)).toMatchObject({
+			phase: 'done',
+			finishedAt: expect.any(String),
+			stalled: false,
+			report: {
+				campaigns: [{ campaignId: 1, outcome: 'synced', noRequestedFolder: true }],
+				drain: [{ campaignId: 1, attempted: 3, mapped: 2, stopped: 'out of time' }],
+			},
+		});
+	});
+
+	it('starts out waiting behind a scheduled sync that is running', async () => {
+		const held = (await acquireSyncLock(db, vanSyncLock(1), MINUTE))!;
+		const { call } = recorder();
+		const result = await startManualVanSync(db, call, { ...FAST, pollMs: 10 });
+		expect(result.status).toBe('queued');
+		expect((await latestManualVanSync(db))!.phase).toBe('waiting');
+		await releaseSyncLock(db, vanSyncLock(1), held);
+		await result.done;
+		expect((await latestManualVanSync(db))!.phase).toBe('done');
+	});
+
+	// Why the organizer's turf did not come, campaign by campaign.
+	it('records each campaign’s outcome, with a failure’s own reason', async () => {
+		await client.batch([
+			PARTNER,
+			'UPDATE van_campaigns SET requested_folder_id = 900 WHERE id = 1',
+			"INSERT INTO van_sync_state (campaign_id, last_error) VALUES (2, 'VAN rejected the API key')",
+		]);
+		const call: Caller = async (_path, params) => {
+			if (params.campaign === '2') {
+				throw new Error('/api/internal/van-sync answered 500: {"campaigns":[]}');
+			}
+			return { campaigns: [{ campaignId: 1, foldersSkipped: 2, newTurfsHeld: 3 }] };
+		};
+		await (
+			await startManualVanSync(db, call, FAST)
+		).done;
+		const run = (await latestManualVanSync(db))!;
+		expect(run.report!.campaigns).toEqual(
+			expect.arrayContaining([
+				{
+					campaignId: 1,
+					name: expect.any(String),
+					outcome: 'synced',
+					foldersSkipped: 2,
+					newRoutesHeld: 3,
+					noRequestedFolder: false,
+				},
+				{
+					campaignId: 2,
+					name: 'Partner',
+					outcome: 'failed',
+					error: 'VAN rejected the API key',
+					noRequestedFolder: true,
+				},
+			]),
+		);
+	});
+
+	it('says when another sync kept a campaign from being read', async () => {
+		const call: Caller = async () => ({
+			campaigns: [{ campaignId: 1, skipped: 'another catalog sync is in progress' }],
+		});
+		await (
+			await startManualVanSync(db, call, FAST)
+		).done;
+		expect((await latestManualVanSync(db))!.report!.campaigns[0]).toMatchObject({
+			outcome: 'skipped',
+			error: 'another catalog sync is in progress',
+		});
+	});
+
+	// Its machine stopped: nothing will finish the record.
+	it('reads as stalled once nobody holds the press lock', async () => {
+		await client.execute(
+			"INSERT INTO van_manual_sync_runs (started_at, phase, passes) VALUES ('2026-10-23T10:00:00.000Z', 'shapes', 1)",
+		);
+		expect((await latestManualVanSync(db))!.stalled).toBe(true);
+		const token = (await acquireSyncLock(db, MANUAL_VAN_SYNC_LOCK, MINUTE))!;
+		expect((await latestManualVanSync(db))!.stalled).toBe(false);
+		await releaseSyncLock(db, MANUAL_VAN_SYNC_LOCK, token);
+	});
+
+	// The turf an organizer moved into the folder keeps the firstSeenAt it
+	// had; what was there when they pressed is what the page leaves out.
+	it('remembers the requested turf already there when it was pressed', async () => {
+		await client.batch([
+			'UPDATE van_campaigns SET requested_folder_id = 900 WHERE id = 1',
+			`INSERT INTO van_turfs (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id, chapter_id, name, first_seen_at, last_seen_at)
+			 VALUES (500, 1, 500, 1, 900, 0, 'Already there', 'x', 'x'), (600, 1, 600, 1, 10, 0, 'Elsewhere', 'x', 'x')`,
+		]);
+		const call: Caller = async () => {
+			// The press's pass moves 600 into the folder.
+			await client.execute('UPDATE van_turfs SET folder_id = 900 WHERE turf_id = 600');
+			return {};
+		};
+		await (
+			await startManualVanSync(db, call, FAST)
+		).done;
+		expect((await latestManualVanSync(db))!.requestedTurfIds).toEqual([500]);
+	});
+
+	// A press past the last pass is answered by a fresh run of the same press,
+	// so the page follows one press and counts from when it was pressed.
+	it('keeps one record through a fresh run for presses past its last pass', async () => {
+		const { calls, call } = recorder();
+		const joined: Promise<void>[] = [];
+		const seen: Array<{ finished: boolean; stalled: boolean }> = [];
+		const first = await startManualVanSync(db, call, {
+			...FAST,
+			afterPass: async () => {
+				const now = (await latestManualVanSync(db))!;
+				seen.push({ finished: now.finishedAt !== null, stalled: now.stalled });
+				if (joined.length >= 4) return;
+				joined.push((await startManualVanSync(db, call, FAST)).done);
+			},
+		});
+		await first.done;
+		await Promise.all(joined);
+		expect(calls).toHaveLength(5);
+		const { rows } = await client.execute('SELECT count(*) AS n FROM van_manual_sync_runs');
+		expect(rows[0]!.n).toBe(1);
+		expect(await latestManualVanSync(db)).toMatchObject({ passes: 5, phase: 'done' });
+		expect(seen.every((s) => !s.finished && !s.stalled)).toBe(true);
+	});
+
+	it('keeps only the last few runs', async () => {
+		const { call } = recorder();
+		for (let i = 0; i < 12; i++) await (await startManualVanSync(db, call, FAST)).done;
+		const { rows } = await client.execute('SELECT count(*) AS n FROM van_manual_sync_runs');
+		expect(rows[0]!.n).toBe(10);
 	});
 });
