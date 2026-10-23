@@ -455,6 +455,49 @@ describe('POST /api/internal/van-sync', () => {
 		expect(order).toEqual(['place', 'geometry']);
 	});
 
+	// Later, the catalog and the contact counts could leave it nothing.
+	it('places straight after the catalog, before the contact counts', async () => {
+		const order: string[] = [];
+		mockPlace.mockImplementation(async () => {
+			order.push('place');
+			return PLACED;
+		});
+		mockRunContactStage.mockImplementation(async () => {
+			order.push('contacts');
+			return null;
+		});
+		await POST(event());
+		expect(order).toEqual(['place', 'contacts']);
+	});
+
+	// A run that ran out of time having placed nothing is the one most worth
+	// seeing in the logs.
+	it('logs a placement that ran out of time, though it placed nothing', async () => {
+		const log = vi.spyOn(console, 'log');
+		mockPlace.mockResolvedValue({ ...PLACED, byZip: 0, byNearby: 0, budgetLapsed: true });
+		await POST(event());
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining('requested turf placed'),
+			expect.objectContaining({ budgetLapsed: true }),
+		);
+	});
+
+	// Said, not silent: a skip that left no trace is how a backlog of requested
+	// turf sat unplaced run after run.
+	it('warns when the catalog leaves no time to place requested turf', async () => {
+		mockCampaigns.mockResolvedValue([{ ...PRIMARY, requestedFolderId: 900 }]);
+		const realNow = Date.now;
+		mockRunCatalogSync.mockImplementation(async () => {
+			const later = realNow() + 10 * 60 * 1000;
+			vi.spyOn(Date, 'now').mockImplementation(() => later);
+			return result;
+		});
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		await POST(event());
+		expect(mockPlace).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining('no time left to place'));
+	});
+
 	it('does not fail the sync when placement fails', async () => {
 		mockPlace.mockRejectedValue(new Error('census down'));
 		const res = await POST(event());
@@ -686,6 +729,20 @@ describe('POST /api/internal/van-sync', () => {
 			await vi.advanceTimersByTimeAsync(80 * 1000);
 			return pending;
 		}
+
+		// Placement needs neither VAN nor this lock, and a drain or webhook can
+		// hold it for run after run.
+		it('still places requested turf when it skips', async () => {
+			campaignLockHeld();
+			mockPlace.mockResolvedValue(PLACED);
+			const res = await postWaiting();
+			expect(mockPlace).toHaveBeenCalledWith(
+				{},
+				expect.objectContaining({ id: 1 }),
+				expect.anything(),
+			);
+			expect((await campaignOf(res)).placement).toEqual(PLACED);
+		});
 
 		it('skips without error once the wait runs out', async () => {
 			campaignLockHeld();

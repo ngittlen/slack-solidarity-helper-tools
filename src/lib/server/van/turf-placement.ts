@@ -47,6 +47,8 @@ import {
 	type VanTurfPlacementRow,
 } from '../schema.js';
 import { haversineMeters, type LatLng } from '../../van/geometry.js';
+import { acquireSyncLock, releaseSyncLock } from '../sync-lock.js';
+import { vanPlacementLock } from './locks.js';
 import { zipForPoint } from './zip-centroid.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -83,6 +85,10 @@ export interface PlacementResult {
 	/** Placements dropped because their turf is no longer in the folder. */
 	cleared: number;
 	budgetLapsed: boolean;
+	/** Another run is placing this campaign's turf; nothing was done. */
+	busy?: true;
+	/** shouldStop asked it to stop before the list was through. */
+	stopped?: true;
 }
 
 export interface PlacementOptions {
@@ -96,7 +102,14 @@ export interface PlacementOptions {
 	fetchFn?: typeof fetch;
 	timeBudgetMs?: number;
 	now?: Date;
+	/** Asked every STOP_CHECK_MS while it runs: true stops it taking more turf. */
+	shouldStop?: () => Promise<boolean>;
 }
+
+/** How often a run asks shouldStop: it is a database read. */
+const STOP_CHECK_MS = 5 * 1000;
+/** Past the budget, for the lookups in flight and the writes after them. */
+const LOCK_SLACK_MS = 2 * 60 * 1000;
 
 /** Turf that votes in the fallback: its location and the chapters it is in. */
 interface Voter {
@@ -106,17 +119,15 @@ interface Voter {
 
 /**
  * Place the campaign's requested turf that needs it. Never throws for one
- * turf; a thrown error means the database is unreachable.
+ * turf; a thrown error means the database is unreachable. `busy` when another
+ * run is placing the same campaign's turf: try again shortly, or leave it to
+ * that run.
  */
 export async function placeRequestedTurf(
 	db: Db,
 	campaign: { id: number; requestedFolderId: number | null },
 	options: PlacementOptions,
 ): Promise<PlacementResult> {
-	const deadline = Date.now() + (options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
-	const nowDate = options.now ?? new Date();
-	const now = nowDate.toISOString();
-	const retryBefore = new Date(nowDate.getTime() - MISS_RETRY_MS).toISOString();
 	const result: PlacementResult = {
 		byZip: 0,
 		byNearby: 0,
@@ -124,6 +135,36 @@ export async function placeRequestedTurf(
 		cleared: 0,
 		budgetLapsed: false,
 	};
+
+	// One run at a time per campaign. Not for an organizer's own turf: one
+	// turf, and they are waiting on the page for it.
+	if (options.turfIds) return placeUnderLock(db, campaign, options, result);
+	const lock = vanPlacementLock(campaign.id);
+	const token = await acquireSyncLock(
+		db,
+		lock,
+		(options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS) + LOCK_SLACK_MS,
+	);
+	if (!token) return { ...result, busy: true };
+	try {
+		return await placeUnderLock(db, campaign, options, result);
+	} finally {
+		await releaseSyncLock(db, lock, token).catch(() => {
+			// It lapses on its own.
+		});
+	}
+}
+
+async function placeUnderLock(
+	db: Db,
+	campaign: { id: number; requestedFolderId: number | null },
+	options: PlacementOptions,
+	result: PlacementResult,
+): Promise<PlacementResult> {
+	const deadline = Date.now() + (options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
+	const nowDate = options.now ?? new Date();
+	const now = nowDate.toISOString();
+	const retryBefore = new Date(nowDate.getTime() - MISS_RETRY_MS).toISOString();
 
 	result.cleared = await clearStale(db, campaign);
 	if (campaign.requestedFolderId === null) return result;
@@ -230,11 +271,20 @@ export async function placeRequestedTurf(
 	// once they are all through.
 	let next = 0;
 	let failure: { err: unknown } | null = null;
+	let lastStopCheck = Date.now();
 	const worker = async (): Promise<void> => {
-		while (next < candidates.length && !failure) {
+		while (next < candidates.length && !failure && !result.stopped) {
 			if (Date.now() >= deadline) {
 				result.budgetLapsed = true;
 				return;
+			}
+			if (options.shouldStop && Date.now() - lastStopCheck >= STOP_CHECK_MS) {
+				lastStopCheck = Date.now();
+				if (await options.shouldStop()) {
+					result.stopped = true;
+					return;
+				}
+				continue;
 			}
 			try {
 				await placeOne(candidates[next++]!);

@@ -4,6 +4,8 @@ import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import { and, isNull } from 'drizzle-orm';
 import { vanTurfs } from '../schema.js';
+import { acquireSyncLock, releaseSyncLock } from '../sync-lock.js';
+import { vanPlacementLock } from './locks.js';
 import { visibleToAnyChapter, visibleToChapter } from './chapter-visibility.js';
 import {
 	NEARBY_TURF_VOTES,
@@ -427,6 +429,47 @@ describe('placeRequestedTurf', () => {
 		);
 		// The first few, in flight together; none took another after.
 		expect(calls).toBe(PLACEMENT_CONCURRENCY);
+	});
+
+	// The staggered cron runs, the press and the webhook must not all look up
+	// the same turf at once.
+	it('leaves the turf to another run placing the same campaign', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		await zipChapter('48104', 71);
+		const held = await acquireSyncLock(db, vanPlacementLock(1), 60_000);
+		const fetchFn = census('48104');
+		const result = await place(fetchFn);
+		expect(result).toMatchObject({ busy: true, byZip: 0 });
+		expect(fetchFn).not.toHaveBeenCalled();
+
+		// An organizer's own turf does not wait for it.
+		expect(await place(fetchFn, [500])).toMatchObject({ byZip: 1 });
+
+		await releaseSyncLock(db, vanPlacementLock(1), held!);
+		await turf(501, REQUESTED, ANN_ARBOR);
+		expect(await place(fetchFn)).toMatchObject({ byZip: 1 });
+		// And lets it go.
+		expect(await acquireSyncLock(db, vanPlacementLock(1), 1000)).not.toBeNull();
+	});
+
+	it('stops taking turf when asked to', async () => {
+		for (let i = 0; i < 20; i++) await turf(500 + i, REQUESTED, ANN_ARBOR);
+		await zipChapter('48104', 71);
+		const realNow = Date.now;
+		let calls = 0;
+		const fetchFn = vi.fn(async () => {
+			// The check is due from the second turf on.
+			if (++calls === 1) vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 10_000);
+			return Response.json({ features: [{ attributes: { ZCTA5: '48104' } }] });
+		}) as unknown as typeof fetch;
+		const result = await placeRequestedTurf(db, CAMPAIGN, {
+			chapters: CHAPTERS,
+			fetchFn,
+			timeBudgetMs: 60_000,
+			shouldStop: async () => true,
+		});
+		expect(result.stopped).toBe(true);
+		expect(result.byZip).toBeLessThan(20);
 	});
 
 	it('looks up several turfs at once', async () => {

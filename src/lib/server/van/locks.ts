@@ -58,6 +58,16 @@ export function vanContactLock(campaignId: number): string {
 }
 
 /**
+ * A campaign's requested-turf placement (turf-placement.ts): one run at a
+ * time. Not vanSyncLock — placement needs no VAN and must run when a drain
+ * holds that — but its own, so the staggered cron runs, the press and the
+ * export webhook do not all look up the same turf with the Census at once.
+ */
+export function vanPlacementLock(campaignId: number): string {
+	return `van-placement:${campaignId}`;
+}
+
+/**
  * A campaign's live ContactHistory poll (live-contacts.ts): one machine polls
  * at a time. Not vanContactLock, which the scheduled pull and the completion
  * nudge would then find taken every half minute.

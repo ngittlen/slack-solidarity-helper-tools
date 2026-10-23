@@ -197,13 +197,25 @@ async function runPlacement(
 	// Run with no folder too: that is what clears placements left over from
 	// one that has been unset.
 	const timeBudgetMs = Math.min(PLACEMENT_BUDGET_MS, deadline - Date.now());
-	if (timeBudgetMs < MIN_PLACEMENT_BUDGET_MS) return null;
+	if (timeBudgetMs < MIN_PLACEMENT_BUDGET_MS) {
+		// Said, not silent: a skip that left no trace is how a backlog of
+		// requested turf sat unplaced run after run.
+		if (campaign.requestedFolderId !== null) {
+			console.warn(`${logPrefix} no time left to place requested turf this run`);
+		}
+		return null;
+	}
 	try {
 		const result = await placeRequestedTurf(db, campaign, {
 			chapters: await placementChapters(db),
 			timeBudgetMs,
 		});
-		if (result.byZip + result.byNearby + result.unplaced + result.cleared > 0) {
+		// A run that ran out of time having placed nothing is the one most
+		// worth seeing.
+		if (
+			result.byZip + result.byNearby + result.unplaced + result.cleared > 0 ||
+			result.budgetLapsed
+		) {
 			console.log(`${logPrefix} requested turf placed:`, result);
 		}
 		return result;
@@ -424,12 +436,16 @@ async function syncCampaign(
 		} catch (err) {
 			console.error(`${logPrefix} contact sync failed:`, err instanceof Error ? err.message : err);
 		}
+		// Placement too: it needs neither VAN nor this lock, and a drain or
+		// export webhook can hold the lock for run after run.
+		const placement = await runPlacement(campaign, requestDeadline - reserveMs, logPrefix);
 		return {
 			failed: false,
 			body: {
 				campaignId: campaign.id,
 				skipped: 'another catalog sync is in progress',
 				contacts: contacts ?? { disabled: true },
+				placement,
 			},
 		};
 	}
@@ -460,6 +476,15 @@ async function syncCampaign(
 					: ''),
 			{ skipped: result.foldersSkipped, degraded: result.degraded },
 		);
+
+		// Requested turf that has a location since the last run — from this
+		// campaign's geometry, the export webhook or a "Sync VAN now" drain —
+		// goes to its chapter (van/turf-placement.ts). Straight after the
+		// catalog, which is what puts turf in the requested folder: later, the
+		// catalog and the contact counts could leave it nothing, and it was
+		// skipped run after run. A turf shaped on this run is placed on the
+		// next, or by the press that shaped it. Never fails the sync.
+		const placement = await runPlacement(campaign, requestDeadline - reserveMs, logPrefix);
 
 		// Story 4's confirmation half. The catalog read is the only place VAN's
 		// `dateRefreshed` shows up, so a refresh we asked for on an earlier tick
@@ -503,13 +528,6 @@ async function syncCampaign(
 				);
 			}
 		}
-
-		// Requested turf that has a location since the last run — from this
-		// campaign's geometry, the export webhook or a "Sync VAN now" drain —
-		// goes to its chapter (van/turf-placement.ts). Before geometry, which
-		// takes whatever time is left: a turf shaped on this run is placed on
-		// the next, or by the press that shaped it. Never fails the sync.
-		const placement = await runPlacement(campaign, requestDeadline - reserveMs, logPrefix);
 
 		// Geometry runs after the catalog because the catalog is what fills the
 		// queue: a turf cut minutes ago gets its shape on this run rather than
