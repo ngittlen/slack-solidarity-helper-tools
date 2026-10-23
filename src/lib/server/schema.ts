@@ -1655,6 +1655,32 @@ export const vanSyncState = sqliteTable('van_sync_state', {
 	alertedError: text('alerted_error'),
 });
 
+// What each "Sync VAN now" press did, for /turfs/organizer to show while it
+// runs and after (van/manual-sync.ts). In the database rather than in memory
+// because the press runs on whichever machine took the form, and the page that
+// polls it may be served by another. Pruned to the last few runs.
+export const vanManualSyncRuns = sqliteTable('van_manual_sync_runs', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	startedAt: text('started_at').notNull(),
+	/** The organizer who pressed, as the page names them. */
+	startedByName: text('started_by_name'),
+	/** 'waiting' | 'reading' | 'shapes' | 'done' */
+	phase: text('phase').notNull(),
+	/** Passes started: more than one when presses came in meanwhile. */
+	passes: integer('passes').notNull().default(0),
+	/** Null while it runs — or, with the press lock free, after its machine
+	 *  stopped partway (see latestManualSync). */
+	finishedAt: text('finished_at'),
+	/** JSON ManualSyncReport: each campaign's catalog outcome on the last pass,
+	 *  and the shape drain's. */
+	report: text('report'),
+	/** JSON array: the requested turf already in its folder when the press
+	 *  started. What is there now and not here is what the press picked up —
+	 *  new routes, and routes moved into the folder, which keep the
+	 *  `firstSeenAt` they had. Null when it could not be read. */
+	requestedTurfIds: text('requested_turf_ids'),
+});
+
 // zip -> lat/lng cache for the "no geolocation" fallback. Deliberately shaped
 // like mobilize_geocoded_zips, including the never-throw contract of the
 // geocoder that fills it: a lookup failure yields no row, never an exception.

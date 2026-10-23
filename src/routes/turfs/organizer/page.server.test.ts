@@ -20,6 +20,7 @@ const mockSetPlacement = vi.hoisted(() =>
 );
 const mockPlace = vi.hoisted(() => vi.fn(async () => ({})));
 const mockDrainGeometry = vi.hoisted(() => vi.fn(async () => []));
+const mockSyncView = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
 const mockHidden = vi.hoisted(() => vi.fn());
 const mockProgress = vi.hoisted(() => vi.fn());
 const mockSetHidden = vi.hoisted(() => vi.fn());
@@ -38,11 +39,18 @@ vi.mock('$lib/server/van/manual-sync.js', () => ({
 	startManualVanSync: mockStartSync,
 }));
 vi.mock('$lib/server/van/manual-geometry.js', () => ({ drainGeometryForPress: mockDrainGeometry }));
-vi.mock('$lib/server/van/turf-placement.js', () => ({
-	loadRequestedTurf: mockRequested,
-	setOrganizerPlacement: mockSetPlacement,
-	placeRequestedTurf: mockPlace,
-}));
+// The labels are pure: the real ones, so the test reads what the page shows.
+vi.mock('$lib/server/van/turf-placement.js', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/server/van/turf-placement.js')>();
+	return {
+		requestedTurfLabel: actual.requestedTurfLabel,
+		requestedTurfCaveats: actual.requestedTurfCaveats,
+		loadRequestedTurf: mockRequested,
+		setOrganizerPlacement: mockSetPlacement,
+		placeRequestedTurf: mockPlace,
+	};
+});
+vi.mock('./manual-sync-view.js', () => ({ manualSyncView: mockSyncView }));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
 vi.mock('$lib/server/van/campaigns.js', () => ({
 	campaignRefreshSwitches: mockRefreshSwitches,
@@ -687,6 +695,10 @@ describe('/turfs/organizer VAN sync', () => {
 		mockStartSync.mockResolvedValueOnce({ status: 'started', done: Promise.resolve() });
 		await expect(press(ADMIN)).resolves.toEqual({ syncStarted: true });
 		expect(mockStartSync).toHaveBeenCalledOnce();
+		// Named in the press's record, which the page shows.
+		expect(mockStartSync.mock.calls[0]![2]).toMatchObject({
+			startedByName: ADMIN.slackUserName,
+		});
 	});
 
 	// The turf the organizer cut has to reach the map, not only the list.
@@ -733,7 +745,12 @@ describe('/turfs/organizer requested turf', () => {
 		campaignId: 1,
 		name: 'Request 1',
 		regionName: 'Requests',
+		firstSeenAt: iso(NOW.getTime() - 3 * HOUR),
 		located: true,
+		shape: null,
+		shapeError: null,
+		claimable: true,
+		hidden: false,
 		missed: false,
 		placement: {
 			chapterId: 71,
@@ -752,7 +769,7 @@ describe('/turfs/organizer requested turf', () => {
 				row,
 				{ ...row, turfId: 501, missed: true, placement: null },
 				{ ...row, turfId: 504, placement: null },
-				{ ...row, turfId: 502, located: false, placement: null },
+				{ ...row, turfId: 502, located: false, shape: 'waiting', placement: null },
 				{
 					...row,
 					turfId: 503,
@@ -768,8 +785,53 @@ describe('/turfs/organizer requested turf', () => {
 			'Not placed yet: waiting for its shape from VAN',
 			'Set by Alex',
 		]);
+		expect(data.requestedTurf[0]).toMatchObject({ caveats: [], firstSeenAgoLabel: '3h ago' });
 		expect(data.placementChoices.map((c: { chapterId: number }) => c.chapterId)).toEqual([71, 72]);
 		expect(data.requestedTotal).toBe(5);
+	});
+
+	// What used to read "waiting for its shape" forever: turf the geometry
+	// worker can never shape, and what still stops a claim once placed.
+	it("says what keeps a requested turf off volunteers' maps", async () => {
+		mockRequested.mockResolvedValueOnce({
+			total: 4,
+			turfs: [
+				{ ...row, turfId: 510, located: false, shape: 'empty', placement: null },
+				{
+					...row,
+					turfId: 511,
+					located: false,
+					shape: 'failed',
+					shapeError: 'export job 7 errored',
+					placement: null,
+				},
+				{ ...row, turfId: 512, located: false, shape: 'unmapped', placement: null },
+				{ ...row, turfId: 513, claimable: false, hidden: true },
+			],
+		});
+		const data = await run(event(ADMIN));
+		const byId = Object.fromEntries(
+			data.requestedTurf.map((t: { turfId: number }) => [t.turfId, t]),
+		) as Record<number, { placedLabel: string; caveats: string[] }>;
+		expect(byId[510]!.placedLabel).toContain('VAN lists nobody in it');
+		expect(byId[511]!.placedLabel).toBe(
+			'Not placed: its shape failed to load from VAN (export job 7 errored)',
+		);
+		expect(byId[512]!.placedLabel).toContain('none of its addresses could be put on the map');
+		expect(byId[513]!.caveats).toEqual([
+			expect.stringContaining('No MiniVAN list number yet'),
+			'Hidden from volunteers',
+		]);
+	});
+
+	it('carries the latest press to the page, and keeps the board up when it cannot', async () => {
+		const view = { running: true, status: 'Reading turf from VAN.', notes: [], newTurf: [] };
+		mockSyncView.mockResolvedValueOnce(view);
+		expect((await run(event(ADMIN))).manualSync).toEqual(view);
+
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockSyncView.mockRejectedValueOnce(new Error('SQLITE_BUSY'));
+		expect((await run(event(ADMIN))).manualSync).toBeNull();
 	});
 
 	const pick = (session: unknown, turfId: string, chapterId: string) => {

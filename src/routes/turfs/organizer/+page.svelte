@@ -1,6 +1,7 @@
 <script lang="ts">
 	import './organizer.css';
 	import { enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import { campaignSheetStamp } from '$lib/campaign-time.js';
@@ -12,6 +13,43 @@
 	/** While the "Sync VAN now" press is in flight. The sync itself runs on in
 	 *  the background long after; this only covers starting it. */
 	let syncStarting = $state(false);
+
+	/** The press as the last poll of sync-status saw it, ahead of the load's
+	 *  copy until the next load. */
+	let polled = $state<{ sync: typeof data.manualSync } | null>(null);
+	const sync = $derived(polled ? polled.sync : data.manualSync);
+	/** Apart from `sync`, a new object every poll, so the timer below is not
+	 *  torn down and set up again on each one. */
+	const syncRunning = $derived(sync?.running ?? false);
+	/** perCampaign is only there when the campaigns differ or one failed. */
+	const lastSyncFailed = $derived(data.lastVanSync.perCampaign?.some((c) => c.failed) ?? false);
+
+	/** While a press runs, ask after it every few seconds; once it is through,
+	 *  reload the board once so the turf it picked up is in the tables. */
+	const POLL_MS = 5000;
+	$effect(() => {
+		if (!syncRunning) return;
+		let stopped = false;
+		const timer = setInterval(async () => {
+			try {
+				const res = await fetch(resolve('/turfs/organizer/sync-status'));
+				if (!res.ok || stopped) return;
+				const next = (await res.json()) as { sync: typeof data.manualSync };
+				if (stopped) return;
+				polled = next;
+				if (!next.sync?.running) {
+					await invalidateAll();
+					polled = null;
+				}
+			} catch {
+				// The next tick tries again.
+			}
+		}, POLL_MS);
+		return () => {
+			stopped = true;
+			clearInterval(timer);
+		};
+	});
 
 	/** Hidden turf whose "show again" is in flight, so its box cannot be
 	 *  ticked back mid-request. */
@@ -110,6 +148,8 @@
 			syncStarting = true;
 			return async ({ update }) => {
 				await update();
+				// The load just read the press afresh.
+				polled = null;
 				syncStarting = false;
 			};
 		}}
@@ -117,12 +157,23 @@
 		<button type="submit" class="van-sync-button" disabled={syncStarting}>
 			{syncStarting ? 'Starting…' : 'Sync VAN now'}
 		</button>
-		<p class="van-sync-status" class:is-error={form?.syncError} role="status">
+		<p
+			class="van-sync-status"
+			class:is-error={form?.syncError || (sync?.stalled && !form?.syncJoined)}
+			role="status"
+		>
 			{#if form?.syncError}
 				{form.syncError}
 			{:else if form?.syncJoined}
 				A sync is already running. It will read VAN again within a couple of minutes and pick up
 				your new turf — no need to press again.
+			{:else if sync}
+				{sync.status}
+				<!-- A press's report must not hide a campaign whose syncs have
+				     failed since. -->
+				{#if lastSyncFailed}
+					{@render lastSynced(data.lastVanSync.perCampaign ?? [])}
+				{/if}
 			{:else if form?.syncQueued}
 				A scheduled sync is running now. Your new turf will load automatically once it finishes,
 				then its map shapes — no need to press again.
@@ -130,16 +181,7 @@
 				Sync started. New turf usually shows up within a few minutes, then appears on the map as its
 				shape loads — reload to check.
 			{:else if data.lastVanSync.perCampaign}
-				VAN last synced:
-				{#each data.lastVanSync.perCampaign as campaign, i (campaign.id)}
-					{i > 0 ? ' · ' : ''}{campaign.name}
-					{campaign.label ?? 'not yet'}{#if campaign.failed}
-						(<a
-							class="van-sync-failed"
-							href={resolve('/settings/van/[campaignId]', { campaignId: String(campaign.id) })}
-							>last sync failed</a
-						>){/if}{i === data.lastVanSync.perCampaign.length - 1 ? '.' : ''}
-				{/each}
+				{@render lastSynced(data.lastVanSync.perCampaign)}
 			{:else if data.lastVanSync.label}
 				VAN last synced {data.lastVanSync.label}.
 			{:else}
@@ -147,6 +189,65 @@
 			{/if}
 		</p>
 	</form>
+
+	{#snippet lastSynced(campaigns: NonNullable<typeof data.lastVanSync.perCampaign>)}
+		VAN last synced:
+		{#each campaigns as campaign, i (campaign.id)}
+			{i > 0 ? ' · ' : ''}{campaign.name}
+			{campaign.label ?? 'not yet'}{#if campaign.failed}
+				(<a
+					class="van-sync-failed"
+					href={resolve('/settings/van/[campaignId]', { campaignId: String(campaign.id) })}
+					>last sync failed</a
+				>){/if}{i === campaigns.length - 1 ? '.' : ''}
+		{/each}
+	{/snippet}
+
+	{#if sync && !form?.syncError}
+		<!-- What the press found: kept apart from the status line, which is a
+		     live region, so a poll does not read the whole list out again. -->
+		<div class="van-sync-report">
+			{#if sync.notes.length > 0}
+				<ul class="van-sync-notes">
+					{#each sync.notes as note, i (i)}
+						<li class:is-error={note.error}>
+							{note.text}
+							{#if note.campaignId !== undefined}
+								<a
+									href={resolve('/settings/van/[campaignId]', {
+										campaignId: String(note.campaignId),
+									})}>Campaign settings</a
+								>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if sync.newTurf.length > 0}
+				<p class="van-sync-new-heading">
+					{sync.running ? 'Picked up so far' : 'Picked up'}:
+					{sync.newTurfTotal.toLocaleString('en-US')} new requested turf{sync.newTurfTotal >
+					sync.newTurf.length
+						? ` (the first ${sync.newTurf.length} below; the rest are under Requested turf)`
+						: ''}
+				</p>
+				<ul class="van-sync-new">
+					{#each sync.newTurf as turf (turf.turfId)}
+						<li class:is-ready={turf.ready}>
+							<span class="turf-name">{turf.name}</span>
+							{#if turf.regionName}<span class="turf-sub">{turf.regionName}</span>{/if}
+							<span class="van-sync-new-status">{turf.label}</span>
+							{#each turf.caveats as caveat (caveat)}
+								<span class="van-sync-new-caveat">{caveat}</span>
+							{/each}
+						</li>
+					{/each}
+				</ul>
+			{:else if sync.running}
+				<p class="van-sync-new-heading">No new requested turf yet.</p>
+			{/if}
+		</div>
+	{/if}
 
 	<!-- Counts first: on a canvass morning this row is the whole answer. -->
 	<ul class="summary">
@@ -428,7 +529,7 @@
 			{#if data.requestedTotal > data.requestedTurf.length}
 				<p class="section-note">
 					Showing {data.requestedTurf.length} of {data.requestedTotal.toLocaleString('en-US')},
-					those not placed yet first.
+					those not placed yet first, then the newest.
 				</p>
 			{/if}
 			<div class="table-wrap">
@@ -448,8 +549,14 @@
 									{#if turf.regionName}
 										<span class="turf-sub">{turf.regionName}{campaignSuffix(turf.campaignId)}</span>
 									{/if}
+									<span class="turf-sub">First seen {turf.firstSeenAgoLabel}</span>
 								</td>
-								<td>{turf.placedLabel}</td>
+								<td>
+									{turf.placedLabel}
+									{#each turf.caveats as caveat (caveat)}
+										<span class="turf-sub is-caveat">{caveat}</span>
+									{/each}
+								</td>
 								<td>
 									<!-- One form per row, sent as soon as the choice changes. A
 									     refusal resets the form, which puts the old choice back:

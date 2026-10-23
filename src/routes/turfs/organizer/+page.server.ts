@@ -51,10 +51,12 @@ import { drainGeometryForPress } from '$lib/server/van/manual-geometry.js';
 import {
 	loadRequestedTurf,
 	placeRequestedTurf,
+	requestedTurfCaveats,
+	requestedTurfLabel,
 	setOrganizerPlacement,
 	type PlacementChapter,
-	type RequestedTurfRow,
 } from '$lib/server/van/turf-placement.js';
+import { manualSyncView } from './manual-sync-view.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -167,6 +169,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		lastSyncs,
 		hiddenRows,
 		requestedRows,
+		manualSync,
 	] = await Promise.all([
 		loadCurrentHoldings(db, query),
 		loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
@@ -182,6 +185,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// Every campaign's, whatever the filters: a request placed in the wrong
 		// chapter is exactly what the chapter filter would hide.
 		loadRequestedTurf(db),
+		readManualSync(now),
 	]);
 
 	// Story 8.2. Both sides of the comparison are our own columns — the sync
@@ -247,7 +251,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// Requested turf and the chapter each was placed in, to correct.
 		requestedTurf: requestedRows.turfs.map((t) => ({
 			...t,
-			placedLabel: placedLabel(t),
+			placedLabel: requestedTurfLabel(t),
+			caveats: requestedTurfCaveats(t),
+			firstSeenAgoLabel: relativeSince(t.firstSeenAt, now),
 		})),
 		requestedTotal: requestedRows.total,
 		// The chapters it may go to: the ones the /turfs pickers offer.
@@ -276,8 +282,22 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// Beside the "Sync VAN now" button: how stale the catalog is, so an
 		// organizer can tell whether the turf they just cut has landed yet.
 		lastVanSync: lastSyncSummary(lastSyncs, now),
+		// The latest press while it runs and for a while after: where it has
+		// got to, what kept turf back, and what it picked up. The page polls
+		// sync-status for the same while it runs.
+		manualSync,
 	};
 };
+
+/** The press's view, or none when it cannot be read: the board stays up. */
+async function readManualSync(now: Date): Promise<Awaited<ReturnType<typeof manualSyncView>>> {
+	try {
+		return await manualSyncView(now);
+	} catch (err) {
+		console.error('[van] could not read the manual sync record:', err);
+		return null;
+	}
+}
 
 /** A claim's door progress as the board shows it. A turf part-walked is
  *  never shown as 0% or 100%: rounding only within 1–99 keeps "started" and
@@ -319,20 +339,6 @@ function lastSyncSummary(
 	if (labels.size <= 1 && !labelled.some((s) => s.failed))
 		return { label: labelled[0]?.label ?? null, perCampaign: null };
 	return { label: null, perCampaign: labelled };
-}
-
-/** How a requested turf came to be where it is, for its row. */
-function placedLabel(turf: RequestedTurfRow): string {
-	const p = turf.placement;
-	if (!p) {
-		if (!turf.located) return 'Not placed yet: waiting for its shape from VAN';
-		return turf.missed
-			? 'Not placed: no chapter fits where it is'
-			: 'Not placed yet: placed on the next sync';
-	}
-	if (p.source === 'organizer') return `Set by ${p.placedByName ?? 'an organizer'}`;
-	if (p.source === 'zip') return `By ZIP ${p.zip ?? ''}`.trim();
-	return 'By the turf around it';
 }
 
 export const actions: Actions = {
@@ -449,7 +455,8 @@ export const actions: Actions = {
 	 * minutes. See van/manual-sync.ts.
 	 */
 	syncVan: async ({ locals }) => {
-		if (!locals.session?.isAdmin) return fail(403, { syncError: 'Organizers only.' });
+		const session = locals.session;
+		if (!session?.isAdmin) return fail(403, { syncError: 'Organizers only.' });
 		if (!INTERNAL_CRON_SECRET) {
 			console.error('[van] manual sync: INTERNAL_CRON_SECRET is not set');
 			return fail(500, { syncError: 'The sync is not configured on this server.' });
@@ -459,6 +466,7 @@ export const actions: Actions = {
 			// Then map shapes for as much of the queue as it can reach, so the
 			// turf the organizer cut shows on the map and not only in the list.
 			result = await startManualVanSync(db, localCaller(PORT, INTERNAL_CRON_SECRET), {
+				startedByName: session.slackUserName ?? null,
 				afterPass: ({ deadline, shouldStop }) =>
 					drainGeometryForPress(db, { deadline, shouldStop }),
 			});

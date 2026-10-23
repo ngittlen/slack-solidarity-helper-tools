@@ -98,6 +98,8 @@ export interface CampaignDrain {
 	mapped: number;
 	/** Why it stopped with work possibly left, if it did. */
 	stopped?: 'not configured' | 'lock busy' | 'out of time' | 'resync requested';
+	/** It threw, and the rest of its queue was left: the error. */
+	failed?: string;
 }
 
 export interface ManualGeometryDeps {
@@ -149,7 +151,7 @@ interface Turn {
 	exportJobTypeId?: number;
 	/** No more slices for it: its queue is through, or it stopped. */
 	done: boolean;
-	/** It threw; left out of the result. */
+	/** It threw: placed no more, and reported with its error. */
 	failed?: true;
 }
 
@@ -221,11 +223,10 @@ export async function drainGeometryForPress(
 			try {
 				await takeSlice(db, turn, deadline, deps, slackTurfChannelId);
 			} catch (err) {
-				console.error(
-					`${turn.tag} manual sync: geometry failed:`,
-					err instanceof Error ? err.message : err,
-				);
+				const message = err instanceof Error ? err.message : String(err);
+				console.error(`${turn.tag} manual sync: geometry failed:`, message);
 				turn.failed = true;
+				turn.drained.failed = message;
 				turn.done = true;
 			}
 			sliced = true;
@@ -246,7 +247,7 @@ export async function drainGeometryForPress(
 				(drained.stopped ? ` (stopped: ${drained.stopped})` : ''),
 		);
 	}
-	return turns.filter((t) => !t.failed).map((t) => t.drained);
+	return turns.map((t) => t.drained);
 }
 
 /**
