@@ -230,7 +230,14 @@
 			shownOnMap(t, { showCleared: canShowCleared && showCleared, selectedId }),
 		),
 	);
-	const clearedCount = $derived(drawable.filter((t) => t.doorsRemaining <= 0).length);
+	/** `onMap` less a cleared turf drawn only because it is selected, so the
+	 *  map's opening view does not move as it comes and goes. */
+	const framing = $derived(
+		drawable.filter((t) => shownOnMap(t, { showCleared: canShowCleared && showCleared })),
+	);
+	/** What ticking the box adds: turf the map leaves off by default. Turf you
+	 *  hold is on it either way. */
+	const clearedCount = $derived(drawable.filter((t) => !shownOnMap(t)).length);
 	const unmappable = $derived(turfs.length - drawable.length);
 	const total = $derived(totalNow ?? data.total ?? 0);
 	const shown = $derived(turfs.length);
@@ -839,6 +846,7 @@
 					{:else}
 						<TurfMap
 							turfs={onMap}
+							{framing}
 							{selectedId}
 							{location}
 							onselect={select}

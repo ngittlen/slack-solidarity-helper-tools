@@ -61,6 +61,10 @@
 		 *  the list view carries it instead of this component inventing a
 		 *  location for it. */
 		turfs: MappableTurf[];
+		/** The turf the opening view frames, when not all of `turfs`: one
+		 *  drawn only because it is selected must not move the camera as it
+		 *  comes and goes. Defaults to `turfs`. */
+		framing?: MappableTurf[];
 		selectedId: number | null;
 		/** Where the volunteer is. Null when geolocation was declined or is
 		 *  unavailable — the map still works, it just frames all the turf
@@ -96,6 +100,7 @@
 
 	let {
 		turfs,
+		framing,
 		selectedId,
 		location,
 		onselect,
@@ -170,18 +175,19 @@
 	// chapter can run 150 miles across and framing the whole thing shows a
 	// scatter of dots nobody can act on. Without one, all the turf is the only
 	// honest frame.
+	const framed = $derived(framing && framing.length > 0 ? framing : turfs);
 	const nearbyBounds = $derived.by((): BoundingBox => {
-		if (location) return padBounds(boundsForNearest(location, turfs, NEARBY_COUNT), 0.15);
+		if (location) return padBounds(boundsForNearest(location, framed, NEARBY_COUNT), 0.15);
 		// Every turf here is mappable by the prop's contract, so unionBounds
 		// only returns null for an empty list — which the parent does not
 		// render this component for. The fallback keeps the type honest without
 		// a cast.
-		const all = unionBounds(turfs.map((t) => t.bounds));
+		const all = unionBounds(framed.map((t) => t.bounds));
 		return all ? padBounds(all, 0.1) : { minLat: 0, maxLat: 0, minLng: 0, maxLng: 0 };
 	});
 
 	const allBounds = $derived.by(() => {
-		const boxes = turfs.map((t) => t.bounds);
+		const boxes = framed.map((t) => t.bounds);
 		if (location) boxes.push(boundingBox([location])!);
 		return padBounds(unionBounds(boxes) ?? nearbyBounds, 0.1);
 	});

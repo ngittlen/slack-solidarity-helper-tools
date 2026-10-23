@@ -2,7 +2,7 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
-import { chaptersFromChannelMap } from '$lib/chapter-list.js';
+import { chaptersFromChannelMap, turfChapters } from '$lib/chapter-list.js';
 import {
 	COMPLETION_LOOKBACK,
 	loadCurrentHoldings,
@@ -47,6 +47,14 @@ import {
 	startManualVanSync,
 	type CampaignLastSync,
 } from '$lib/server/van/manual-sync.js';
+import { drainGeometryForPress } from '$lib/server/van/manual-geometry.js';
+import {
+	loadRequestedTurf,
+	placeRequestedTurf,
+	setOrganizerPlacement,
+	type PlacementChapter,
+	type RequestedTurfRow,
+} from '$lib/server/van/turf-placement.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -158,6 +166,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		geometry,
 		lastSyncs,
 		hiddenRows,
+		requestedRows,
 	] = await Promise.all([
 		loadCurrentHoldings(db, query),
 		loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
@@ -170,6 +179,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		loadGeometryProgress(db),
 		lastVanSyncs(db),
 		loadHiddenTurfs(db, query),
+		// Every campaign's, whatever the filters: a request placed in the wrong
+		// chapter is exactly what the chapter filter would hide.
+		loadRequestedTurf(db),
 	]);
 
 	// Story 8.2. Both sides of the comparison are our own columns — the sync
@@ -232,6 +244,18 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		suspects,
 		// Turf an admin hid from volunteers on its /turfs card, to show again.
 		hidden,
+		// Requested turf and the chapter each was placed in, to correct.
+		requestedTurf: requestedRows.turfs.map((t) => ({
+			...t,
+			placedLabel: placedLabel(t),
+		})),
+		requestedTotal: requestedRows.total,
+		// The chapters it may go to: the ones the /turfs pickers offer.
+		placementChoices: turfChapters(
+			settings.chapterChannelMap,
+			settings.turfHiddenChapterIds,
+			settings.turfCustomChapters,
+		),
 		// Why the map is part shapes and part pins after a big sync — the line is
 		// only shown while there is something to explain (see the page).
 		geometry: {
@@ -297,7 +321,69 @@ function lastSyncSummary(
 	return { label: null, perCampaign: labelled };
 }
 
+/** How a requested turf came to be where it is, for its row. */
+function placedLabel(turf: RequestedTurfRow): string {
+	const p = turf.placement;
+	if (!p) {
+		return turf.located
+			? 'Not placed: no chapter fits where it is'
+			: 'Not placed yet: waiting for its shape from VAN';
+	}
+	if (p.source === 'organizer') return `Set by ${p.placedByName ?? 'an organizer'}`;
+	if (p.source === 'zip') return `By ZIP ${p.zip ?? ''}`.trim();
+	return 'By the turf around it';
+}
+
 export const actions: Actions = {
+	/**
+	 * Put a requested turf in a chapter, or hand it back to the automatic
+	 * placement (`chapterId` empty). See van/turf-placement.ts.
+	 */
+	placeTurf: async ({ locals, request }) => {
+		const session = locals.session;
+		if (!session?.isAdmin) return fail(403, { placeError: 'Organizers only.' });
+		const form = await request.formData();
+		const turfId = Number(form.get('turfId'));
+		const rawChapter = String(form.get('chapterId') ?? '');
+		if (!Number.isInteger(turfId)) return fail(400, { placeError: 'Unknown turf.' });
+
+		const settings = await loadSettings(db);
+		const choices = turfChapters(
+			settings.chapterChannelMap,
+			settings.turfHiddenChapterIds,
+			settings.turfCustomChapters,
+		);
+		let chapter: PlacementChapter | null = null;
+		if (rawChapter !== '') {
+			const found = choices.find((c) => c.chapterId === Number(rawChapter));
+			if (!found) return fail(400, { placeError: 'That chapter is not offered for turf.' });
+			chapter = { chapterId: found.chapterId, name: found.name };
+		}
+
+		try {
+			const campaign = await setOrganizerPlacement(
+				db,
+				turfId,
+				chapter,
+				session.slackUserName ?? session.slackUserId,
+			);
+			if (!campaign) return fail(404, { placeError: 'That turf is no longer requested turf.' });
+			if (chapter === null) {
+				// Placed again straight away rather than at the next sync, so the
+				// row says where it went.
+				await placeRequestedTurf(db, campaign, {
+					chapters: choices,
+					turfIds: [turfId],
+					timeBudgetMs: 10_000,
+				});
+			}
+		} catch (err) {
+			console.error('[van] could not place turf:', err);
+			return fail(500, { placeError: 'Could not move that turf. Please try again.' });
+		}
+		return { placed: turfId };
+	},
+
 	/**
 	 * Show hidden turf to volunteers again — the organizer-page side of the
 	 * "Hide from volunteers" box on a /turfs card.
@@ -369,19 +455,21 @@ export const actions: Actions = {
 		}
 		let result: Awaited<ReturnType<typeof startManualVanSync>>;
 		try {
-			result = await startManualVanSync(db, localCaller(PORT, INTERNAL_CRON_SECRET));
+			// Then map shapes for as much of the queue as it can reach, so the
+			// turf the organizer cut shows on the map and not only in the list.
+			result = await startManualVanSync(db, localCaller(PORT, INTERNAL_CRON_SECRET), {
+				afterPass: ({ deadline, shouldStop }) =>
+					drainGeometryForPress(db, { deadline, shouldStop }),
+			});
 		} catch (err) {
 			// A failure here is the lock's database read, before anything ran.
 			// Answered on the form, so the board stays up around it.
 			console.error('[van] manual sync: could not start:', err);
 			return fail(500, { syncError: 'Could not start the sync. Please try again.' });
 		}
-		if (result.status === 'busy') {
-			return fail(409, {
-				syncError:
-					"Someone already started a sync and it's still running. Try again in a few minutes.",
-			});
-		}
+		// Folded into the press already running, which reads VAN again at its
+		// next chance — so turf cut since that press started is picked up.
+		if (result.status === 'joined') return { syncJoined: true };
 		return result.status === 'queued' ? { syncQueued: true } : { syncStarted: true };
 	},
 };

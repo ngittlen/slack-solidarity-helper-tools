@@ -89,12 +89,20 @@ async function main(): Promise<void> {
 			mappings.length === 0
 				? "NONE — add one on the campaign's page under Settings → VAN campaigns"
 				: mappings.map((m) => `${m.chapterName} → ${m.folderIds.join(', ')}`).join(' · ')
+		}`,
+	);
+	console.log(
+		`Requested-turf folder: ${
+			campaign.requestedFolderId === null
+				? 'none'
+				: `${campaign.requestedFolderId} (each turf placed by where it is)`
 		}\n`,
 	);
 
 	const result = await runCatalogSync(db, client, campaign.id, mappings, {
 		dryRun: DRY_RUN,
 		roster: ROSTER,
+		requestedFolderId: campaign.requestedFolderId,
 	});
 
 	console.log('Result');

@@ -12,6 +12,14 @@ const mockDriftVisibility = vi.hoisted(() => vi.fn());
 const mockGeometryProgress = vi.hoisted(() => vi.fn());
 const mockLastVanSync = vi.hoisted(() => vi.fn());
 const mockStartSync = vi.hoisted(() => vi.fn());
+const mockRequested = vi.hoisted(() =>
+	vi.fn(async (): Promise<{ turfs: unknown[]; total: number }> => ({ turfs: [], total: 0 })),
+);
+const mockSetPlacement = vi.hoisted(() =>
+	vi.fn(async (): Promise<unknown> => ({ id: 1, requestedFolderId: 900 })),
+);
+const mockPlace = vi.hoisted(() => vi.fn(async () => ({})));
+const mockDrainGeometry = vi.hoisted(() => vi.fn(async () => []));
 const mockHidden = vi.hoisted(() => vi.fn());
 const mockProgress = vi.hoisted(() => vi.fn());
 const mockSetHidden = vi.hoisted(() => vi.fn());
@@ -28,6 +36,12 @@ vi.mock('$lib/server/env.js', () => mockEnv);
 vi.mock('$lib/server/van/manual-sync.js', () => ({
 	lastVanSyncs: mockLastVanSync,
 	startManualVanSync: mockStartSync,
+}));
+vi.mock('$lib/server/van/manual-geometry.js', () => ({ drainGeometryForPress: mockDrainGeometry }));
+vi.mock('$lib/server/van/turf-placement.js', () => ({
+	loadRequestedTurf: mockRequested,
+	setOrganizerPlacement: mockSetPlacement,
+	placeRequestedTurf: mockPlace,
 }));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
 vi.mock('$lib/server/van/campaigns.js', () => ({
@@ -126,7 +140,10 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
-	mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+	mockSettings.mockResolvedValue({
+		chapterChannelMap: CHAPTERS,
+		turfHiddenChapterIds: new Set<number>(),
+	});
 	mockProgress.mockResolvedValue(new Map());
 	mockLastVanSync.mockResolvedValue([]);
 	mockEnv.INTERNAL_CRON_SECRET = 'secret';
@@ -177,6 +194,7 @@ describe('/turfs/organizer filters', () => {
 	it('lists and scopes to a turf-only chapter', async () => {
 		mockSettings.mockResolvedValue({
 			chapterChannelMap: CHAPTERS,
+			turfHiddenChapterIds: new Set<number>(),
 			turfCustomChapters: [{ chapterId: -1, name: 'Ann Arbor outreach' }],
 		});
 		const data = await run(event(ADMIN, 'chapter=-1'));
@@ -671,17 +689,24 @@ describe('/turfs/organizer VAN sync', () => {
 		expect(mockStartSync).toHaveBeenCalledOnce();
 	});
 
+	// The turf the organizer cut has to reach the map, not only the list.
+	it('drains the map-shape queue after the pass', async () => {
+		mockStartSync.mockResolvedValueOnce({ status: 'started', done: Promise.resolve() });
+		await press(ADMIN);
+		const [, , options] = mockStartSync.mock.calls[0]!;
+		const ctx = { deadline: 123, shouldStop: async () => false };
+		await options.afterPass(ctx);
+		expect(mockDrainGeometry).toHaveBeenCalledWith({}, ctx);
+	});
+
 	it('says when it will follow a scheduled sync already running', async () => {
 		mockStartSync.mockResolvedValueOnce({ status: 'queued', done: Promise.resolve() });
 		await expect(press(ADMIN)).resolves.toEqual({ syncQueued: true });
 	});
 
-	it('says so when a pressed sync is still running', async () => {
-		mockStartSync.mockResolvedValueOnce({ status: 'busy' });
-		await expect(press(ADMIN)).resolves.toMatchObject({
-			status: 409,
-			data: { syncError: expect.stringContaining('already started') },
-		});
+	it('folds a press into the one already running', async () => {
+		mockStartSync.mockResolvedValueOnce({ status: 'joined' });
+		await expect(press(ADMIN)).resolves.toEqual({ syncJoined: true });
 	});
 
 	// The board must stay up around a failed press, not give way to the error page.
@@ -699,6 +724,100 @@ describe('/turfs/organizer VAN sync', () => {
 		mockEnv.INTERNAL_CRON_SECRET = '';
 		await expect(press(ADMIN)).resolves.toMatchObject({ status: 500 });
 		expect(mockStartSync).not.toHaveBeenCalled();
+	});
+});
+
+describe('/turfs/organizer requested turf', () => {
+	const row = {
+		turfId: 500,
+		campaignId: 1,
+		name: 'Request 1',
+		regionName: 'Requests',
+		located: true,
+		placement: {
+			chapterId: 71,
+			chapterName: 'Washtenaw County',
+			source: 'zip',
+			zip: '48104',
+			placedByName: null,
+			placedAt: iso(NOW.getTime()),
+		},
+	};
+
+	it('lists requested turf with how each was placed, and the chapters it may go to', async () => {
+		mockRequested.mockResolvedValueOnce({
+			total: 4,
+			turfs: [
+				row,
+				{ ...row, turfId: 501, placement: null },
+				{ ...row, turfId: 502, located: false, placement: null },
+				{
+					...row,
+					turfId: 503,
+					placement: { ...row.placement, source: 'organizer', placedByName: 'Alex' },
+				},
+			],
+		});
+		const data = await run(event(ADMIN));
+		expect(data.requestedTurf.map((t: { placedLabel: string }) => t.placedLabel)).toEqual([
+			'By ZIP 48104',
+			'Not placed: no chapter fits where it is',
+			'Not placed yet: waiting for its shape from VAN',
+			'Set by Alex',
+		]);
+		expect(data.placementChoices.map((c: { chapterId: number }) => c.chapterId)).toEqual([71, 72]);
+		expect(data.requestedTotal).toBe(4);
+	});
+
+	const pick = (session: unknown, turfId: string, chapterId: string) => {
+		const body = new FormData();
+		body.set('turfId', turfId);
+		body.set('chapterId', chapterId);
+		return actions.placeTurf({
+			locals: { session },
+			request: new Request('https://app.example/turfs/organizer?/placeTurf', {
+				method: 'POST',
+				body,
+			}),
+		} as never);
+	};
+
+	it('puts a turf in the chapter an organizer picks', async () => {
+		await expect(pick(ADMIN, '500', '72')).resolves.toEqual({ placed: 500 });
+		expect(mockSetPlacement).toHaveBeenCalledWith(
+			expect.anything(),
+			500,
+			{ chapterId: 72, name: 'Wayne County' },
+			expect.any(String),
+		);
+		expect(mockPlace).not.toHaveBeenCalled();
+	});
+
+	it('hands a turf back to the automatic placement, and places it again now', async () => {
+		await expect(pick(ADMIN, '500', '')).resolves.toEqual({ placed: 500 });
+		expect(mockSetPlacement).toHaveBeenCalledWith(expect.anything(), 500, null, expect.any(String));
+		expect(mockPlace).toHaveBeenCalledWith(
+			expect.anything(),
+			{ id: 1, requestedFolderId: 900 },
+			expect.objectContaining({ turfIds: [500] }),
+		);
+	});
+
+	it('refuses a chapter the turf pickers do not offer', async () => {
+		await expect(pick(ADMIN, '500', '4242')).resolves.toMatchObject({ status: 400 });
+		expect(mockSetPlacement).not.toHaveBeenCalled();
+	});
+
+	it('refuses turf that is not requested turf', async () => {
+		mockSetPlacement.mockResolvedValueOnce(null);
+		await expect(pick(ADMIN, '300', '71')).resolves.toMatchObject({ status: 404 });
+	});
+
+	it('refuses anyone but an organizer', async () => {
+		await expect(
+			pick({ slackUserId: 'U_VOL', isAdmin: false }, '500', '71'),
+		).resolves.toMatchObject({ status: 403 });
+		expect(mockSetPlacement).not.toHaveBeenCalled();
 	});
 });
 

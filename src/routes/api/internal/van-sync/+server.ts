@@ -25,6 +25,8 @@ import { runContactStage } from '$lib/server/van/contact-live.js';
 import { runCatalogSync } from '$lib/server/van/sync.js';
 import { VAN_LEDGER_LOCK, vanSyncLock, vanSyncWaitingLock } from '$lib/server/van/locks.js';
 import { runGeometryQueue } from '$lib/server/van/geometry-worker.js';
+import { placeRequestedTurf } from '$lib/server/van/turf-placement.js';
+import { placementChapters } from '$lib/server/van/placement-chapters.js';
 import { exportCallbackUrl } from '$lib/server/van/webhook-token.js';
 import { sweepExpiredClaims } from '$lib/server/van/checkout-store.js';
 import { sendExpiryWarnings } from '$lib/server/van/expiry-warning-store.js';
@@ -106,6 +108,10 @@ const MIN_SHEET_BUDGET_MS = 5 * 1000;
 // it: the Packet Tracker's slice, plus a little for the ledger-only reads and
 // Slack posts around it.
 const SHARED_RESERVE_MS = SHEET_BUDGET_MS + 15 * 1000;
+// Placing requested turf: one Census lookup per turf newly located, a few
+// hundred milliseconds each. What it does not reach waits for the next run.
+const PLACEMENT_BUDGET_MS = 20 * 1000;
+const MIN_PLACEMENT_BUDGET_MS = 5 * 1000;
 // Longer than the sync's own time budget, so a run killed mid-flight by Fly
 // still frees the lock within a cadence rather than blocking until someone
 // notices.
@@ -177,6 +183,32 @@ async function runGeometry(
 		// Geometry is decoration. A failure here must not fail a sync whose
 		// catalog rows are already written and correct.
 		console.error(`${logPrefix} geometry queue failed:`, err instanceof Error ? err.message : err);
+		return null;
+	}
+}
+
+/** Place the campaign's requested turf, with at most PLACEMENT_BUDGET_MS of
+ *  what is left. Null when it has no requested folder, no time, or failed. */
+async function runPlacement(
+	campaign: Campaign,
+	deadline: number,
+	logPrefix: string,
+): Promise<Awaited<ReturnType<typeof placeRequestedTurf>> | null> {
+	// Run with no folder too: that is what clears placements left over from
+	// one that has been unset.
+	const timeBudgetMs = Math.min(PLACEMENT_BUDGET_MS, deadline - Date.now());
+	if (timeBudgetMs < MIN_PLACEMENT_BUDGET_MS) return null;
+	try {
+		const result = await placeRequestedTurf(db, campaign, {
+			chapters: await placementChapters(db),
+			timeBudgetMs,
+		});
+		if (result.byZip + result.byNearby + result.unplaced + result.cleared > 0) {
+			console.log(`${logPrefix} requested turf placed:`, result);
+		}
+		return result;
+	} catch (err) {
+		console.error(`${logPrefix} placement failed:`, err instanceof Error ? err.message : err);
 		return null;
 	}
 }
@@ -418,6 +450,7 @@ async function syncCampaign(
 			timeBudgetMs: Math.min(CATALOG_BUDGET_MS, requestDeadline - Date.now()),
 			// Queue roster exports only when something can build them.
 			roster: vanPersonHasher() !== null,
+			requestedFolderId: campaign.requestedFolderId,
 		});
 		console.log(
 			`${logPrefix} catalog sync: ${result.turfsUpserted} turfs across ${result.foldersSynced} folder(s), ` +
@@ -471,6 +504,13 @@ async function syncCampaign(
 			}
 		}
 
+		// Requested turf that has a location since the last run — from this
+		// campaign's geometry, the export webhook or a "Sync VAN now" drain —
+		// goes to its chapter (van/turf-placement.ts). Before geometry, which
+		// takes whatever time is left: a turf shaped on this run is placed on
+		// the next, or by the press that shaped it. Never fails the sync.
+		const placement = await runPlacement(campaign, requestDeadline - reserveMs, logPrefix);
+
 		// Geometry runs after the catalog because the catalog is what fills the
 		// queue: a turf cut minutes ago gets its shape on this run rather than
 		// the next one. It is also the half that is safe to cut short — an
@@ -517,6 +557,7 @@ async function syncCampaign(
 				campaignId: campaign.id,
 				...result,
 				geometry,
+				placement,
 				refreshesSettled,
 				refresh: refresh ?? { disabled: true },
 				contacts: contacts ?? { disabled: true },

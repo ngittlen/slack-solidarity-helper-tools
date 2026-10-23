@@ -142,6 +142,53 @@ export async function geocodeZip(
 }
 
 /**
+ * The ZIP a point falls in, for placing requested turf (turf-placement.ts).
+ * Never throws: `{ ok: false }` when the Census could not be asked or would
+ * not answer, so a caller can tell an outage — try again later — from a point
+ * in no ZIP at all (`{ ok: true, zip: null }`: water, a park, the border).
+ *
+ * The same TIGERweb ZCTA layer as geocodeZip, asked the other way round: a
+ * point-in-polygon query. The point is a turf's centroid — the middle of a
+ * route of houses, not anyone's address — so nothing here is personal.
+ */
+export async function zipForPoint(
+	point: LatLng,
+	fetchFn: typeof fetch = fetch,
+): Promise<{ ok: true; zip: string | null } | { ok: false }> {
+	if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return { ok: false };
+	const url = new URL(ZCTA_ENDPOINT);
+	url.searchParams.set('geometry', `${point.lng},${point.lat}`);
+	url.searchParams.set('geometryType', 'esriGeometryPoint');
+	url.searchParams.set('inSR', '4326');
+	url.searchParams.set('spatialRel', 'esriSpatialRelIntersects');
+	url.searchParams.set('outFields', 'ZCTA5');
+	url.searchParams.set('returnGeometry', 'false');
+	url.searchParams.set('f', 'json');
+
+	try {
+		const res = await fetchFn(url.toString(), { signal: AbortSignal.timeout(TIMEOUT_MS) });
+		if (!res.ok) {
+			console.warn(`[van] point-to-zip lookup returned ${res.status}`);
+			return { ok: false };
+		}
+		const body = (await res.json()) as {
+			error?: unknown;
+			features?: Array<{ attributes?: { ZCTA5?: unknown } }>;
+		};
+		// ArcGIS reports its errors with HTTP 200; see geocodeZip.
+		if (body?.error || !Array.isArray(body?.features)) {
+			console.warn('[van] point-to-zip lookup was rejected by TIGERweb');
+			return { ok: false };
+		}
+		const zip = normalizeZip(String(body.features[0]?.attributes?.ZCTA5 ?? ''));
+		return { ok: true, zip };
+	} catch (err) {
+		console.warn('[van] point-to-zip lookup failed:', err instanceof Error ? err.message : err);
+		return { ok: false };
+	}
+}
+
+/**
  * Where a ZIP is, from cache when we have it and from the geocoder otherwise.
  *
  * A cache write failure is swallowed too — having the answer and failing to

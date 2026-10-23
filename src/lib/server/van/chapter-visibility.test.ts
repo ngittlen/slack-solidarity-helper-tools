@@ -127,6 +127,18 @@ describe('visibleToChapter', () => {
 // visibleToChapter matches on, or two chapters showing the same turf would
 // still be charged separately — or worse, different turf would ride free.
 describe('foldersForChapter', () => {
+	// Requested turf placed in a chapter is that chapter's alone, so the rate
+	// limiter counts it as a folder of its own — but only when there is some.
+	it('adds a key of its own for a chapter with requested turf placed in it', async () => {
+		await map(71, 68295);
+		expect(await foldersForChapter(db, 71)).toEqual(['1:68295']);
+		await client.execute(
+			`INSERT INTO van_turf_placements (turf_id, chapter_id, chapter_name, source, zip_checked, placed_at) VALUES (500, 71, 'Washtenaw County', 'zip', 1, '${AT}')`,
+		);
+		expect(await foldersForChapter(db, 71)).toEqual(['1:68295', 'placed:71']);
+		expect(await foldersForChapter(db, 72)).toEqual([]);
+	});
+
 	it('lists every folder mapped to the chapter', async () => {
 		await map(71, 68295);
 		await map(71, 68299);

@@ -67,6 +67,8 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			sheetsEnabled: campaign.sheetsEnabled,
 			sheetTabName: campaign.sheetTabName ?? '',
 			dailyReportSpreadsheetId: campaign.dailyReportSpreadsheetId ?? '',
+			requestedFolderId:
+				campaign.requestedFolderId === null ? '' : String(campaign.requestedFolderId),
 		},
 		credentials: credentialStatus(campaign),
 		status,

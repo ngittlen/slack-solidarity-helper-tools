@@ -124,6 +124,34 @@ describe('runGeometryQueue on a real database', () => {
 		});
 	}
 
+	// An organizer's new turf is not on the map until it has a centroid, so it
+	// goes before turf already drawn and queued again for its roster.
+	it('takes turf that is not on the map before turf already drawn', async () => {
+		await seed(100);
+		await seed(200);
+		await client.execute(
+			'UPDATE van_turfs SET centroid_lat = 28.5, centroid_lng = -81.4 WHERE turf_id = 100',
+		);
+
+		await runGeometryQueue(db, van, {
+			campaignId: 1,
+			exportJobTypeId: 5,
+			webhookUrlFor: () => 'https://example.test/hook',
+			sleep: async () => undefined,
+			fetchFn: async () => new Response(CSV, { status: 200 }),
+			geocode: null,
+			maxItems: 1,
+		});
+
+		const queue = await client.execute(
+			'SELECT turf_id, status FROM van_geometry_queue ORDER BY turf_id',
+		);
+		expect(queue.rows.map((r) => [r.turf_id, r.status])).toEqual([
+			[100, 'pending'],
+			[200, 'done'],
+		]);
+	});
+
 	it('writes nothing of a turf whose batch fails part way', async () => {
 		await seed(100);
 		// The roster insert comes after the hull update in the batch.
