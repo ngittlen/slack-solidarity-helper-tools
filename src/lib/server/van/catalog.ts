@@ -74,7 +74,11 @@ export interface CatalogClaim {
 }
 
 export interface CatalogPlan {
+	/** Every turf VAN listed, as it should now be stored. */
 	upserts: NewVanTurfRow[];
+	/** The upserts that differ from the stored row — the only ones the sync
+	 *  writes (see turfRowChanged). */
+	writes: NewVanTurfRow[];
 	/** turfIds to stamp `retiredAt` on. */
 	retirements: number[];
 	/** turfIds whose `retiredAt` should be cleared — a route that vanished
@@ -149,6 +153,29 @@ function holdable(prior: VanTurfRow, now: Date): boolean {
 	if (!prior.printedListCreatedAt) return true;
 	const expires = listExpiresAt(prior.printedListCreatedAt);
 	return expires === null || now < expires;
+}
+
+/**
+ * Whether a planned row says anything the stored one does not.
+ *
+ * The catalog runs 37 times a day over every live turf, and an upsert rewrites
+ * its row whether or not a value moved — 12,000-odd rows a run, nearly all of
+ * them identical, and Turso bills each one as written. So a row is written
+ * only when some column other than `lastSeenAt` differs. `lastSeenAt` changes
+ * every run by construction and nothing reads it; it is stamped whenever the
+ * row is written for another reason, so it says when the row last changed, not
+ * when VAN last listed it.
+ *
+ * An `undefined` key is skipped: drizzle leaves it out of `set`, so it cannot
+ * change the stored row, and counting it would rewrite the turf every run.
+ */
+export function turfRowChanged(row: NewVanTurfRow, prior: VanTurfRow | undefined): boolean {
+	if (!prior) return true;
+	for (const [key, value] of Object.entries(row)) {
+		if (key === 'lastSeenAt' || value === undefined) continue;
+		if (value !== (prior[key as keyof VanTurfRow] ?? null)) return true;
+	}
+	return false;
 }
 
 /** The fields a held turf keeps from before VAN changed it: the list a
@@ -506,6 +533,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 	const existingByRoute = new Map(existing.map((row) => [row.vanMapRouteId, row]));
 
 	const upserts: NewVanTurfRow[] = [];
+	const writes: NewVanTurfRow[] = [];
 	const missingListNumbers: string[] = [];
 	const listNumberDisagreements: string[] = [];
 	const sharedRegionNames: string[] = [];
@@ -691,6 +719,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				if (held && prior) Object.assign(row, heldFields(prior), { vanChangedAt: changedSince });
 				else row.vanChangedAt = null;
 				upserts.push(row);
+				if (turfRowChanged(row, prior)) writes.push(row);
 
 				if (prior?.retiredAt) unretirements.push(prior.turfId);
 
@@ -769,6 +798,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 
 	return {
 		upserts,
+		writes,
 		retirements,
 		unretirements,
 		geometryQueue,

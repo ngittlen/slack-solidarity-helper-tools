@@ -1110,6 +1110,9 @@ export const vanTurfs = sqliteTable(
 		 *  a kind since dropped; the drift alert's stale sweep clears those. */
 		driftAlertedKind: text('drift_alerted_kind'),
 		firstSeenAt: text('first_seen_at').notNull(),
+		/** The last sync that WROTE this row, not the last that saw it: an
+		 *  unchanged turf is not rewritten (turfRowChanged in catalog.ts). When
+		 *  VAN last listed a turf is not recorded per turf. */
 		lastSeenAt: text('last_seen_at').notNull(),
 		/** When the catalog sync first saw VAN differ from this row — the route
 		 *  gone, or its list changed — while that change is held back until the
@@ -1610,6 +1613,8 @@ export const vanMinivanExports = sqliteTable(
 		/** The `canvassers` array as VAN sent it, JSON. Kept whole rather than
 		 *  reduced to names so a change in how names are read needs no refetch. */
 		canvassersJson: text('canvassers_json').notNull().default('[]'),
+		/** When this export was first stored, or last changed. A re-read that
+		 *  finds it as it was does not rewrite it (pullMinivanExports). */
 		fetchedAt: text('fetched_at').notNull(),
 	},
 	(table) => [

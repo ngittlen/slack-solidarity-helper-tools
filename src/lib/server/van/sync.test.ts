@@ -151,6 +151,23 @@ describe('runCatalogSync', () => {
 		expect(inserted[0]).toMatchObject({ turfId: 100, chapterId: 71 });
 	});
 
+	// An identical rewrite still bills as a row written (turfRowChanged).
+	it('does not rewrite a turf VAN reports as it was', async () => {
+		const first = await runCatalogSync(makeDb().db, makeClient(), 1, MAPPING, OVERNIGHT);
+		const stored = first.plan!.upserts[0]!;
+		const { db, inserted } = makeDb([stored]);
+
+		const result = await runCatalogSync(db, makeClient(), 1, MAPPING, {
+			now: new Date(OVERNIGHT.now.getTime() + 30 * 60 * 1000),
+		});
+
+		expect(result.turfsUpserted).toBe(1);
+		expect(result.turfsWritten).toBe(0);
+		expect(inserted.filter((row) => (row as { vanMapRouteId?: unknown }).vanMapRouteId)).toEqual(
+			[],
+		);
+	});
+
 	// The bug this replaced: a folder mapped to several chapters was fetched
 	// once per chapter and upserted once per chapter, every row keyed by
 	// turfId alone — so the last chapter written silently owned the folder

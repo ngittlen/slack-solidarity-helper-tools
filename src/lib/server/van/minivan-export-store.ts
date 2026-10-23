@@ -19,7 +19,7 @@
 //     of its life; short enough to keep a statewide campaign's ~1,000 exports
 //     a day to tens of thousands of rows.
 
-import { and, eq, gte, inArray, lt, max } from 'drizzle-orm';
+import { and, eq, gte, inArray, lt, max, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import {
 	vanMinivanExports,
@@ -121,6 +121,11 @@ export async function pullMinivanExports(
 	// Upserted rather than inserted-or-ignored: an export re-read on the
 	// overlap day is the same record, but VAN is the authority on it and a
 	// canvasser list edited after the fact should land.
+	//
+	// Only when something did change, though. Every sync re-reads the newest
+	// day it holds — up to ~1,000 exports on a busy one, 37 times a day — and
+	// an unconditional update rewrites each, which Turso bills as a row written
+	// even when nothing moved.
 	for (const batch of chunked(rows, WRITE_BATCH_SIZE)) {
 		const statements = batch.map((r) =>
 			db
@@ -129,6 +134,12 @@ export async function pullMinivanExports(
 				.onConflictDoUpdate({
 					target: [vanMinivanExports.campaignId, vanMinivanExports.minivanExportId],
 					set: r,
+					setWhere: or(
+						sql`${vanMinivanExports.name} IS NOT excluded.name`,
+						sql`${vanMinivanExports.listNumber} IS NOT excluded.list_number`,
+						sql`${vanMinivanExports.dateCreated} IS NOT excluded.date_created`,
+						sql`${vanMinivanExports.canvassersJson} IS NOT excluded.canvassers_json`,
+					),
 				}),
 		);
 		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
