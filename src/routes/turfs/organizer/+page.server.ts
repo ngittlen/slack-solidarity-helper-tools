@@ -325,9 +325,10 @@ function lastSyncSummary(
 function placedLabel(turf: RequestedTurfRow): string {
 	const p = turf.placement;
 	if (!p) {
-		return turf.located
+		if (!turf.located) return 'Not placed yet: waiting for its shape from VAN';
+		return turf.missed
 			? 'Not placed: no chapter fits where it is'
-			: 'Not placed yet: waiting for its shape from VAN';
+			: 'Not placed yet: placed on the next sync';
 	}
 	if (p.source === 'organizer') return `Set by ${p.placedByName ?? 'an organizer'}`;
 	if (p.source === 'zip') return `By ZIP ${p.zip ?? ''}`.trim();

@@ -32,7 +32,10 @@
 //
 // Requested turf (van/turf-placement.ts) is placed in its chapter after each
 // slice that put turf on the map, so a request shows up where the volunteer
-// is looking as soon as it has a shape, not at the next scheduled sync.
+// is looking as soon as it has a shape, not at the next scheduled sync. Once
+// the shapes are done the drain places whatever requested turf is still
+// waiting, shaped by this press or not: a scheduled sync places only what its
+// budget reaches, and a folder can hold hundreds.
 //
 // A press while this runs asks for VAN to be read again (manual-sync.ts). The
 // drain checks between slices, stops when asked, and the press runs its pass
@@ -80,6 +83,8 @@ const MAX_DRAIN_MS = 30 * MINUTE;
 const CONCURRENCY = 4;
 /** Placing what a slice shaped: a Census lookup per turf. */
 const PLACEMENT_BUDGET_MS = 15 * SECOND;
+/** Placing what is still waiting once the shapes are done. */
+const FINAL_PLACEMENT_BUDGET_MS = 5 * 60 * SECOND;
 
 export interface CampaignDrain {
 	campaignId: number;
@@ -105,13 +110,24 @@ export interface ManualGeometryDeps {
 	/** Checked between slices: true stops the drain, for a pass to run. */
 	shouldStop?: () => Promise<boolean>;
 	/** Place a campaign's requested turf; placeRequestedTurf by default. */
-	place?: (db: Db, campaign: VanCampaignRow) => Promise<unknown>;
+	place?: (
+		db: Db,
+		campaign: VanCampaignRow,
+		timeBudgetMs: number,
+		retryMisses?: boolean,
+	) => Promise<unknown>;
 }
 
-async function placeNow(db: Db, campaign: VanCampaignRow): Promise<unknown> {
+async function placeNow(
+	db: Db,
+	campaign: VanCampaignRow,
+	timeBudgetMs: number,
+	retryMisses = false,
+): Promise<unknown> {
 	return placeRequestedTurf(db, campaign, {
 		chapters: await placementChapters(db),
-		timeBudgetMs: PLACEMENT_BUDGET_MS,
+		timeBudgetMs,
+		retryMisses,
 	});
 }
 
@@ -201,6 +217,26 @@ export async function drainGeometryForPress(
 		}
 	}
 
+	// Not when a resync was asked for: its pass places too, and the drain that
+	// follows it comes back here.
+	if (!turns.some((t) => t.drained.stopped === 'resync requested')) {
+		for (const turn of turns) {
+			if (turn.failed || turn.campaign.requestedFolderId === null) continue;
+			const timeBudgetMs = Math.min(FINAL_PLACEMENT_BUDGET_MS, deadline - Date.now());
+			if (timeBudgetMs <= 0) break;
+			try {
+				// Misses too: the press is how an organizer who fixed what kept a
+				// turf out asks for it to be tried again.
+				await (deps.place ?? placeNow)(db, turn.campaign, timeBudgetMs, true);
+			} catch (err) {
+				console.error(
+					`${turn.tag} manual sync: placement failed:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
+		}
+	}
+
 	for (const { tag, drained, failed } of turns) {
 		if (failed) continue;
 		console.log(
@@ -250,7 +286,7 @@ async function takeSlice(
 	turn.drained.mapped += slice.hullsStored + slice.centroidsOnly;
 	if (slice.hullsStored + slice.centroidsOnly > 0 && turn.campaign.requestedFolderId !== null) {
 		try {
-			await (deps.place ?? placeNow)(db, turn.campaign);
+			await (deps.place ?? placeNow)(db, turn.campaign, PLACEMENT_BUDGET_MS);
 		} catch (err) {
 			// The next slice, or the scheduled sync, places it instead.
 			console.error(

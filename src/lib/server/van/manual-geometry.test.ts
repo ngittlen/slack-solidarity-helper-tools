@@ -221,12 +221,44 @@ describe('drainGeometryForPress', () => {
 			{ attempted: 1, hullsStored: 0 },
 		]);
 		await drainGeometryForPress(db, { ...configured, run, place });
-		// Once: the second slice mapped nothing.
-		expect(place).toHaveBeenCalledOnce();
-		expect(place).toHaveBeenCalledWith(
+		// After the first slice — the second mapped nothing — and once at the end.
+		expect(place).toHaveBeenCalledTimes(2);
+		expect(place).toHaveBeenNthCalledWith(
+			1,
 			db,
 			expect.objectContaining({ id: 1, requestedFolderId: 900 }),
+			15_000,
 		);
+	});
+
+	// A scheduled sync places only what its budget reaches; the press finishes
+	// the rest, though it mapped none of it.
+	it('places what is still waiting once the shapes are done', async () => {
+		await client.execute('UPDATE van_campaigns SET requested_folder_id = 900 WHERE id = 1');
+		const place = vi.fn(async () => {});
+		const { run } = worker([{ attempted: 0 }]);
+		await drainGeometryForPress(db, { ...configured, run, place });
+		expect(place).toHaveBeenCalledOnce();
+		// Misses too: a press is how an organizer asks for them again.
+		expect(place).toHaveBeenCalledWith(
+			db,
+			expect.objectContaining({ id: 1 }),
+			expect.any(Number),
+			true,
+		);
+	});
+
+	it('leaves the placing to the pass when a resync is asked for', async () => {
+		await client.execute('UPDATE van_campaigns SET requested_folder_id = 900 WHERE id = 1');
+		const place = vi.fn(async () => {});
+		const { run } = worker([{ attempted: 0 }]);
+		await drainGeometryForPress(db, {
+			...configured,
+			run,
+			place,
+			shouldStop: async () => true,
+		});
+		expect(place).not.toHaveBeenCalled();
 	});
 
 	it('places nothing for a campaign with no requested-turf folder', async () => {

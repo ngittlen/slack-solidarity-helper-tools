@@ -40,6 +40,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import {
 	vanCampaigns,
 	vanChapterFolders,
+	vanTurfPlacementMisses,
 	vanTurfPlacements,
 	vanTurfs,
 	zipChapterMap,
@@ -60,6 +61,13 @@ const NEARBY_RADIUS_METRES = NEARBY_RADIUS_MILES * 1609.344;
 export const UNPLACED_LABEL = 'Requested turf (not placed yet)';
 
 const DEFAULT_TIME_BUDGET_MS = 30 * 1000;
+/** Turfs placed at once: each waits on a Census lookup, so one at a time gets
+ *  through a few dozen in a sync's budget, and a folder holds hundreds. */
+export const PLACEMENT_CONCURRENCY = 6;
+/** How long a turf nothing fit waits before it is tried again where it is.
+ *  What could change the answer — the nightly ZIP map, the chapters offered —
+ *  changes rarely, and every try is a Census lookup. */
+export const MISS_RETRY_MS = 60 * 60 * 1000;
 
 /** A chapter requested turf may be placed in: one the turf pickers offer. */
 export interface PlacementChapter {
@@ -82,6 +90,9 @@ export interface PlacementOptions {
 	chapters: readonly PlacementChapter[];
 	/** Only these turfs: an organizer's "back to automatic". */
 	turfIds?: readonly number[];
+	/** Try recent misses too (see MISS_RETRY_MS): a "Sync VAN now" press, after
+	 *  which an organizer who just fixed what kept a turf out expects it in. */
+	retryMisses?: boolean;
 	fetchFn?: typeof fetch;
 	timeBudgetMs?: number;
 	now?: Date;
@@ -103,7 +114,9 @@ export async function placeRequestedTurf(
 	options: PlacementOptions,
 ): Promise<PlacementResult> {
 	const deadline = Date.now() + (options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
-	const now = (options.now ?? new Date()).toISOString();
+	const nowDate = options.now ?? new Date();
+	const now = nowDate.toISOString();
+	const retryBefore = new Date(nowDate.getTime() - MISS_RETRY_MS).toISOString();
 	const result: PlacementResult = {
 		byZip: 0,
 		byNearby: 0,
@@ -116,6 +129,7 @@ export async function placeRequestedTurf(
 	if (campaign.requestedFolderId === null) return result;
 
 	const offered = new Map(options.chapters.map((c) => [c.chapterId, c.name]));
+	const missedHere = missedWhereItIs();
 	const candidates = await db
 		.select({
 			turfId: vanTurfs.turfId,
@@ -124,6 +138,7 @@ export async function placeRequestedTurf(
 		})
 		.from(vanTurfs)
 		.leftJoin(vanTurfPlacements, eq(vanTurfPlacements.turfId, vanTurfs.turfId))
+		.leftJoin(vanTurfPlacementMisses, eq(vanTurfPlacementMisses.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				eq(vanTurfs.campaignId, campaign.id),
@@ -132,6 +147,10 @@ export async function placeRequestedTurf(
 				isNotNull(vanTurfs.centroidLat),
 				isNotNull(vanTurfs.centroidLng),
 				options.turfIds ? inArray(vanTurfs.turfId, [...options.turfIds]) : undefined,
+				// A recent miss where it still is waits, unless an organizer asked.
+				options.turfIds || options.retryMisses
+					? undefined
+					: or(sql`not (${missedHere})`, sql`${vanTurfPlacementMisses.triedAt} < ${retryBefore}`),
 				or(
 					isNull(vanTurfPlacements.turfId),
 					and(
@@ -147,40 +166,47 @@ export async function placeRequestedTurf(
 				),
 			),
 		)
-		.orderBy(vanTurfs.turfId);
+		// Turf never tried first — a miss somewhere it no longer is counts as
+		// never tried — then the misses longest untried: a run that cannot
+		// reach them all does not spend itself on the same misses each time
+		// while newer turf waits behind them.
+		.orderBy(sql`${missedHere}`, vanTurfPlacementMisses.triedAt, vanTurfs.turfId);
 	if (candidates.length === 0) return result;
 
-	let voters: Voter[] | null = null;
-	for (const turf of candidates) {
-		if (Date.now() >= deadline) {
-			result.budgetLapsed = true;
-			break;
-		}
+	// The whole map, read once: a few thousand rows, rather than a query per turf.
+	const zipChapters = new Map(
+		(
+			await db
+				.select({ zipCode: zipChapterMap.zipCode, chapterId: zipChapterMap.chapterId })
+				.from(zipChapterMap)
+		).map((r) => [r.zipCode, r.chapterId]),
+	);
+	let voters: Promise<Voter[]> | null = null;
+
+	const placeOne = async (turf: (typeof candidates)[number]): Promise<void> => {
 		const at = { lat: turf.lat!, lng: turf.lng! };
 
 		const lookup = await zipForPoint(at, options.fetchFn);
 		const zip = lookup.ok ? lookup.zip : null;
 		let placement: Pick<VanTurfPlacementRow, 'chapterId' | 'chapterName' | 'source'> | null = null;
-		if (zip) {
-			const [row] = await db
-				.select({ chapterId: zipChapterMap.chapterId })
-				.from(zipChapterMap)
-				.where(eq(zipChapterMap.zipCode, zip));
-			const name = row ? offered.get(row.chapterId) : undefined;
-			if (row && name !== undefined) {
-				placement = { chapterId: row.chapterId, chapterName: name, source: 'zip' };
-			}
+		const zipChapter = zip ? zipChapters.get(zip) : undefined;
+		const zipName = zipChapter === undefined ? undefined : offered.get(zipChapter);
+		if (zipChapter !== undefined && zipName !== undefined) {
+			placement = { chapterId: zipChapter, chapterName: zipName, source: 'zip' };
 		}
 		if (!placement) {
-			voters ??= await loadVoters(db, offered);
-			const chapterId = nearbyVote(at, voters);
+			voters ??= loadVoters(db, offered);
+			const chapterId = nearbyVote(at, await voters);
 			if (chapterId !== null) {
 				placement = { chapterId, chapterName: offered.get(chapterId)!, source: 'nearby' };
 			}
 		}
 		if (!placement) {
 			result.unplaced++;
-			continue;
+			// Not a miss when the Census did not answer: the ZIP was never asked,
+			// so "no chapter fits" would not be known. Tried again next run.
+			if (lookup.ok) await recordMiss(db, turf.turfId, at, now);
+			return;
 		}
 
 		const written = await writeAutomaticPlacement(db, turf.turfId, {
@@ -192,11 +218,60 @@ export async function placeRequestedTurf(
 			placedAt: now,
 			placedByName: null,
 		});
-		if (!written) continue;
+		if (!written) return;
 		if (placement.source === 'zip') result.byZip++;
 		else result.byNearby++;
-	}
+	};
+
+	// A few at a time, each taking the next turf until the list or the budget
+	// runs out. A turf started finishes past the deadline: one lookup's timeout.
+	// One worker's error stops the rest taking more — the run has failed, and
+	// must not go on writing after its caller has been told so — and is thrown
+	// once they are all through.
+	let next = 0;
+	let failure: { err: unknown } | null = null;
+	const worker = async (): Promise<void> => {
+		while (next < candidates.length && !failure) {
+			if (Date.now() >= deadline) {
+				result.budgetLapsed = true;
+				return;
+			}
+			try {
+				await placeOne(candidates[next++]!);
+			} catch (err) {
+				failure ??= { err };
+			}
+		}
+	};
+	await Promise.all(
+		Array.from({ length: Math.min(PLACEMENT_CONCURRENCY, candidates.length) }, worker),
+	);
+	if (failure) throw (failure as { err: unknown }).err;
 	return result;
+}
+
+/** True where the turf's miss is at its location now. False (not null) with
+ *  no miss, so it sorts and negates as it reads. */
+function missedWhereItIs() {
+	return sql`coalesce(${vanTurfPlacementMisses.centroidLat} is ${vanTurfs.centroidLat} and ${vanTurfPlacementMisses.centroidLng} is ${vanTurfs.centroidLng}, 0)`;
+}
+
+/**
+ * Remember that nothing fit the turf where it is. Not over a placement made
+ * meanwhile — by an organizer, or by another run placing the same turf (the
+ * press's and a scheduled sync's can overlap): a miss beside a placement would
+ * put the turf at the back of the queue once it moved.
+ */
+async function recordMiss(db: Db, turfId: number, at: LatLng, now: string): Promise<void> {
+	await db.run(sql`
+		insert into ${vanTurfPlacementMisses} (turf_id, centroid_lat, centroid_lng, tried_at)
+		select ${turfId}, ${at.lat}, ${at.lng}, ${now}
+		where not exists (select 1 from ${vanTurfPlacements} where ${vanTurfPlacements.turfId} = ${turfId})
+		on conflict (turf_id) do update set
+			centroid_lat = excluded.centroid_lat,
+			centroid_lng = excluded.centroid_lng,
+			tried_at = excluded.tried_at
+	`);
 }
 
 /**
@@ -305,6 +380,7 @@ async function writeAutomaticPlacement(
 					sql`not exists (select 1 from ${vanTurfPlacements} where ${vanTurfPlacements.turfId} = ${turfId} and ${vanTurfPlacements.source} = 'organizer')`,
 				),
 			),
+		db.delete(vanTurfPlacementMisses).where(eq(vanTurfPlacementMisses.turfId, turfId)),
 	]);
 	return stored.length > 0;
 }
@@ -324,6 +400,7 @@ async function writePlacement(
 			.update(vanTurfs)
 			.set({ chapterId: row.chapterId, chapterName: row.chapterName })
 			.where(eq(vanTurfs.turfId, turfId)),
+		db.delete(vanTurfPlacementMisses).where(eq(vanTurfPlacementMisses.turfId, turfId)),
 	]);
 }
 
@@ -338,6 +415,27 @@ async function clearStale(
 	db: Db,
 	campaign: { id: number; requestedFolderId: number | null },
 ): Promise<number> {
+	// Misses too, and a retired turf's: one back in the folder is then tried
+	// afresh rather than showing an old "no chapter fits".
+	await db.delete(vanTurfPlacementMisses).where(
+		inArray(
+			vanTurfPlacementMisses.turfId,
+			db
+				.select({ turfId: vanTurfs.turfId })
+				.from(vanTurfs)
+				.where(
+					and(
+						eq(vanTurfs.campaignId, campaign.id),
+						or(
+							isNotNull(vanTurfs.retiredAt),
+							campaign.requestedFolderId === null
+								? undefined
+								: ne(vanTurfs.folderId, campaign.requestedFolderId),
+						),
+					),
+				),
+		),
+	);
 	const stale = await db
 		.select({ turfId: vanTurfPlacements.turfId, folderId: vanTurfs.folderId })
 		.from(vanTurfPlacements)
@@ -454,6 +552,9 @@ export interface RequestedTurfRow {
 	regionName: string;
 	/** It has a location, so the automatic placement can work on it. */
 	located: boolean;
+	/** The automatic placement tried it where it is now and nothing fit.
+	 *  False for located turf no run has reached yet. */
+	missed: boolean;
 	placement: Pick<
 		VanTurfPlacementRow,
 		'chapterId' | 'chapterName' | 'source' | 'zip' | 'placedByName' | 'placedAt'
@@ -479,11 +580,13 @@ export async function loadRequestedTurf(
 			name: vanTurfs.name,
 			regionName: vanTurfs.regionName,
 			centroidLat: vanTurfs.centroidLat,
+			missed: sql<number>`${missedWhereItIs()}`,
 			placement: vanTurfPlacements,
 		})
 		.from(vanTurfs)
 		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
 		.leftJoin(vanTurfPlacements, eq(vanTurfPlacements.turfId, vanTurfs.turfId))
+		.leftJoin(vanTurfPlacementMisses, eq(vanTurfPlacementMisses.turfId, vanTurfs.turfId))
 		.where(scope)
 		.orderBy(sql`${vanTurfPlacements.turfId} is not null`, vanTurfs.name)
 		.limit(limit);
@@ -505,6 +608,7 @@ export async function loadRequestedTurf(
 		name: r.name,
 		regionName: r.regionName,
 		located: r.centroidLat !== null,
+		missed: r.centroidLat !== null && Boolean(r.missed),
 		placement: r.placement
 			? {
 					chapterId: r.placement.chapterId,
