@@ -734,6 +734,7 @@ describe('/turfs/organizer requested turf', () => {
 		name: 'Request 1',
 		regionName: 'Requests',
 		located: true,
+		missed: false,
 		placement: {
 			chapterId: 71,
 			chapterName: 'Washtenaw County',
@@ -746,10 +747,11 @@ describe('/turfs/organizer requested turf', () => {
 
 	it('lists requested turf with how each was placed, and the chapters it may go to', async () => {
 		mockRequested.mockResolvedValueOnce({
-			total: 4,
+			total: 5,
 			turfs: [
 				row,
-				{ ...row, turfId: 501, placement: null },
+				{ ...row, turfId: 501, missed: true, placement: null },
+				{ ...row, turfId: 504, placement: null },
 				{ ...row, turfId: 502, located: false, placement: null },
 				{
 					...row,
@@ -762,11 +764,12 @@ describe('/turfs/organizer requested turf', () => {
 		expect(data.requestedTurf.map((t: { placedLabel: string }) => t.placedLabel)).toEqual([
 			'By ZIP 48104',
 			'Not placed: no chapter fits where it is',
+			'Not placed yet: placed on the next sync',
 			'Not placed yet: waiting for its shape from VAN',
 			'Set by Alex',
 		]);
 		expect(data.placementChoices.map((c: { chapterId: number }) => c.chapterId)).toEqual([71, 72]);
-		expect(data.requestedTotal).toBe(4);
+		expect(data.requestedTotal).toBe(5);
 	});
 
 	const pick = (session: unknown, turfId: string, chapterId: string) => {

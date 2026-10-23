@@ -275,9 +275,10 @@ requested-turf folder, the app sends the centre point of the turf's outline — 
 longitude, the middle of a route of houses rather than any one address — to the same TIGERweb
 service, which answers with the ZIP that point is in. The app then looks that ZIP up in its own
 ZIP → chapter table, built from where members live. It stores the turf's ZIP, chapter and centre
-point in `van_turf_placements`, and nothing about any voter. When an organizer picks a turf's
-chapter by hand instead, it also records the organizer's display name there, as it does for other
-organizer changes.
+point in `van_turf_placements` (or, for turf no chapter fits, the centre point and when it was
+tried in `van_turf_placement_misses`), and nothing about any voter. When an organizer picks a
+turf's chapter by hand instead, it also records the organizer's display name there, as it does for
+other organizer changes.
 
 ### Canvassing results
 

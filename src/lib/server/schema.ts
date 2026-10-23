@@ -1689,6 +1689,17 @@ export const vanTurfPlacements = sqliteTable('van_turf_placements', {
 
 export type VanTurfPlacementRow = typeof vanTurfPlacements.$inferSelect;
 
+/** Requested turf the automatic placement tried and could not place, so
+ *  /turfs/organizer can tell "no chapter fits" from "not tried yet", and the
+ *  next run tries turf it has never tried before these. Gone once it is
+ *  placed; a miss at another location than the turf's now is not tried yet. */
+export const vanTurfPlacementMisses = sqliteTable('van_turf_placement_misses', {
+	turfId: integer('turf_id').primaryKey(),
+	centroidLat: real('centroid_lat').notNull(),
+	centroidLng: real('centroid_lng').notNull(),
+	triedAt: text('tried_at').notNull(),
+});
+
 export const vanZipCentroids = sqliteTable('van_zip_centroids', {
 	zip: text('zip').primaryKey(),
 	lat: real('lat').notNull(),

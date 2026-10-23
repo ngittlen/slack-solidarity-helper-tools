@@ -7,6 +7,8 @@ import { vanTurfs } from '../schema.js';
 import { visibleToAnyChapter, visibleToChapter } from './chapter-visibility.js';
 import {
 	NEARBY_TURF_VOTES,
+	MISS_RETRY_MS,
+	PLACEMENT_CONCURRENCY,
 	UNPLACED_LABEL,
 	loadRequestedTurf,
 	nearbyVote,
@@ -20,6 +22,8 @@ import {
 let db: ReturnType<typeof drizzle>;
 let client: Client;
 const AT = '2026-10-22T00:00:00.000Z';
+/** Long enough ago that a miss then is tried again now. */
+const HOURS_AGO = new Date(Date.now() - 3 * 60 * 60 * 1000);
 const REQUESTED = 900;
 const CAMPAIGN = { id: 1, requestedFolderId: REQUESTED };
 const CHAPTERS = [
@@ -282,6 +286,164 @@ describe('placeRequestedTurf', () => {
 			.where(visibleToAnyChapter([71]));
 		expect(rows.map((r) => r.turfId)).toContain(500);
 	});
+
+	// So /turfs/organizer can tell "no chapter fits" from "not tried yet".
+	it('remembers a turf nothing could place, until it moves', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		await turf(501, REQUESTED, DETROIT);
+		const result = await placeRequestedTurf(db, CAMPAIGN, {
+			chapters: [],
+			fetchFn: census('48104'),
+			turfIds: [500],
+		});
+		expect(result).toMatchObject({ unplaced: 1 });
+		const missed = async () =>
+			Object.fromEntries((await loadRequestedTurf(db)).turfs.map((t) => [t.turfId, t.missed]));
+		expect(await missed()).toEqual({ 500: true, 501: false });
+
+		await client.execute('UPDATE van_turfs SET centroid_lat = 42.3 WHERE turf_id = 500');
+		expect(await missed()).toEqual({ 500: false, 501: false });
+	});
+
+	it('forgets the miss once the turf is placed', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		await placeRequestedTurf(db, CAMPAIGN, {
+			chapters: [],
+			fetchFn: census('48104'),
+			now: HOURS_AGO,
+		});
+		await zipChapter('48104', 71);
+		await place(census('48104'));
+		const [row] = (await loadRequestedTurf(db)).turfs;
+		expect(row).toMatchObject({ missed: false, placement: { source: 'zip' } });
+		const { rows } = await client.execute('SELECT count(*) AS n FROM van_turf_placement_misses');
+		expect(rows[0]!.n).toBe(0);
+	});
+
+	// A run that cannot reach them all must not spend itself on the same
+	// misses each time while new turf waits.
+	it('tries turf never tried before the misses', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		await placeRequestedTurf(db, CAMPAIGN, {
+			chapters: [],
+			fetchFn: census(null),
+			now: HOURS_AGO,
+		});
+		await turf(501, REQUESTED, DETROIT);
+		const asked: string[] = [];
+		const fetchFn = vi.fn(async (url: string) => {
+			asked.push(new URL(url).searchParams.get('geometry')!);
+			return Response.json({ features: [] });
+		}) as unknown as typeof fetch;
+		await placeRequestedTurf(db, CAMPAIGN, { chapters: [], fetchFn });
+		expect(asked).toEqual([`${DETROIT.lng},${DETROIT.lat}`, `${ANN_ARBOR.lng},${ANN_ARBOR.lat}`]);
+	});
+
+	// Every try is a Census lookup, and the answer seldom changes.
+	it('leaves a recent miss alone unless the turf moved or an organizer asks', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		const opts = { chapters: [], fetchFn: census('48104') };
+		await placeRequestedTurf(db, CAMPAIGN, opts);
+		const again = census('48104');
+		await placeRequestedTurf(db, CAMPAIGN, { ...opts, fetchFn: again });
+		expect(again).not.toHaveBeenCalled();
+
+		await placeRequestedTurf(db, CAMPAIGN, { ...opts, fetchFn: again, turfIds: [500] });
+		expect(again).toHaveBeenCalledOnce();
+
+		await client.execute('UPDATE van_turfs SET centroid_lat = 42.3 WHERE turf_id = 500');
+		await placeRequestedTurf(db, CAMPAIGN, { ...opts, fetchFn: again });
+		expect(again).toHaveBeenCalledTimes(2);
+
+		const later = census('48104');
+		await placeRequestedTurf(db, CAMPAIGN, {
+			...opts,
+			fetchFn: later,
+			now: new Date(Date.now() + MISS_RETRY_MS + 1000),
+		});
+		expect(later).toHaveBeenCalledOnce();
+	});
+
+	// An organizer who fixed what kept a turf out presses "Sync VAN now".
+	it('tries recent misses again when asked to', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		await placeRequestedTurf(db, CAMPAIGN, { chapters: [], fetchFn: census('48104') });
+		await zipChapter('48104', 71);
+		const result = await placeRequestedTurf(db, CAMPAIGN, {
+			chapters: CHAPTERS,
+			fetchFn: census('48104'),
+			retryMisses: true,
+		});
+		expect(result).toMatchObject({ byZip: 1 });
+	});
+
+	it('forgets the misses of turf that left the folder or was retired', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		await turf(501, REQUESTED, ANN_ARBOR);
+		await turf(502, REQUESTED, ANN_ARBOR);
+		await placeRequestedTurf(db, CAMPAIGN, { chapters: [], fetchFn: census('48104') });
+		await client.execute('UPDATE van_turfs SET folder_id = 10 WHERE turf_id = 500');
+		await client.execute(`UPDATE van_turfs SET retired_at = '${AT}' WHERE turf_id = 501`);
+		await placeRequestedTurf(db, CAMPAIGN, { chapters: [], fetchFn: census('48104') });
+		const { rows } = await client.execute('SELECT turf_id FROM van_turf_placement_misses');
+		expect(rows.map((r) => r.turf_id)).toEqual([502]);
+	});
+
+	// The ZIP was never asked, so "no chapter fits" would not be known.
+	it('records no miss when the Census does not answer', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		const result = await placeRequestedTurf(db, CAMPAIGN, {
+			chapters: [],
+			fetchFn: census('down'),
+		});
+		expect(result).toMatchObject({ unplaced: 1 });
+		expect((await loadRequestedTurf(db)).turfs[0]).toMatchObject({ missed: false });
+	});
+
+	it('records no miss over a placement made meanwhile', async () => {
+		await turf(500, REQUESTED, ANN_ARBOR);
+		const fetchFn = vi.fn(async () => {
+			await setOrganizerPlacement(db, 500, CHAPTERS[1]!, 'Alex');
+			return Response.json({ features: [] });
+		}) as unknown as typeof fetch;
+		await placeRequestedTurf(db, CAMPAIGN, { chapters: [], fetchFn });
+		const { rows } = await client.execute('SELECT count(*) AS n FROM van_turf_placement_misses');
+		expect(rows[0]!.n).toBe(0);
+	});
+
+	// A failed run must not go on writing after its caller has been told so.
+	it('stops taking turf once one fails, and throws', async () => {
+		for (let i = 0; i < 20; i++) await turf(500 + i, REQUESTED, ANN_ARBOR);
+		let calls = 0;
+		const fetchFn = vi.fn(async () => {
+			calls++;
+			await new Promise((r) => setTimeout(r, 5));
+			return Response.json({ features: [] });
+		}) as unknown as typeof fetch;
+		// Every lookup answers; writing the miss fails.
+		vi.spyOn(db, 'run').mockRejectedValue(new Error('db down'));
+		await expect(placeRequestedTurf(db, CAMPAIGN, { chapters: [], fetchFn })).rejects.toThrow(
+			'db down',
+		);
+		// The first few, in flight together; none took another after.
+		expect(calls).toBe(PLACEMENT_CONCURRENCY);
+	});
+
+	it('looks up several turfs at once', async () => {
+		for (let i = 0; i < 12; i++) await turf(500 + i, REQUESTED, ANN_ARBOR);
+		await zipChapter('48104', 71);
+		let inFlight = 0;
+		let most = 0;
+		const fetchFn = vi.fn(async () => {
+			most = Math.max(most, ++inFlight);
+			await new Promise((r) => setTimeout(r, 5));
+			inFlight--;
+			return Response.json({ features: [{ attributes: { ZCTA5: '48104' } }] });
+		}) as unknown as typeof fetch;
+		const result = await place(fetchFn);
+		expect(result).toMatchObject({ byZip: 12 });
+		expect(most).toBe(PLACEMENT_CONCURRENCY);
+	});
 });
 
 describe('setOrganizerPlacement', () => {
@@ -326,7 +488,6 @@ describe('setOrganizerPlacement', () => {
 			'de Soto Chapter',
 		);
 	});
-
 	it('can place turf that has no location yet', async () => {
 		await turf(500, REQUESTED, null);
 		await setOrganizerPlacement(db, 500, CHAPTERS[0]!, 'Alex');
