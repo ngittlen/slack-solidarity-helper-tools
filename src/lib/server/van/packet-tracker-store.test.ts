@@ -706,6 +706,27 @@ describe('the campaign’s own assignments', () => {
 		expect(await assignedTo()).toBe('Organizer Olu');
 	});
 
+	// A fresh cut written into the tracker at once: thousands of turf, a few
+	// names. Every one recorded, and the ones nobody has left alone.
+	it('records many turf at once, each against its own name', async () => {
+		const lists = Array.from({ length: 12 }, (_, i) => `3553674${String(i).padStart(2, '0')}-1`);
+		for (const [i, list] of lists.entries()) await turf({ turfId: 200 + i, list });
+		await turf({ turfId: 300, list: '99999999-9' });
+		const fake = fakeSheets({
+			'sheet-downriver': tracker(
+				...lists.map((list, i) =>
+					packet(list, { Canvasser: i % 2 ? 'Olu' : 'Dana', Status: 'Out' }),
+				),
+			),
+		});
+
+		const result = await run(fake.api);
+
+		expect(result.assignmentsChanged).toBe(12);
+		for (const i of lists.keys()) expect(await assignedTo(200 + i)).toBe(i % 2 ? 'Olu' : 'Dana');
+		expect(await assignedTo(300)).toBeNull();
+	});
+
 	it('clears it when the entry goes Incomplete', async () => {
 		await turf();
 		const fake = fakeSheets({

@@ -85,6 +85,14 @@ describe('the schedules', () => {
 	});
 });
 
+// Off the VAN sync's :07 and :37, so the two do not start together.
+it('runs the Packet Tracker every 15 minutes, apart from the VAN sync', () => {
+	const times = day(job('packet-tracker-sync'));
+	expect(times).toHaveLength(96);
+	expect(times.slice(0, 4)).toEqual(['00:02', '00:17', '00:32', '00:47']);
+	expect(times.some((t) => day(job('van-sync')).includes(t))).toBe(false);
+});
+
 describe('latestSlot', () => {
 	const schedule = [{ hours: [11], minutes: [7] }];
 

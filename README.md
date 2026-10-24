@@ -873,7 +873,7 @@ The app can serve turf from several VAN campaigns at once — each its own Every
 
 5. **Enable it.** The app checks the key works and at least one folder is mapped, and refuses with the reason otherwise. **Disable** is on the same page, behind a confirmation: syncing stops and its unclaimed turf leaves the map and `/turfs` at once; claims in progress run to their end. It can be enabled again; nothing is deleted.
 
-6. Trigger a sync rather than wait for the schedule: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET&campaign=<id>"` (without `campaign`, every enabled campaign, stalest first). Either way it also runs the stages shared by every campaign — reconciliation, the drift and list-expiry alerts, the Packet Tracker — after the catalogs; `&shared=0` leaves them out, which is how the scheduler runs them once a tick rather than once per campaign.
+6. Trigger a sync rather than wait for the schedule: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET&campaign=<id>"` (without `campaign`, every enabled campaign, stalest first). Either way it also runs the stages shared by every campaign — reconciliation, the drift and list-expiry alerts — after the catalogs; `&shared=0` leaves them out, which is how the scheduler runs them once a tick rather than once per campaign.
 
 7. Watch the turf shapes fill in. The catalog lands immediately, but every turf needs its own VAN export job before it can be drawn as a shape rather than a pin, and the scheduled sync only has a few minutes per run for that:
 
@@ -892,7 +892,7 @@ The export job type is set per campaign (step 4) — pick the type that can expo
 
 #### The Packet Tracker in the campaign's spreadsheets
 
-Campaign staff track every packet in a **Packet Tracker** tab in Google Sheets they own. Each packet is **listed in advance** — Packet Name, Voters, Doors and List Number, in columns the campaign protects — and handing one out means filling in the canvasser columns on that packet's row. When this is configured, the app does exactly that for turf claimed here, and reads the campaign's own entries back so it never hands out a packet the tracker says is already out.
+Campaign staff track every packet in a **Packet Tracker** tab in Google Sheets they own. Each packet is **listed in advance** — Packet Name, Voters, Doors and List Number, in columns the campaign protects — and handing one out means filling in the canvasser columns on that packet's row. When this is configured, the app does exactly that for turf claimed here, and reads the campaign's own entries back so it never hands out a packet the tracker says is already out. That runs every 15 minutes on its own schedule (`POST /api/internal/packet-tracker-sync?key=$INTERNAL_CRON_SECRET` runs it by hand), apart from the VAN sync, so a slow VAN never holds it up; a claim also checks the packet's tracker live, for entries made since.
 
 The app finds the packet by **List Number** and writes only the canvasser's half of the row:
 

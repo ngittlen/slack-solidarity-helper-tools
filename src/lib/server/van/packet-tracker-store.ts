@@ -27,10 +27,11 @@
 // Never throws. A Google outage must not fail a sync whose catalog rows are
 // already written and correct.
 
-import { and, eq, gte, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanSheetHealth, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { postAlert } from '../slack.js';
+import { chunked } from './sql-chunk.js';
 import { escapeMrkdwn } from '../../slack-mrkdwn.js';
 import { OUT_OF_TIME, STALE_TAB, type SheetsClient } from '../google/sheets.js';
 import {
@@ -1259,19 +1260,27 @@ async function refreshAssignments(
 	}>,
 ): Promise<number> {
 	const assigned = campaignAssignments(tab.values, tab.layout, ours);
-	let changed = 0;
+	// One statement per name rather than per turf: a campaign that writes a
+	// fresh cut into its trackers changes thousands at once, and a write each
+	// took the run's whole budget on the first few spreadsheets.
+	const byName = new Map<string | null, number[]>();
 	for (const turf of turfs) {
 		const next = turf.printedListNumber
 			? (assigned.get(normaliseListNumber(turf.printedListNumber)) ?? null)
 			: null;
 		if (next === turf.sheetAssignedTo) continue;
-		await db
-			.update(vanTurfs)
-			.set({ sheetAssignedTo: next })
-			.where(eq(vanTurfs.turfId, turf.turfId));
-		changed += 1;
+		let ids = byName.get(next);
+		if (!ids) byName.set(next, (ids = []));
+		ids.push(turf.turfId);
 	}
-	return changed;
+	const writes = [...byName].flatMap(([name, ids]) =>
+		chunked(ids).map((chunk) =>
+			db.update(vanTurfs).set({ sheetAssignedTo: name }).where(inArray(vanTurfs.turfId, chunk)),
+		),
+	);
+	if (writes.length === 0) return 0;
+	await db.batch(writes as unknown as Parameters<typeof db.batch>[0]);
+	return [...byName.values()].reduce((n, ids) => n + ids.length, 0);
 }
 
 /**
@@ -1553,8 +1562,8 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 /**
  * Who the campaign's Packet Tracker says has this turf, read live.
  *
- * The claim path's double-check: the sync only reads the tracker every half
- * hour, and an organizer may have written a turf down since. Returns the
+ * The claim path's double-check: the sync only reads the tracker every 15
+ * minutes, and an organizer may have written a turf down since. Returns the
  * canvasser, null when the tracker does not have it out, or undefined when it
  * could not be read in time — the caller then relies on the last sync's
  * `sheetAssignedTo` rather than refusing everyone because Google is slow.

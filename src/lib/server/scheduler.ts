@@ -172,6 +172,18 @@ const vanSync: Job = {
 	},
 };
 
+/** The Packet Tracker, off the VAN sync's slots so the two do not start
+ *  together. Every 15 minutes: turf an organizer writes into a tracker stays on
+ *  the map as claimable until a run reads it, and the claim's live check
+ *  refuses it to whoever tries. */
+const packetTrackerSync: Job = {
+	name: 'packet-tracker-sync',
+	schedule: [{ hours: EVERY_HOUR, minutes: [2, 17, 32, 47] }],
+	run: async (_slot, call) => {
+		await call('/api/internal/packet-tracker-sync', {}, 3 * MINUTE);
+	},
+};
+
 /** The 07:40 UTC pass: no signup window, and routine event edits reported. */
 const MOBILIZE_NIGHTLY = { hour: 7, minute: 40 };
 /** Requests the event half may take before it is treated as stuck. */
@@ -319,6 +331,7 @@ const mentorWalksSweep: Job = {
 
 export const JOBS: readonly Job[] = [
 	vanSync,
+	packetTrackerSync,
 	mobilizeSync,
 	mobilizeImport,
 	slackInviteAudit,
