@@ -9,7 +9,10 @@
 	import MentorPanel from './MentorPanel.svelte';
 	import MentorDebug from './MentorDebug.svelte';
 	import WalkFinder from './WalkFinder.svelte';
-	import { enhance } from '$app/forms';
+	import { openWalkAlerts } from '$lib/components/nav/bell.svelte.js';
+	import NoticeList from './NoticeList.svelte';
+	import WalkDrawer from './WalkDrawer.svelte';
+	import NewPersonPrompt from '$lib/components/mentor-walks/NewPersonPrompt.svelte';
 	import { afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { WalkFinderView } from '$lib/mentor-walks/types.js';
@@ -24,6 +27,8 @@
 	let noticeDismissed = $state(false);
 	afterNavigate(() => {
 		noticeDismissed = false;
+		// Whatever was followed is what they want to see, not the drawer.
+		drawerOpen = false;
 	});
 
 	// The dismiss form posts to `?/dismissNotice` plus the page's own query, so
@@ -56,45 +61,48 @@
 		refreshed && refreshed.from === pageFinder ? refreshed.view : pageFinder,
 	);
 
-	/** The "Mentor walks" toggle, remembered on this browser once they've
-	 *  used it. Until then it starts open for someone who has never checked
-	 *  out a turf, and closed for everyone else. */
-	const TOGGLE_KEY = 'mentor-walks-open';
-	let toggleChoice = $state<boolean | null>(null);
-	const toggleOpen = $derived(toggleChoice ?? walkFinder?.cardsStartOpen ?? false);
-	// After hydration, so the server's markup and the first client render agree.
-	$effect(() => {
-		try {
-			const stored = localStorage.getItem(TOGGLE_KEY);
-			if (stored !== null) toggleChoice = stored === '1';
-		} catch {
-			// No storage: the toggle starts as the server says.
-		}
-	});
-	function setToggle(open: boolean) {
-		toggleChoice = open;
-		if (!open) closedLink = linkedWalkId;
-		try {
-			localStorage.setItem(TOGGLE_KEY, open ? '1' : '0');
-		} catch {
-			// Remembered for this visit only.
-		}
-	}
+	/** The walks drawer, opened from the chapter bar's button: walk
+	 *  messages, the mentor's own walks, and staff tools. Alerts are the
+	 *  header bell's (NotificationToggle). */
+	let drawerOpen = $state(false);
 
-	const stoppingAlerts = $derived(page.url.searchParams.get('mentorAlerts') === 'stop');
-	/** A walk a message linked to (`#walk-12`): its card is opened and shown,
-	 *  even with the toggle closed, as an alert's "Join on /turfs" promises. */
+	/** A walk a message linked to (`#walk-12`): its card is shown, even for
+	 *  someone who said No thanks, as an alert's "Join on /turfs" promises. */
 	const linkedWalkId = $derived(/^#walk-([\w-]+)$/.exec(page.url.hash)?.[1] ?? null);
-	/** Closing the toggle closes it on a linked walk too. */
-	let closedLink = $state<string | null>(null);
+	const finderState = $derived(walkFinder?.state ?? null);
+	/** The cards at the top of the turf list, and the pins on the map: for
+	 *  anyone but a new person who hasn't said Yes, unless a message linked
+	 *  them to a walk. */
 	const showCards = $derived(
-		walkFinder !== null &&
-			(walkFinder.state === 'cards' ||
-				((walkFinder.state === 'toggle' || walkFinder.state === 'declined') &&
-					(toggleOpen || (linkedWalkId !== null && closedLink !== linkedWalkId)))),
+		finderState === 'cards' ||
+			finderState === 'toggle' ||
+			(walkFinder !== null && linkedWalkId !== null),
 	);
-	// The browser looked for the card before it was drawn, so scroll to it
-	// once it is. Once per link.
+	const showFinder = $derived(walkFinder !== null && !data.needsName);
+	const showMentor = $derived(data.mentor !== null && !data.needsName);
+	const notices = $derived(data.mode === 'member' ? data.notices : []);
+	const turfNotices = $derived(notices.filter((n) => !n.walk));
+	const walkNotices = $derived(notices.filter((n) => n.walk));
+	const mentorDebug = $derived(data.mode === 'member' ? data.mentorDebug : null);
+	const hasDrawer = $derived(
+		(showFinder && finderState === 'declined') ||
+			showMentor ||
+			walkNotices.length > 0 ||
+			mentorDebug !== null,
+	);
+	/** Shown as a dot on the button: something in the drawer is waiting on
+	 *  them. */
+	const waiting = $derived(
+		walkNotices.length +
+			(showMentor && data.mentor && 'checkins' in data.mentor ? data.mentor.checkins.length : 0) +
+			(showMentor && data.mentor?.state === 'invite' ? 1 : 0),
+	);
+	const buttonLabel = $derived(
+		waiting > 0 ? `Mentor walks, ${waiting} waiting for you` : 'Mentor walks',
+	);
+
+	// The browser looked for a linked card before it was drawn, so scroll to
+	// it once it is. Once per link.
 	let scrolledTo: string | null = null;
 	$effect(() => {
 		if (linkedWalkId === null || !showCards || scrolledTo === linkedWalkId) return;
@@ -103,14 +111,13 @@
 		scrolledTo = linkedWalkId;
 		card.scrollIntoView({ block: 'start' });
 	});
-	const showFinder = $derived(
-		walkFinder !== null &&
-			!data.needsName &&
-			(walkFinder.state !== null ||
-				walkFinder.checkins.length > 0 ||
-				walkFinder.mine.length > 0 ||
-				stoppingAlerts),
-	);
+	function promptAnswer(answer: 'yes' | 'snooze' | 'decline' | 'reopen') {
+		walkError = null;
+		void postMentorAction('mentorPrompt', { answer }, pageQuery).then((result) => {
+			if (!result.ok) walkError = result.message;
+		});
+	}
+
 	const chapter = $derived('chapter' in data ? data.chapter : null);
 
 	let walkError = $state<string | null>(null);
@@ -144,14 +151,18 @@
 	}
 
 	const REFRESH_MS = 2 * 60_000;
+	/** Refreshed while there are walks on screen, so a cancelled walk's card
+	 *  and marker go (User Story 8, scenario 3). Not for everyone on a
+	 *  chapter with no walks. */
+	const refreshing = $derived(showCards && (walkFinder?.cards.length ?? 0) > 0);
 	$effect(() => {
-		if (!showCards) return;
+		if (!refreshing) return;
 		const timer = setInterval(refreshWalks, REFRESH_MS);
 		return () => clearInterval(timer);
 	});
 </script>
 
-<svelte:document onvisibilitychange={() => showCards && void refreshWalks()} />
+<svelte:document onvisibilitychange={() => refreshing && void refreshWalks()} />
 
 {#if data.mode === 'public'}
 	<PublicTurfTeaser
@@ -180,44 +191,11 @@
 				</button>
 			</p>
 		{/if}
-		{#if data.notices.length > 0}
-			<!-- What a Google or Apple holder would have been DMed: an expiry warning, a
-			     "did MiniVAN sync?" nudge, a re-cut, a mentor walk's news. Kept until dismissed — the
-			     server drops them after a week regardless. Rendered from plain
-			     segments ($lib/van/notice-text.ts), never as HTML. -->
-			{#if dismissError}
-				<p class="turf-notice-error" role="alert">{dismissError}</p>
-			{/if}
-			<ul class="turf-notices" aria-label="Messages for you">
-				{#each data.notices as notice (notice.id)}
-					<li class="turf-notice">
-						<div class="turf-notice-body">
-							{#each notice.lines as line, i (i)}
-								{#if line.length === 0}
-									<span class="turf-notice-break"></span>
-								{:else}
-									<p>
-										{#each line as segment, j (j)}
-											{#if segment.href}
-												<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- a same-site path, checked server-side -->
-												<a href={segment.href}>{segment.text}</a>
-											{:else if segment.bold}
-												<strong>{segment.text}</strong>
-											{:else}
-												{segment.text}
-											{/if}
-										{/each}
-									</p>
-								{/if}
-							{/each}
-						</div>
-						<form method="POST" action={dismissAction} use:enhance>
-							<input type="hidden" name="id" value={notice.id} />
-							<button type="submit" class="needs-slack-dismiss">Dismiss</button>
-						</form>
-					</li>
-				{/each}
-			</ul>
+		{#if dismissError}
+			<p class="turf-notice-error" role="alert">{dismissError}</p>
+		{/if}
+		{#if turfNotices.length > 0}
+			<NoticeList notices={turfNotices} action={dismissAction} label="Messages for you" />
 		{/if}
 		{#if data.needsName}
 			<NamePrompt action={setNameAction} {confirmName} error={nameError} />
@@ -227,35 +205,89 @@
 				You'd already chosen a name in another tab, so you're <strong>{nameTaken}</strong>.
 			</p>
 		{/if}
-		{#if data.mentorDebug}
-			<MentorDebug debug={data.mentorDebug} {pageQuery} />
-		{/if}
-		{#if data.mentor && !data.needsName}
-			<!-- specs/015-mentor-walks. Not alongside the name prompt: a walk would
-			     carry the name they haven't given yet. -->
-			<MentorPanel mentor={data.mentor} chapter={data.chapter} {pageQuery} tiles={data.tiles} />
-		{/if}
-		{#if walkFinder && showFinder}
-			<WalkFinder
-				finder={walkFinder}
-				chapter={data.chapter}
-				{pageQuery}
-				location={data.location}
-				{showCards}
-				ontoggle={setToggle}
-				onjoin={joinWalk}
-				onleave={leaveWalk}
-				{stoppingAlerts}
-				error={walkError}
-			/>
-		{/if}
 	</div>
 	<MemberTurfs
 		{data}
 		mentorWalks={walkFinder && showCards
 			? { cards: walkFinder.cards, onjoin: joinWalk, onleave: leaveWalk }
 			: null}
+		walksButton={hasDrawer ? walksButton : undefined}
+		walksList={showFinder ? walksList : undefined}
 	/>
+
+	{#snippet walksList()}
+		{#if finderState === 'prompt'}
+			<!-- A new person is asked once (FR-014). -->
+			<NewPersonPrompt
+				onyes={() => promptAnswer('yes')}
+				onsnooze={() => promptAnswer('snooze')}
+				ondecline={() => promptAnswer('decline')}
+				onalerts={() => openWalkAlerts({ setup: true, fromPrompt: true })}
+			/>
+		{/if}
+		{#if walkFinder && chapter}
+			<WalkFinder
+				finder={walkFinder}
+				{chapter}
+				{pageQuery}
+				location={data.location}
+				{showCards}
+				onjoin={joinWalk}
+				onleave={leaveWalk}
+				onalerts={() => openWalkAlerts({ setup: !walkFinder?.alerts })}
+				error={walkError}
+			/>
+		{/if}
+	{/snippet}
+
+	{#snippet walksButton()}
+		<button
+			type="button"
+			class={['walks-btn', walkFinder?.cardsStartOpen && 'walks-btn-new']}
+			aria-haspopup="dialog"
+			aria-label={buttonLabel}
+			onclick={() => (drawerOpen = true)}
+		>
+			<span aria-hidden="true">👟</span> Mentor walks
+			{#if waiting > 0}
+				<span class="walks-dot" aria-hidden="true"></span>
+			{/if}
+		</button>
+	{/snippet}
+
+	<!-- Kept while open even once it's emptied, say by dismissing its last
+	     message: taken away open, it would come back open by itself. -->
+	{#if hasDrawer || drawerOpen}
+		<WalkDrawer open={drawerOpen} onclose={() => (drawerOpen = false)}>
+			{#if !hasDrawer}
+				<p class="mw-muted">Nothing here right now.</p>
+			{/if}
+			{#if dismissError && walkNotices.length > 0}
+				<!-- Also here: the page's copy is behind the drawer. -->
+				<p class="turf-notice-error" role="alert">{dismissError}</p>
+			{/if}
+			{#if walkNotices.length > 0}
+				<NoticeList notices={walkNotices} action={dismissAction} label="Mentor walk messages" />
+			{/if}
+			{#if showMentor && data.mentor}
+				<!-- specs/015-mentor-walks. Not alongside the name prompt: a walk would
+				     carry the name they haven't given yet. -->
+				<MentorPanel mentor={data.mentor} chapter={data.chapter} {pageQuery} tiles={data.tiles} />
+			{/if}
+			{#if showFinder && finderState === 'declined'}
+				<p class="walks-reopen">
+					<button type="button" class="mw-btn mw-btn-link" onclick={() => promptAnswer('reopen')}>
+						Show me mentor walks
+					</button>
+					<span class="mw-muted">to go out with an experienced canvasser.</span>
+				</p>
+			{/if}
+			{#if mentorDebug}
+				<!-- Staff only. -->
+				<MentorDebug debug={mentorDebug} {pageQuery} />
+			{/if}
+		</WalkDrawer>
+	{/if}
 {/if}
 
 <style>
@@ -299,39 +331,9 @@
 		}
 	}
 
-	.turf-notices {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-		margin: 0;
-		padding: 0;
-		list-style: none;
-	}
-
-	.turf-notice {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: var(--space-2);
-		padding: var(--space-2) var(--space-3);
-		border: 1px solid var(--color-border);
-		border-left: 3px solid var(--color-warning);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-surface);
-	}
-
 	.turf-notice-error {
 		margin: 0;
 		color: var(--color-error);
-	}
-
-	.turf-notice-body p {
-		margin: 0;
-	}
-
-	.turf-notice-break {
-		display: block;
-		height: var(--space-2);
 	}
 
 	.needs-slack-dismiss {
@@ -347,5 +349,78 @@
 
 	.needs-slack-dismiss:hover {
 		background: var(--color-bg-hover);
+	}
+
+	/* On the chapter bar's navy, like "Change chapter" beside it. */
+	.walks-btn {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		min-height: 36px;
+		padding: 4px 12px;
+		font: inherit;
+		font-weight: 600;
+		white-space: nowrap;
+		cursor: pointer;
+		border: 1px solid color-mix(in srgb, var(--color-header-text) 50%, transparent);
+		border-radius: var(--radius-md);
+		background: transparent;
+		color: var(--color-header-text);
+	}
+
+	.walks-btn:hover {
+		background: color-mix(in srgb, var(--color-header-text) 12%, transparent);
+	}
+
+	.walks-btn:focus-visible {
+		outline: 2px solid var(--color-border-focus);
+		outline-offset: 2px;
+	}
+
+	/* Someone who has never checked out a turf: the walks are for them. */
+	.walks-btn-new {
+		border-color: var(--color-action);
+		background: var(--color-action);
+		color: var(--color-action-text);
+	}
+
+	.walks-btn-new:hover {
+		background: var(--color-action-hover);
+	}
+
+	.walks-dot {
+		position: absolute;
+		top: -4px;
+		right: -4px;
+		width: 12px;
+		height: 12px;
+		border: 2px solid var(--color-navy-mid);
+		border-radius: 50%;
+		background: var(--color-warning);
+	}
+
+	.walks-reopen {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--space-1);
+		margin: 0;
+		font-size: var(--font-size-sm);
+	}
+
+	/* Before a chapter is picked, under the chapter list on the page's own
+	   background rather than the navy bar. */
+	:global(.chapter-gate) .walks-btn {
+		margin-top: var(--space-4);
+	}
+
+	:global(.chapter-gate) .walks-btn:not(.walks-btn-new) {
+		border-color: var(--color-border);
+		color: var(--color-text);
+	}
+
+	:global(.chapter-gate) .walks-dot {
+		border-color: var(--color-bg);
 	}
 </style>

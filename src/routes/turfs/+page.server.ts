@@ -60,13 +60,12 @@ import {
 	answerWalkAction,
 	joinWalkAction,
 	leaveWalkAction,
-	saveAlertsAction,
 	saveAttendanceAction,
-	stopAlertsAction,
 	type MentorDebugView,
 } from '$lib/server/mentor-walks/panel.js';
 import { forgetMentor } from '$lib/server/mentor-walks/store.js';
 import type { MentorPanelView, WalkFinderView } from '$lib/mentor-walks/types.js';
+import { WALK_MESSAGE_TITLES } from '$lib/mentor-walks/messages.js';
 
 // The volunteer turf page.
 //
@@ -433,6 +432,8 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 export interface TurfNoticeView {
 	id: number;
 	lines: NoticeLine[];
+	/** A mentor walk's news, shown in the walks drawer rather than above the turfs. */
+	walk: boolean;
 }
 
 /**
@@ -443,7 +444,11 @@ export interface TurfNoticeView {
 async function turfNoticesFor(holderId: string): Promise<TurfNoticeView[]> {
 	try {
 		const rows = await loadHolderNotices(db, holderId);
-		return rows.map((n) => ({ id: n.id, lines: noticeLines(n.text, APP_URL) }));
+		return rows.map((n) => ({
+			id: n.id,
+			lines: noticeLines(n.text, APP_URL),
+			walk: Object.hasOwn(WALK_MESSAGE_TITLES, n.kind),
+		}));
 	} catch (err) {
 		console.error('[van] could not read holder notices:', errMessage(err));
 		return [];
@@ -805,24 +810,6 @@ export const actions: Actions = {
 		const result = await saveAttendanceAction(db, ctx, formText(form, 'walkId'), seatIds);
 		if (!result.ok) return fail(result.status, { mentorError: result.message });
 		return { mentorAttendance: result.value };
-	},
-
-	/** Turn nearby-walk alerts on, or change them. */
-	mentorAlertsSave: async ({ request, locals }) => {
-		const ctx = await mentorContext(locals.session);
-		if (!('viewer' in ctx)) return ctx;
-		const form = await request.formData();
-		const result = await saveAlertsAction(db, ctx, formText(form, 'zip'), formText(form, 'radius'));
-		if (!result.ok) return fail(result.status, { mentorError: result.message });
-		return { mentorAlerts: 'on' };
-	},
-
-	/** Turn nearby-walk alerts off. */
-	mentorAlertsOff: async ({ locals }) => {
-		const ctx = await mentorContext(locals.session);
-		if (!('viewer' in ctx)) return ctx;
-		await stopAlertsAction(db, ctx);
-		return { mentorAlerts: 'off' };
 	},
 
 	/**

@@ -49,6 +49,7 @@ import {
 	type MentorPanelState,
 } from '../../mentor-walks/rules.js';
 import type {
+	AlertsView,
 	ChapterOption,
 	MentorDebugView,
 	MentorPanelView,
@@ -88,7 +89,7 @@ type Viewer = Pick<
 	'slackUserId' | 'slackUserName' | 'isAdmin' | 'isModerator' | 'mentorSimulation'
 >;
 
-interface PanelContext {
+export interface PanelContext {
 	viewer: Viewer;
 	settings: Pick<Settings, 'mentorWalksVisibility' | 'volunteerGuidelinesUrl'>;
 	blocked: boolean;
@@ -636,6 +637,20 @@ export async function saveAttendanceAction(
 		return refuse(409, NOT_AVAILABLE);
 	}
 	return { ok: true, value: rawId };
+}
+
+/** The viewer's nearby-walk alerts, for the header's bell (FR-027): null
+ *  when the feature is hidden from them, so the bell leaves them out. */
+export async function loadAlertsView(
+	db: Db,
+	ctx: PanelContext,
+): Promise<{ alerts: AlertsView | null } | null> {
+	if (!visible(ctx)) return null;
+	const row = await loadAlerts(db, ctx.viewer.slackUserId);
+	return {
+		alerts:
+			row && isAlertRadius(row.radiusMiles) ? { zip: row.zip, radius: row.radiusMiles } : null,
+	};
 }
 
 /** Turn nearby-walk alerts on or change them (FR-027). */
