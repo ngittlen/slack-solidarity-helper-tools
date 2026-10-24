@@ -453,6 +453,20 @@ main {
 	container-type: inline-size;
 }
 
+/* Mentor walks at the top of the list (specs/015-mentor-walks): the
+   new-person prompt, check-ins, seats and the chapter's walk cards. Spaced
+   from the sort bar only when something in it is showing. */
+.walks-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+}
+
+.walks-list:has(> :not(.walk-finder)),
+.walks-list:has(.walk-finder > *) {
+	margin-bottom: var(--space-4);
+}
+
 .legend {
 	list-style: none;
 	display: flex;

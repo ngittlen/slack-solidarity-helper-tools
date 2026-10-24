@@ -7,7 +7,7 @@
 	// component renders what it was given and posts actions back.
 
 	import '$lib/components/turfs/turf-page.css';
-	import { tick } from 'svelte';
+	import { tick, type Snippet } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
@@ -38,10 +38,18 @@
 	const {
 		data,
 		mentorWalks = null,
+		walksButton,
+		walksList,
 	}: {
 		data: Extract<PageData, { mode: 'member' }>;
-		/** Mentor walks to mark on the map, when the walk cards are showing
-		 *  (specs/015-mentor-walks, User Story 8). */
+		/** The button that opens the mentor walks drawer: on the chapter bar,
+		 *  or under the chapter list before one is picked. */
+		walksButton?: Snippet;
+		/** Mentor walks at the top of the turf list: the cards for this
+		 *  chapter, and what's waiting on the viewer. */
+		walksList?: Snippet;
+		/** Mentor walks to mark on the map (specs/015-mentor-walks, User
+		 *  Story 8). */
 		mentorWalks?: {
 			cards: WalkCardView[];
 			onjoin: (id: string) => Promise<unknown>;
@@ -678,6 +686,7 @@
 					</li>
 				{/each}
 			</ul>
+			{@render walksButton?.()}
 		</section>
 	{:else}
 		<div class="chapter-bar">
@@ -686,6 +695,7 @@
 				<span class="chapter-current">{data.chapter.name}</span>
 			</div>
 			<div class="bar-actions">
+				{@render walksButton?.()}
 				<a class="change-chapter" href={resolve('/turfs')}>Change chapter</a>
 			</div>
 		</div>
@@ -917,6 +927,9 @@
 			</div>
 
 			<div class="list-col">
+				{#if walksList}
+					<div class="walks-list">{@render walksList()}</div>
+				{/if}
 				<!-- One row, because the two ways in are alternatives: stacked, they
 				     read as two features, and a volunteer who grants location wonders
 				     what the ZIP field is still for. -->

@@ -34,9 +34,7 @@ vi.mock('$lib/server/mentor-walks/panel.js', () => ({
 	answerWalkAction: vi.fn(),
 	joinWalkAction: mockJoinWalk,
 	leaveWalkAction: vi.fn(),
-	saveAlertsAction: vi.fn(),
 	saveAttendanceAction: vi.fn(),
-	stopAlertsAction: vi.fn(),
 }));
 vi.mock('$lib/server/mentor-walks/dispatch.js', () => ({
 	liveNoShowDeps: () => ({}),
@@ -358,11 +356,21 @@ describe('/turfs load', () => {
 						[{ text: 'Your turf expires soon.', bold: true }],
 						[{ text: 'Open turf checkout', href: '/turfs?chapter=71' }],
 					],
+					walk: false,
 				},
 			];
 			expect((await run(event(GOOGLE))).notices).toEqual(expected);
 			expect((await run(event(GOOGLE, 'chapter=71'))).notices).toEqual(expected);
 			expect(mockLoadNotices).toHaveBeenCalledWith(expect.anything(), 'google:1093');
+		});
+
+		it('marks a mentor walk’s news, which the page shows in the walks drawer', async () => {
+			mockLoadNotices.mockResolvedValue([NOTICE, { ...NOTICE, id: 6, kind: 'walk-joined' }]);
+			const notices = (await run(event(GOOGLE))).notices as { id: number; walk: boolean }[];
+			expect(notices.map((n) => [n.id, n.walk])).toEqual([
+				[5, false],
+				[6, true],
+			]);
 		});
 
 		it('reads nothing for a Slack session, whose notices went as DMs', async () => {
@@ -1213,7 +1221,7 @@ describe('/turfs mentor debug actions', () => {
 describe('/turfs mentor actions', () => {
 	const VOLUNTEER_SESSION = { slackUserId: 'U_VOL', slackUserName: 'Kim', isAdmin: false };
 	const runAction = (
-		name: 'mentorAgree' | 'mentorLocate' | 'mentorSaveWalk' | 'mentorJoin' | 'mentorAlertsOff',
+		name: 'mentorAgree' | 'mentorLocate' | 'mentorSaveWalk' | 'mentorJoin',
 		session: unknown,
 		fields: Record<string, string>,
 	) => {

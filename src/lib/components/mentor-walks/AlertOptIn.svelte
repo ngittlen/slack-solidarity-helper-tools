@@ -1,13 +1,13 @@
 <script lang="ts">
 	// Opt in to hear about mentor walks near you (specs/015-mentor-walks,
-	// User Story 7, FR-027–FR-029). Alerts stay on until turned off here or
+	// User Story 7, FR-027–FR-029), in the header bell's popover beside the
+	// device's notification switch. Alerts stay on until turned off here or
 	// from an alert.
 
 	import { onMount } from 'svelte';
 	import './mentor-walks.css';
 	import { ALERT_RADII, DEFAULT_ALERT_RADIUS, type AlertRadius } from '$lib/mentor-walks/rules.js';
 	import type { AlertsView } from '$lib/mentor-walks/types.js';
-	import { pushOfferKey, turnOnPush } from '$lib/push-client.js';
 
 	interface Props {
 		subscription: AlertsView | null;
@@ -17,10 +17,15 @@
 		/** Resolves with what's wrong, or null once saved. */
 		onsave: (subscription: AlertsView) => Promise<string | null>;
 		onoff: () => Promise<boolean>;
-		/** Opened from the new-person prompt: straight to the form. */
+		/** Opened to set them up: straight to the form. */
 		startEditing?: boolean;
 		/** The form's Cancel, when the panel was opened just for it. */
 		oncancel?: () => void;
+		/** How the alerts will reach them, said under the heading. */
+		delivery?: string | null;
+		/** Why they can't be set up or changed yet, e.g. notifications are off
+		 *  and there's no Slack to fall back on. Turning them off still works. */
+		unavailable?: string | null;
 	}
 
 	let {
@@ -30,12 +35,13 @@
 		onoff,
 		startEditing = false,
 		oncancel,
+		delivery = null,
+		unavailable = null,
 	}: Props = $props();
 
 	let editing = $state(false);
 	let zip = $state('');
 	let radius = $state<AlertRadius>(DEFAULT_ALERT_RADIUS);
-	let pushToo = $state(true);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 	let stopped = $state(false);
@@ -43,12 +49,8 @@
 	 *  setting them up again. Until the page is opened from the link again. */
 	let stopAnswered = $state(false);
 	const asking = $derived(stopping && !stopAnswered);
-	/** Set when this browser could take notifications but doesn't yet. */
-	let pushKey = $state<string | null>(null);
-
 	onMount(() => {
-		if (startEditing) open();
-		void pushOfferKey().then((key) => (pushKey = key));
+		if (startEditing && !unavailable) open();
 	});
 
 	function focusOnMount(node: HTMLElement) {
@@ -64,25 +66,14 @@
 
 	async function save(event: SubmitEvent) {
 		event.preventDefault();
+		if (unavailable) return;
 		if (!/^\d{5}$/.test(zip.trim())) {
 			error = 'Enter a 5-digit ZIP code.';
 			return;
 		}
 		busy = true;
-		// Asked first, while still inside the tap: browsers only show the
-		// permission prompt in direct answer to one. Best effort: alerts come
-		// by Slack or on /turfs either way.
-		const pushing =
-			pushKey && pushToo
-				? turnOnPush(pushKey)
-						.then(({ subscription }) => {
-							if (subscription) pushKey = null;
-						})
-						.catch(() => {})
-				: null;
 		try {
 			error = await onsave({ zip: zip.trim(), radius });
-			await pushing;
 			if (error !== null) return;
 			editing = false;
 			stopped = false;
@@ -105,8 +96,13 @@
 	}
 </script>
 
-<section class="mw-panel" aria-labelledby="mw-alerts-heading">
-	<h3 id="mw-alerts-heading">🔔 Alerts for walks near you</h3>
+<section class="mw-alerts" aria-labelledby="mw-alerts-heading">
+	<h3 id="mw-alerts-heading">Mentor walks near you</h3>
+	{#if unavailable}
+		<p class="mw-alerts-note">{unavailable}</p>
+	{:else if delivery}
+		<p class="mw-alerts-note">{delivery}</p>
+	{/if}
 
 	{#if editing}
 		<form class="mw-alert-form" onsubmit={save} novalidate>
@@ -121,6 +117,7 @@
 						autocomplete="postal-code"
 						maxlength="5"
 						bind:value={zip}
+						data-autofocus
 						{@attach focusOnMount}
 					/>
 				</div>
@@ -133,17 +130,11 @@
 					</select>
 				</div>
 			</div>
-			{#if pushKey}
-				<label class="mw-inline-check">
-					<input type="checkbox" bind:checked={pushToo} />
-					Also send notifications to this device
-				</label>
-			{/if}
 			{#if error}
 				<p class="mw-error" role="alert">{error}</p>
 			{/if}
 			<div class="mw-actions">
-				<button type="submit" class="mw-btn mw-btn-primary" disabled={busy}>
+				<button type="submit" class="mw-btn mw-btn-primary" disabled={busy || !!unavailable}>
 					{busy ? 'Saving…' : 'Turn on alerts'}
 				</button>
 				<button
@@ -167,6 +158,7 @@
 					class="mw-btn mw-btn-danger"
 					disabled={busy}
 					onclick={stop}
+					data-autofocus
 					{@attach focusOnMount}
 				>
 					Stop these alerts
@@ -181,7 +173,9 @@
 				<strong>{subscription.zip}</strong>. We'll send at most 2 a day.
 			</p>
 			<div class="mw-actions">
-				<button type="button" class="mw-btn mw-btn-ghost" onclick={open}>Change</button>
+				<button type="button" class="mw-btn mw-btn-ghost" disabled={!!unavailable} onclick={open}>
+					Change
+				</button>
 				<button type="button" class="mw-btn mw-btn-link" disabled={busy} onclick={stop}>
 					Turn off alerts
 				</button>
@@ -193,21 +187,37 @@
 		{/if}
 		<p>Tell me when a mentor plans a walk near me.</p>
 		<div class="mw-actions">
-			<button type="button" class="mw-btn mw-btn-ghost" onclick={open}>Set up alerts</button>
+			<button type="button" class="mw-btn mw-btn-ghost" disabled={!!unavailable} onclick={open}>
+				Set up alerts
+			</button>
 		</div>
 	{/if}
 </section>
 
 <style>
+	/* Bare: the popover around it is the box. */
+	.mw-alerts {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.mw-alerts h3 {
+		margin: 0;
+		font-size: inherit;
+	}
+
+	.mw-alerts p {
+		margin: 0;
+	}
+
+	.mw-alerts-note {
+		color: var(--color-text-muted);
+	}
+
 	.mw-alert-form {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-3);
-	}
-
-	.mw-inline-check {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
 	}
 </style>

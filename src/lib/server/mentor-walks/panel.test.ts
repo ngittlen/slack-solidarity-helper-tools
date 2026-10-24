@@ -22,6 +22,8 @@ import {
 	loadWalkFinder,
 	saveAttendanceAction,
 	stopAlertsAction,
+	saveAlertsAction,
+	loadAlertsView,
 	WALK_GONE,
 	type WalkForm,
 } from './panel.js';
@@ -528,6 +530,19 @@ describe('walk cards, seats and alerts', () => {
 			value: walkId,
 		});
 		expect(await saveAttendanceAction(db, later, walkId, [])).toMatchObject({ ok: false });
+	});
+
+	it('reads alerts for the header bell, only for someone shown the feature', async () => {
+		expect(await loadAlertsView(db, asNewcomer({ visibility: 'off' }))).toBeNull();
+		expect(await loadAlertsView(db, asNewcomer())).toEqual({ alerts: null });
+		const lookup = async () => ({ lat: 42.28, lng: -83.74 });
+		expect(await saveAlertsAction(db, asNewcomer(), '48104', '25', lookup)).toEqual({
+			ok: true,
+			value: true,
+		});
+		expect(await loadAlertsView(db, asNewcomer())).toEqual({
+			alerts: { zip: '48104', radius: 25 },
+		});
 	});
 
 	it('lets anyone stop alerts, whatever the setting', async () => {

@@ -16,7 +16,7 @@
 		location?: { lat: number; lng: number } | null;
 		onjoin: (id: string) => Promise<unknown>;
 		onleave: (id: string) => Promise<unknown>;
-		/** Below the cards (or the empty state): the nearby-alert opt-in. */
+		/** Below the cards (or the empty state): the way to nearby-walk alerts. */
 		footer?: Snippet;
 	}
 
@@ -33,10 +33,7 @@
 <section class="mw-cards" aria-labelledby="mw-cards-heading">
 	<h2 id="mw-cards-heading">Mentor walks in {chapterName}</h2>
 	{#if walks.length === 0}
-		<p class="mw-panel">
-			No mentor walks in the next 3 days. Turn on alerts below and we'll tell you when one is
-			planned near you.
-		</p>
+		<p class="mw-panel">No mentor walks in the next 3 days.</p>
 	{:else}
 		<ul class="mw-list mw-card-grid">
 			{#each shown as { walk, miles } (walk.id)}
