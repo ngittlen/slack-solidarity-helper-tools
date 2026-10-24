@@ -165,18 +165,6 @@ const geometryResult = {
 };
 
 const driftResult = { announced: 0, cleared: 0, failed: false, skipped: 'nothing-new' };
-const sheetLogResult = {
-	filled: 0,
-	updated: 0,
-	failed: 0,
-	deferred: 0,
-	unrouted: 0,
-	unroutedRegions: [] as string[],
-	assignmentsChanged: 0,
-	budgetLapsed: false,
-	warnings: [] as string[],
-};
-
 const event = (key = 'cron-secret', extra = '') =>
 	({ url: new URL(`https://app.example/api/internal/van-sync?key=${key}${extra}`) }) as never;
 
@@ -242,7 +230,6 @@ describe('POST /api/internal/van-sync', () => {
 		mockPrune.mockResolvedValue(0);
 		mockDrift.mockResolvedValue(driftResult);
 		mockListExpiry.mockResolvedValue({ announced: 0, failed: false, skipped: 'nothing-new' });
-		mockRunPacketTracker.mockResolvedValue(sheetLogResult);
 		mockHasher.mockReturnValue(null);
 		mockRunContactStage.mockResolvedValue(null);
 		mockEnsureCampaignRows.mockResolvedValue([]);
@@ -419,7 +406,6 @@ describe('POST /api/internal/van-sync', () => {
 				doorsWarning: null,
 				drift: driftResult,
 				listExpiry: { announced: 0, failed: false, skipped: 'nothing-new' },
-				sheetLog: sheetLogResult,
 			},
 		});
 		expect(mockRunCatalogSync).toHaveBeenCalledWith(
@@ -681,15 +667,14 @@ describe('POST /api/internal/van-sync', () => {
 		);
 	});
 
-	// The shared stages need no VAN key: claims still need reconciling and the
-	// Packet Tracker still needs writing when a key is broken. Drift guards
+	// The shared stages need no VAN key: claims still need reconciling when a
+	// key is broken. Drift guards
 	// itself — it leaves out any campaign whose last sync failed, whose
 	// `van_distributed_to` is stale (drift-store.ts).
 	it('runs the shared stages even when the catalog could not', async () => {
 		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
 		await POST(event());
 		expect(mockReconcile).toHaveBeenCalledOnce();
-		expect(mockRunPacketTracker).toHaveBeenCalledOnce();
 		expect(mockDrift).toHaveBeenCalledOnce();
 	});
 
@@ -698,7 +683,6 @@ describe('POST /api/internal/van-sync', () => {
 		const body = await (await POST(event('cron-secret', '&shared=0'))).json();
 		expect(mockReconcile).not.toHaveBeenCalled();
 		expect(mockDrift).not.toHaveBeenCalled();
-		expect(mockRunPacketTracker).not.toHaveBeenCalled();
 		expect(body.shared).toBeUndefined();
 		expect(body.campaigns[0].turfsUpserted).toBe(3);
 	});
@@ -891,70 +875,11 @@ describe('POST /api/internal/van-sync', () => {
 		});
 	});
 
-	describe('the Packet Tracker', () => {
-		it('runs with the turf channel for its alerts', async () => {
-			await POST(event());
-
-			expect(mockRunPacketTracker).toHaveBeenCalledOnce();
-			const [, options] = mockRunPacketTracker.mock.calls[0]!;
-			expect(options.channelId).toBe('C_TURF');
-			expect(options.timeBudgetMs).toBeGreaterThan(0);
-		});
-
-		// After the catalog, which is what notices a list loaded in MiniVAN.
-		it('runs after the catalog and the reconciliation', async () => {
-			await POST(event());
-
-			const tracker = mockRunPacketTracker.mock.invocationCallOrder[0]!;
-			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(tracker);
-			expect(mockReconcile.mock.invocationCallOrder[0]).toBeLessThan(tracker);
-		});
-
-		it('reports what it wrote', async () => {
-			mockRunPacketTracker.mockResolvedValue({ ...sheetLogResult, filled: 4 });
-			const res = await POST(event());
-			expect((await sharedOf(res)).sheetLog.filled).toBe(4);
-		});
-
-		// Most deployments of this tool have no campaign spreadsheet. An
-		// integration nobody set up must be silent, not reassuring.
-		it('says disabled when it did not run', async () => {
-			mockRunPacketTracker.mockResolvedValue(null);
-			const res = await POST(event());
-
-			expect((await sharedOf(res)).sheetLog).toEqual({ disabled: true });
-		});
-
-		it('posts its advisory warnings with the sync notices', async () => {
-			mockRunPacketTracker.mockResolvedValue({
-				...sheetLogResult,
-				warnings: ['[sheets] the Packet Tracker row for Turf 01 (Dana) was deleted in the sheet'],
-			});
-			await POST(event());
-
-			expect(mockPostMessage).toHaveBeenCalledOnce();
-			expect(mockPostMessage.mock.calls[0]![0].text).toContain('was deleted in the sheet');
-		});
-
-		// The tracker posts its own operator alert through postAlert, which is
-		// what keeps it to one message per ongoing problem. Repeating it here
-		// would put every failure in the channel twice — the same care the
-		// geometry dead letters get.
-		it('leaves the failure alert to the store rather than echoing it', async () => {
-			mockRunPacketTracker.mockResolvedValue({ ...sheetLogResult, failed: 3, warnings: [] });
-			await POST(event());
-
-			expect(mockPostMessage).not.toHaveBeenCalled();
-		});
-
-		// A copy of the ledger must never fail a sync whose own rows are written.
-		it('still returns the catalog result when the tracker throws', async () => {
-			mockRunPacketTracker.mockRejectedValue(new Error('libsql is gone'));
-			const res = await POST(event());
-
-			expect(res.status).toBe(200);
-			expect((await campaignOf(res)).turfsUpserted).toBe(3);
-		});
+	// Its own job (packet-tracker-sync): run here, last, a slow VAN call left
+	// it no time at all.
+	it('leaves the Packet Tracker to its own job', async () => {
+		await POST(event());
+		expect(mockRunPacketTracker).not.toHaveBeenCalled();
 	});
 
 	describe('geometry', () => {
@@ -966,7 +891,7 @@ describe('POST /api/internal/van-sync', () => {
 			mockRunGeometryQueue.mockClear();
 			await POST(event('cron-secret', '&shared=0'));
 			const without = mockRunGeometryQueue.mock.calls[0]![2].timeBudgetMs;
-			expect(without - withShared).toBeGreaterThanOrEqual(40 * 1000);
+			expect(without - withShared).toBeGreaterThanOrEqual(10 * 1000);
 		});
 
 		it('drains the queue after the catalog and reports what it did', async () => {
@@ -1108,12 +1033,10 @@ describe('POST /api/internal/van-sync', () => {
 			expect(body.campaigns.map((c: { campaignId: number }) => c.campaignId)).toEqual([2, 1]);
 		});
 
-		// Run per campaign, they did the same work once per campaign: every
-		// spreadsheet read twice inside a minute against Google's quota, and the
-		// doors warning posted under each campaign's name.
+		// Run per campaign, they did the same work once per campaign: the doors
+		// warning posted under each campaign's name.
 		it('runs the shared stages once, after every campaign', async () => {
 			await POST(event());
-			expect(mockRunPacketTracker).toHaveBeenCalledOnce();
 			expect(mockReconcile).toHaveBeenCalledOnce();
 			expect(mockDoorsHealth).toHaveBeenCalledOnce();
 			const lastCatalog = Math.max(...mockRunCatalogSync.mock.invocationCallOrder);

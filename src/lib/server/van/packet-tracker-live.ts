@@ -36,7 +36,7 @@ const TRACKER_LOCK_TTL_MS = 2 * 60 * 1000;
 const NUDGE_BUDGET_MS = 20 * 1000;
 /** Waits between nudge attempts when the sync holds the lock. The sync may have
  *  read the ledger before this claim existed, so a skipped nudge tries again
- *  rather than leaving the row for the next half-hourly run. */
+ *  rather than leaving the row for the next scheduled run. */
 const NUDGE_RETRY_MS = [5_000, 15_000, 45_000];
 
 /** The most the claim waits for the live check before trusting the last sync.

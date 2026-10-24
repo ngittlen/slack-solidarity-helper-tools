@@ -240,7 +240,7 @@ export async function claimTurf(
 
 	// The tracker double-check, only once everything else says yes: it is a
 	// round trip to Google, and a claim refused for another reason should not
-	// wait on one. The sync reads the tracker every half hour; an organizer
+	// wait on one. The tracker is read every 15 minutes; an organizer
 	// may have written this turf down since.
 	if (input.sheetCheck) {
 		const assignedTo = await input.sheetCheck({

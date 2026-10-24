@@ -41,4 +41,7 @@ primary_region = 'ord'
   # catalog froze for a campaign, and requests in flight got a 500.
   memory = '1gb'
   cpu_kind = 'shared'
-  cpus = 1
+  # 1 shared CPU's 6.25% baseline barely covered normal traffic, so credit
+  # never rebuilt after a deploy and a manual sync drained it into throttling
+  # (2026-10-24). 2 CPUs double the baseline and the burst pool.
+  cpus = 2

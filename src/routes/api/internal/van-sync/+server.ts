@@ -35,7 +35,7 @@ import { sendDriftAlerts } from '$lib/server/van/drift-alert-store.js';
 import { sendListExpiryAlerts } from '$lib/server/van/list-expiry-alert-store.js';
 import { runRefreshSweep, settleRefreshes } from '$lib/server/van/refresh.js';
 import { reconcileClaims } from '$lib/server/van/reconcile-store.js';
-import { packetTrackerCheck, runPacketTracker } from '$lib/server/van/packet-tracker-live.js';
+import { packetTrackerCheck } from '$lib/server/van/packet-tracker-live.js';
 import { stampDoorDeltas } from '$lib/server/van/door-delta-store.js';
 import { notifyDoorsCounted, notifyLapsedClaims } from '$lib/server/van/claim-notices.js';
 import { doorsHealthWarning } from '$lib/server/van/doors-store.js';
@@ -58,9 +58,13 @@ import { secretMatches } from '$lib/server/secret-compare.js';
 //      contact history, geometry — with that campaign's key and lock
 //      (syncCampaign).
 //   3. The shared stages — re-cut reconciliation, door deltas, the doors health
-//      check, the drift and list-expiry alerts, the Packet Tracker. They read
-//      our own tables across every campaign, so they run once, after every
-//      catalog (runSharedStages).
+//      check, the drift and list-expiry alerts. They read our own tables across
+//      every campaign, so they run once, after every catalog (runSharedStages).
+//
+// Not the Packet Tracker: it has its own job (api/internal/packet-tracker-sync).
+// Run here, last, it had only what the VAN stages left of the request; a slow
+// VAN call left it nothing, and the map went on offering turf the campaign had
+// written down as handed out (2026-10-24: three thousand routes).
 //
 // There can be several VAN campaigns (specs/012-multi-van-campaigns), each with
 // its own key, folders, lock and state. `?campaign=<id>` syncs that one; the
@@ -90,24 +94,15 @@ const REFRESH_BUDGET_MS = 30 * 1000;
 // Below this there is no point starting a turf we cannot finish — the export
 // job would be submitted and then abandoned mid-download.
 const MIN_GEOMETRY_BUDGET_MS = 20 * 1000;
-// The Packet Tracker's slice. A run is two reads per spreadsheet the campaign
-// keeps plus a write per turf that moved, each well under a second — but Google
-// can be slow or unreachable without anybody noticing, so it is capped rather
-// than trusted to finish. What it does not reach waits for the next run.
-const SHEET_BUDGET_MS = 30 * 1000;
 // The ContactHistory pull and uncontacted-door recompute. Normally one short
 // window (the half hour since the last run) plus a recompute of every turf;
 // during the first backfill it walks as many day-windows as fit, and the rest
 // wait for the next run.
 const CONTACT_BUDGET_MS = 45 * 1000;
 const MIN_CONTACT_BUDGET_MS = 10 * 1000;
-// Below this there is no point starting: the reads alone need a few seconds,
-// and anything unwritten is no worse off waiting.
-const MIN_SHEET_BUDGET_MS = 5 * 1000;
 // Kept back from the last campaign's geometry for the shared stages that follow
-// it: the Packet Tracker's slice, plus a little for the ledger-only reads and
-// Slack posts around it.
-const SHARED_RESERVE_MS = SHEET_BUDGET_MS + 15 * 1000;
+// it: ledger-only reads and the Slack posts around them.
+const SHARED_RESERVE_MS = 15 * 1000;
 // Placing requested turf: one Census lookup per turf newly located, a few
 // hundred milliseconds each. What it does not reach waits for the next run.
 const PLACEMENT_BUDGET_MS = 20 * 1000;
@@ -221,37 +216,6 @@ async function runPlacement(
 		return result;
 	} catch (err) {
 		console.error(`${logPrefix} placement failed:`, err instanceof Error ? err.message : err);
-		return null;
-	}
-}
-
-/**
- * Bring the campaign's Packet Tracker up to date, and read back which turf it
- * has handed out itself.
- *
- * Returns null — rather than zeros — when the tracker cannot run at all, so
- * "not configured" stays distinguishable from "ran and found nothing to do".
- * Most deployments of this tool have no campaign spreadsheet, and an
- * integration nobody set up must be silent rather than reassuring.
- */
-async function runSheetLog(
-	requestDeadline: number,
-	channelId: string,
-): Promise<Awaited<ReturnType<typeof runPacketTracker>>> {
-	const timeBudgetMs = Math.min(SHEET_BUDGET_MS, requestDeadline - Date.now());
-	if (timeBudgetMs < MIN_SHEET_BUDGET_MS) {
-		console.warn('[sheets] skipping the Packet Tracker this run — the catalog used the budget');
-		return null;
-	}
-	try {
-		// Null too when a nudge holds the lock: it is doing this same work, for
-		// one turf, and the next scheduled run catches up on the rest.
-		return await runPacketTracker(db, { timeBudgetMs, channelId });
-	} catch (err) {
-		// The tracker is a copy. A failure here must not fail a sync whose own
-		// rows are already written and correct — the ledger keeps what is owed
-		// and the next run retries it.
-		console.error('[sheets] packet tracker failed:', err instanceof Error ? err.message : err);
 		return null;
 	}
 }
@@ -510,11 +474,10 @@ async function syncCampaign(
 			: null;
 
 		// Uncontacted doors for every turf in this campaign. After the catalog,
-		// which writes each turf's cut date and retires dead routes; before the
-		// Packet Tracker, which reads the % walked this derives for recent
-		// completions; and before geometry, which is the stage that routinely
-		// runs out of time. Never fails the sync — the counts are an overlay on
-		// VAN's doorCount, which is already written.
+		// which writes each turf's cut date and retires dead routes; and before
+		// geometry, which is the stage that routinely runs out of time. Never
+		// fails the sync — the counts are an overlay on VAN's doorCount, which is
+		// already written.
 		let contacts: Awaited<ReturnType<typeof runContactStage>> = null;
 		const contactBudget = Math.min(CONTACT_BUDGET_MS, requestDeadline - Date.now());
 		if (contactBudget >= MIN_CONTACT_BUDGET_MS) {
@@ -592,26 +555,21 @@ async function syncCampaign(
 
 /**
  * The stages that read our own tables across every campaign: re-cut
- * reconciliation, door deltas, the doors health check, the drift and
- * list-expiry alerts, and the Packet Tracker.
+ * reconciliation, door deltas, the doors health check, and the drift and
+ * list-expiry alerts.
  *
  * Once per request, after every campaign's catalog — and the scheduler asks
  * for them only on its last call of a tick (`shared=0` on the others). Run per
- * campaign, they did the same work once per campaign: the Packet Tracker read
- * every spreadsheet that many times inside a minute against Google's
- * 60-a-minute quota, and the doors health warning, which is about all
- * campaigns, was posted once per campaign under each one's name. After the
- * catalogs, because each reads what they wrote: a re-cut has just retired
- * somebody's route and released their claim, and this is what pairs it to its
- * replacement.
+ * campaign, they did the same work once per campaign: the doors health
+ * warning, which is about all campaigns, was posted once per campaign under
+ * each one's name. After the catalogs, because each reads what they wrote: a
+ * re-cut has just retired somebody's route and released their claim, and this
+ * is what pairs it to its replacement.
  *
  * Under the ledger lock, the same one the housekeeping takes: a second request
  * finding it held skips — the holder is doing this work.
  */
-async function runSharedStages(
-	now: Date,
-	requestDeadline: number,
-): Promise<Record<string, unknown>> {
+async function runSharedStages(now: Date): Promise<Record<string, unknown>> {
 	const token = await acquireSyncLock(db, VAN_LEDGER_LOCK, LEDGER_LOCK_TTL_MS);
 	if (!token) return { skipped: 'another request is running them' };
 	try {
@@ -675,22 +633,11 @@ async function runSharedStages(
 			appUrl: APP_URL,
 		});
 
-		// The Packet Tracker (specs/011-turf-checkout-sheet), last: the catalogs
-		// notice a list loaded in MiniVAN, the reconciliation moves claims onto
-		// re-cut turf, and each campaign's contact stage derives the % walked —
-		// syncing before any of that would write rows describing a ledger
-		// mid-repair. No VAN call, so a missing key does not affect it.
-		const sheetLog = await runSheetLog(requestDeadline, slackTurfChannelId);
-
-		// `sheetLog.warnings` is advisory — an unrouted region, a row the campaign
-		// edited. Failures that need an operator are posted by the tracker itself
-		// through postAlert, one message per ongoing problem.
-		const notices = [...(doorsWarning ? [doorsWarning] : []), ...(sheetLog?.warnings ?? [])];
-		if (notices.length > 0 && slackTurfChannelId) {
+		if (doorsWarning && slackTurfChannelId) {
 			try {
 				await slack.chat.postMessage({
 					channel: slackTurfChannelId,
-					text: `[van] sync notices:\n${notices.map((n) => `• ${n}`).join('\n')}`,
+					text: `[van] sync notices:\n• ${doorsWarning}`,
 				});
 			} catch (err) {
 				console.error(
@@ -706,7 +653,6 @@ async function runSharedStages(
 			doorsWarning,
 			drift,
 			listExpiry,
-			sheetLog: sheetLog ?? { disabled: true },
 		};
 	} catch (err) {
 		// Each of these is idempotent and the next run repeats it; a failure here
@@ -752,7 +698,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			const campaign = await loadCampaign(db, campaignId);
 			if (!campaign) return json({ error: `No campaign ${campaignId}` }, { status: 404 });
 			if (!campaign.enabled) {
-				const shared = runShared ? await runSharedStages(now, requestDeadline) : undefined;
+				const shared = runShared ? await runSharedStages(now) : undefined;
 				return json({
 					...housekeeping,
 					campaigns: [],
@@ -789,7 +735,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			console.log(`[van] out of time; campaign(s) ${deferred.join(', ')} left for the next run`);
 		}
 
-		const shared = runShared ? await runSharedStages(now, requestDeadline) : undefined;
+		const shared = runShared ? await runSharedStages(now) : undefined;
 
 		const failed = outcomes.some((o) => o.failed);
 		return json(

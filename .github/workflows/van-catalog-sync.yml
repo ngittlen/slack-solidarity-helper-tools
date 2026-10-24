@@ -45,3 +45,15 @@ jobs:
             --max-time 300 \
             --retry 3 --retry-delay 30 --retry-connrefused \
             "${APP_URL}/api/internal/van-sync?key=${INTERNAL_CRON_SECRET}"
+      # The Packet Tracker has its own job in the app (every 15 minutes); this
+      # covers it too when the app's scheduler is down. Its own lock makes a
+      # run the app is already doing a no-op.
+      - name: Call Packet Tracker sync endpoint
+        if: always()
+        env:
+          APP_URL: https://slack.tools4abdul.com
+          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            --max-time 180 \
+            "${APP_URL}/api/internal/packet-tracker-sync?key=${INTERNAL_CRON_SECRET}"
