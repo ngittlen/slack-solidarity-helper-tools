@@ -180,6 +180,57 @@ describe('createVanClient', () => {
 		expect(fetchFn).toHaveBeenCalledTimes(2);
 	});
 
+	// What AbortSignal.timeout makes fetch throw.
+	const timedOut = () =>
+		new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+
+	it('gives every request a time limit', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(res(200, { items: [] }));
+		await createVanClient(config, fetchFn as never).folders();
+		expect(fetchFn.mock.calls[0]![1].signal).toBeInstanceOf(AbortSignal);
+	});
+
+	it('tries a read that timed out once more', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockRejectedValueOnce(timedOut())
+			.mockResolvedValueOnce(res(200, { items: [] }));
+		expect(await withTimers(createVanClient(config, fetchFn as never).folders())).toEqual([]);
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+	});
+
+	it('gives up on a read that times out twice, saying so', async () => {
+		const fetchFn = vi.fn().mockRejectedValue(timedOut());
+		const err = await withTimers(
+			createVanClient({ ...config, requestTimeoutMs: 30_000 }, fetchFn as never)
+				.folders()
+				.catch((e: unknown) => e),
+		);
+		expect(err).toBeInstanceOf(VanError);
+		expect((err as VanError).message).toMatch(/no answer within 30s/);
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+	});
+
+	// VAN may have acted on it: a second refresh re-cuts the region again.
+	it('does not send a write that timed out again', async () => {
+		const fetchFn = vi.fn().mockRejectedValue(timedOut());
+		const err = await withTimers(
+			createVanClient(config, fetchFn as never)
+				.refreshMapRegion(7, 8)
+				.catch((e: unknown) => e),
+		);
+		expect((err as VanError).message).toMatch(/no answer within 60s/);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
+	it('says a body that stops arriving timed out', async () => {
+		const stuck = { ...res(200, {}), text: () => Promise.reject(timedOut()) } as Response;
+		const fetchFn = vi.fn().mockResolvedValue(stuck);
+		await expect(createVanClient(config, fetchFn as never).exportJob(1)).rejects.toThrow(
+			/no answer within 60s/,
+		);
+	});
+
 	it('surfaces a non-JSON 200 as a VanError rather than a parse crash', async () => {
 		const fetchFn = vi.fn().mockResolvedValue(res(200, '<html>maintenance</html>'));
 		await expect(createVanClient(config, fetchFn as never).folders()).rejects.toThrow(

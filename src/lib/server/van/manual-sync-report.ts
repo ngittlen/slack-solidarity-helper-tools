@@ -36,8 +36,10 @@ export type ManualSyncPhase = 'waiting' | 'reading' | 'shapes' | 'done';
 export interface CampaignPassReport {
 	campaignId: number;
 	name: string;
-	/** `skipped`: another sync held the campaign's lock for the whole wait. */
-	outcome: 'synced' | 'skipped' | 'failed';
+	/** `skipped`: another sync held the campaign's lock for the whole wait.
+	 *  `slow`: the press stopped waiting for the call, which the server carries
+	 *  on with — not known to have failed (VAN_SYNC_WAIT_MS in scheduler.ts). */
+	outcome: 'synced' | 'skipped' | 'slow' | 'failed';
 	error?: string;
 	/** Folders the catalog ran out of time for: their new turf waits for the
 	 *  next sync. */
@@ -209,7 +211,9 @@ async function passReport(
 			noRequestedFolder: campaign.requestedFolderId === null,
 		};
 		const body = answer.body ?? {};
-		if (answer.error !== undefined || typeof body.error === 'string') {
+		if (answer.error !== undefined && TIMED_OUT.test(answer.error)) {
+			report.outcome = 'slow';
+		} else if (answer.error !== undefined || typeof body.error === 'string') {
 			report.outcome = 'failed';
 			report.error =
 				typeof body.error === 'string'
@@ -228,6 +232,9 @@ async function passReport(
 		return [report];
 	});
 }
+
+/** localCaller's error for a call it stopped waiting on. */
+const TIMED_OUT = /^\S+ took longer than /;
 
 /** The latest press's record, or null before the first. */
 export async function latestManualSync(db: Db, pressLock: string): Promise<ManualSyncRun | null> {

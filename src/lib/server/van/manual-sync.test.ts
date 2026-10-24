@@ -461,6 +461,19 @@ describe('the press record', () => {
 		});
 	});
 
+	// The endpoint carries on after the press stops waiting for it.
+	it('does not call a campaign the press stopped waiting on failed', async () => {
+		const call: Caller = async () => {
+			throw new Error('/api/internal/van-sync took longer than 10 minutes');
+		};
+		await (
+			await startManualVanSync(db, call, FAST)
+		).done;
+		const [campaign] = (await latestManualVanSync(db))!.report!.campaigns;
+		expect(campaign!.outcome).toBe('slow');
+		expect(campaign!.error).toBeUndefined();
+	});
+
 	// Its machine stopped: nothing will finish the record.
 	it('reads as stalled once nobody holds the press lock', async () => {
 		await client.execute(

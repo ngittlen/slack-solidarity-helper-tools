@@ -136,6 +136,13 @@ function campaignNotes(c: CampaignPassReport): ManualSyncNote[] {
 			error: true,
 			campaignId: c.campaignId,
 		});
+	} else if (c.outcome === 'slow') {
+		notes.push({
+			text:
+				`${c.name}: VAN is taking a while — the sync is still running on the server. ` +
+				'Check back in a few minutes: new turf it reads shows up under Requested turf.',
+			error: false,
+		});
 	} else if (c.outcome === 'skipped') {
 		notes.push({
 			text: `${c.name}: not read this time — another sync was using it. Its new turf comes with the next sync.`,

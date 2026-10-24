@@ -130,6 +130,25 @@ describe('manualSyncView', () => {
 		expect(notes.map((n) => n.text)).toEqual([expect.stringContaining('Main: not read')]);
 	});
 
+	it('says a campaign the press stopped waiting on is still running, not failed', async () => {
+		mockLatest.mockResolvedValueOnce(
+			run({
+				report: {
+					campaigns: [{ campaignId: 1, name: 'Main', outcome: 'slow', noRequestedFolder: false }],
+				},
+			}),
+		);
+		const { notes } = (await manualSyncView(NOW))!;
+		expect(notes).toEqual([
+			{
+				text:
+					'Main: VAN is taking a while — the sync is still running on the server. ' +
+					'Check back in a few minutes: new turf it reads shows up under Requested turf.',
+				error: false,
+			},
+		]);
+	});
+
 	it('says when loading a campaign’s map shapes failed', async () => {
 		mockLatest.mockResolvedValueOnce(
 			run({

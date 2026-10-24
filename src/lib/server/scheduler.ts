@@ -88,8 +88,18 @@ export interface Job {
 }
 
 /**
+ * How long a pass waits on one campaign's call. Twice the endpoint's own
+ * budget (REQUEST_BUDGET_MS, 4½ minutes): that budget is checked between
+ * stages, so a slow VAN call runs past it, and a call given up on is reported
+ * as failed while the endpoint carries on and usually finishes. It is also the
+ * campaign lock's lifetime (LOCK_TTL_MS in the endpoint), so a call still
+ * going that late is stuck, not slow.
+ */
+const VAN_SYNC_WAIT_MS = 10 * MINUTE;
+
+/**
  * One pass of the VAN sync: one call per enabled campaign, stalest first, each
- * with the endpoint's full five minutes. One request cannot sync an arbitrary
+ * waited on for VAN_SYNC_WAIT_MS. One request cannot sync an arbitrary
  * number of catalogs, and each campaign has its own lock, so they never
  * contend. One failing does not stop the rest. With none enabled the endpoint
  * is still called once, because it also runs the ledger housekeeping —
@@ -121,7 +131,7 @@ export interface VanSyncAnswer {
 export async function vanSyncPass(call: Caller, db: Db): Promise<VanSyncAnswer[]> {
 	const campaigns = await campaignsStalestFirst(db);
 	if (campaigns.length === 0) {
-		await call('/api/internal/van-sync', {}, 5 * MINUTE);
+		await call('/api/internal/van-sync', {}, VAN_SYNC_WAIT_MS);
 		return [];
 	}
 	const answers: VanSyncAnswer[] = [];
@@ -135,7 +145,7 @@ export async function vanSyncPass(call: Caller, db: Db): Promise<VanSyncAnswer[]
 			const response = await call(
 				'/api/internal/van-sync',
 				{ campaign: String(campaign.id), ...(last ? {} : { shared: '0' }) },
-				5 * MINUTE,
+				VAN_SYNC_WAIT_MS,
 			);
 			const [body] = Array.isArray(response.campaigns) ? response.campaigns : [];
 			answers.push({ campaignId: campaign.id, body: body as Record<string, unknown> | undefined });
