@@ -48,6 +48,9 @@ export interface VanConfig {
 	/** Calls in flight at once, across the whole client. Defaults to
 	 *  MAX_CONCURRENCY; a drain run by hand raises it. */
 	maxConcurrency?: number;
+	/** How long one request may take, answer included. Defaults to
+	 *  REQUEST_TIMEOUT_MS; tests shorten it. */
+	requestTimeoutMs?: number;
 }
 
 /** An error from VAN, carrying the HTTP status and any codes from the standard
@@ -85,6 +88,13 @@ type FetchFn = typeof fetch;
 const MAX_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
+// One request, headers and body, before it is given up on. VAN answers in
+// well under a second; without a limit, a request it never answered waited
+// out fetch's own five minutes, past every stage budget in the sync — and the
+// "Sync VAN now" press gave up on the whole request. A read that times out is
+// tried once more; a write is not (see request).
+const REQUEST_TIMEOUT_MS = 60_000;
+const MAX_TIMED_OUT_READS = 2;
 // Concurrency across the whole client, not per call site. The app's default;
 // VanConfig.maxConcurrency overrides it per client.
 const MAX_CONCURRENCY = 2;
@@ -219,6 +229,11 @@ function backoffMs(attempt: number, retryAfter: string | null): number {
 	return Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS);
 }
 
+/** The abort AbortSignal.timeout raises, as fetch or a body read throws it. */
+function isTimeout(err: unknown): boolean {
+	return err instanceof Error && err.name === 'TimeoutError';
+}
+
 export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): VanClient {
 	const baseUrl = (config.baseUrl ?? VAN_BASE_URL).replace(/\/+$/, '');
 	const headers = {
@@ -230,6 +245,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	// through here, so a caller that fans out over 200 turfs still only has
 	// `maxConcurrency` requests in flight (two unless the config says otherwise).
 	const maxConcurrency = Math.max(1, Math.floor(config.maxConcurrency ?? MAX_CONCURRENCY));
+	const requestTimeoutMs = config.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
 	let active = 0;
 	const waiting: Array<() => void> = [];
 	const stats: VanClientStats = { slotWaitMs: 0, retryWaitMs: 0, retries: 0 };
@@ -268,18 +284,34 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 
 	/** One request with retry on 429 and 5xx. 4xx other than 429 throws
 	 *  immediately — a 403 means the key lacks the tier, and retrying it four
-	 *  more times just delays the error a human needs to see. */
+	 *  more times just delays the error a human needs to see.
+	 *
+	 *  A request VAN does not answer within requestTimeoutMs is abandoned. A
+	 *  read is tried once more; a write is not, because VAN may have acted on
+	 *  it — a second region refresh re-cuts the region again. */
 	async function request(path: string, init: RequestInit = {}): Promise<Response> {
 		const url = path.startsWith('http') ? path : `${baseUrl}${path}`;
+		const isRead = (init.method ?? 'GET').toUpperCase() === 'GET';
 		return withSlot(async () => {
 			let lastError: unknown = null;
+			let timedOut = 0;
 			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 				const isLast = attempt === MAX_ATTEMPTS - 1;
 				let res: Response;
 				try {
-					res = await fetchFn(url, { ...init, headers: { ...headers, ...init.headers } });
+					res = await fetchFn(url, {
+						...init,
+						headers: { ...headers, ...init.headers },
+						// Bounds the body too: it stays attached to the response.
+						signal: AbortSignal.timeout(requestTimeoutMs),
+					});
 				} catch (err) {
-					// Network-level failure (DNS, reset, timeout). Retryable.
+					if (isTimeout(err)) {
+						lastError = new Error(`no answer within ${requestTimeoutMs / 1000}s`);
+						if (!isRead || ++timedOut >= MAX_TIMED_OUT_READS) break;
+						continue;
+					}
+					// Network-level failure (DNS, reset). Retryable.
 					lastError = err;
 					if (!isLast) await retryWait(backoffMs(attempt, null));
 					continue;
@@ -311,7 +343,13 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 
 	async function getJson<T>(path: string): Promise<T> {
 		const res = await request(path);
-		const body = await res.text();
+		let body: string;
+		try {
+			body = await res.text();
+		} catch (err) {
+			if (!isTimeout(err)) throw err;
+			throw new VanError(path, 0, [], `no answer within ${requestTimeoutMs / 1000}s`);
+		}
 		if (!body.trim()) return undefined as T;
 		try {
 			return JSON.parse(body) as T;
