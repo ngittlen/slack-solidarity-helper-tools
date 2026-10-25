@@ -150,7 +150,7 @@
 <section class="mw-panel" aria-labelledby="mw-form-heading">
 	<h2 id="mw-form-heading">{initial ? 'Edit your walk' : 'Host a walk'}</h2>
 	<p class="mw-muted">
-		New canvassers in {chapterLabel} will see this for the 3 days before it starts.
+		New canvassers in {chapterLabel} will see this among the next walks coming up.
 	</p>
 
 	<form class="mw-form" onsubmit={save} novalidate>

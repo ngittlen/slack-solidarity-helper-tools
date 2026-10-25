@@ -77,9 +77,11 @@ export function whenLabel(startsAt: string, now: Date, lower = false): string {
 		: label;
 }
 
-/** The walk's card on /turfs. */
+/** The walk's card on /turfs: `walk` has the page load it among the cards,
+ *  and the fragment scrolls to it. */
 export function walkLink(appUrl: string, walk: Pick<WalkFacts, 'publicId' | 'chapterId'>): string {
-	return `<${appUrl}/turfs?chapter=${walk.chapterId}#walk-${walk.publicId}|/turfs>`;
+	const query = `chapter=${walk.chapterId}&walk=${walk.publicId}`;
+	return `<${appUrl}/turfs?${query}#walk-${walk.publicId}|/turfs>`;
 }
 
 function seatsLeftLine(left: number, seats: number): string {

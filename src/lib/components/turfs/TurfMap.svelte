@@ -254,6 +254,37 @@
 		});
 	});
 
+	/** Centre on a walk at the zoom the map is at. Its card calls this: the
+	 *  card is in the list, so the marker may be anywhere, or off the map. */
+	export function centreOnWalk(id: string) {
+		const walk = walks.find((w) => w.id === id);
+		if (!walk) return;
+		centre = walk.point;
+		zoom = view.zoom;
+		moved = true;
+	}
+
+	/** How near the frame a tapped marker has to be for the map to centre it:
+	 *  a little more than the marker, so one cut off by the edge comes in. */
+	const WALK_EDGE_PX = 48;
+
+	// A tapped marker is already in view, so the map only moves for one at
+	// the edge. Moving it from under the finger would put whatever comes next
+	// under a second tap meant to unselect it.
+	function selectWalk(id: string) {
+		const selecting = id !== selectedWalkId;
+		onselectwalk?.(id);
+		if (!selecting) return;
+		const at = walkMarkers.find((m) => m.walk.id === id)?.at;
+		if (!at) return;
+		const nearEdge =
+			at.x < WALK_EDGE_PX ||
+			at.y < WALK_EDGE_PX ||
+			at.x > mapWidth - WALK_EDGE_PX ||
+			at.y > mapHeight - WALK_EDGE_PX;
+		if (nearEdge) centreOnWalk(id);
+	}
+
 	const me = $derived(location ? view.project(location) : null);
 
 	/** Where the knocked-turf stripe tile starts, so the stripes stay on the
@@ -602,7 +633,7 @@
 			onselect(pressedTurfId);
 		}
 		if (!dragMoved && pressedWalkId !== null && activePointers.length === 1) {
-			onselectwalk?.(pressedWalkId);
+			selectWalk(pressedWalkId);
 		}
 		pressedTurfId = null;
 		pressedWalkId = null;
@@ -984,7 +1015,7 @@
 						onkeydown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
 								e.preventDefault();
-								onselectwalk?.(walk.id);
+								selectWalk(walk.id);
 							}
 						}}
 					>

@@ -31,6 +31,7 @@
 	import AlertOptIn from '$lib/components/mentor-walks/AlertOptIn.svelte';
 	import type { AlertsView } from '$lib/mentor-walks/types.js';
 	import { bell } from './bell.svelte.js';
+	import { scrollBehavior } from '$lib/motion.js';
 	import {
 		claimPushDevice,
 		currentPushSubscription,
@@ -209,11 +210,20 @@
 		bell.fromPrompt = false;
 	}
 
+	let trigger = $state<HTMLButtonElement | null>(null);
+
 	// Read again on each opening, from the button or from the page, in case
 	// they were changed elsewhere. What's on hand shows meanwhile.
+	//
+	// The popover hangs from the bell, so opened from a link far down the
+	// turf list it would open out of sight: the page scrolls up to the bell
+	// when it isn't already in view.
 	$effect(() => {
 		if (!bell.open) return;
-		untrack(() => void loadWalkAlerts());
+		untrack(() => {
+			void loadWalkAlerts();
+			trigger?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+		});
 	});
 
 	async function saveWalkAlerts(subscription: AlertsView): Promise<string | null> {
@@ -288,7 +298,7 @@
 
 {#if pushShown || walksOnPage || bell.walkAlerts === 'stop'}
 	<Popover.Root bind:open={bell.open} {onOpenChange}>
-		<Popover.Trigger class="notify-toggle" aria-label={label} title={label}>
+		<Popover.Trigger bind:ref={trigger} class="notify-toggle" aria-label={label} title={label}>
 			<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
 				<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.6 2H4.4Z" />
 				<path d="M10 21a2.2 2.2 0 0 0 4 0" />

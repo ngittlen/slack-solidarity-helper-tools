@@ -8,6 +8,7 @@
 
 	import '$lib/components/turfs/turf-page.css';
 	import { tick, type Snippet } from 'svelte';
+	import { scrollBehavior } from '$lib/motion.js';
 	import { resolve } from '$app/paths';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
@@ -16,7 +17,6 @@
 	import { KNOCKED_LABEL, rampStyle, turfShade } from '$lib/van/turf-shade.js';
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
-	import WalkCard from '$lib/components/mentor-walks/WalkCard.svelte';
 	import type { WalkCardView } from '$lib/mentor-walks/types.js';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import KnockedClaimDialog from '$lib/components/turfs/KnockedClaimDialog.svelte';
@@ -46,20 +46,51 @@
 		 *  or under the chapter list before one is picked. */
 		walksButton?: Snippet;
 		/** Mentor walks at the top of the turf list: the cards for this
-		 *  chapter, and what's waiting on the viewer. */
-		walksList?: Snippet;
+		 *  chapter, and what's waiting on the viewer. Given whether the map is
+		 *  drawn, as only then can a card select its walk on it. */
+		walksList?: Snippet<[boolean]>;
 		/** Mentor walks to mark on the map (specs/015-mentor-walks, User
 		 *  Story 8). */
 		mentorWalks?: {
 			cards: WalkCardView[];
 			onjoin: (id: string) => Promise<unknown>;
 			onleave: (id: string) => Promise<unknown>;
+			/** The walk selected on its marker or its card. */
+			selectedId: string | null;
+			onselect: (id: string | null) => void;
 		} | null;
 	} = $props();
 
-	/** The walk marker last tapped: its card shows under the map. */
-	let selectedWalkId = $state<string | null>(null);
-	const selectedWalk = $derived(mentorWalks?.cards.find((w) => w.id === selectedWalkId) ?? null);
+	const selectedWalkId = $derived(mentorWalks?.selectedId ?? null);
+
+	let turfMap = $state<TurfMap | null>(null);
+
+	/** Centre the map on a walk, for its card. */
+	export function centreOnWalk(id: string) {
+		turfMap?.centreOnWalk(id);
+	}
+
+	let mapCol = $state<HTMLElement | null>(null);
+
+	/** A tapped marker selects its walk, or unselects it, and puts focus on
+	 *  its card in the list, as for a claimed turf (revealClaimedTurf), so a
+	 *  screen reader announces the walk the marker opened. A copy under the
+	 *  map would repeat the card, and on a short screen run past the bottom
+	 *  of the sticky map column. Beside the map, the list scrolls to the card;
+	 *  with the map above the list, scrolling would carry the map away from
+	 *  under the finger, so the outline on the card is left to show it. */
+	function selectWalk(id: string) {
+		const selecting = selectedWalkId !== id;
+		mentorWalks?.onselect(selecting ? id : null);
+		if (!selecting) return;
+		const card = document.getElementById(`walk-${id}`);
+		if (!card) return;
+		// Side by side, turf-page.css makes the map column sticky.
+		if (mapCol && getComputedStyle(mapCol).position === 'sticky') {
+			card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+		}
+		card.focus({ preventScroll: true });
+	}
 	const mapWalks = $derived(
 		(mentorWalks?.cards ?? []).map((w) => ({
 			id: w.id,
@@ -469,7 +500,7 @@
 		if (selectedId === null || !listEl) return;
 		listEl.querySelector('.turf-row.is-selected')?.scrollIntoView({
 			block: 'nearest',
-			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+			behavior: scrollBehavior(),
 		});
 	});
 
@@ -486,15 +517,14 @@
 	 * screen-reader user gets no benefit from a viewport change, and moving
 	 * focus is what announces the card and puts the copy button next in the tab
 	 * order. `preventScroll` leaves the scrolling to `scrollIntoView`, whose
-	 * behaviour respects the reduced-motion preference below.
+	 * behaviour respects the reduced-motion preference.
 	 */
 	async function revealClaimedTurf(turfId: number): Promise<void> {
 		// The card does not exist until the claim has re-rendered the list.
 		await tick();
 		const card = document.getElementById(`my-turf-${turfId}`);
 		if (!card) return;
-		const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-		card.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+		card.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
 		card.focus({ preventScroll: true });
 	}
 
@@ -624,10 +654,7 @@
 	}
 
 	function backToTop() {
-		window.scrollTo({
-			top: 0,
-			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-		});
+		window.scrollTo({ top: 0, behavior: scrollBehavior() });
 	}
 </script>
 
@@ -848,13 +875,14 @@
 		{/each}
 
 		<div class="turf-layout">
-			<div class="map-col">
+			<div class="map-col" bind:this={mapCol}>
 				{#if drawable.length > 0}
 					{#if onMap.length === 0}
 						<!-- TurfMap needs at least one turf to frame. -->
 						<p class="gate-help">Every turf mapped here has no doors left.</p>
 					{:else}
 						<TurfMap
+							bind:this={turfMap}
 							turfs={onMap}
 							{framing}
 							{selectedId}
@@ -865,7 +893,7 @@
 							campaignBadges={badges}
 							walks={mapWalks}
 							{selectedWalkId}
-							onselectwalk={(id) => (selectedWalkId = selectedWalkId === id ? null : id)}
+							onselectwalk={selectWalk}
 						/>
 					{/if}
 					<ul class="legend">
@@ -899,17 +927,6 @@
 							Show turf with no doors left ({clearedCount})
 						</label>
 					{/if}
-					<!-- The tapped walk marker's card, under the legend. -->
-					{#if selectedWalk && mentorWalks}
-						<div class="walk-popup">
-							<WalkCard
-								walk={selectedWalk}
-								shownIn="map"
-								onjoin={mentorWalks.onjoin}
-								onleave={mentorWalks.onleave}
-							/>
-						</div>
-					{/if}
 					<!-- Constraint A, said out loud. A convex hull swallows territory
 					     the turf does not contain, so it is a browsing aid and MiniVAN
 					     is the authority on which doors are in the list. -->
@@ -928,7 +945,7 @@
 
 			<div class="list-col">
 				{#if walksList}
-					<div class="walks-list">{@render walksList()}</div>
+					<div class="walks-list">{@render walksList(turfMap !== null)}</div>
 				{/if}
 				<!-- One row, because the two ways in are alternatives: stacked, they
 				     read as two features, and a volunteer who grants location wonders

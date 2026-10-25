@@ -1,8 +1,8 @@
 <script lang="ts">
 	// The mentor-walk cards on /turfs (specs/015-mentor-walks, User Story 3,
-	// FR-015/FR-016): walks in the chapter on screen starting within the next
-	// 3 days, soonest first, or nearest first when the viewer's location is
-	// known.
+	// FR-015/FR-016): the next 5 walks in the chapter on screen starting
+	// within the next week, soonest first, or nearest first when the viewer's
+	// location is known.
 
 	import type { Snippet } from 'svelte';
 	import './mentor-walks.css';
@@ -18,9 +18,21 @@
 		onleave: (id: string) => Promise<unknown>;
 		/** Below the cards (or the empty state): the way to nearby-walk alerts. */
 		footer?: Snippet;
+		/** The walk selected on the map, and a way to select one from its card. */
+		selectedId?: string | null;
+		onselect?: (id: string) => void;
 	}
 
-	let { walks, chapterName, location = null, onjoin, onleave, footer }: Props = $props();
+	let {
+		walks,
+		chapterName,
+		location = null,
+		onjoin,
+		onleave,
+		footer,
+		selectedId = null,
+		onselect,
+	}: Props = $props();
 
 	const shown = $derived.by(() => {
 		if (!location) return walks.map((walk) => ({ walk, miles: null }));
@@ -33,7 +45,7 @@
 <section class="mw-cards" aria-labelledby="mw-cards-heading">
 	<h2 id="mw-cards-heading">Mentor walks in {chapterName}</h2>
 	{#if walks.length === 0}
-		<p class="mw-panel">No mentor walks in the next 3 days.</p>
+		<p class="mw-panel">No mentor walks in the next week.</p>
 	{:else}
 		<ul class="mw-list mw-card-grid">
 			{#each shown as { walk, miles } (walk.id)}
@@ -43,6 +55,8 @@
 						distanceLabel={miles === null ? null : distanceLabel(miles)}
 						{onjoin}
 						{onleave}
+						selected={walk.id === selectedId}
+						{onselect}
 					/>
 				</li>
 			{/each}

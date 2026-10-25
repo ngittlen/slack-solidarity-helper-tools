@@ -1,6 +1,6 @@
 <script lang="ts">
-	// One mentor walk, as a card above the turf list or in a map marker's
-	// popup (specs/015-mentor-walks, User Story 3, FR-016/FR-021).
+	// One mentor walk, as a card above the turf list (specs/015-mentor-walks,
+	// User Story 3, FR-016/FR-021).
 	//
 	// The phone number only ever arrives for someone holding a seat (FR-011):
 	// the server leaves it out for everyone else.
@@ -17,14 +17,21 @@
 		/** Settles once the server has answered, so the buttons wait. */
 		onjoin: (id: string) => Promise<unknown>;
 		onleave: (id: string) => Promise<unknown>;
-		/** Where the card shows: the list's copy is the one a `#walk-12` link
-		 *  scrolls to, so a second copy, under the map, takes other ids. */
-		shownIn?: 'list' | 'map';
+		/** Marked as the walk selected on the map. */
+		selected?: boolean;
+		/** Clicking the card, away from its buttons and links, selects its
+		 *  walk on the map. */
+		onselect?: (id: string) => void;
 	}
 
-	let { walk, distanceLabel = null, onjoin, onleave, shownIn = 'list' }: Props = $props();
+	let { walk, distanceLabel = null, onjoin, onleave, selected = false, onselect }: Props = $props();
 
-	const headingId = $derived(`mw-${shownIn === 'map' ? 'map-' : ''}card-${walk.id}`);
+	function select(event: MouseEvent) {
+		if ((event.target as Element).closest('button, a')) return;
+		onselect?.(walk.id);
+	}
+
+	const headingId = $derived(`mw-card-${walk.id}`);
 
 	const full = $derived(walk.seatsLeft <= 0 && !walk.joined);
 	const mentorFirstName = $derived(walk.mentorName.split(' ')[0]);
@@ -91,10 +98,22 @@
 	}
 </script>
 
+<!-- A mouse or tap shortcut: the map's marker is the keyboard's way to
+     select the walk, so the card adds no stop to the tab order. Focusable
+     from script all the same, as the marker sends focus here. -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
 <article
-	id={shownIn === 'list' ? `walk-${walk.id}` : undefined}
-	class={['mw-card', walk.joined && 'mw-card-joined']}
+	id={`walk-${walk.id}`}
+	class={[
+		'mw-card',
+		walk.joined && 'mw-card-joined',
+		onselect && 'mw-card-selectable',
+		selected && 'mw-card-selected',
+	]}
 	aria-labelledby={headingId}
+	aria-current={selected ? 'true' : undefined}
+	tabindex="-1"
+	onclick={onselect ? select : undefined}
 >
 	<div class="mw-card-top">
 		<h3 id={headingId}>{walk.dayLabel} · {walk.timeLabel}</h3>
@@ -192,6 +211,16 @@
 	.mw-card-joined {
 		border-color: var(--color-success);
 		border-width: 2px;
+	}
+
+	.mw-card-selectable {
+		cursor: pointer;
+	}
+
+	/* An outline, so it shows alongside a joined card's green border. */
+	.mw-card-selected {
+		outline: 3px solid var(--color-border-focus);
+		outline-offset: 2px;
 	}
 
 	.mw-card p {

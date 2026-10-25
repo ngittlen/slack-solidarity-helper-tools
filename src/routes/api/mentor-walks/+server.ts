@@ -17,7 +17,9 @@ import { loadWalkFinder } from '$lib/server/mentor-walks/panel.js';
 
 // The walk cards for one chapter, as /turfs loads them (specs/015-mentor-
 // walks, FR-015): for refreshing the cards and the map's walk markers without
-// reloading the page (User Story 8, scenario 3).
+// reloading the page (User Story 8, scenario 3). `walk` names the walk a
+// message linked to, which is always among the cards, as the page's own
+// `?walk=` has its load include it.
 //
 // The same gates as /api/turfs, against the same shared counters: this shows
 // where mentors are meeting in a chapter, so it mustn't be a way around the
@@ -76,6 +78,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		blocked: false,
 		now: new Date(now),
 		chapterId,
+		linkedWalkId: url.searchParams.get('walk'),
 	});
 	return json({ finder });
 };

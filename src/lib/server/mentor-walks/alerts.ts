@@ -2,7 +2,7 @@
 //
 // Someone gives a ZIP and a radius; from then on, each walk with open seats
 // that meets within that radius gets them one alert, when it first comes
-// within CARD_WINDOW_DAYS of starting. The alert's key is the walk, so editing
+// within ALERT_WINDOW_DAYS of starting. The alert's key is the walk, so editing
 // a walk never alerts anyone twice, and a walk moved into someone's range
 // alerts them for the first time (US7, scenario 3). At most ALERTS_PER_DAY go
 // to a person in a campaign day; the rest wait, and the next alert says how
@@ -20,8 +20,8 @@ import {
 } from '../schema.js';
 import { lookupZipCentroid, normalizeZip } from '../van/zip-centroid.js';
 import {
+	ALERT_WINDOW_DAYS,
 	ALERTS_PER_DAY,
-	CARD_WINDOW_DAYS,
 	distanceLabel,
 	isAlertRadius,
 	milesBetween,
@@ -92,7 +92,7 @@ export async function stopAlerts(db: Db, holderId: string): Promise<boolean> {
  *  the window with seats open (FR-028). */
 export async function queueAlerts(db: Db, now: Date, appUrl: string): Promise<number> {
 	const at = now.toISOString();
-	const until = new Date(now.getTime() + CARD_WINDOW_DAYS * DAY_MS).toISOString();
+	const until = new Date(now.getTime() + ALERT_WINDOW_DAYS * DAY_MS).toISOString();
 	const subscribers = await db.select().from(mentorWalkAlerts);
 	if (subscribers.length === 0) return 0;
 

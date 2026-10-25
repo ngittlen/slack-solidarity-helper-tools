@@ -13,8 +13,9 @@
 	import NoticeList from './NoticeList.svelte';
 	import WalkDrawer from './WalkDrawer.svelte';
 	import NewPersonPrompt from '$lib/components/mentor-walks/NewPersonPrompt.svelte';
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
 	import type { WalkFinderView } from '$lib/mentor-walks/types.js';
 	import { postMentorAction } from './mentor-post.js';
 
@@ -27,8 +28,10 @@
 	let noticeDismissed = $state(false);
 	afterNavigate(() => {
 		noticeDismissed = false;
-		// Whatever was followed is what they want to see, not the drawer.
+		// Whatever was followed is what they want to see, not the drawer, nor
+		// a walk picked out on the way.
 		drawerOpen = false;
+		selectedWalkId = null;
 	});
 
 	// The dismiss form posts to `?/dismissNotice` plus the page's own query, so
@@ -66,9 +69,37 @@
 	 *  header bell's (NotificationToggle). */
 	let drawerOpen = $state(false);
 
-	/** A walk a message linked to (`#walk-12`): its card is shown, even for
-	 *  someone who said No thanks, as an alert's "Join on /turfs" promises. */
-	const linkedWalkId = $derived(/^#walk-([\w-]+)$/.exec(page.url.hash)?.[1] ?? null);
+	/** A walk a message linked to (`?walk=12#walk-12`): its card is shown,
+	 *  even for someone who said No thanks, as an alert's "Join on /turfs"
+	 *  promises. */
+	const hashWalkId = $derived(/^#walk-([\w-]+)$/.exec(page.url.hash)?.[1] ?? null);
+	const linkedWalkId = $derived(page.url.searchParams.get('walk') ?? hashWalkId);
+
+	/** Reload the page with `?walk=` naming this walk, so its load includes
+	 *  the card, and every reload after keeps it. */
+	function linkWalk(id: string): Promise<void> {
+		const query = [...page.url.searchParams]
+			.filter(([key]) => key !== 'walk')
+			.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+			.concat(`walk=${encodeURIComponent(id)}`)
+			.join('&');
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve() is here; the rule misses it in this file
+		return goto(`${resolve('/turfs')}?${query}${page.url.hash}`, {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+			// The address may already be this one, after a seat given up on a
+			// linked walk; the load runs again regardless.
+			invalidateAll: true,
+		});
+	}
+
+	// A message that names its walk in the fragment alone: the server never
+	// sees a fragment, so the page asks again with `?walk=`.
+	$effect(() => {
+		if (hashWalkId === null || page.url.searchParams.has('walk')) return;
+		void linkWalk(hashWalkId);
+	});
 	const finderState = $derived(walkFinder?.state ?? null);
 	/** The cards at the top of the turf list, and the pins on the map: for
 	 *  anyone but a new person who hasn't said Yes, unless a message linked
@@ -102,10 +133,12 @@
 	);
 
 	// The browser looked for a linked card before it was drawn, so scroll to
-	// it once it is. Once per link.
+	// it once it is: on the first render, or when the cards that bring it
+	// arrive, as after an old link's reload with `?walk=`. Once per link.
 	let scrolledTo: string | null = null;
 	$effect(() => {
 		if (linkedWalkId === null || !showCards || scrolledTo === linkedWalkId) return;
+		if (!walkFinder?.cards.some((c) => c.id === linkedWalkId)) return;
 		const card = document.getElementById(`walk-${linkedWalkId}`);
 		if (!card) return;
 		scrolledTo = linkedWalkId;
@@ -122,26 +155,46 @@
 
 	let walkError = $state<string | null>(null);
 
+	/** The walk selected on the map, from its marker or its card. */
+	let selectedWalkId = $state<string | null>(null);
+	let memberTurfs = $state<MemberTurfs | null>(null);
+
+	/** A card selects its walk and centres the map on it, every click, so
+	 *  clicking the selected card again brings back a marker panned away. */
+	function selectWalkFromCard(id: string) {
+		selectedWalkId = id;
+		memberTurfs?.centreOnWalk(id);
+	}
+
 	async function joinWalk(id: string): Promise<void> {
 		walkError = null;
 		const result = await postMentorAction('mentorJoin', { walkId: id }, pageQuery);
 		if (!result.ok) walkError = result.message;
 	}
 
+	/** Giving a seat up keeps the walk's card on screen, though past the
+	 *  first few walks only the seat had it shown: the reload names it as
+	 *  linked, unless the page already links another walk. */
 	async function leaveWalk(id: string): Promise<void> {
 		walkError = null;
-		const result = await postMentorAction('mentorLeave', { walkId: id }, pageQuery);
+		const keep = showCards && (linkedWalkId === null || linkedWalkId === id);
+		const result = await postMentorAction('mentorLeave', { walkId: id }, pageQuery, {
+			reload: !keep,
+		});
 		if (!result.ok) walkError = result.message;
+		else if (keep) await linkWalk(id);
 	}
 
 	/** Fetch the chapter's walks again: someone else may have joined, or a walk
-	 *  been cancelled (User Story 8, scenario 3). */
+	 *  been cancelled (User Story 8, scenario 3). With the walk a message
+	 *  linked to, which the cards always include, as the page's load does. */
 	async function refreshWalks(): Promise<void> {
 		const chapterId = chapter?.chapterId;
 		if (chapterId === undefined || document.visibilityState !== 'visible') return;
 		const from = pageFinder;
 		try {
-			const res = await fetch(`/api/mentor-walks?chapter=${chapterId}`);
+			const walk = linkedWalkId === null ? '' : `&walk=${encodeURIComponent(linkedWalkId)}`;
+			const res = await fetch(`/api/mentor-walks?chapter=${chapterId}${walk}`);
 			if (!res.ok) return;
 			const { finder } = (await res.json()) as { finder: WalkFinderView | null };
 			if (pageFinder === from) refreshed = { from, view: finder };
@@ -206,16 +259,25 @@
 			</p>
 		{/if}
 	</div>
+	<!-- Walk markers only alongside the cards they open: someone who still
+	     has to give a name has no list, so no markers either. -->
 	<MemberTurfs
+		bind:this={memberTurfs}
 		{data}
-		mentorWalks={walkFinder && showCards
-			? { cards: walkFinder.cards, onjoin: joinWalk, onleave: leaveWalk }
+		mentorWalks={walkFinder && showCards && showFinder
+			? {
+					cards: walkFinder.cards,
+					onjoin: joinWalk,
+					onleave: leaveWalk,
+					selectedId: selectedWalkId,
+					onselect: (id) => (selectedWalkId = id),
+				}
 			: null}
 		walksButton={hasDrawer ? walksButton : undefined}
 		walksList={showFinder ? walksList : undefined}
 	/>
 
-	{#snippet walksList()}
+	{#snippet walksList(mapShown: boolean)}
 		{#if finderState === 'prompt'}
 			<!-- A new person is asked once (FR-014). -->
 			<NewPersonPrompt
@@ -236,6 +298,8 @@
 				onleave={leaveWalk}
 				onalerts={() => openWalkAlerts({ setup: !walkFinder?.alerts })}
 				error={walkError}
+				{selectedWalkId}
+				onselectwalk={mapShown ? selectWalkFromCard : undefined}
 			/>
 		{/if}
 	{/snippet}

@@ -152,6 +152,65 @@ describe('joining', () => {
 	});
 });
 
+describe('the cards', () => {
+	it('shows the 5 soonest walks starting within a week', async () => {
+		const days = [6, 1, 8, 3, 2, 5, 4];
+		const ids = new Map<number, number>();
+		for (const d of days) ids.set(d, await postWalk({ startsAt: at(d * 24) }));
+		const cards = await cardWalks(db, 71, NOW);
+		expect(cards.map((w) => w.id)).toEqual([1, 2, 3, 4, 5].map((d) => ids.get(d)));
+	});
+
+	it('shows walks under way besides the 5, as nobody can join them', async () => {
+		const started = await postWalk({ startsAt: at(1) });
+		const ids = [];
+		for (const d of [1, 2, 3, 4, 5, 6]) ids.push(await postWalk({ startsAt: at(d * 24) }));
+		const cards = await cardWalks(db, 71, later(1.5));
+		expect(cards.map((w) => w.id)).toEqual([started, ...ids.slice(0, 5)]);
+	});
+
+	it('shows the viewer’s own walks besides the 5, held or hosted', async () => {
+		const ids = [];
+		for (const d of [1, 2, 3, 4, 5, 6]) ids.push(await postWalk({ startsAt: at(d * 24) }));
+		const joined = await joinWalk(db, SAM, ids[5], true, NOW);
+		if (!joined.ok) throw new Error('join failed');
+		const held = { viewerId: SAM.id, heldIds: new Set([ids[5]]) };
+		expect((await cardWalks(db, 71, NOW, held)).map((w) => w.id)).toEqual(ids);
+		expect((await cardWalks(db, 71, NOW, { viewerId: MENTOR.id })).map((w) => w.id)).toEqual(ids);
+		expect((await cardWalks(db, 71, NOW, { viewerId: PRIYA.id })).map((w) => w.id)).toEqual(
+			ids.slice(0, 5),
+		);
+	});
+
+	it('shows full walks besides the 5, as nobody can join them', async () => {
+		const full = await postWalk({ startsAt: at(12), seats: 1 });
+		if (!(await joinWalk(db, DEV, full, true, NOW)).ok) throw new Error('join failed');
+		const ids = [];
+		for (const d of [1, 2, 3, 4, 5, 6]) ids.push(await postWalk({ startsAt: at(d * 24) }));
+		const cards = await cardWalks(db, 71, NOW);
+		expect(cards.map((w) => w.id)).toEqual([full, ...ids.slice(0, 5)]);
+	});
+
+	it('counts a linked walk among the 5 when it is one of them', async () => {
+		const ids = [];
+		for (const d of [1, 2, 3, 4, 5, 6]) ids.push(await postWalk({ startsAt: at(d * 24) }));
+		const [first] = await db.select().from(mentorWalks).where(eq(mentorWalks.id, ids[0]));
+		const cards = await cardWalks(db, 71, NOW, { linkedId: first.publicId });
+		expect(cards.map((w) => w.id)).toEqual(ids.slice(0, 5));
+	});
+
+	it('always shows the walk a message linked to, however far off or far down', async () => {
+		const ids = [];
+		for (const d of [1, 2, 3, 4, 5, 6, 10]) ids.push(await postWalk({ startsAt: at(d * 24) }));
+		const publicIds = await db.select().from(mentorWalks);
+		const publicId = (id: number) => publicIds.find((w) => w.id === id)!.publicId;
+		for (const linked of [ids[5], ids[6]]) {
+			const cards = await cardWalks(db, 71, NOW, { linkedId: publicId(linked) });
+			expect(cards.map((w) => w.id)).toEqual([...ids.slice(0, 5), linked]);
+		}
+	});
+});
+
 describe('giving a seat up', () => {
 	it('works until the start, and not after', async () => {
 		const id = await postWalk({ startsAt: at(2) });

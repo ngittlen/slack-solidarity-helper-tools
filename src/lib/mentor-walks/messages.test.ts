@@ -50,7 +50,7 @@ describe('mentor walk messages', () => {
 
 	it('links changes and cancellations back to the walk on /turfs', () => {
 		expect(changedMessage(WALK, APP, NOW)).toContain(
-			`give up your seat on <${APP}/turfs?chapter=71#walk-k3Xq9vR2mT8w|/turfs>.`,
+			`give up your seat on <${APP}/turfs?chapter=71&walk=k3Xq9vR2mT8w#walk-k3Xq9vR2mT8w|/turfs>.`,
 		);
 		expect(offMessage(WALK, APP, NOW)).toBe(
 			'The walk with *Kimberly B.* on *Today at 5:30 PM* has been cancelled.\n' +
