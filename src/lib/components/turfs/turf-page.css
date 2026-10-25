@@ -1301,9 +1301,3 @@ main {
 		transition: none;
 	}
 }
-
-/* The mentor walk whose map marker was tapped (specs/015-mentor-walks,
-   User Story 8): its card, under the map. */
-.walk-popup {
-	margin-top: var(--space-2);
-}

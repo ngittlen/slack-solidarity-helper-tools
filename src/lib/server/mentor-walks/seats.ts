@@ -6,7 +6,7 @@
 // the joiner holds no overlapping seat (FR-018, FR-019), so two people taking
 // the last seat at once can't both get it.
 
-import { and, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import {
 	mentors,
@@ -16,10 +16,12 @@ import {
 	type MentorWalkSeatRow,
 } from '../schema.js';
 import {
+	CARD_LIMIT,
 	CARD_WINDOW_DAYS,
 	CHECKIN_DAYS,
 	snoozeUntil,
 	WALK_HOURS,
+	walkStarted,
 } from '../../mentor-walks/rules.js';
 import type { Person } from './store.js';
 
@@ -287,14 +289,36 @@ export async function attendedCount(db: Db, holderId: string): Promise<number> {
 }
 
 /**
- * Walks for the cards in one chapter (FR-015): scheduled, starting within
- * CARD_WINDOW_DAYS, not ended, and hosted by a mentor who is still active.
+ * Walks for the cards in one chapter (FR-015): scheduled, not ended, and
+ * hosted by a mentor who is still active, starting within CARD_WINDOW_DAYS.
+ *
+ * Of those, the CARD_LIMIT soonest that can be joined, plus any that can't —
+ * under way, or full — which take none of those places, so a week of full
+ * walks never hides one with a seat left. The places are the same for
+ * everyone, so joining or leaving never moves the list.
+ *
+ * Beyond them, the viewer's own walks, hosted (`viewerId`) or with a seat
+ * (`heldIds`), which they need on the map; and `linkedId`, the walk a message
+ * linked to, however far off: its "Join on /turfs" has to find a card.
  */
-export async function cardWalks(db: Db, chapterId: number, now: Date) {
+export async function cardWalks(
+	db: Db,
+	chapterId: number,
+	now: Date,
+	{
+		linkedId = null,
+		viewerId = null,
+		heldIds = new Set(),
+	}: { linkedId?: string | null; viewerId?: string | null; heldIds?: ReadonlySet<number> } = {},
+) {
 	const endedBefore = new Date(now.getTime() - WALK_HOURS * 3_600_000).toISOString();
 	const until = new Date(now.getTime() + CARD_WINDOW_DAYS * DAY_MS).toISOString();
-	return db
-		.select({ walk: mentorWalks })
+	const rows = await db
+		.select({
+			walk: mentorWalks,
+			taken: sql<number>`(SELECT count(*) FROM ${mentorWalkSeats} s
+				WHERE s.walk_id = ${mentorWalks.id} AND s.left_at IS NULL)`,
+		})
 		.from(mentorWalks)
 		.innerJoin(mentors, eq(mentors.holderId, mentorWalks.mentorId))
 		.where(
@@ -303,11 +327,21 @@ export async function cardWalks(db: Db, chapterId: number, now: Date) {
 				eq(mentorWalks.status, 'scheduled'),
 				eq(mentors.status, 'active'),
 				gt(mentorWalks.startsAt, endedBefore),
-				lte(mentorWalks.startsAt, until),
+				linkedId === null
+					? lte(mentorWalks.startsAt, until)
+					: or(lte(mentorWalks.startsAt, until), eq(mentorWalks.publicId, linkedId)),
 			),
 		)
-		.orderBy(mentorWalks.startsAt)
-		.then((rows) => rows.map((r) => r.walk));
+		.orderBy(mentorWalks.startsAt);
+	let joinable = 0;
+	return rows
+		.filter(({ walk, taken }) => {
+			const own = walk.publicId === linkedId || walk.mentorId === viewerId || heldIds.has(walk.id);
+			if (walk.startsAt > until) return walk.publicId === linkedId;
+			if (walkStarted(walk.startsAt, now) || Number(taken) >= walk.seats) return true;
+			return joinable++ < CARD_LIMIT || own;
+		})
+		.map(({ walk }) => walk);
 }
 
 /** The seats someone holds on walks that haven't ended, or that ended within

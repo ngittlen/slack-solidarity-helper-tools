@@ -275,7 +275,11 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 		session.authProvider !== undefined ? turfNoticesFor(session.slackUserId) : [],
 		loadMentorPanel(db, { ...mentorCtx, chapters, chapterNames: chapterNamesOf(settings) }),
 		loadMentorDebug(db, { viewer: session, settings, blocked: false }),
-		loadWalkFinder(db, { ...mentorCtx, chapterId: chapter?.chapterId ?? null }),
+		loadWalkFinder(db, {
+			...mentorCtx,
+			chapterId: chapter?.chapterId ?? null,
+			linkedWalkId: url.searchParams.get('walk'),
+		}),
 	]);
 
 	const empty = {

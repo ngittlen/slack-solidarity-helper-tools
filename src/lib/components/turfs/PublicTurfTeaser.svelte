@@ -9,6 +9,7 @@
 
 	import { tick } from 'svelte';
 	import { enhance } from '$app/forms';
+	import { prefersReducedMotion } from '$lib/motion.js';
 	import type { SubmitFunction } from '@sveltejs/kit';
 	import type { LatLng } from '$lib/van/geometry.js';
 	import { createMapView, metresPerPixel, tileUrl, MAX_ZOOM, MIN_ZOOM } from '$lib/van/tiles.js';
@@ -169,8 +170,7 @@
 		syncWalkers(walkers, count, current, performance.now());
 		if (walkers.length === 0) return;
 
-		const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-		if (still) {
+		if (prefersReducedMotion()) {
 			drawWalkers(ctx, walkers, colors, Infinity);
 			return;
 		}

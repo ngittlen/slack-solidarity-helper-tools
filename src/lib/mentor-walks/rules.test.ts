@@ -14,11 +14,9 @@ import {
 	type MentorState,
 	type WalkInput,
 	finderState,
-	inCardWindow,
 	isNew,
 	milesBetween,
 	walkDayLabel,
-	walkEnded,
 	walkStarted,
 } from './rules.js';
 
@@ -246,17 +244,9 @@ describe('finderState (FR-014, FR-017)', () => {
 
 describe('walk windows', () => {
 	const at = (hours: number) => new Date(NOW.getTime() + hours * 3_600_000).toISOString();
-	it('shows a card from 3 days out until the walk has ended', () => {
-		expect(inCardWindow(at(73), NOW)).toBe(false);
-		expect(inCardWindow(at(72), NOW)).toBe(true);
-		expect(inCardWindow(at(-1), NOW)).toBe(true);
-		expect(inCardWindow(at(-2), NOW)).toBe(false);
-	});
-	it('knows when a walk has started and ended', () => {
+	it('knows when a walk has started', () => {
 		expect(walkStarted(at(0), NOW)).toBe(true);
 		expect(walkStarted(at(1), NOW)).toBe(false);
-		expect(walkEnded(at(-2), NOW)).toBe(true);
-		expect(walkEnded(at(-1), NOW)).toBe(false);
 	});
 	it('labels days in campaign time', () => {
 		// NOW is noon in Detroit; 1am UTC tomorrow is still tonight there.

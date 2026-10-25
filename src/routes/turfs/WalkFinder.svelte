@@ -29,10 +29,25 @@
 		onalerts: () => void;
 		/** From joining or leaving. */
 		error: string | null;
+		/** The walk selected on the map, and a way to select one from its
+		 *  card: none when there's no map to select it on. */
+		selectedWalkId: string | null;
+		onselectwalk?: (id: string) => void;
 	}
 
-	let { finder, chapter, pageQuery, location, showCards, onjoin, onleave, onalerts, error }: Props =
-		$props();
+	let {
+		finder,
+		chapter,
+		pageQuery,
+		location,
+		showCards,
+		onjoin,
+		onleave,
+		onalerts,
+		error,
+		selectedWalkId,
+		onselectwalk,
+	}: Props = $props();
 
 	let ownError = $state<string | null>(null);
 
@@ -91,6 +106,8 @@
 			{onjoin}
 			{onleave}
 			footer={alertsLink}
+			selectedId={selectedWalkId}
+			onselect={onselectwalk}
 		/>
 	{/if}
 

@@ -484,16 +484,30 @@ async function newcomer(db: Db, ctx: PanelContext) {
  */
 export async function loadWalkFinder(
 	db: Db,
-	ctx: PanelContext & { chapterId: number | null },
+	ctx: PanelContext & {
+		chapterId: number | null;
+		/** The walk a message linked to (`?walk=12`), always among the cards. */
+		linkedWalkId?: string | null;
+	},
 ): Promise<WalkFinderView | null> {
 	if (!visible(ctx)) return null;
 	try {
 		const id = ctx.viewer.slackUserId;
+		const chapterId = ctx.chapterId;
+		const heldWalks = holderSeats(db, id, ctx.now);
 		const [{ state }, alerts, held, chapterWalks, checkedOut] = await Promise.all([
 			newcomer(db, ctx),
 			loadAlerts(db, id),
-			holderSeats(db, id, ctx.now),
-			ctx.chapterId === null ? Promise.resolve([]) : cardWalks(db, ctx.chapterId, ctx.now),
+			heldWalks,
+			chapterId === null
+				? Promise.resolve([])
+				: heldWalks.then((seats) =>
+						cardWalks(db, chapterId, ctx.now, {
+							linkedId: ctx.linkedWalkId ?? null,
+							viewerId: id,
+							heldIds: new Set(seats.map((s) => s.walk.id)),
+						}),
+					),
 			hasCheckedOutTurf(db, id),
 		]);
 		const upcoming = held.filter((h) => !walkStarted(h.walk.startsAt, ctx.now));

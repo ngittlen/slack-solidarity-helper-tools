@@ -237,8 +237,14 @@ export function walkInputsFromStart(iso: string): { date: string; time: string }
 	return { date: campaignDayKey(iso), time: TIME_INPUT.format(new Date(iso)) };
 }
 
-/** Cards show walks starting within this many days (FR-015). */
-export const CARD_WINDOW_DAYS = 3;
+/** Cards show walks starting within this many days (FR-015)… */
+export const CARD_WINDOW_DAYS = 7;
+/** …and no more than this many of them, the soonest. */
+export const CARD_LIMIT = 5;
+
+/** A nearby-walk alert goes out when the walk comes within this many days
+ *  of starting (FR-028). */
+export const ALERT_WINDOW_DAYS = 3;
 /** The reminder goes about this long before the start (FR-025). */
 export const REMINDER_HOURS = 3;
 /** How long after the start the post-walk questions stay open. */
@@ -295,16 +301,6 @@ export function finderState(
 
 export function walkStarted(startsAt: string, now: Date): boolean {
 	return new Date(startsAt).getTime() <= now.getTime();
-}
-
-export function walkEnded(startsAt: string, now: Date): boolean {
-	return new Date(startsAt).getTime() + WALK_HOURS * HOUR_MS <= now.getTime();
-}
-
-/** Shown as a card: hasn't ended, and starts within CARD_WINDOW_DAYS. */
-export function inCardWindow(startsAt: string, now: Date): boolean {
-	const start = new Date(startsAt).getTime();
-	return !walkEnded(startsAt, now) && start <= now.getTime() + CARD_WINDOW_DAYS * DAY_MS;
 }
 
 const METRES_PER_MILE = 1609.344;
