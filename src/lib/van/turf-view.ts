@@ -381,6 +381,11 @@ export type TurfViewOptions = ClaimOptions & {
  *  payload alongside the turf, which carry only `campaignId`. */
 export type CampaignBadges = Record<number, string>;
 
+/** Campaign id → how much of the chapter's turf is that campaign's: `total`
+ *  split by campaign, for the page's campaign filter. Sent beside
+ *  `CampaignBadges`, and keyed the same way. */
+export type CampaignTotals = Record<number, number>;
+
 /** What the holder of a disabled campaign's turf is told, on their turf card
  *  and in Slack alike (`TurfView.campaignDisabled`). One sentence for both, so
  *  the two places a volunteer checks their turf cannot tell them different

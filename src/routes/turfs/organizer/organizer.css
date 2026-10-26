@@ -28,20 +28,8 @@ main {
 	letter-spacing: 0.05em;
 }
 
-.filter select {
-	padding: var(--space-2) var(--space-3);
-	font: inherit;
-	font-size: var(--font-size-base);
-	color: var(--color-text);
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-md);
+.filter .ui-select-trigger {
 	min-width: 180px;
-}
-
-.filter select:focus-visible {
-	outline: 2px solid var(--color-border-focus);
-	outline-offset: 1px;
 }
 
 /* --- Sync VAN now -------------------------------------------------------- */
@@ -360,7 +348,7 @@ tr:hover td {
 	}
 
 	.filter,
-	.filter select {
+	.filter .ui-select-trigger {
 		min-width: 0;
 		flex: 1 1 140px;
 	}
@@ -397,14 +385,6 @@ tr:hover td {
 	color: var(--color-error);
 }
 
-.unhide-check {
-	width: 1.125rem;
-	height: 1.125rem;
-	margin: 0;
-	accent-color: var(--color-border-focus);
-	cursor: pointer;
-}
-
 /* --- Turf history -------------------------------------------------------- */
 
 .history-search {
@@ -416,18 +396,6 @@ tr:hover td {
 
 .history-input {
 	flex: 1 1 320px;
-	padding: var(--space-2) var(--space-3);
-	font: inherit;
-	font-size: var(--font-size-base);
-	color: var(--color-text);
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-md);
-}
-
-.history-input:focus-visible {
-	outline: 2px solid var(--color-border-focus);
-	outline-offset: 1px;
 }
 
 .history-turf {

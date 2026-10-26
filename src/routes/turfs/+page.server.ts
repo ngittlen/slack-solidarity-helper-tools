@@ -43,7 +43,7 @@ import { tidyDisplayName } from '$lib/server/display-name.js';
 import { setDisplayNameOnce } from '$lib/server/outside-volunteers.js';
 import { updateSession } from '$lib/server/session.js';
 import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
-import type { CampaignBadges, TurfView } from '$lib/van/turf-view.js';
+import type { CampaignBadges, CampaignTotals, TurfView } from '$lib/van/turf-view.js';
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
 import type { LatLng } from '$lib/van/geometry.js';
 import { parseTurfSort, type TurfSort } from '$lib/van/turf-paging.js';
@@ -216,6 +216,7 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 			turfs: [] as TurfView[],
 			total: 0,
 			campaignBadges: null as CampaignBadges | null,
+			campaignTotals: null as CampaignTotals | null,
 			location: null as LatLng | null,
 			zip: null as string | null,
 			sort: 'nearest' as TurfSort,
@@ -300,6 +301,7 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 		turfs: [] as TurfView[],
 		total: 0,
 		campaignBadges: null as CampaignBadges | null,
+		campaignTotals: null as CampaignTotals | null,
 		location: null as LatLng | null,
 		zip: null as string | null,
 		sort: 'nearest' as TurfSort,
@@ -381,7 +383,7 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 	// says: it carries their MiniVAN list number, and a volunteer who claimed
 	// turf on the far side of the chapter would otherwise open the page to no
 	// card at all. Both are loadChapterTurfs' `includeHeldByViewer`.
-	const { turfs, total, campaignBadges } = await loadChapterTurfs(db, {
+	const { turfs, total, campaignBadges, campaignTotals } = await loadChapterTurfs(db, {
 		chapterId: chapter.chapterId,
 		viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
 		location,
@@ -416,6 +418,8 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 		// Badge text per campaign, for TurfView.campaignId — null while only one
 		// campaign is enabled. Signed-in only: the teaser branch never has it.
 		campaignBadges,
+		// `total` per campaign, for the campaign filter. Sent with the badges.
+		campaignTotals,
 		location,
 		zip: location ? zip : null,
 		sort,

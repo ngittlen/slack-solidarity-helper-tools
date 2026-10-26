@@ -140,6 +140,60 @@
 		letter-spacing: var(--tracking-subhead);
 		line-height: 1.2;
 	}
+
+	/* Every text field in the app, in one look: the same box as the Select
+	   trigger (components/ui/Select.svelte), so a form mixing the two lines up.
+	   In this layer so a component can still size or place a field — its width,
+	   a monospace face — without restating how a field looks. */
+	:is(
+		input:not(
+			[type='hidden'],
+			[type='checkbox'],
+			[type='radio'],
+			[type='range'],
+			[type='color'],
+			[type='file'],
+			[type='submit'],
+			[type='button'],
+			[type='reset'],
+			[type='image']
+		),
+		textarea
+	) {
+		min-width: 0;
+		padding: var(--space-2) var(--space-3);
+		/* The surrounding text's size, which is 16px in a form: under 16px, iOS
+		   zooms the page in on every tap into a field. */
+		font: inherit;
+		line-height: 1.4;
+		color: var(--color-text);
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+	}
+
+	:is(input, textarea)::placeholder {
+		color: var(--color-text-muted);
+		opacity: 1;
+	}
+
+	:is(input, textarea):hover:not(:disabled, :focus, [readonly]) {
+		border-color: var(--color-text-muted);
+	}
+
+	:is(input, textarea):focus-visible {
+		outline: 2px solid var(--color-border-focus);
+		outline-offset: 1px;
+	}
+
+	:is(input, textarea):disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	textarea {
+		resize: vertical;
+	}
 }
 
 /* Solid (non-translucent) background on chart tooltips so values stay

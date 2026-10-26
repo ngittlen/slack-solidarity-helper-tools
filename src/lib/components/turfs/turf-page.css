@@ -314,12 +314,6 @@ main {
 	cursor: pointer;
 }
 
-.synced-check input {
-	width: 1.125rem;
-	height: 1.125rem;
-	accent-color: var(--color-border-focus);
-}
-
 /* What VAN has for this turf, under "I synced MiniVAN" once it is ticked.
    Green only when VAN shows doors: "not yet" is not an error, just early. */
 .sync-check {
@@ -350,12 +344,6 @@ main {
 	margin-top: var(--space-3);
 	font-size: var(--font-size-sm);
 	cursor: pointer;
-}
-
-.hide-check input {
-	width: 1.125rem;
-	height: 1.125rem;
-	accent-color: var(--color-border-focus);
 }
 
 /* --- Map + list --------------------------------------------------------- */
@@ -1183,20 +1171,11 @@ main {
 	flex: 0 1 auto;
 	width: calc(5.5ch + 18px);
 	min-width: calc(5ch + 18px);
+	/* The sort buttons' height and size (.sort-btn), as it shares their row. */
 	padding: 7px 8px;
-	font: inherit;
 	font-size: var(--font-size-md);
 	/* Tabular figures so a five-digit ZIP doesn't jitter as it's typed. */
 	font-variant-numeric: tabular-nums;
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-sm);
-	background: var(--color-surface);
-	color: var(--color-text);
-}
-
-.zip-form input:focus-visible {
-	outline: 2px solid var(--color-border-focus);
-	outline-offset: 1px;
 }
 
 /* Its own line under the controls: which sort is in force is an answer, not a

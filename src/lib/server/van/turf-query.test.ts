@@ -190,6 +190,35 @@ describe('loadChapterTurfs', () => {
 		expect(omitted).toBe(1);
 	});
 
+	// A volunteer opening the map wants turf they can walk, so the payload
+	// fills with it before turf that is taken or empty, however near.
+	it('picks free, uncontacted turf before knocked, taken or empty turf, before cutting', async () => {
+		const near = { centroidLat: 42.281, centroidLng: -83.741 };
+		const rows = [
+			turfRow({ turfId: 1, name: 'Near but checked out', ...near }),
+			turfRow({ turfId: 2, name: 'Near but empty', doorCount: 0, ...near }),
+			turfRow({ turfId: 3, name: 'Near but handed out in VAN', vanDistributedTo: 'Pat', ...near }),
+			turfRow({
+				turfId: 4,
+				name: 'Middle but knocked',
+				centroidLat: 42.35,
+				centroidLng: -83.8,
+				knockedBeforeCut: 4,
+				rosterSavedListId: 585052,
+			}),
+			turfRow({ turfId: 5, name: 'Far', centroidLat: 42.6, centroidLng: -83.2 }),
+		];
+		const { db } = makeDb([rows, [claimRow({ turfId: 1 })]]);
+		const { turfs, omitted } = await loadChapterTurfs(db, {
+			chapterId: 71,
+			viewer: VIEWER,
+			location: HERE,
+			limit: 2,
+		});
+		expect(turfs.map((t) => t.name)).toEqual(['Far', 'Middle but knocked']);
+		expect(omitted).toBe(3);
+	});
+
 	it('marks knocked turf the viewer checked out last, and asks only about that turf', async () => {
 		const knocked = { knockedBeforeCut: 4, rosterSavedListId: 585052 };
 		vi.mocked(lastCheckedOutBy).mockResolvedValueOnce([1]);
@@ -307,6 +336,7 @@ describe('loadChapterTurfs', () => {
 				nextOffset: 0,
 				unavailable: 0,
 				campaignBadges: null,
+				campaignTotals: null,
 			});
 			expect(queryCount()).toBe(0);
 		});

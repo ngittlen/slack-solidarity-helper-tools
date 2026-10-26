@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import AutocompletePicker from '$lib/components/settings/AutocompletePicker.svelte';
 	import type { ChannelChapterDiff } from '$lib/server/channel-chapter-diff';
 	import {
@@ -205,7 +206,7 @@
 
 	<section class="ccd-activity">
 		<label class="ccd-check">
-			<input type="checkbox" bind:checked={activityFilterOn} onchange={toggleActivityFilter} />
+			<Checkbox bind:checked={activityFilterOn} onCheckedChange={toggleActivityFilter} />
 			Only list Solidarity people active in the last
 		</label>
 		<input

@@ -18,8 +18,9 @@
 //
 // The ordering matters and is deliberate: rows are cut BEFORE views are built,
 // so a turf left out of a payload is never serialised at all rather than
-// serialised and then filtered. The one exception is `claimableOnly`, which has
-// to judge every row before it can know which ones to leave out.
+// serialised and then filtered. Every row is judged claimable or not before the
+// cut, so the payload fills with turf a volunteer can take first, and
+// `claimableOnly` can leave out the rest.
 
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
@@ -55,6 +56,7 @@ import {
 	parseHull,
 	toTurfView,
 	turfSnapshot,
+	type CampaignTotals,
 	type TurfView,
 } from '../../van/turf-view.js';
 import { visibleToChapter } from './chapter-visibility.js';
@@ -137,6 +139,9 @@ export interface TurfQueryResult {
 	 * here shows one. Once per payload rather than per row.
 	 */
 	campaignBadges: CampaignBadges | null;
+	/** `total` split by campaign, keyed like `campaignBadges` and sent when it
+	 *  is. Null otherwise. */
+	campaignTotals: CampaignTotals | null;
 }
 
 /** The turf a viewer may see in one chapter, ordered, cut, and serialisable. */
@@ -173,6 +178,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 			nextOffset: 0,
 			unavailable: 0,
 			campaignBadges: null,
+			campaignTotals: null,
 		};
 	}
 
@@ -209,29 +215,30 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// box, and without the second cap that box is the chapter.
 	const boxed = bounds ? withinBounds(rows, bounds) : rows;
 
-	// Claimability depends on the claims and walk reports, so the filtered path
-	// has to read both for every candidate before it can cut. The unfiltered
-	// path reads them for the cut page only.
-	let candidates: VanTurfRow[] = boxed;
-	let judged: {
-		claims: ClaimSnapshot[];
-		walkReports: Awaited<ReturnType<typeof latestWalkReports>>;
-	} | null = null;
-	if (claimableOnly) {
-		const ids = boxed.map((r) => r.turfId);
-		const claims = await claimsFor(db, ids, viewer.slackUserId);
-		const walkReports = await latestWalkReports(db, ids);
-		// No cap: see `claimableOnly` for why being at the limit does not hide a turf.
-		const ignoringCap = { ...claimOptions, maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
-		candidates = boxed.filter((row) => {
-			const snapshot = turfSnapshot(row, now, { ...claimOptions, walkReports });
-			return (
-				canClaim(snapshot, claims, viewer.slackUserId, now, ignoringCap).ok ||
-				activeClaimFor(row.turfId, claims, now)?.slackUserId === viewer.slackUserId
-			);
-		});
-		judged = { claims, walkReports };
-	}
+	// Claimability depends on the claims and walk reports, so both are read for
+	// every candidate before the cut: the payload is filled with turf a
+	// volunteer can take first, and `claimableOnly` leaves the rest out.
+	const boxedIds = boxed.map((r) => r.turfId);
+	const claims = await claimsFor(db, boxedIds, viewer.slackUserId);
+	const walkReports = await latestWalkReports(db, boxedIds);
+	// No cap: being at the limit is about the viewer, not the turf — see
+	// `claimableOnly` — and would otherwise rank every turf as taken.
+	const ignoringCap = { ...claimOptions, maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
+	const takeable = new Set(
+		boxed
+			.filter((row) => {
+				const snapshot = turfSnapshot(row, now, { ...claimOptions, walkReports });
+				return canClaim(snapshot, claims, viewer.slackUserId, now, ignoringCap).ok;
+			})
+			.map((r) => r.turfId),
+	);
+	const candidates: VanTurfRow[] = claimableOnly
+		? boxed.filter(
+				(row) =>
+					takeable.has(row.turfId) ||
+					activeClaimFor(row.turfId, claims, now)?.slackUserId === viewer.slackUserId,
+			)
+		: boxed;
 
 	// The viewer's own turf is pinned to the first page: it carries their list
 	// number, and it must not be sorted — or boxed — out of the one view that
@@ -248,20 +255,18 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 			sort === 'densest'
 				? (row) => doorDensity({ hull: parseHull(row.hullJson), doorsRemaining: doorsLeft(row) })
 				: undefined,
-		// Turf knocked recently goes after turf nobody has been to, whichever sort.
-		sink: hasContactHistory,
+		// Whichever sort: turf a volunteer can take that nobody has been to,
+		// then takeable turf knocked recently, then turf checked out, handed
+		// out in VAN, without doors left or without a list number — the same
+		// bands the list orders by.
+		band: (row) => (!takeable.has(row.turfId) ? 2 : hasContactHistory(row) ? 1 : 0),
 	});
-
-	const selectedIds = selected.map((r) => r.turfId);
-	const claims = judged?.claims ?? (await claimsFor(db, selectedIds, viewer.slackUserId));
 
 	// One small read for the whole payload rather than a lookup per row. The
 	// table holds one row per region and only in-flight ones are returned, so
 	// this is usually empty and never more than a handful — and an empty page
 	// skips it entirely, like the claim query above.
 	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<string>();
-	// What volunteers last reported walking, for this page's turf only.
-	const walkReports = judged?.walkReports ?? (await latestWalkReports(db, selectedIds));
 	// Striped turf on this page the viewer checked out last, which checks out
 	// without the knocked-before question. Skipped when none is striped.
 	const striped = selected.filter(hasContactHistory).map((r) => r.turfId);
@@ -286,10 +291,19 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// The Slack, Google or Apple mark (and an outside holder's email) beside each holder
 	// name. Admins only — nobody else is shown who holds anything, so nobody
 	// else needs the read.
+	// What `total` counts, and the same split by campaign.
+	const counted = claimableOnly ? candidates : rows;
+	const totalsByCampaign = new Map<number, number>();
+	for (const row of counted) {
+		totalsByCampaign.set(row.campaignId, (totalsByCampaign.get(row.campaignId) ?? 0) + 1);
+	}
+
+	// Only this page's holders: `claims` covers every candidate.
+	const selectedIds = new Set(selected.map((r) => r.turfId));
 	const holderAccounts = viewer.isAdmin
 		? await loadHolderAccounts(
 				db,
-				claims.map((c) => c.slackUserId),
+				claims.filter((c) => selectedIds.has(c.turfId)).map((c) => c.slackUserId),
 			)
 		: undefined;
 
@@ -308,7 +322,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				lastCheckedOutByViewer,
 			}),
 		),
-		total: claimableOnly ? candidates.length : rows.length,
+		total: counted.length,
 		omitted,
 		start,
 		nextOffset,
@@ -316,6 +330,10 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		campaignBadges:
 			badged.size > 0
 				? Object.fromEntries([...badged].map((id) => [id, campaigns.badges[id] ?? '']))
+				: null,
+		campaignTotals:
+			badged.size > 0
+				? Object.fromEntries([...badged].map((id) => [id, totalsByCampaign.get(id) ?? 0]))
 				: null,
 	};
 }

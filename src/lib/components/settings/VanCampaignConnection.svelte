@@ -7,6 +7,7 @@
 	// ids are what an admin types into the folder mapping below — and the export
 	// job types, because those ids are per developer and only the key knows them.
 
+	import Select from '$lib/components/ui/Select.svelte';
 	import { untrack } from 'svelte';
 	import SettingsRow from './SettingsRow.svelte';
 	import { createFieldAutosave } from './use-field-autosave.svelte.js';
@@ -164,23 +165,24 @@
 	error={jobTypeSave.error}
 	onRetry={jobTypeSave.status === 'error' ? jobTypeSave.retry : undefined}
 >
-	<select
-		class="select"
+	<Select
+		items={[
+			{
+				value: '',
+				label:
+					fallbackExportJobTypeId === null
+						? 'None — turf draws as pins'
+						: `None here — using VAN_EXPORT_JOB_TYPE_ID (${fallbackExportJobTypeId})`,
+			},
+			...jobTypeOptions.map((type) => ({
+				value: String(type.exportJobTypeId),
+				label: `${type.exportJobTypeId} · ${type.name}`,
+			})),
+		]}
 		value={jobTypeSave.value === null ? '' : String(jobTypeSave.value)}
-		onchange={jobTypeSave.oninput}
+		onValueChange={jobTypeSave.setRaw}
 		aria-label="Export job type"
-	>
-		<option value=""
-			>{fallbackExportJobTypeId === null
-				? 'None — turf draws as pins'
-				: `None here — using VAN_EXPORT_JOB_TYPE_ID (${fallbackExportJobTypeId})`}</option
-		>
-		{#each jobTypeOptions as type (type.exportJobTypeId)}
-			<option value={String(type.exportJobTypeId)}>
-				{type.exportJobTypeId} · {type.name}
-			</option>
-		{/each}
-	</select>
+	/>
 	<p class="app-config-note">
 		The export that carries each address's coordinates, which is what draws a turf's shape. Pick
 		<strong>VoterCircle</strong> — the only type with coordinate columns; SavedListExport has none, and
@@ -216,17 +218,13 @@
 		margin-top: var(--space-3);
 	}
 
-	.button,
-	.select {
+	.button {
 		font: inherit;
 		color: var(--color-text);
 		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
 		padding: var(--space-2) var(--space-3);
-	}
-
-	.button {
 		cursor: pointer;
 	}
 

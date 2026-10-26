@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Select from '$lib/components/ui/Select.svelte';
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import './organizer.css';
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
@@ -56,6 +58,9 @@
 	let unhiding = $state<Record<number, boolean>>({});
 	/** Requested turf whose chapter change is in flight. */
 	let placing = $state<Record<number, boolean>>({});
+	/** Refusals per turf, as a key: a new count re-creates its picker or box,
+	 *  which puts back what the turf still has. */
+	let refused = $state<Record<number, number>>({});
 
 	/** While a turf history search is in flight. */
 	let historyLoading = $state(false);
@@ -105,33 +110,36 @@
 	<form class="filters" method="GET" action={resolve('/turfs/organizer')}>
 		<div class="filter">
 			<label for="chapter">Chapter</label>
-			<select id="chapter" name="chapter" onchange={(e) => e.currentTarget.form?.requestSubmit()}>
-				<option value="" selected={data.chapter === null}>All chapters</option>
-				{#each data.chapters as chapter (chapter.chapterId)}
-					<option
-						value={chapter.chapterId}
-						selected={data.chapter?.chapterId === chapter.chapterId}
-					>
-						{chapter.name}
-					</option>
-				{/each}
-			</select>
+			<Select
+				id="chapter"
+				name="chapter"
+				items={[
+					{ value: '', label: 'All chapters' },
+					...data.chapters.map((chapter) => ({
+						value: String(chapter.chapterId),
+						label: chapter.name,
+					})),
+				]}
+				value={data.chapter ? String(data.chapter.chapterId) : ''}
+				submitOnChange
+			/>
 		</div>
 		{#if data.campaigns.length > 1}
 			<div class="filter">
 				<label for="campaign">Campaign</label>
-				<select
+				<Select
 					id="campaign"
 					name="campaign"
-					onchange={(e) => e.currentTarget.form?.requestSubmit()}
-				>
-					<option value="" selected={data.campaign === null}>All campaigns</option>
-					{#each data.campaigns as campaign (campaign.id)}
-						<option value={campaign.id} selected={data.campaign?.id === campaign.id}>
-							{campaign.name}
-						</option>
-					{/each}
-				</select>
+					items={[
+						{ value: '', label: 'All campaigns' },
+						...data.campaigns.map((campaign) => ({
+							value: String(campaign.id),
+							label: campaign.name,
+						})),
+					]}
+					value={data.campaign ? String(data.campaign.id) : ''}
+					submitOnChange
+				/>
 			</div>
 		{/if}
 		<a class="cross-link" href={resolve('/turfs/activity')}>See what already happened →</a>
@@ -559,42 +567,49 @@
 								</td>
 								<td>
 									<!-- One form per row, sent as soon as the choice changes. A
-									     refusal resets the form, which puts the old choice back:
-									     `selected` is the default, not a binding. -->
+									     refusal re-creates the picker, which puts back the choice
+									     the turf still has. -->
 									<form
 										method="POST"
 										action="?/placeTurf"
 										use:enhance={() => {
 											placing[turf.turfId] = true;
-											return async ({ result, update, formElement }) => {
+											return async ({ result, update }) => {
 												await update();
-												if (result.type !== 'success') formElement.reset();
+												if (result.type !== 'success') {
+													refused[turf.turfId] = (refused[turf.turfId] ?? 0) + 1;
+												}
 												delete placing[turf.turfId];
 											};
 										}}
 									>
 										<input type="hidden" name="turfId" value={turf.turfId} />
-										<select
-											name="chapterId"
-											disabled={placing[turf.turfId]}
-											aria-label="Chapter for {turf.name}"
-											onchange={(e) => e.currentTarget.form?.requestSubmit()}
-										>
-											<option value="" selected={turf.placement?.source !== 'organizer'}>
-												Automatic{turf.placement && turf.placement.source !== 'organizer'
-													? ` (${turf.placement.chapterName})`
+										{#key refused[turf.turfId]}
+											<Select
+												name="chapterId"
+												items={[
+													{
+														value: '',
+														label: `Automatic${
+															turf.placement && turf.placement.source !== 'organizer'
+																? ` (${turf.placement.chapterName})`
+																: ''
+														}`,
+													},
+													...data.placementChoices.map((choice) => ({
+														value: String(choice.chapterId),
+														label: choice.name,
+													})),
+												]}
+												value={turf.placement?.source === 'organizer'
+													? String(turf.placement.chapterId)
 													: ''}
-											</option>
-											{#each data.placementChoices as choice (choice.chapterId)}
-												<option
-													value={choice.chapterId}
-													selected={turf.placement?.source === 'organizer' &&
-														turf.placement.chapterId === choice.chapterId}
-												>
-													{choice.name}
-												</option>
-											{/each}
-										</select>
+												disabled={placing[turf.turfId]}
+												aria-label="Chapter for {turf.name}"
+												size="sm"
+												submitOnChange
+											/>
+										{/key}
 									</form>
 								</td>
 							</tr>
@@ -655,22 +670,24 @@
 										action="?/unhide"
 										use:enhance={() => {
 											unhiding[turf.turfId] = true;
-											return async ({ result, update, formElement }) => {
+											return async ({ result, update }) => {
 												await update();
-												if (result.type !== 'success') formElement.reset();
+												if (result.type !== 'success') {
+													refused[turf.turfId] = (refused[turf.turfId] ?? 0) + 1;
+												}
 												delete unhiding[turf.turfId];
 											};
 										}}
 									>
 										<input type="hidden" name="turfId" value={turf.turfId} />
-										<input
-											class="unhide-check"
-											type="checkbox"
-											checked
-											disabled={unhiding[turf.turfId]}
-											aria-label="Hidden: untick to show {turf.turfName} to volunteers"
-											onchange={(e) => e.currentTarget.form?.requestSubmit()}
-										/>
+										{#key refused[turf.turfId]}
+											<Checkbox
+												checked
+												disabled={unhiding[turf.turfId]}
+												aria-label="Hidden: untick to show {turf.turfName} to volunteers"
+												submitOnChange
+											/>
+										{/key}
 									</form>
 								</td>
 							</tr>

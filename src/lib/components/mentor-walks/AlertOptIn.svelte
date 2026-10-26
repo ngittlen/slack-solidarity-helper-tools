@@ -4,6 +4,7 @@
 	// device's notification switch. Alerts stay on until turned off here or
 	// from an alert.
 
+	import Select from '$lib/components/ui/Select.svelte';
 	import { onMount } from 'svelte';
 	import './mentor-walks.css';
 	import { ALERT_RADII, DEFAULT_ALERT_RADIUS, type AlertRadius } from '$lib/mentor-walks/rules.js';
@@ -123,11 +124,11 @@
 				</div>
 				<div class="mw-field">
 					<label for="mw-radius">How far will you go?</label>
-					<select id="mw-radius" bind:value={radius}>
-						{#each ALERT_RADII as miles (miles)}
-							<option value={miles}>{miles} miles</option>
-						{/each}
-					</select>
+					<Select
+						id="mw-radius"
+						items={ALERT_RADII.map((miles) => ({ value: String(miles), label: `${miles} miles` }))}
+						bind:value={() => String(radius), (v) => (radius = Number(v) as AlertRadius)}
+					/>
 				</div>
 			</div>
 			{#if error}

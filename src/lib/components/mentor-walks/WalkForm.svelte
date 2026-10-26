@@ -8,6 +8,7 @@
 	// can't be found is refused, and the mentor is asked for another: a street
 	// address or nearby cross streets. There's no placing the pin by hand.
 
+	import Select from '$lib/components/ui/Select.svelte';
 	import './mentor-walks.css';
 	import PlacePreview from './PlacePreview.svelte';
 	import { DEFAULT_LOOK_FOR, LOOK_FOR_MAX_LENGTH } from '$lib/mentor-walks/rules.js';
@@ -157,11 +158,16 @@
 		{#if chapters.length > 1}
 			<div class="mw-field">
 				<label for="mw-chapter">Chapter</label>
-				<select id="mw-chapter" bind:value={chapterId}>
-					{#each chapters as chapter (chapter.chapterId)}
-						<option value={chapter.chapterId}>{chapter.name}</option>
-					{/each}
-				</select>
+				<Select
+					id="mw-chapter"
+					items={chapters.map((chapter) => ({
+						value: String(chapter.chapterId),
+						label: chapter.name,
+					}))}
+					bind:value={
+						() => (chapterId === undefined ? '' : String(chapterId)), (v) => (chapterId = Number(v))
+					}
+				/>
 			</div>
 		{/if}
 
@@ -239,11 +245,15 @@
 		<div class="mw-field-row">
 			<div class="mw-field">
 				<label for="mw-seats">Open seats</label>
-				<select id="mw-seats" bind:value={seats}>
-					{#each [1, 2, 3, 4, 5, 6] as n (n)}
-						<option value={n} disabled={n < seatsTaken}>{n}</option>
-					{/each}
-				</select>
+				<Select
+					id="mw-seats"
+					items={[1, 2, 3, 4, 5, 6].map((n) => ({
+						value: String(n),
+						label: String(n),
+						disabled: n < seatsTaken,
+					}))}
+					bind:value={() => String(seats), (v) => (seats = Number(v))}
+				/>
 			</div>
 			<div class="mw-field">
 				<label for="mw-phone">Phone for texts <span class="mw-muted">(optional)</span></label>

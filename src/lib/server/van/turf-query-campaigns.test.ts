@@ -117,6 +117,23 @@ describe('campaign badges', () => {
 		expect(result.campaignBadges).toEqual({ 1: 'primary', 2: 'campaign2' });
 	});
 
+	// The campaign filter's "Showing N of T": T is the picked campaign's share
+	// of the chapter, not the whole chapter's, even past the payload cut.
+	it('splits the chapter total by campaign, beside the badges', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 2');
+		const result = await load();
+		expect(result.total).toBe(3);
+		expect(result.campaignTotals).toEqual({ 1: 1, 2: 2 });
+
+		const cut = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER, now: NOW, limit: 2 });
+		expect(cut.turfs).toHaveLength(2);
+		expect(cut.campaignTotals).toEqual({ 1: 1, 2: 2 });
+	});
+
+	it('sends no split while only one campaign is enabled', async () => {
+		expect((await load()).campaignTotals).toBeNull();
+	});
+
 	it('uses the badge text, then the name, then the key', async () => {
 		await client.execute('UPDATE van_campaigns SET enabled = 1 WHERE id = 2');
 		await client.execute(

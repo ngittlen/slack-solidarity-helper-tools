@@ -14,6 +14,7 @@
 	// these are durations an organizer has an exact figure in mind for ("give
 	// them the weekend"), and dragging to land on 48 is worse than typing it.
 
+	import RadioGroup from '$lib/components/ui/RadioGroup.svelte';
 	import SettingsRow from './SettingsRow.svelte';
 	import { createFieldAutosave } from './use-field-autosave.svelte.js';
 	import {
@@ -203,20 +204,15 @@
 	error={visibilitySave.error}
 	onRetry={visibilitySave.status === 'error' ? visibilitySave.retry : undefined}
 >
-	<fieldset class="turf-choices" aria-label="Who sees mentor walks">
-		{#each MENTOR_WALKS_VISIBILITIES as value (value)}
-			<label>
-				<input
-					type="radio"
-					name="mentor-walks-visibility"
-					{value}
-					checked={visibilitySave.value === value}
-					onchange={visibilitySave.oninput}
-				/>
-				{MENTOR_WALKS_VISIBILITY_LABELS[value]}
-			</label>
-		{/each}
-	</fieldset>
+	<RadioGroup
+		aria-label="Who sees mentor walks"
+		items={MENTOR_WALKS_VISIBILITIES.map((value) => ({
+			value,
+			label: MENTOR_WALKS_VISIBILITY_LABELS[value],
+		}))}
+		value={visibilitySave.value}
+		onValueChange={visibilitySave.setRaw}
+	/>
 	<p class="app-config-note">
 		Experienced canvassers host walks new volunteers can join, from /turfs. "Admins and moderators
 		only" lets you try it out first: everyone else sees /turfs exactly as before. Blocked people
@@ -245,35 +241,9 @@
 </SettingsRow>
 
 <style>
-	.turf-choices {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-		margin: 0;
-		padding: 0;
-		border: 0;
-	}
-
-	.turf-choices label {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-	}
-
 	.turf-url {
 		width: 100%;
 		max-width: 32rem;
-		padding: var(--space-2) var(--space-3);
-		font: inherit;
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-	}
-
-	.turf-url:focus-visible {
-		outline: 2px solid var(--color-border-focus);
-		outline-offset: 1px;
 	}
 
 	.turf-number {
@@ -284,17 +254,6 @@
 
 	.turf-number input {
 		width: 6rem;
-		padding: var(--space-2) var(--space-3);
-		font: inherit;
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-	}
-
-	.turf-number input:focus-visible {
-		outline: 2px solid var(--color-border-focus);
-		outline-offset: 1px;
 	}
 
 	.turf-unit {

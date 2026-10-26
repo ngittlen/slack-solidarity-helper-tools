@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Select from '$lib/components/ui/Select.svelte';
 	import './activity.css';
 	import { resolve } from '$app/paths';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
@@ -42,46 +43,52 @@
 	<form class="filters" method="GET" action={resolve('/turfs/activity')}>
 		<div class="filter">
 			<label for="chapter">Chapter</label>
-			<select id="chapter" name="chapter" onchange={(e) => e.currentTarget.form?.requestSubmit()}>
-				<option value="" selected={data.chapter === null}>All chapters</option>
-				{#each data.chapters as chapter (chapter.chapterId)}
-					<option
-						value={chapter.chapterId}
-						selected={data.chapter?.chapterId === chapter.chapterId}
-					>
-						{chapter.name}
-					</option>
-				{/each}
-			</select>
+			<Select
+				id="chapter"
+				name="chapter"
+				items={[
+					{ value: '', label: 'All chapters' },
+					...data.chapters.map((chapter) => ({
+						value: String(chapter.chapterId),
+						label: chapter.name,
+					})),
+				]}
+				value={data.chapter ? String(data.chapter.chapterId) : ''}
+				submitOnChange
+			/>
 		</div>
 
 		{#if data.campaigns.length > 1}
 			<div class="filter">
 				<label for="campaign">Campaign</label>
-				<select
+				<Select
 					id="campaign"
 					name="campaign"
-					onchange={(e) => e.currentTarget.form?.requestSubmit()}
-				>
-					<option value="" selected={data.campaign === null}>All campaigns</option>
-					{#each data.campaigns as campaign (campaign.id)}
-						<option value={campaign.id} selected={data.campaign?.id === campaign.id}>
-							{campaign.name}
-						</option>
-					{/each}
-				</select>
+					items={[
+						{ value: '', label: 'All campaigns' },
+						...data.campaigns.map((campaign) => ({
+							value: String(campaign.id),
+							label: campaign.name,
+						})),
+					]}
+					value={data.campaign ? String(data.campaign.id) : ''}
+					submitOnChange
+				/>
 			</div>
 		{/if}
 
 		<div class="filter">
 			<label for="days">Period</label>
-			<select id="days" name="days" onchange={(e) => e.currentTarget.form?.requestSubmit()}>
-				{#each PERIOD_OPTIONS as option (option.value)}
-					<option value={option.value} selected={data.period === option.value}
-						>{option.label}</option
-					>
-				{/each}
-			</select>
+			<Select
+				id="days"
+				name="days"
+				items={PERIOD_OPTIONS.map((option) => ({
+					value: String(option.value),
+					label: option.label,
+				}))}
+				value={String(data.period)}
+				submitOnChange
+			/>
 		</div>
 	</form>
 

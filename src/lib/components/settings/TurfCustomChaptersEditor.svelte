@@ -182,13 +182,6 @@
 
 	.turf-custom-chapters-add input {
 		flex: 1;
-		min-width: 0;
-		font: inherit;
-		padding: 6px 8px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		background: var(--color-surface);
-		color: var(--color-text);
 	}
 
 	.turf-custom-chapters-add button {
