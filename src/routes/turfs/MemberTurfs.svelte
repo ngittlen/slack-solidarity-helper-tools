@@ -11,6 +11,8 @@
 	import { scrollBehavior } from '$lib/motion.js';
 	import { resolve } from '$app/paths';
 	import { goto, invalidateAll } from '$app/navigation';
+	import type { FoundPlace } from '$lib/van/map-focus.js';
+	import { postPageAction } from './post-action.js';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
 	import { coarseNear } from '$lib/van/turf-paging.js';
 	import { statusLabel } from '$lib/van/turf-status.js';
@@ -390,6 +392,29 @@
 		}
 	});
 
+	/** The map's address search, through the page's `findAddress` action: a
+	 *  POST, so the address stays out of the URL. Answers with the place or
+	 *  a message to show under the search box. */
+	async function findPlace(query: string, signal: AbortSignal): Promise<FoundPlace | string> {
+		const result = await postPageAction('findAddress', { q: query }, '', {
+			reload: false,
+			errorKey: 'findError',
+			signal,
+		});
+		if (!result.ok) return result.message;
+		return result.data.found as FoundPlace;
+	}
+
+	/** The place the map's search found, kept here rather than in TurfMap: the
+	 *  map is taken down whenever a filter leaves it nothing to draw, and the
+	 *  pin should still be there when it comes back. */
+	let foundPlace = $state<FoundPlace | null>(null);
+
+	/** A viewport that settled while another was loading, fetched when that
+	 *  one finishes. Dropping it would leave the area unloaded until the next
+	 *  pan, and a jump to a searched address may be the only move there is. */
+	let queuedViewport: Parameters<typeof loadViewport>[0] | null = null;
+
 	/** Fetch turf for the area the map settled on. Failures are silent by
 	 *  design: the rows already on screen are still valid and still claimable,
 	 *  and an error banner for a background top-up would be noise. */
@@ -399,7 +424,11 @@
 		minLng: number;
 		maxLng: number;
 	}) {
-		if (!data.chapter || loadingMore) return;
+		if (!data.chapter) return;
+		if (loadingMore) {
+			queuedViewport = bounds;
+			return;
+		}
 		const bbox = [bounds.minLat, bounds.minLng, bounds.maxLat, bounds.maxLng]
 			.map((n) => n.toFixed(5))
 			.join(',');
@@ -431,6 +460,9 @@
 			lastBbox = '';
 		} finally {
 			loadingMore = false;
+			const next = queuedViewport;
+			queuedViewport = null;
+			if (next) void loadViewport(next);
 		}
 	}
 
@@ -929,6 +961,8 @@
 							walks={mapWalks}
 							{selectedWalkId}
 							onselectwalk={selectWalk}
+							{findPlace}
+							bind:place={foundPlace}
 						/>
 					{/if}
 					<ul class="legend">

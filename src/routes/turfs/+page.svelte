@@ -17,7 +17,7 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import type { WalkFinderView } from '$lib/mentor-walks/types.js';
-	import { postMentorAction } from './mentor-post.js';
+	import { postPageAction } from './post-action.js';
 
 	const { data, form } = $props();
 
@@ -146,7 +146,7 @@
 	});
 	function promptAnswer(answer: 'yes' | 'snooze' | 'decline' | 'reopen') {
 		walkError = null;
-		void postMentorAction('mentorPrompt', { answer }, pageQuery).then((result) => {
+		void postPageAction('mentorPrompt', { answer }, pageQuery).then((result) => {
 			if (!result.ok) walkError = result.message;
 		});
 	}
@@ -168,7 +168,7 @@
 
 	async function joinWalk(id: string): Promise<void> {
 		walkError = null;
-		const result = await postMentorAction('mentorJoin', { walkId: id }, pageQuery);
+		const result = await postPageAction('mentorJoin', { walkId: id }, pageQuery);
 		if (!result.ok) walkError = result.message;
 	}
 
@@ -178,7 +178,7 @@
 	async function leaveWalk(id: string): Promise<void> {
 		walkError = null;
 		const keep = showCards && (linkedWalkId === null || linkedWalkId === id);
-		const result = await postMentorAction('mentorLeave', { walkId: id }, pageQuery, {
+		const result = await postPageAction('mentorLeave', { walkId: id }, pageQuery, {
 			reload: !keep,
 		});
 		if (!result.ok) walkError = result.message;

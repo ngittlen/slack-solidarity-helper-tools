@@ -69,11 +69,13 @@ export interface LatLng {
 	lng: number;
 }
 
-/** Five digits, or null. Rejects ZIP+4, letters, and the empty string rather
- *  than passing them to the geocoder to be rejected more slowly. */
+/** Five digits, or null. A ZIP+4 gives its five-digit half however the four
+ *  are joined on — a hyphen, a space, or nothing, as people type it. Rejects
+ *  letters and the empty string rather than passing them to the geocoder to
+ *  be rejected more slowly. */
 export function normalizeZip(raw: string | null | undefined): string | null {
 	const trimmed = (raw ?? '').trim();
-	const match = /^(\d{5})(?:-\d{4})?$/.exec(trimmed);
+	const match = /^(\d{5})(?:[-\s]?\d{4})?$/.exec(trimmed);
 	return match ? match[1]! : null;
 }
 
@@ -93,12 +95,25 @@ export async function geocodeZip(
 	rawZip: string,
 	fetchFn: typeof fetch = fetch,
 ): Promise<LatLng | null> {
+	const found = await fetchZip(rawZip, fetchFn);
+	return found.kind === 'found' ? found.point : null;
+}
+
+/** What a ZIP lookup came to. `unavailable` is TIGERweb failing (an error
+ *  status, an error envelope, a timeout), as opposed to `not-found`, an
+ *  answer with no usable point — so a caller can tell "check the ZIP" from
+ *  "try again later". */
+export type ZipLookup =
+	{ kind: 'found'; point: LatLng } | { kind: 'not-found' } | { kind: 'unavailable' };
+
+/** geocodeZip's answer, with an outage told apart from no such ZIP. */
+async function fetchZip(rawZip: string, fetchFn: typeof fetch): Promise<ZipLookup> {
 	// Re-normalized rather than trusted, even though every caller in this module
 	// already did it: the ZIP is interpolated into a `where` clause below, and a
 	// function that guarantees five digits at its own boundary cannot be made to
 	// carry a quote into one by a future caller.
 	const zip = normalizeZip(rawZip);
-	if (!zip) return null;
+	if (!zip) return { kind: 'not-found' };
 
 	const url = new URL(ZCTA_ENDPOINT);
 	url.searchParams.set('where', `ZCTA5='${zip}'`);
@@ -112,7 +127,7 @@ export async function geocodeZip(
 		});
 		if (!res.ok) {
 			console.warn(`[van] zip lookup for ${zip} returned ${res.status}`);
-			return null;
+			return { kind: 'unavailable' };
 		}
 		const body = (await res.json()) as {
 			error?: { message?: unknown };
@@ -123,21 +138,23 @@ export async function geocodeZip(
 		// nothing while looking like a clean miss.
 		if (body?.error) {
 			console.warn(`[van] zip lookup for ${zip} was rejected by TIGERweb`);
-			return null;
+			return { kind: 'unavailable' };
 		}
-		const attrs = body?.features?.[0]?.attributes;
+		// A 200 without the list isn't an answer about the ZIP.
+		if (!Array.isArray(body?.features)) return { kind: 'unavailable' };
+		const attrs = body.features[0]?.attributes;
 		// Signed and zero-padded in the source ("+42.2620394", "-083.7166908").
 		// Number() handles both, which is why these are not parsed by hand.
 		const lat = Number(attrs?.INTPTLAT);
 		const lng = Number(attrs?.INTPTLON);
-		if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+		if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { kind: 'not-found' };
 		// Null island means the answer carried no usable point.
-		if (lat === 0 && lng === 0) return null;
-		return { lat, lng };
+		if (lat === 0 && lng === 0) return { kind: 'not-found' };
+		return { kind: 'found', point: { lat, lng } };
 	} catch (err) {
 		// Includes the timeout. Deliberately swallowed: see the header.
 		console.warn(`[van] zip lookup for ${zip} failed:`, err instanceof Error ? err.message : err);
-		return null;
+		return { kind: 'unavailable' };
 	}
 }
 
@@ -200,22 +217,31 @@ export async function lookupZipCentroid(
 	rawZip: string | null | undefined,
 	fetchFn: typeof fetch = fetch,
 ): Promise<LatLng | null> {
+	const found = await findZip(db, rawZip, fetchFn);
+	return found.kind === 'found' ? found.point : null;
+}
+
+/** lookupZipCentroid's answer, with an outage told apart from no such ZIP —
+ *  for a caller that says which one happened. Never throws. */
+export async function findZip(
+	db: Db,
+	rawZip: string | null | undefined,
+	fetchFn: typeof fetch = fetch,
+): Promise<ZipLookup> {
 	const zip = normalizeZip(rawZip);
-	if (!zip) return null;
+	if (!zip) return { kind: 'not-found' };
 
 	try {
 		const [cached] = await db.select().from(vanZipCentroids).where(eq(vanZipCentroids.zip, zip));
-		if (cached) return { lat: cached.lat, lng: cached.lng };
+		if (cached) return { kind: 'found', point: { lat: cached.lat, lng: cached.lng } };
 	} catch (err) {
 		// A cache read failure must not stop the lookup either.
 		console.warn('[van] zip cache read failed:', err instanceof Error ? err.message : err);
 	}
 
-	const point = await geocodeZip(zip, fetchFn);
-	if (!point) return null;
-
-	await cacheCentroid(db, zip, point);
-	return point;
+	const found = await fetchZip(zip, fetchFn);
+	if (found.kind === 'found') await cacheCentroid(db, zip, found.point);
+	return found;
 }
 
 /** Write a ZIP's Census point to the cache. Never throws: having the answer

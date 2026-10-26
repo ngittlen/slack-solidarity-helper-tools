@@ -12,7 +12,7 @@
 	import WalkCards from '$lib/components/mentor-walks/WalkCards.svelte';
 	import '$lib/components/mentor-walks/mentor-walks.css';
 	import type { WalkFinderView } from '$lib/mentor-walks/types.js';
-	import { postMentorAction } from './mentor-post.js';
+	import { postPageAction } from './post-action.js';
 
 	interface Props {
 		finder: WalkFinderView;
@@ -77,7 +77,7 @@
 			{walk}
 			onanswer={async (answer) => {
 				ownError = null;
-				const result = await postMentorAction(
+				const result = await postPageAction(
 					'mentorAnswer',
 					{ walkId: walk.walkId, answer },
 					pageQuery,

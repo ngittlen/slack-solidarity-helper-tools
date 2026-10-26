@@ -51,8 +51,8 @@
 		turfShade,
 	} from '$lib/van/turf-shade.js';
 	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
-	import { focusZoom, isBoxVisible } from '$lib/van/map-focus.js';
-	import { untrack } from 'svelte';
+	import { focusZoom, isBoxVisible, placeZoom, type FoundPlace } from '$lib/van/map-focus.js';
+	import { tick, untrack } from 'svelte';
 	import type { CampaignBadges, MappableTurf } from '$lib/van/turf-view.js';
 
 	interface Props {
@@ -87,6 +87,14 @@
 		walks?: MapWalk[];
 		selectedWalkId?: string | null;
 		onselectwalk?: (id: string) => void;
+		/** Look up an address or ZIP for the map's search box: the place, or
+		 *  a message saying why not. No search box without it. `signal` is
+		 *  aborted when the search is dismissed or gives up waiting. */
+		findPlace?: (query: string, signal: AbortSignal) => Promise<FoundPlace | string>;
+		/** The place the search found, pinned on the map. Bindable, so it
+		 *  outlives this component: the parent takes the map down whenever a
+		 *  filter leaves nothing to draw. */
+		place?: FoundPlace | null;
 	}
 
 	interface MapWalk {
@@ -110,6 +118,8 @@
 		walks = [],
 		selectedWalkId = null,
 		onselectwalk,
+		findPlace,
+		place = $bindable(null),
 	}: Props = $props();
 
 	const walkMarkers = $derived(walks.map((walk) => ({ walk, at: view.project(walk.point) })));
@@ -194,9 +204,12 @@
 
 	// Camera. Seeded from the fit, then owned by the user once they pan or
 	// zoom — `moved` is what stops a re-render from yanking the view back.
-	let moved = $state(false);
-	let centre = $state<LatLng | null>(null);
-	let zoom = $state<number | null>(null);
+	// A map put back up with a searched place opens on that place, where the
+	// volunteer left it.
+	const openingPlace = untrack(() => place);
+	let moved = $state(openingPlace !== null);
+	let centre = $state<LatLng | null>(openingPlace?.point ?? null);
+	let zoom = $state<number | null>(openingPlace ? placeZoom(openingPlace.kind) : null);
 
 	const view = $derived(
 		createMapView({
@@ -286,6 +299,135 @@
 	}
 
 	const me = $derived(location ? view.project(location) : null);
+
+	// --- Address search -----------------------------------------------------
+	// With a chapter's turf over every street, the basemap alone is hard to
+	// read a position off. The search takes the volunteer to an address they
+	// know and leaves a pin there. It stays a button until asked for, so it
+	// costs the map one corner, not a bar across the top of it.
+
+	/** How long a lookup may take before the search gives up on it. The
+	 *  server allows the geocoder four seconds; the rest is a phone signal. */
+	const SEARCH_TIMEOUT_MS = 12_000;
+
+	let searchOpen = $state(false);
+	let searchQuery = $state('');
+	/** The query that found `place`. */
+	let placeQuery = '';
+	let searchError = $state<string | null>(null);
+	/** Said to a screen reader when the map moves to a found place: the map
+	 *  moving is otherwise silent, and success sounds like nothing happened. */
+	let searchAnnouncement = $state('');
+	/** The lookup in flight. Dismissing the search aborts it, so a slow answer
+	 *  can't move the map after the volunteer has moved on. */
+	let searchRequest = $state<AbortController | null>(null);
+	const searching = $derived(searchRequest !== null);
+
+	let searchInput = $state<HTMLInputElement | undefined>();
+	let searchToggle = $state<HTMLButtonElement | undefined>();
+	let placeButton = $state<HTMLButtonElement | undefined>();
+
+	const placeAt = $derived(place ? view.project(place.point) : null);
+
+	function cancelSearchRequest() {
+		searchRequest?.abort();
+		searchRequest = null;
+	}
+
+	$effect(() => () => searchRequest?.abort());
+
+	/** Focus what the search area shows when the form is closed: the chip for
+	 *  a pinned place, else the button that opens the search. The control
+	 *  that had focus has just been taken off the page. */
+	async function focusSearchArea() {
+		await tick();
+		(placeButton ?? searchToggle)?.focus();
+	}
+
+	async function openSearch() {
+		searchOpen = true;
+		searchError = null;
+		await tick();
+		searchInput?.select();
+	}
+
+	function closeSearch() {
+		cancelSearchRequest();
+		searchOpen = false;
+		searchError = null;
+		void focusSearchArea();
+	}
+
+	function clearPlace() {
+		cancelSearchRequest();
+		place = null;
+		searchQuery = '';
+		searchOpen = false;
+		searchError = null;
+		void focusSearchArea();
+	}
+
+	function showPlace(found: FoundPlace) {
+		centre = found.point;
+		zoom = placeZoom(found.kind);
+		moved = true;
+	}
+
+	async function submitSearch(event: SubmitEvent) {
+		event.preventDefault();
+		if (!findPlace || searching) return;
+		const query = searchQuery.trim();
+		if (query === '') {
+			searchError = 'Enter an address or ZIP code.';
+			return;
+		}
+		// The place already pinned: go back to it rather than ask again.
+		if (place && query === placeQuery) {
+			showPlace(place);
+			searchOpen = false;
+			void focusSearchArea();
+			return;
+		}
+		const request = new AbortController();
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			request.abort();
+		}, SEARCH_TIMEOUT_MS);
+		searchRequest = request;
+		searchError = null;
+		try {
+			const found = await findPlace(query, request.signal);
+			if (timedOut) {
+				searchError = 'The lookup is taking too long. Check your signal and try again.';
+				return;
+			}
+			// Dismissed while it was in flight: the volunteer has moved on.
+			if (request.signal.aborted) return;
+			if (typeof found === 'string') {
+				searchError = found;
+				return;
+			}
+			place = found;
+			placeQuery = query;
+			showPlace(found);
+			searchOpen = false;
+			searchAnnouncement = `Map moved to ${found.label}`;
+			void focusSearchArea();
+		} finally {
+			clearTimeout(timer);
+			if (searchRequest === request) searchRequest = null;
+		}
+	}
+
+	function onSearchKeyDown(event: KeyboardEvent) {
+		// An Escape while composing belongs to the input method: it dismisses
+		// the candidate list, not the search.
+		if (event.key === 'Escape' && !event.isComposing) {
+			event.preventDefault();
+			closeSearch();
+		}
+	}
 
 	/** Where the knocked-turf stripe tile starts, so the stripes stay on the
 	 *  ground while the map pans. Any fixed point does; this one is simply
@@ -818,6 +960,114 @@
 
 <figure class="map-figure">
 	<div class="map-frame" bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}>
+		<!-- Everything over the top of the map, in one row: the search and its
+		     messages on the left, the camera buttons on the right. Sharing a row
+		     is what stops a long address from running under the zoom buttons
+		     however many of them are showing. Ahead of the svg so the search is
+		     the first tab stop, not the last behind every turf on the map. -->
+		<div class="map-overlay">
+			<div class="overlay-start">
+				{#if findPlace}
+					{#if searchOpen}
+						<form class="search-form" onsubmit={submitSearch} role="search">
+							<!-- Plain text, not type="search": the browser's own clear
+							     button would sit beside the × that closes the search.
+							     No autocomplete: an address autofill fills the street
+							     line alone, which the geocoder can't place. -->
+							<input
+								bind:this={searchInput}
+								bind:value={searchQuery}
+								onkeydown={onSearchKeyDown}
+								type="text"
+								name="q"
+								enterkeyhint="search"
+								autocomplete="off"
+								placeholder="Full address, or ZIP"
+								aria-label="Find an address or ZIP code on the map"
+								aria-invalid={searchError !== null}
+								aria-describedby={searchError ? 'map-search-error' : undefined}
+								maxlength="200"
+							/>
+							<button type="submit" class="map-btn" disabled={searching}>
+								{searching ? 'Finding…' : 'Go'}
+							</button>
+							<button
+								type="button"
+								class="map-btn"
+								onclick={closeSearch}
+								aria-label="Close address search">×</button
+							>
+						</form>
+						{#if searchError}
+							<p class="map-note" id="map-search-error" role="alert">{searchError}</p>
+						{/if}
+					{:else if place}
+						<!-- The label is a button: tapping it goes back to the place after
+						     panning away from it. -->
+						<div class="place-chip">
+							<button
+								bind:this={placeButton}
+								type="button"
+								class="map-btn place-label"
+								aria-label="Back to {place.label}"
+								onclick={() => place && showPlace(place)}
+							>
+								<span aria-hidden="true">📍</span>
+								{place.label}
+							</button>
+							<button
+								type="button"
+								class="map-btn"
+								onclick={openSearch}
+								aria-label="Search another address"
+							>
+								<span aria-hidden="true">⌕</span>
+							</button>
+							<button type="button" class="map-btn" onclick={clearPlace} aria-label="Remove the pin"
+								>×</button
+							>
+						</div>
+					{:else}
+						<button bind:this={searchToggle} type="button" class="map-btn" onclick={openSearch}>
+							<span aria-hidden="true">⌕</span> Find address
+						</button>
+					{/if}
+				{/if}
+
+				<!-- Under the search rather than across the middle of the map, so it
+				     can never cover the search — which is what a volunteer reaches
+				     for when the street names are gone. -->
+				{#if tilesBroken}
+					<p class="map-note tile-error" role="status">
+						Street map unavailable — turf shapes and positions are still accurate.
+					</p>
+				{/if}
+			</div>
+
+			<div class="map-controls">
+				<button
+					type="button"
+					class="map-btn square"
+					onclick={() => stepZoom(1)}
+					aria-label="Zoom in">+</button
+				>
+				<button
+					type="button"
+					class="map-btn square"
+					onclick={() => stepZoom(-1)}
+					aria-label="Zoom out">−</button
+				>
+				{#if moved}
+					<button type="button" class="map-btn" onclick={resetView}>Near me</button>
+				{/if}
+				{#if hasOffscreenTurfs}
+					<button type="button" class="map-btn" onclick={() => frameTo(allBounds)}>Show all</button>
+				{/if}
+			</div>
+		</div>
+
+		<p class="visually-hidden" role="status">{searchAnnouncement}</p>
+
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 		<!-- Svelte's a11y heuristics don't model a map widget: it treats <svg> as
@@ -1024,6 +1274,15 @@
 					</g>
 				{/each}
 
+				<!-- The searched-for place: a drop pin, a shape nothing else on the
+				     map uses. Spoken by the chip that names it, not here. -->
+				{#if placeAt}
+					<g class="place-pin" aria-hidden="true" transform="translate({placeAt.x} {placeAt.y})">
+						<path d="M0 0 C-3 -10 -12 -14 -12 -24 A12 12 0 1 1 12 -24 C12 -14 3 -10 0 0 Z" />
+						<circle cx="0" cy="-24" r="4.5" />
+					</g>
+				{/if}
+
 				<g class="me" aria-hidden="true">
 					{#if me}
 						<circle class="me-halo" cx={me.x} cy={me.y} r="16" />
@@ -1046,17 +1305,6 @@
 			</g>
 		</svg>
 
-		<div class="map-controls">
-			<button type="button" onclick={() => stepZoom(1)} aria-label="Zoom in">+</button>
-			<button type="button" onclick={() => stepZoom(-1)} aria-label="Zoom out">−</button>
-			{#if moved}
-				<button type="button" class="wide" onclick={resetView}>Near me</button>
-			{/if}
-			{#if hasOffscreenTurfs}
-				<button type="button" class="wide" onclick={() => frameTo(allBounds)}>Show all</button>
-			{/if}
-		</div>
-
 		{#if gestureHint}
 			<!-- aria-hidden: this is a visual answer to a gesture that just did
 			     nothing, and the figcaption already carries the same instruction
@@ -1066,12 +1314,6 @@
 		{/if}
 
 		<p class="attribution">{tiles.attribution}</p>
-
-		{#if tilesBroken}
-			<p class="tile-error" role="status">
-				Street map unavailable — turf shapes and positions are still accurate.
-			</p>
-		{/if}
 	</div>
 
 	<!-- How to work the map, and nothing else. What the shapes mean is said
@@ -1216,40 +1458,150 @@
 		line-height: 1.5;
 	}
 
-	.map-controls {
+	/* Clear of the edges by the same 10px all round. The row itself takes no
+	   pointer: it spans the top of the map, and only the controls in it may
+	   come between a finger and the map. */
+	.map-overlay {
 		position: absolute;
 		top: 10px;
+		left: 10px;
 		right: 10px;
 		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 8px;
+		pointer-events: none;
+	}
+
+	/* Shrinks before the camera buttons do, so a long address truncates
+	   rather than pushing them off the map. */
+	.overlay-start {
+		flex: 0 1 auto;
+		min-width: 0;
+		display: flex;
 		flex-direction: column;
+		align-items: flex-start;
 		gap: 4px;
 	}
 
-	.map-controls button {
-		width: 32px;
+	.overlay-start > *,
+	.map-controls {
+		pointer-events: auto;
+	}
+
+	.map-controls {
+		flex: none;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 4px;
+	}
+
+	/* Every button over the map: the search's and the camera's. */
+	.map-btn {
 		height: 32px;
+		min-width: 32px;
+		padding: 0 8px;
 		display: grid;
 		place-items: center;
 		background: var(--color-surface);
 		color: var(--color-text);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-sm);
-		font-size: 1.1rem;
-		font-weight: 700;
+		font-size: var(--font-size-xs);
+		font-weight: 600;
 		line-height: 1;
+		white-space: nowrap;
 		cursor: pointer;
 	}
 
-	.map-controls button:hover {
+	.map-btn:hover:not(:disabled) {
 		background: var(--color-cream-light);
 		border-color: var(--color-action);
 	}
 
-	.map-controls .wide {
-		width: auto;
-		padding: 0 8px;
+	.map-btn:disabled {
+		cursor: progress;
+		opacity: 0.7;
+	}
+
+	/* + and −: a glyph, not a word. */
+	.map-btn.square {
+		width: 32px;
+		padding: 0;
+		font-size: 1.1rem;
+		font-weight: 700;
+	}
+
+	.search-form,
+	.place-chip {
+		display: flex;
+		gap: 4px;
+		max-width: 100%;
+	}
+
+	/* The look is app.css's, for every field; this only fits it to the row of
+	   32px buttons beside it. 16px because the overlay's own text is smaller,
+	   and under 16px iOS zooms the page in on a tap into the field. */
+	.search-form input {
+		width: 16rem;
+		flex: 1 1 auto;
+		height: 32px;
+		padding-block: 0;
+		font-size: 16px;
+	}
+
+	/* The matched address can be long; it truncates rather than covering the
+	   map, and the full text is in the button's label. */
+	.place-label {
+		display: block;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		font-weight: 500;
+	}
+
+	.map-note {
+		margin: 0;
+		padding: 6px 10px;
+		max-width: 20rem;
+		background: var(--color-surface);
+		border: 1px solid var(--color-warning);
+		border-radius: var(--radius-sm);
+		color: var(--color-text);
 		font-size: var(--font-size-xs);
-		font-weight: 600;
+		line-height: 1.4;
+	}
+
+	/* A message, not a control: taps go through it to the map. */
+	.overlay-start > .tile-error {
+		pointer-events: none;
+	}
+
+	/* Scenery for the pointer: a drag that starts on it pans, and a tap
+	   reaches the turf underneath. Ink on paper, for the reason the turf
+	   labels give: it sits on Positron in both themes, over every status
+	   colour. */
+	.place-pin {
+		pointer-events: none;
+	}
+
+	.place-pin path {
+		fill: var(--color-near-black);
+		stroke: var(--color-header-text);
+		stroke-width: 2;
+	}
+
+	.place-pin circle {
+		fill: var(--color-header-text);
+	}
+
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
 		white-space: nowrap;
 	}
 
@@ -1263,20 +1615,6 @@
 		border-top-left-radius: var(--radius-sm);
 		font-size: 10px;
 		color: var(--color-warm-dark);
-	}
-
-	.tile-error {
-		position: absolute;
-		left: 50%;
-		top: 12px;
-		transform: translateX(-50%);
-		margin: 0;
-		padding: 6px 12px;
-		background: var(--color-surface);
-		border: 1px solid var(--color-warning);
-		border-radius: var(--radius-md);
-		font-size: var(--font-size-xs);
-		color: var(--color-text);
 	}
 
 	.turf {

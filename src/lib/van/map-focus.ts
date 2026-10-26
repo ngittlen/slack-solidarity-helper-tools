@@ -50,3 +50,28 @@ export function isBoxVisible(box: PixelBox, width: number, height: number, margi
 export function focusZoom(current: number, fit: number): number {
 	return Math.min(current, fit);
 }
+
+/** A place the map's address search found, to centre on and mark. */
+export interface FoundPlace {
+	point: { lat: number; lng: number };
+	/** What the geocoder took the query to mean ("229 W MICHIGAN AVE,
+	 *  YPSILANTI, MI, 48197"), or "ZIP 48197". Shown back, because the
+	 *  geocoder confidently matches a half-understood query to the wrong town. */
+	label: string;
+	kind: 'address' | 'zip';
+}
+
+/**
+ * The zoom to show a found place at. Unlike a selected turf, this one zooms
+ * in: the volunteer asked to see that spot, and the point of the search is to
+ * get from a county of turf to the streets around it. An address goes to
+ * street level, where the basemap names the streets; a ZIP is a neighbourhood
+ * or a town, so it stops short of that.
+ */
+export function placeZoom(kind: FoundPlace['kind']): number {
+	return kind === 'address' ? STREET_ZOOM : 13;
+}
+
+/** Street level: close enough to read the names of the streets around a
+ *  point. */
+export const STREET_ZOOM = 16;

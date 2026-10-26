@@ -235,8 +235,11 @@ exchanged through the site: the only number anyone sees is one a mentor chose to
 Three deliberate limits here, all verifiable in the code:
 
 - **A typed street address is never stored and never logged.** It is geocoded in memory through
-  the US Census geocoder, used to sort the list, and dropped. Only the ZIP code it matched to is
-  cached, in `van_zip_centroids` — a table of ZIP centroids, not of people.
+  the US Census geocoder, used to sort the list — or, typed into the map's search box, to centre
+  the map and drop a pin there — and dropped. Only the ZIP code it matched to is cached, in
+  `van_zip_centroids` — a table of ZIP centroids, not of people. Centring the map fetches the
+  street-map tiles around that spot from the map provider, as panning there would; the pin stays in
+  your browser.
 - **Browser geolocation, if you grant it, stays in your browser** for sorting. Coordinates that
   ride along in a Slack button are rounded to three decimal places (~100 m) — enough to re-sort a
   list, not a movement trace.
