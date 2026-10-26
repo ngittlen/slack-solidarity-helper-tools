@@ -2,13 +2,15 @@
 	// The mentor-walk cards on /turfs (specs/015-mentor-walks, User Story 3,
 	// FR-015/FR-016): the next 5 walks in the chapter on screen starting
 	// within the next week, soonest first, or nearest first when the viewer's
-	// location is known.
+	// location is known. The cards collapse to their heading unless `open`;
+	// the empty state and the alerts footer show either way.
 
 	import type { Snippet } from 'svelte';
 	import './mentor-walks.css';
 	import { distanceLabel, milesBetween } from '$lib/mentor-walks/rules.js';
 	import type { WalkCardView } from '$lib/mentor-walks/types.js';
 	import WalkCard from './WalkCard.svelte';
+	import SectionToggle from './SectionToggle.svelte';
 
 	interface Props {
 		walks: WalkCardView[];
@@ -21,6 +23,8 @@
 		/** The walk selected on the map, and a way to select one from its card. */
 		selectedId?: string | null;
 		onselect?: (id: string) => void;
+		/** Whether the cards are showing. Bindable, as a marker opens them. */
+		open?: boolean;
 	}
 
 	let {
@@ -32,6 +36,7 @@
 		footer,
 		selectedId = null,
 		onselect,
+		open = $bindable(false),
 	}: Props = $props();
 
 	const shown = $derived.by(() => {
@@ -43,25 +48,33 @@
 </script>
 
 <section class="mw-cards" aria-labelledby="mw-cards-heading">
-	<h2 id="mw-cards-heading">Mentor walks in {chapterName}</h2>
-	{#if walks.length === 0}
-		<p class="mw-panel">No mentor walks in the next week.</p>
-	{:else}
-		<ul class="mw-list mw-card-grid">
-			{#each shown as { walk, miles } (walk.id)}
-				<li>
-					<WalkCard
-						{walk}
-						distanceLabel={miles === null ? null : distanceLabel(miles)}
-						{onjoin}
-						{onleave}
-						selected={walk.id === selectedId}
-						{onselect}
-					/>
-				</li>
-			{/each}
-		</ul>
-	{/if}
+	<SectionToggle
+		id="mw-cards-heading"
+		label="Mentor walks in {chapterName}"
+		count={walks.length}
+		controls="mw-card-list"
+		bind:open
+	/>
+	<div id="mw-card-list" hidden={!open && walks.length > 0}>
+		{#if walks.length === 0}
+			<p class="mw-panel">No mentor walks in the next week.</p>
+		{:else if open}
+			<ul class="mw-list mw-card-grid">
+				{#each shown as { walk, miles } (walk.id)}
+					<li>
+						<WalkCard
+							{walk}
+							distanceLabel={miles === null ? null : distanceLabel(miles)}
+							{onjoin}
+							{onleave}
+							selected={walk.id === selectedId}
+							{onselect}
+						/>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
 	{@render footer?.()}
 </section>
 
@@ -69,17 +82,6 @@
 	.mw-cards {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-3);
-	}
-
-	.mw-cards h2 {
-		margin: 0;
-		font-size: var(--font-size-md);
-	}
-
-	.mw-card-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
-		gap: var(--space-3);
+		gap: var(--space-2);
 	}
 </style>

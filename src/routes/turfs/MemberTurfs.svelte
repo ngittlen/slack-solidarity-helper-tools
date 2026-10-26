@@ -22,6 +22,7 @@
 	import CampaignFilter from '$lib/components/turfs/CampaignFilter.svelte';
 	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import type { WalkCardView } from '$lib/mentor-walks/types.js';
+	import type { CanvassEventCard } from '$lib/canvass-events/types.js';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import KnockedClaimDialog from '$lib/components/turfs/KnockedClaimDialog.svelte';
 	import { formatRelative } from '$lib/components/settings/format-relative.js';
@@ -43,6 +44,7 @@
 	const {
 		data,
 		mentorWalks = null,
+		canvassEvents = null,
 		walksButton,
 		walksList,
 	}: {
@@ -50,9 +52,10 @@
 		/** The button that opens the mentor walks drawer: on the chapter bar,
 		 *  or under the chapter list before one is picked. */
 		walksButton?: Snippet;
-		/** Mentor walks at the top of the turf list: the cards for this
-		 *  chapter, and what's waiting on the viewer. Given whether the map is
-		 *  drawn, as only then can a card select its walk on it. */
+		/** Mentor walks and canvass events at the top of the turf list: the
+		 *  cards for this chapter, and what's waiting on the viewer. Given
+		 *  whether the map is drawn, as only then can a card select its marker
+		 *  on it. */
 		walksList?: Snippet<[boolean]>;
 		/** Mentor walks to mark on the map (specs/015-mentor-walks, User
 		 *  Story 8). */
@@ -64,15 +67,55 @@
 			selectedId: string | null;
 			onselect: (id: string | null) => void;
 		} | null;
+		/** Canvass events from Solidarity to mark on the map. */
+		canvassEvents?: {
+			cards: CanvassEventCard[];
+			/** The event selected on its marker or its card. */
+			selectedId: string | null;
+			onselect: (id: string | null) => void;
+		} | null;
 	} = $props();
 
 	const selectedWalkId = $derived(mentorWalks?.selectedId ?? null);
+	const selectedEventId = $derived(canvassEvents?.selectedId ?? null);
 
 	let turfMap = $state<TurfMap | null>(null);
 
-	/** Centre the map on a walk, for its card. */
-	export function centreOnWalk(id: string) {
+	/** Whether the map draws the walk and canvass markers. The legend's two
+	 *  entries switch them, so a busy map can be read for its turf alone. */
+	let showWalks = $state(true);
+	let showEvents = $state(true);
+
+	/** Hiding a kind of marker lets go of the one selected, which is no
+	 *  longer there to be outlined. */
+	function toggleWalks() {
+		showWalks = !showWalks;
+		if (!showWalks && selectedWalkId !== null) mentorWalks?.onselect(null);
+	}
+
+	function toggleEvents() {
+		showEvents = !showEvents;
+		if (!showEvents && selectedEventId !== null) canvassEvents?.onselect(null);
+	}
+
+	/** Centre the map on a walk, for its card. A card asking for its marker
+	 *  brings the walks back if they were hidden; the map only has them to
+	 *  centre on once they're drawn. */
+	export async function centreOnWalk(id: string) {
+		if (!showWalks) {
+			showWalks = true;
+			await tick();
+		}
 		turfMap?.centreOnWalk(id);
+	}
+
+	/** The same for a canvass event. */
+	export async function centreOnEvent(id: string) {
+		if (!showEvents) {
+			showEvents = true;
+			await tick();
+		}
+		turfMap?.centreOnEvent(id);
 	}
 
 	let mapCol = $state<HTMLElement | null>(null);
@@ -84,11 +127,26 @@
 	 *  of the sticky map column. Beside the map, the list scrolls to the card;
 	 *  with the map above the list, scrolling would carry the map away from
 	 *  under the finger, so the outline on the card is left to show it. */
-	function selectWalk(id: string) {
+	async function selectWalk(id: string) {
 		const selecting = selectedWalkId !== id;
 		mentorWalks?.onselect(selecting ? id : null);
 		if (!selecting) return;
-		const card = document.getElementById(`walk-${id}`);
+		await tick();
+		revealCard(`walk-${id}`);
+	}
+
+	/** The same for a canvass event's marker. Selecting a marker opens its
+	 *  collapsed list, so its card is only there after a tick. */
+	async function selectEvent(id: string) {
+		const selecting = selectedEventId !== id;
+		canvassEvents?.onselect(selecting ? id : null);
+		if (!selecting) return;
+		await tick();
+		revealCard(`event-${id}`);
+	}
+
+	function revealCard(cardId: string) {
+		const card = document.getElementById(cardId);
 		if (!card) return;
 		// Side by side, turf-page.css makes the map column sticky.
 		if (mapCol && getComputedStyle(mapCol).position === 'sticky') {
@@ -102,6 +160,20 @@
 			point: w.point,
 			label: `Mentor walk with ${w.mentorName}, ${w.dayLabel} at ${w.timeLabel}`,
 			joined: w.joined,
+		})),
+	);
+	/** Spoken: "Canvass: Door knock, Today at 10:00 AM, and 2 more times". */
+	function canvassLabel(e: CanvassEventCard): string {
+		const [next, ...rest] = e.sessions;
+		const more =
+			rest.length === 0 ? '' : `, and ${rest.length} more ${rest.length === 1 ? 'time' : 'times'}`;
+		return `Canvass: ${e.title}, ${next.dayLabel} at ${next.timeLabel}${more}`;
+	}
+	const mapEvents = $derived(
+		(canvassEvents?.cards ?? []).map((e) => ({
+			id: e.id,
+			point: e.point,
+			label: canvassLabel(e),
 		})),
 	);
 
@@ -238,6 +310,8 @@
 		lastBbox = '';
 		lastNear = '';
 		campaignFilter = null;
+		foundPlace = null;
+		queuedViewport = null;
 	});
 
 	// A new sort picks different turf for the same viewport, so the box last
@@ -429,6 +503,7 @@
 			queuedViewport = bounds;
 			return;
 		}
+		const chapterId = data.chapter.chapterId;
 		const bbox = [bounds.minLat, bounds.minLng, bounds.maxLat, bounds.maxLng]
 			.map((n) => n.toFixed(5))
 			.join(',');
@@ -441,9 +516,11 @@
 			// value, not reactive state, and the lint rule that would otherwise
 			// push it to SvelteURLSearchParams exists for the latter.
 			const res = await fetch(
-				`/api/turfs?chapter=${data.chapter.chapterId}&bbox=${encodeURIComponent(bbox)}` +
+				`/api/turfs?chapter=${chapterId}&bbox=${encodeURIComponent(bbox)}` +
 					(sortMode === 'densest' ? '&sort=densest' : ''),
 			);
+			// Another chapter's turf, answered after the switch to this one.
+			if (shownChapterId !== chapterId) return;
 			if (!res.ok) {
 				// Let the same viewport be retried once the user moves back to it,
 				// rather than remembering a box we never actually loaded.
@@ -958,9 +1035,12 @@
 							tiles={data.tiles}
 							onviewport={loadViewport}
 							campaignBadges={badges}
-							walks={mapWalks}
+							walks={showWalks ? mapWalks : []}
 							{selectedWalkId}
 							onselectwalk={selectWalk}
+							events={showEvents ? mapEvents : []}
+							{selectedEventId}
+							onselectevent={selectEvent}
 							{findPlace}
 							bind:place={foundPlace}
 						/>
@@ -986,7 +1066,37 @@
 						<li><span class="swatch swatch-mine"></span> Yours</li>
 						<li><span class="swatch swatch-other"></span> Checked out</li>
 						{#if location}<li><span class="swatch swatch-me"></span> You</li>{/if}
-						{#if mapWalks.length > 0}<li><span aria-hidden="true">👟</span> Mentor walk</li>{/if}
+						<!-- Buttons, not swatches: each shows or hides its markers. -->
+						{#if mapWalks.length > 0}
+							<li>
+								<button
+									type="button"
+									class="legend-toggle"
+									aria-pressed={showWalks}
+									title={showWalks
+										? 'Hide mentor walks on the map'
+										: 'Show mentor walks on the map'}
+									onclick={toggleWalks}
+								>
+									<span aria-hidden="true">👟</span> Mentor walk
+								</button>
+							</li>
+						{/if}
+						{#if mapEvents.length > 0}
+							<li>
+								<button
+									type="button"
+									class="legend-toggle"
+									aria-pressed={showEvents}
+									title={showEvents
+										? 'Hide canvass events on the map'
+										: 'Show canvass events on the map'}
+									onclick={toggleEvents}
+								>
+									<span aria-hidden="true">📣</span> Canvass event
+								</button>
+							</li>
+						{/if}
 					</ul>
 					{#if canShowCleared && clearedCount > 0}
 						<!-- Staff only: volunteers have nothing to do on turf with no

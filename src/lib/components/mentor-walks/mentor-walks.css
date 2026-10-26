@@ -176,3 +176,62 @@
 	padding: 0;
 	list-style: none;
 }
+
+/* Walk and canvass event cards side by side where there's room. */
+.mw-card-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+	gap: var(--space-2);
+}
+
+/* A walk or a canvass event as a card above the turf list. */
+.mw-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-1);
+	padding: var(--space-3);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-bg-surface);
+	scroll-margin-top: var(--space-6);
+}
+
+.mw-card-joined {
+	border-color: var(--color-success);
+	border-width: 2px;
+}
+
+.mw-card-selectable {
+	cursor: pointer;
+}
+
+/* An outline, so it shows alongside a joined card's green border. */
+.mw-card-selected {
+	outline: 3px solid var(--color-border-focus);
+	outline-offset: 2px;
+}
+
+.mw-card p {
+	margin: 0;
+	line-height: 1.45;
+}
+
+.mw-card-top {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2);
+}
+
+.mw-card h3 {
+	margin: 0;
+	font-size: var(--font-size-md);
+}
+
+.mw-look-for {
+	font-size: var(--font-size-sm);
+}
+
+.mw-card .mw-actions {
+	margin-top: var(--space-2);
+}

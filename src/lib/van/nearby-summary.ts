@@ -62,6 +62,24 @@ export function doorsHeadline(doors: number, anyTurf = doors > 0): DoorsHeadline
 }
 
 // ---------------------------------------------------------------------------
+// Mentor walks and canvass events
+// ---------------------------------------------------------------------------
+
+/** Counts of walks and canvasses this week stop here, sent as this and shown
+ *  as "10+". Below it a number reads as an invitation; above it, how many
+ *  more would only help someone sweeping points to map where they meet. */
+export const NEARBY_COUNT_CAP = 10;
+
+export function cappedCount(count: number): number {
+	return Math.min(Math.max(0, Math.floor(count)), NEARBY_COUNT_CAP);
+}
+
+/** "3", or "10+" at the cap. */
+export function countLabel(count: number): string {
+	return count >= NEARBY_COUNT_CAP ? `${NEARBY_COUNT_CAP}+` : String(count);
+}
+
+// ---------------------------------------------------------------------------
 // Canvassers
 // ---------------------------------------------------------------------------
 

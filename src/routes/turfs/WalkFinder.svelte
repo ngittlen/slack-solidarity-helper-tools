@@ -33,6 +33,8 @@
 		 *  card: none when there's no map to select it on. */
 		selectedWalkId: string | null;
 		onselectwalk?: (id: string) => void;
+		/** Whether the walk cards are expanded under their heading. */
+		cardsOpen?: boolean;
 	}
 
 	let {
@@ -47,6 +49,7 @@
 		error,
 		selectedWalkId,
 		onselectwalk,
+		cardsOpen = $bindable(false),
 	}: Props = $props();
 
 	let ownError = $state<string | null>(null);
@@ -108,6 +111,7 @@
 			footer={alertsLink}
 			selectedId={selectedWalkId}
 			onselect={onselectwalk}
+			bind:open={cardsOpen}
 		/>
 	{/if}
 
@@ -120,7 +124,7 @@
 	.walk-finder {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-3);
+		gap: var(--space-2);
 	}
 
 	/* Nothing to show: no gap left above the sort bar. */

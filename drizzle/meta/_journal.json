@@ -575,6 +575,13 @@
       "when": 1792780311847,
       "tag": "0081_manual_sync_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "6",
+      "when": 1793037314818,
+      "tag": "0082_canvass_event_tag",
+      "breakpoints": true
     }
   ]
 }

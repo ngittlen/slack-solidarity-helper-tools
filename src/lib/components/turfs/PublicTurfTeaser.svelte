@@ -16,6 +16,7 @@
 	import {
 		CANVASSER_LEVELS,
 		CELL_MILES,
+		countLabel,
 		METRES_PER_MILE,
 		NEARBY_RADIUS_MILES,
 		placeLabel,
@@ -40,6 +41,9 @@
 		canvassers: number;
 		cells: DensityCell[];
 		place: NearbyPlace;
+		/** This week within the ring, capped; null when not offered. */
+		mentorWalks: number | null;
+		canvasses: number | null;
 	}
 
 	interface Props {
@@ -78,6 +82,9 @@
 
 	const result = $derived(nearby && !editing ? nearby : null);
 	const level = $derived(result ? CANVASSER_LEVELS[result.canvassers]! : null);
+	/** Only what there is: a zero would read as a reason not to join. */
+	const walksNear = $derived(result?.mentorWalks ?? 0);
+	const canvassesNear = $derived(result?.canvasses ?? 0);
 
 	// --- Map framing -------------------------------------------------------
 
@@ -87,7 +94,9 @@
 
 	const focus = $derived(result?.centre ?? turfCentre ?? FALLBACK_CENTRE);
 
-	// With a result, zoom so the 2-mile ring fills most of the short side; the
+	const radiusLabel = `${NEARBY_RADIUS_MILES} miles`;
+
+	// With a result, zoom so the radius ring fills most of the short side; the
 	// card sits inside it on a desktop. Before one, show the campaign's region.
 	const zoom = $derived.by(() => {
 		if (!result) return turfCentre ? 9 : 4;
@@ -292,7 +301,7 @@
 						{/if}
 					</div>
 					{#if result.doors.kind !== 'none'}
-						<span class="unit">within 2 miles of {placeLabel(result.place)}</span>
+						<span class="unit">within {radiusLabel} of {placeLabel(result.place)}</span>
 					{/if}
 				</div>
 
@@ -305,6 +314,33 @@
 					<div class="pip-scale" aria-hidden="true"><span>No one</span><span>Tons</span></div>
 					<p>{level.sentence}</p>
 				</div>
+
+				{#if walksNear > 0 || canvassesNear > 0}
+					<div class="this-week">
+						<p class="this-week-title">This week within {radiusLabel}</p>
+						<ul>
+							{#if walksNear > 0}
+								<li>
+									<span aria-hidden="true">👟</span>
+									<span
+										><strong>{countLabel(walksNear)}</strong>
+										{walksNear === 1 ? 'mentor walk' : 'mentor walks'}
+										<span class="this-week-note">with an experienced canvasser</span></span
+									>
+								</li>
+							{/if}
+							{#if canvassesNear > 0}
+								<li>
+									<span aria-hidden="true">📣</span>
+									<span
+										><strong>{countLabel(canvassesNear)}</strong>
+										{canvassesNear === 1 ? 'canvass event' : 'canvass events'}</span
+									>
+								</li>
+							{/if}
+						</ul>
+					</div>
+				{/if}
 
 				{@render actions()}
 
@@ -701,6 +737,38 @@
 	.people p {
 		margin: 0;
 		font-weight: 600;
+	}
+	.this-week {
+		display: grid;
+		gap: 6px;
+		padding: 12px 16px;
+		border-radius: 12px;
+		background: var(--color-surface-alt);
+		border: 1px solid var(--color-border);
+	}
+	.this-week-title {
+		margin: 0;
+		font-size: var(--font-size-xs);
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--color-text-muted);
+	}
+	.this-week ul {
+		display: grid;
+		gap: 4px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.this-week li {
+		display: flex;
+		gap: 8px;
+		align-items: baseline;
+	}
+	.this-week-note {
+		color: var(--color-text-muted);
+		font-size: var(--font-size-sm);
 	}
 	.pips {
 		display: grid;

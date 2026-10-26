@@ -18,6 +18,7 @@ import {
 	answerWalk,
 	attendedCount,
 	cardWalks,
+	countWalksNear,
 	heldSeats,
 	joinWalk,
 	leaveWalk,
@@ -208,6 +209,29 @@ describe('the cards', () => {
 			const cards = await cardWalks(db, 71, NOW, { linkedId: publicId(linked) });
 			expect(cards.map((w) => w.id)).toEqual([...ids.slice(0, 5), linked]);
 		}
+	});
+});
+
+describe('countWalksNear', () => {
+	const LIBRARY = { lat: 42.278, lng: -83.746 };
+
+	it('counts joinable walks this week within the radius, in offered chapters', async () => {
+		await postWalk({ startsAt: at(26) });
+		await postWalk({ startsAt: at(50), lat: 42.29 });
+		// About 8 miles north: out of a 2-mile radius.
+		await postWalk({ startsAt: at(74), lat: 42.4 });
+		// In a chapter /turfs doesn't offer.
+		await postWalk({ startsAt: at(98), chapterId: 72 });
+		// Past the week.
+		await postWalk({ startsAt: at(8 * 24) });
+		expect(await countWalksNear(db, LIBRARY, 2, [71], NOW)).toBe(2);
+		expect(await countWalksNear(db, LIBRARY, 2, [71, 72], NOW)).toBe(3);
+		expect(await countWalksNear(db, LIBRARY, 2, [], NOW)).toBe(0);
+	});
+
+	it('leaves out a walk already under way', async () => {
+		await postWalk({ startsAt: at(26) });
+		expect(await countWalksNear(db, LIBRARY, 2, [71], later(26.5))).toBe(0);
 	});
 });
 

@@ -51,7 +51,13 @@
 		turfShade,
 	} from '$lib/van/turf-shade.js';
 	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
-	import { focusZoom, isBoxVisible, placeZoom, type FoundPlace } from '$lib/van/map-focus.js';
+	import {
+		focusZoom,
+		isBoxVisible,
+		placeZoom,
+		STREET_ZOOM,
+		type FoundPlace,
+	} from '$lib/van/map-focus.js';
 	import { tick, untrack } from 'svelte';
 	import type { CampaignBadges, MappableTurf } from '$lib/van/turf-view.js';
 
@@ -87,6 +93,11 @@
 		walks?: MapWalk[];
 		selectedWalkId?: string | null;
 		onselectwalk?: (id: string) => void;
+		/** Canvass events from Solidarity, drawn as square badges so they read
+		 *  apart from the walks. */
+		events?: MapEvent[];
+		selectedEventId?: string | null;
+		onselectevent?: (id: string) => void;
 		/** Look up an address or ZIP for the map's search box: the place, or
 		 *  a message saying why not. No search box without it. `signal` is
 		 *  aborted when the search is dismissed or gives up waiting. */
@@ -106,6 +117,16 @@
 		joined: boolean;
 	}
 
+	interface MapEvent {
+		id: string;
+		point: LatLng;
+		/** Spoken: "Canvass: Door knock, Sat, Nov 1 at 10:00 AM". */
+		label: string;
+	}
+
+	/** The two kinds of badge a tap selects, by the attribute each carries. */
+	type MarkerKind = 'walk' | 'event';
+
 	let {
 		turfs,
 		framing,
@@ -118,11 +139,15 @@
 		walks = [],
 		selectedWalkId = null,
 		onselectwalk,
+		events = [],
+		selectedEventId = null,
+		onselectevent,
 		findPlace,
 		place = $bindable(null),
 	}: Props = $props();
 
 	const walkMarkers = $derived(walks.map((walk) => ({ walk, at: view.project(walk.point) })));
+	const eventMarkers = $derived(events.map((event) => ({ event, at: view.project(event.point) })));
 
 	/** Fallback viewport, used for SSR and for the first frame before the
 	 *  element has been measured. Matches the desktop aspect ratio the
@@ -267,14 +292,35 @@
 		});
 	});
 
-	/** Centre on a walk at the zoom the map is at. Its card calls this: the
-	 *  card is in the list, so the marker may be anywhere, or off the map. */
-	export function centreOnWalk(id: string) {
-		const walk = walks.find((w) => w.id === id);
-		if (!walk) return;
-		centre = walk.point;
-		zoom = view.zoom;
+	function markerPoint(kind: MarkerKind, id: string): LatLng | null {
+		const list: { id: string; point: LatLng }[] = kind === 'walk' ? walks : events;
+		return list.find((m) => m.id === id)?.point ?? null;
+	}
+
+	function centreOnMarker(kind: MarkerKind, id: string, atZoom = view.zoom) {
+		const point = markerPoint(kind, id);
+		if (!point) return;
+		centre = point;
+		zoom = atZoom;
 		moved = true;
+	}
+
+	/** Centre on a marker for its card, zoomed in to street level. The card is
+	 *  in the list, so the marker may be anywhere, or off the map. As for a
+	 *  searched address, the card is a place to go, and the streets around it
+	 *  say how to get there. Never out, for someone already closer. */
+	function showMarkerForCard(kind: MarkerKind, id: string) {
+		centreOnMarker(kind, id, Math.max(view.zoom, STREET_ZOOM));
+	}
+
+	/** A walk's card asking for its marker. */
+	export function centreOnWalk(id: string) {
+		showMarkerForCard('walk', id);
+	}
+
+	/** The same for a canvass event. */
+	export function centreOnEvent(id: string) {
+		showMarkerForCard('event', id);
 	}
 
 	/** How near the frame a tapped marker has to be for the map to centre it:
@@ -284,18 +330,19 @@
 	// A tapped marker is already in view, so the map only moves for one at
 	// the edge. Moving it from under the finger would put whatever comes next
 	// under a second tap meant to unselect it.
-	function selectWalk(id: string) {
-		const selecting = id !== selectedWalkId;
-		onselectwalk?.(id);
+	function selectMarker(kind: MarkerKind, id: string) {
+		const selecting = id !== (kind === 'walk' ? selectedWalkId : selectedEventId);
+		(kind === 'walk' ? onselectwalk : onselectevent)?.(id);
 		if (!selecting) return;
-		const at = walkMarkers.find((m) => m.walk.id === id)?.at;
-		if (!at) return;
+		const point = markerPoint(kind, id);
+		if (!point) return;
+		const at = view.project(point);
 		const nearEdge =
 			at.x < WALK_EDGE_PX ||
 			at.y < WALK_EDGE_PX ||
 			at.x > mapWidth - WALK_EDGE_PX ||
 			at.y > mapHeight - WALK_EDGE_PX;
-		if (nearEdge) centreOnWalk(id);
+		if (nearEdge) centreOnMarker(kind, id);
 	}
 
 	const me = $derived(location ? view.project(location) : null);
@@ -633,18 +680,20 @@
 	 *  not an option: it is what keeps a drag alive when the pointer leaves the
 	 *  svg mid-pan. */
 	let pressedTurfId: number | null = null;
-	/** The same for a mentor walk's marker. */
-	let pressedWalkId: string | null = null;
+	/** The same for a walk's or a canvass event's marker. */
+	let pressedMarker: { kind: MarkerKind; id: string } | null = null;
 
 	function turfIdAt(target: EventTarget | null): number | null {
 		const el = (target as Element | null)?.closest?.('[data-turf-id]');
 		return el ? Number(el.getAttribute('data-turf-id')) : null;
 	}
 
-	function walkIdAt(target: EventTarget | null): string | null {
-		return (
-			(target as Element | null)?.closest?.('[data-walk-id]')?.getAttribute('data-walk-id') ?? null
-		);
+	function markerAt(target: EventTarget | null): { kind: MarkerKind; id: string } | null {
+		const el = (target as Element | null)?.closest?.('[data-walk-id], [data-event-id]');
+		if (!el) return null;
+		const walkId = el.getAttribute('data-walk-id');
+		if (walkId !== null) return { kind: 'walk', id: walkId };
+		return { kind: 'event', id: el.getAttribute('data-event-id') ?? '' };
 	}
 
 	function onPointerDown(event: PointerEvent) {
@@ -657,7 +706,7 @@
 			// Second finger down: stop panning, start pinching.
 			dragging = false;
 			pressedTurfId = null;
-			pressedWalkId = null;
+			pressedMarker = null;
 			pinch = { distance: distanceBetween(pair[0], pair[1]), zoom: view.zoom };
 			pinchMidpoint = midpointOf(pair);
 			return;
@@ -671,7 +720,7 @@
 		// svg, so this is the last point at which the shape under the finger is
 		// still the event target.
 		pressedTurfId = turfIdAt(event.target);
-		pressedWalkId = walkIdAt(event.target);
+		pressedMarker = markerAt(event.target);
 		if (pageOwnsSwipe(event)) return;
 
 		dragging = true;
@@ -774,11 +823,11 @@
 		if (!dragMoved && pressedTurfId !== null && activePointers.length === 1) {
 			onselect(pressedTurfId);
 		}
-		if (!dragMoved && pressedWalkId !== null && activePointers.length === 1) {
-			selectWalk(pressedWalkId);
+		if (!dragMoved && pressedMarker !== null && activePointers.length === 1) {
+			selectMarker(pressedMarker.kind, pressedMarker.id);
 		}
 		pressedTurfId = null;
-		pressedWalkId = null;
+		pressedMarker = null;
 
 		activePointers = activePointers.filter((p) => p.id !== event.pointerId);
 		(event.currentTarget as SVGSVGElement).releasePointerCapture?.(event.pointerId);
@@ -801,7 +850,7 @@
 	 *  Not a tap, whatever the pointer did before it was cancelled. */
 	function onPointerCancel(event: PointerEvent) {
 		pressedTurfId = null;
-		pressedWalkId = null;
+		pressedMarker = null;
 		onPointerUp(event);
 	}
 
@@ -1265,12 +1314,34 @@
 						onkeydown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
 								e.preventDefault();
-								selectWalk(walk.id);
+								selectMarker('walk', walk.id);
 							}
 						}}
 					>
 						<circle cx={at.x} cy={at.y} r="17" />
 						<text x={at.x} y={at.y} text-anchor="middle" dominant-baseline="central">👟</text>
+					</g>
+				{/each}
+
+				<!-- Canvass events: rounded squares, a shape apart from the round
+				     walks for anyone who can't tell the colours apart. -->
+				{#each eventMarkers as { event, at } (event.id)}
+					<g
+						class={['event-marker', event.id === selectedEventId && 'is-selected']}
+						data-event-id={event.id}
+						role="button"
+						aria-label={event.label}
+						aria-pressed={event.id === selectedEventId}
+						tabindex="0"
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								selectMarker('event', event.id);
+							}
+						}}
+					>
+						<rect x={at.x - 16} y={at.y - 16} width="32" height="32" rx="7" />
+						<text x={at.x} y={at.y} text-anchor="middle" dominant-baseline="central">📣</text>
 					</g>
 				{/each}
 
@@ -1823,14 +1894,23 @@
 		stroke-width: 2.5;
 	}
 
-	.walk-marker {
+	.walk-marker,
+	.event-marker {
 		cursor: pointer;
+	}
+
+	.walk-marker circle,
+	.event-marker rect {
+		stroke: var(--color-surface);
+		stroke-width: 3;
 	}
 
 	.walk-marker circle {
 		fill: var(--color-action);
-		stroke: var(--color-surface);
-		stroke-width: 3;
+	}
+
+	.event-marker rect {
+		fill: var(--color-gold);
 	}
 
 	.walk-marker.is-joined circle {
@@ -1838,16 +1918,20 @@
 	}
 
 	.walk-marker.is-selected circle,
-	.walk-marker:focus-visible circle {
+	.walk-marker:focus-visible circle,
+	.event-marker.is-selected rect,
+	.event-marker:focus-visible rect {
 		stroke: var(--color-border-focus);
 		stroke-width: 4;
 	}
 
-	.walk-marker:focus {
+	.walk-marker:focus,
+	.event-marker:focus {
 		outline: none;
 	}
 
-	.walk-marker text {
+	.walk-marker text,
+	.event-marker text {
 		font-size: 16px;
 		pointer-events: none;
 	}

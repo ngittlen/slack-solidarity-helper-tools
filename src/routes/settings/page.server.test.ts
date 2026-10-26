@@ -114,6 +114,7 @@ const settingsFixture = {
 	publicJoinUrl: '',
 	mentorWalksVisibility: 'off' as const,
 	volunteerGuidelinesUrl: '',
+	canvassEventTag: '',
 };
 
 function makeEvent(overrides: {

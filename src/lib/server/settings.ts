@@ -195,6 +195,9 @@ export interface Settings {
 	/** The volunteer guidelines mentors agree to. '' means mentor sign-up is
 	 *  unavailable (FR-036). */
 	volunteerGuidelinesUrl: string;
+	/** Solidarity events with this tag show on the /turfs map, lowercased for
+	 *  hasTag. '' shows none. */
+	canvassEventTag: string;
 }
 
 export interface Editor {
@@ -238,6 +241,8 @@ export type AppConfigPatch = Partial<{
 	mentorWalksVisibility: MentorWalksVisibility;
 	/** '' turns mentor sign-up off. */
 	volunteerGuidelinesUrl: string;
+	/** '' keeps canvass events off /turfs. */
+	canvassEventTag: string;
 }>;
 
 /** Sentinel editor for non-interactive writes (seed/backfill). Stays in the
@@ -400,6 +405,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		publicJoinUrl: cfg?.publicJoinUrl?.trim() ?? '',
 		mentorWalksVisibility: parseVisibility(cfg?.mentorWalksVisibility),
 		volunteerGuidelinesUrl: cfg?.volunteerGuidelinesUrl?.trim() ?? '',
+		canvassEventTag: cfg?.canvassEventTag?.trim().toLowerCase() ?? '',
 	};
 }
 
@@ -1078,6 +1084,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'publicJoinUrl',
 	'mentorWalksVisibility',
 	'volunteerGuidelinesUrl',
+	'canvassEventTag',
 ]);
 
 export async function saveAppConfig(

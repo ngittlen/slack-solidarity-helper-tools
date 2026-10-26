@@ -21,6 +21,9 @@ const mockAgree = vi.hoisted(() => vi.fn());
 const mockLocatePlace = vi.hoisted(() => vi.fn());
 const mockWalkFinder = vi.hoisted(() => vi.fn(async () => null as unknown));
 const mockJoinWalk = vi.hoisted(() => vi.fn());
+const mockCanvassEvents = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+const mockCanvassCount = vi.hoisted(() => vi.fn(async () => 0));
+const mockWalkCount = vi.hoisted(() => vi.fn(async () => 0));
 
 // Its own tests run it against real SQLite (mentor-walks/panel.test.ts).
 vi.mock('$lib/server/mentor-walks/panel.js', () => ({
@@ -43,6 +46,13 @@ vi.mock('$lib/server/mentor-walks/dispatch.js', () => ({
 	dispatchSoon: vi.fn(),
 }));
 const mockForgetMentor = vi.hoisted(() => vi.fn());
+// Has its own tests (canvass-events.test.ts).
+vi.mock('$lib/server/canvass-events.js', () => ({
+	loadCanvassEvents: mockCanvassEvents,
+	loadCanvassCountNear: mockCanvassCount,
+}));
+// Has its own tests on real SQLite (seats.test.ts).
+vi.mock('$lib/server/mentor-walks/seats.js', () => ({ countWalksNear: mockWalkCount }));
 vi.mock('$lib/server/mentor-walks/store.js', () => ({ forgetMentor: mockForgetMentor }));
 
 // Both have their own tests (outside-volunteers.test.ts on real SQLite).
@@ -623,6 +633,38 @@ describe('/turfs load', () => {
 		expect(result.chapters).toEqual([]);
 	});
 
+	describe('canvass events', () => {
+		const CARD = { id: '100-7', title: 'Saturday door knock' };
+
+		beforeEach(() => {
+			mockCanvassEvents.mockResolvedValue([CARD]);
+			mockSettings.mockResolvedValue({
+				turfHiddenChapterIds: new Set<number>(),
+				chapterChannelMap: CHAPTERS,
+				canvassEventTag: 'canvass',
+			});
+		});
+
+		it('ships the chapter’s events with its turf', async () => {
+			const result = await run(event(VOLUNTEER, 'chapter=71'));
+			expect(result.canvassEvents).toEqual([CARD]);
+			expect(mockCanvassEvents).toHaveBeenCalledWith(
+				expect.objectContaining({ tag: 'canvass', chapterId: 71 }),
+			);
+		});
+
+		it('reads none before a chapter is picked', async () => {
+			expect((await run(event(VOLUNTEER))).canvassEvents).toEqual([]);
+			expect(mockCanvassEvents).not.toHaveBeenCalled();
+		});
+
+		it('never reads or ships them for a blocked volunteer', async () => {
+			mockBlockedIds.mockResolvedValue(new Set(['U_VOL']));
+			expect((await run(event(VOLUNTEER, 'chapter=71'))).canvassEvents).toEqual([]);
+			expect(mockCanvassEvents).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('the mentor panel', () => {
 		const PANEL = { state: 'invite', guidelinesUrl: 'https://example.org/g' };
 
@@ -819,6 +861,7 @@ describe('/turfs load', () => {
 			const stopped = results.find((r) => r.rateLimited > 0);
 			expect(stopped).toBeDefined();
 			expect(stopped!.turfs).toEqual([]);
+			expect(stopped!.canvassEvents).toEqual([]);
 			// Told apart from the chapter limit, whose message promises that
 			// chapters already seen still open — which is not true here.
 			expect(stopped!.rateLimitReason).toBe('requests');
@@ -1117,7 +1160,70 @@ describe('/turfs nearby action', () => {
 
 	it('answers a ZIP with the summary and names the ZIP', async () => {
 		const result = await actions.nearby(post({ q: '48104' }));
-		expect(result).toEqual({ nearby: { ...SUMMARY, place: { kind: 'zip', zip: '48104' } } });
+		expect(result).toEqual({
+			nearby: {
+				...SUMMARY,
+				place: { kind: 'zip', zip: '48104' },
+				mentorWalks: null,
+				canvasses: null,
+			},
+		});
+	});
+
+	describe('walks and canvasses this week', () => {
+		const ON = {
+			vanAssignmentTtlHours: 72,
+			chapterChannelMap: CHAPTERS,
+			turfHiddenChapterIds: new Set([72]),
+			mentorWalksVisibility: 'everyone',
+			canvassEventTag: 'canvass',
+		};
+
+		it('counts both within the ring, in the chapters /turfs offers', async () => {
+			mockSettings.mockResolvedValue(ON);
+			mockWalkCount.mockResolvedValue(3);
+			mockCanvassCount.mockResolvedValue(2);
+			const result = await actions.nearby(post({ q: '48104' }));
+			expect(result).toMatchObject({ nearby: { mentorWalks: 3, canvasses: 2 } });
+			expect(mockWalkCount).toHaveBeenCalledWith(
+				expect.anything(),
+				{ lat: 42.2808, lng: -83.743 },
+				2,
+				[71],
+				expect.any(Date),
+			);
+			expect(mockCanvassCount).toHaveBeenCalledWith(
+				expect.objectContaining({ tag: 'canvass', chapterIds: [71], radiusMiles: 2 }),
+			);
+		});
+
+		it('caps them, so a sweep of lookups learns little', async () => {
+			mockSettings.mockResolvedValue(ON);
+			mockWalkCount.mockResolvedValue(37);
+			mockCanvassCount.mockResolvedValue(11);
+			const result = await actions.nearby(post({ q: '48104' }));
+			expect(result).toMatchObject({ nearby: { mentorWalks: 10, canvasses: 10 } });
+		});
+
+		it('says nothing of walks unless they are open to everyone, nor of untagged canvasses', async () => {
+			mockSettings.mockResolvedValue({
+				...ON,
+				mentorWalksVisibility: 'staff',
+				canvassEventTag: '',
+			});
+			const result = await actions.nearby(post({ q: '48104' }));
+			expect(result).toMatchObject({ nearby: { mentorWalks: null, canvasses: null } });
+			expect(mockWalkCount).not.toHaveBeenCalled();
+			expect(mockCanvassCount).not.toHaveBeenCalled();
+		});
+
+		it('still answers when the walk count fails', async () => {
+			vi.spyOn(console, 'error').mockImplementation(() => {});
+			mockSettings.mockResolvedValue(ON);
+			mockWalkCount.mockRejectedValue(new Error('db down'));
+			const result = await actions.nearby(post({ q: '48104' }));
+			expect(result).toMatchObject({ nearby: { doors: SUMMARY.doors, mentorWalks: null } });
+		});
 	});
 
 	it('never echoes a street address back', async () => {

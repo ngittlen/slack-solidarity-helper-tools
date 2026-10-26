@@ -372,6 +372,7 @@ export const APP_CONFIG_FIELDS: {
 	publicJoinUrl: publicUrlField('publicJoinUrl', PUBLIC_URL_MAX_LENGTH),
 	mentorWalksVisibility: enumField('mentorWalksVisibility', MENTOR_WALKS_VISIBILITIES),
 	volunteerGuidelinesUrl: publicUrlField('volunteerGuidelinesUrl', PUBLIC_URL_MAX_LENGTH),
+	canvassEventTag: boundedTextField('canvassEventTag', MOBILIZE_TAG_MAX_LENGTH),
 
 	siteName: boundedTextField('siteName', SITE_NAME_MAX_LENGTH),
 	countdownLabel: boundedTextField('countdownLabel', COUNTDOWN_LABEL_MAX_LENGTH),
