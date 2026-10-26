@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Select from '$lib/components/ui/Select.svelte';
 	import { onMount } from 'svelte';
 	import './pending.css';
 	import { parsePhoneNumberWithError } from 'libphonenumber-js';
@@ -271,18 +272,16 @@
 								class:contacted={currentStatus === 'contacted'}
 							>
 								<td class="col-helped">
-									<select
+									<Select
+										items={STATUS_OPTIONS}
 										value={currentStatus}
-										onchange={(e) => setStatus(entry.id, (e.target as HTMLSelectElement).value)}
+										onValueChange={(v) => setStatus(entry.id, v)}
 										aria-label="Status for {entry.name ??
 											entry.email ??
 											entry.phone ??
 											'volunteer'}"
-									>
-										{#each STATUS_OPTIONS as opt (opt.value)}
-											<option value={opt.value}>{opt.label}</option>
-										{/each}
-									</select>
+										size="sm"
+									/>
 									{#if statusErrors[entry.id]}
 										<span class="comment-status error" role="alert">Not saved</span>
 									{/if}

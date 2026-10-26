@@ -3,6 +3,7 @@
 	// (specs/015-mentor-walks, User Story 6, FR-030/FR-031). Ticking someone
 	// ends their "new" status; it never adds doors to anyone's count.
 
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import './mentor-walks.css';
 	import type { MentorCheckinView } from '$lib/mentor-walks/types.js';
 
@@ -36,7 +37,12 @@
 		<legend class="mw-muted">Tick everyone who came along</legend>
 		{#each walk.seats as seat (seat.id)}
 			<label>
-				<input type="checkbox" value={seat.id} bind:group={ticked} />
+				<Checkbox
+					bind:checked={
+						() => ticked.includes(seat.id),
+						(on) => (ticked = on ? [...ticked, seat.id] : ticked.filter((id) => id !== seat.id))
+					}
+				/>
 				{seat.name}
 			</label>
 		{/each}

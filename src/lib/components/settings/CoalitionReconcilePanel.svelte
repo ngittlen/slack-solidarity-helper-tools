@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { errMessage } from '$lib/err-message.js';
 
@@ -160,10 +161,9 @@
 					{#each diff.toMark as person (person.email)}
 						<li>
 							<label class="reconcile-person">
-								<input
-									type="checkbox"
+								<Checkbox
 									checked={selectedMark.has(person.email)}
-									onchange={() => toggle(selectedMark, person.email)}
+									onCheckedChange={() => toggle(selectedMark, person.email)}
 								/>
 								<span class="reconcile-name">{person.name}</span>
 								<span class="reconcile-email">{person.email}</span>
@@ -196,10 +196,9 @@
 					{#each diff.toInvite as person (person.email)}
 						<li>
 							<label class="reconcile-person">
-								<input
-									type="checkbox"
+								<Checkbox
 									checked={selectedInvite.has(person.email)}
-									onchange={() => toggle(selectedInvite, person.email)}
+									onCheckedChange={() => toggle(selectedInvite, person.email)}
 								/>
 								<span class="reconcile-name">{person.name}</span>
 								<span class="reconcile-email">{person.email}</span>

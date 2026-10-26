@@ -10,6 +10,7 @@
 	// The VAN read is streamed: the header and state picker render at once, and
 	// everything below waits on `data.folderData` behind a spinner.
 
+	import Select from '$lib/components/ui/Select.svelte';
 	import FolderCountyMap from '$lib/components/turfs/FolderCountyMap.svelte';
 	import FolderChapterPicker from '$lib/components/turfs/FolderChapterPicker.svelte';
 	import type { MapDot } from '$lib/components/turfs/FolderCountyMap.svelte';
@@ -87,24 +88,24 @@
 		     read is re-placed in the picked state without asking VAN again. -->
 		<form class="state-picker" method="GET" action={resolve('/turfs/folder-map')}>
 			<input type="hidden" name="campaign" value={data.campaign.id} />
-			<label>
-				Look up counties in
-				<select
-					name="state"
-					value={data.pickedState ?? ''}
-					onchange={(e) => e.currentTarget.form?.requestSubmit()}
-				>
-					<option value=""
-						>{data.configuredStates.length > 0
-							? `Default (${data.configuredStates.join(', ')})`
-							: 'Auto-detect from region names'}</option
-					>
-					{#each data.stateOptions as code (code)}
-						<option value={code}>{code}</option>
-					{/each}
-				</select>
-			</label>
-			<noscript><button type="submit">Apply</button></noscript>
+			<label for="state-picker">Look up counties in</label>
+			<Select
+				id="state-picker"
+				name="state"
+				items={[
+					{
+						value: '',
+						label:
+							data.configuredStates.length > 0
+								? `Default (${data.configuredStates.join(', ')})`
+								: 'Auto-detect from region names',
+					},
+					...data.stateOptions.map((code) => ({ value: code, label: code })),
+				]}
+				value={data.pickedState ?? ''}
+				size="sm"
+				submitOnChange
+			/>
 		</form>
 	</header>
 
@@ -308,11 +309,6 @@
 		gap: var(--space-2);
 		margin: var(--space-2) 0 0;
 		font-size: var(--font-size-sm);
-	}
-
-	.state-picker select {
-		margin-left: var(--space-2);
-		font: inherit;
 	}
 
 	.loading {

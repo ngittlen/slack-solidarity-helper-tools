@@ -15,8 +15,10 @@
 	import { coarseNear } from '$lib/van/turf-paging.js';
 	import { statusLabel } from '$lib/van/turf-status.js';
 	import { KNOCKED_LABEL, rampStyle, turfShade } from '$lib/van/turf-shade.js';
-	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
+	import { describeAge } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
+	import CampaignFilter from '$lib/components/turfs/CampaignFilter.svelte';
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import type { WalkCardView } from '$lib/mentor-walks/types.js';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import KnockedClaimDialog from '$lib/components/turfs/KnockedClaimDialog.svelte';
@@ -28,6 +30,7 @@
 		needsKnockedConfirm,
 		shownOnMap,
 		type CampaignBadges,
+		type CampaignTotals,
 		type TurfView,
 	} from '$lib/van/turf-view.js';
 
@@ -106,6 +109,9 @@
 	/** Turf whose "Hide from volunteers" change is in flight. Apart from
 	 *  `busy`, which the claim button reads as "Checking out…". */
 	let hiding = $state<Record<number, boolean>>({});
+	/** What the "Hide from volunteers" box shows while its change is in
+	 *  flight, ahead of the reload that brings back `turf.hidden`. */
+	let hideShown = $state<Record<number, boolean>>({});
 	let error = $state<string | null>(null);
 	/** Turf knocked before its cut whose checkout waits on the volunteer's
 	 *  say-so (KnockedClaimDialog). */
@@ -194,6 +200,8 @@
 	 *  a total rather than a remainder precisely so panning cannot make it
 	 *  disagree with the number of rows on screen. */
 	let totalNow = $state<number | null>(null);
+	/** `totalNow` per campaign, from the same request. */
+	let pagedTotals = $state<CampaignTotals>({});
 	/** The last viewport actually fetched.
 	 *
 	 *  This is a loop-breaker, not an optimisation. Before the volunteer pans,
@@ -224,8 +232,10 @@
 		paged = {};
 		pagedBadges = {};
 		totalNow = null;
+		pagedTotals = {};
 		lastBbox = '';
 		lastNear = '';
+		campaignFilter = null;
 	});
 
 	// A new sort picks different turf for the same viewport, so the box last
@@ -235,7 +245,7 @@
 		lastBbox = '';
 	});
 
-	const turfs = $derived.by<TurfView[]>(() => {
+	const allTurfs = $derived.by<TurfView[]>(() => {
 		// A plain record rather than a Map: this is a transient dedupe inside a
 		// derived, not reactive state, and `paged` is already keyed the same way.
 		//
@@ -259,6 +269,25 @@
 		return turf.campaignId === undefined ? null : (badges[turf.campaignId] ?? null);
 	}
 
+	/** The campaigns the volunteer can narrow the list to. Empty unless two or
+	 *  more are enabled, as only then does turf carry `campaignId`. */
+	const campaignOptions = $derived(
+		Object.entries(badges)
+			.map(([id, badge]) => ({ id: Number(id), badge }))
+			.sort((a, b) => a.badge.localeCompare(b.badge)),
+	);
+	/** The campaign picked in the list header, or null for all of them. */
+	let campaignFilter = $state<number | null>(null);
+	/** `campaignFilter` while it names a campaign still in the options; a
+	 *  campaign that has dropped out of them filters nothing. */
+	const pickedCampaign = $derived(
+		campaignFilter !== null && campaignFilter in badges ? campaignFilter : null,
+	);
+	/** The turf on the map and in the list: every campaign's, or the picked one's. */
+	const turfs = $derived(
+		pickedCampaign === null ? allTurfs : allTurfs.filter((t) => t.campaignId === pickedCampaign),
+	);
+
 	const drawable = $derived(mappableTurfs(turfs));
 	/** Admins and moderators may put turf with no doors left back on the map;
 	 *  everyone else never sees it there (`shownOnMap`). */
@@ -278,7 +307,17 @@
 	 *  hold is on it either way. */
 	const clearedCount = $derived(drawable.filter((t) => !shownOnMap(t)).length);
 	const unmappable = $derived(turfs.length - drawable.length);
-	const total = $derived(totalNow ?? data.total ?? 0);
+	/** The latest request's, as for `total`. */
+	const campaignTotals = $derived<CampaignTotals>({
+		...(data.campaignTotals ?? {}),
+		...pagedTotals,
+	});
+	/** The chapter's turf, or the picked campaign's: the same set as `shown`. */
+	const total = $derived(
+		pickedCampaign === null
+			? (totalNow ?? data.total ?? 0)
+			: (campaignTotals[pickedCampaign] ?? turfs.length),
+	);
 	const shown = $derived(turfs.length);
 
 	/** Fold an /api/turfs answer into `paged`. */
@@ -286,6 +325,7 @@
 		turfs: TurfView[];
 		total: number;
 		campaignBadges: CampaignBadges | null;
+		campaignTotals: CampaignTotals | null;
 	}) {
 		// Only reassign when something genuinely new arrived. A fresh object
 		// every time would re-trigger every downstream derived — including
@@ -303,6 +343,7 @@
 			pagedBadges = { ...pagedBadges, ...Object.fromEntries(newBadges) };
 		}
 		totalNow = body.total;
+		if (body.campaignTotals) pagedTotals = { ...pagedTotals, ...body.campaignTotals };
 	}
 
 	/** The chapter and rounded point last asked for by `loadNearMe`, so a
@@ -446,7 +487,7 @@
 		}),
 	);
 
-	const myTurfs = $derived(turfs.filter((t) => t.status === 'held-by-you'));
+	const myTurfs = $derived(allTurfs.filter((t) => t.status === 'held-by-you'));
 
 	async function checkSync(turfId: number): Promise<void> {
 		try {
@@ -479,10 +520,6 @@
 		return () => clearInterval(timer);
 	});
 	const availableCount = $derived(turfs.filter((t) => t.status === 'available').length);
-	// The OLDEST count on the page, not the first row's — see turf-freshness.ts.
-	// The same helper backs the /turfs Slack command, so the two surfaces cannot
-	// describe the same list's age differently.
-	const stalestMinutes = $derived(oldestRefreshMinutes(turfs));
 	/** Turf whose region VAN is re-cutting right now. Counted for the note under
 	 *  the list; individual rows carry their own chip. */
 	const updatingCount = $derived(turfs.filter((t) => t.updating).length);
@@ -592,11 +629,10 @@
 
 	/** An admin's "Hide from volunteers" box. Its own request rather than
 	 *  `act`, which would clear the claim state kept for the turf. */
-	async function setHidden(turf: TurfView, box: HTMLInputElement) {
-		const hidden = box.checked;
+	async function setHidden(turf: TurfView, hidden: boolean) {
+		hideShown[turf.turfId] = hidden;
 		hiding[turf.turfId] = true;
 		error = null;
-		let saved = false;
 		try {
 			const res = await fetch(`/api/turfs/${turf.turfId}`, {
 				method: 'POST',
@@ -604,15 +640,14 @@
 				body: JSON.stringify({ action: hidden ? 'hide' : 'unhide' }),
 			});
 			const body = await res.json().catch(() => ({}));
-			if (res.ok) saved = true;
-			else error = body.error ?? 'Something went wrong. Try again.';
+			if (!res.ok) error = body.error ?? 'Something went wrong. Try again.';
 		} catch {
 			error = "Couldn't reach the server. Check your signal and try again.";
 		} finally {
-			// By hand: `checked` is one-way, and a refusal reloads the same
-			// `turf.hidden`, which Svelte will not write back to the box.
-			if (!saved) box.checked = !hidden;
+			// The box goes back to `turf.hidden` once the reload lands, which
+			// after a refusal is the old value.
 			await invalidateAll().catch(() => {});
+			delete hideShown[turf.turfId];
 			delete hiding[turf.turfId];
 		}
 	}
@@ -808,7 +843,7 @@
 					<div class="card-actions">
 						<div class="action-choice">
 							<label class="synced-check">
-								<input type="checkbox" bind:checked={synced[turf.turfId]} />
+								<Checkbox bind:checked={synced[turf.turfId]} />
 								I synced MiniVAN
 							</label>
 							{#if synced[turf.turfId]}
@@ -923,7 +958,7 @@
 						<!-- Staff only: volunteers have nothing to do on turf with no
 						     doors left, so the map leaves it off for them. -->
 						<label class="hide-check admin-only">
-							<input type="checkbox" bind:checked={showCleared} />
+							<Checkbox bind:checked={showCleared} />
 							Show turf with no doors left ({clearedCount})
 						</label>
 					{/if}
@@ -1017,12 +1052,15 @@
 						<span class="available-count">{availableCount}</span>
 						turf{availableCount === 1 ? '' : 's'} available
 					</h2>
-					{#if turfs.length > 0}
-						<span class="freshness">
-							Doors remaining as of {describeAge(stalestMinutes)}
-							{#if updatingCount > 0}
-								· {updatingCount} updating{/if}
-						</span>
+					{#if campaignOptions.length > 1}
+						<CampaignFilter
+							options={campaignOptions}
+							value={campaignFilter}
+							onchange={(next) => (campaignFilter = next)}
+						/>
+					{/if}
+					{#if updatingCount > 0}
+						<span class="freshness">{updatingCount} updating</span>
 					{/if}
 				</div>
 
@@ -1033,8 +1071,9 @@
 					     halves then come from the same set, so panning cannot make
 					     them disagree. -->
 					<p class="gate-help">
-						Showing {shown} of {total} turfs in this chapter — pan or zoom the map to load turf in another
-						area.
+						Showing {shown} of {total}
+						{pickedCampaign === null ? '' : `${badges[pickedCampaign]} `}turfs in this chapter — pan
+						or zoom the map to load turf in another area.
 					</p>
 				{/if}
 
@@ -1246,11 +1285,12 @@
 										     reads the turf as a volunteer would before changing who
 										     sees it. The API refuses anyone else. -->
 										<label class="hide-check admin-only">
-											<input
-												type="checkbox"
-												checked={turf.hidden === true}
+											<Checkbox
+												bind:checked={
+													() => hideShown[turf.turfId] ?? turf.hidden === true,
+													(next) => void setHidden(turf, next)
+												}
 												disabled={hiding[turf.turfId]}
-												onchange={(e) => setHidden(turf, e.currentTarget)}
 											/>
 											Hide from volunteers
 										</label>
@@ -1261,7 +1301,7 @@
 					{/each}
 				</ul>
 
-				{#if turfs.length === 0}
+				{#if allTurfs.length === 0}
 					<p class="gate-help">
 						No turf is published for this chapter yet. An organizer needs to cut it in VAN and
 						generate its printed lists.

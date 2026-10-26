@@ -667,14 +667,9 @@
 
 	.token-hex {
 		width: 100%;
-		min-width: 0;
 		padding: 4px 6px;
 		font-family: var(--font-mono);
 		font-size: var(--font-size-sm);
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
 	}
 
 	.token-reset,

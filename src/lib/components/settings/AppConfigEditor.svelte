@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
+	import Slider from '$lib/components/ui/Slider.svelte';
 	import { errMessage } from '$lib/err-message.js';
 	import { reRank, DEFAULT_RANKING_ALPHA } from '$lib/growth-ranking.js';
 	import type { LeaderboardPair, LeaderboardResult } from '$lib/server/weekly-growth-report';
@@ -232,9 +234,8 @@
 
 	/** The autosave helper reads `event.target.value`, which on a checkbox is
 	 *  the constant "on" — so hand it the checked state as the string it parses. */
-	function onVirtualEventsToggle(e: Event): void {
-		const checked = (e.currentTarget as HTMLInputElement).checked;
-		virtualEventsSave.oninput({ target: { value: String(checked) } } as unknown as Event);
+	function onVirtualEventsToggle(checked: boolean): void {
+		virtualEventsSave.setRaw(String(checked));
 	}
 
 	const contactSaves = $derived([contactNameSave, contactEmailSave, contactPhoneSave]);
@@ -631,7 +632,7 @@
 		onRetry={virtualEventsSave.status === 'error' ? virtualEventsSave.retry : undefined}
 	>
 		<label class="toggle">
-			<input type="checkbox" checked={virtualEventsSave.value} onchange={onVirtualEventsToggle} />
+			<Checkbox checked={virtualEventsSave.value} onCheckedChange={onVirtualEventsToggle} />
 			<span>Sync virtual events to Mobilize as well as in-person ones</span>
 		</label>
 		<p class="app-config-note">
@@ -840,13 +841,12 @@
 	>
 		<div class="alpha-control">
 			<span class="alpha-end">Biggest gain</span>
-			<input
-				type="range"
-				min="0"
-				max="1"
-				step="0.05"
+			<Slider
+				min={0}
+				max={1}
+				step={0.05}
 				value={alphaSave.value}
-				oninput={alphaSave.oninput}
+				onValueChange={(v) => alphaSave.setRaw(String(v))}
 				aria-label="Growth report ranking alpha"
 			/>
 			<span class="alpha-end">Fastest growth</span>
@@ -871,13 +871,12 @@
 	>
 		<div class="alpha-control">
 			<span class="alpha-end">Slower</span>
-			<input
-				type="range"
+			<Slider
 				min={MIN_TICKER_COLUMNS_PER_SECOND}
 				max={MAX_TICKER_COLUMNS_PER_SECOND}
-				step="1"
+				step={1}
 				value={tickerSpeedSave.value}
-				oninput={tickerSpeedSave.oninput}
+				onValueChange={(v) => tickerSpeedSave.setRaw(String(v))}
 				aria-label="Doors ticker speed in LED columns per second"
 			/>
 			<span class="alpha-end">Faster</span>
@@ -968,15 +967,6 @@
 		color: var(--color-text-muted);
 	}
 
-	.countdown-field input {
-		padding: 6px 8px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		font: inherit;
-		color: var(--color-text);
-		background: var(--color-surface);
-	}
-
 	.countdown-field input[type='text'] {
 		min-width: 220px;
 	}
@@ -988,9 +978,8 @@
 		max-width: 480px;
 	}
 
-	.alpha-control input[type='range'] {
+	.alpha-control :global(.ui-slider) {
 		flex: 1;
-		accent-color: var(--color-gold);
 	}
 
 	.alpha-end {
@@ -1006,14 +995,6 @@
 	.welcome-dm-input {
 		width: 100%;
 		max-width: 560px;
-		padding: 8px 10px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		font: inherit;
-		line-height: 1.5;
-		color: var(--color-text);
-		background: var(--color-surface);
-		resize: vertical;
 	}
 
 	.welcome-dm-warning {
@@ -1086,13 +1067,6 @@
 	.site-name-input {
 		width: 100%;
 		max-width: 340px;
-		padding: 6px 8px;
-		font-family: inherit;
-		font-size: var(--font-size-md);
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
 	}
 
 	.site-name-note {

@@ -75,27 +75,31 @@ describe('selectNearest', () => {
 		});
 	});
 
-	describe('sink', () => {
-		const knocked = new Set([2]);
-		const sink = (row: Locatable) => knocked.has(row.turfId);
+	describe('band', () => {
+		const bands: Record<number, number> = { 1: 0, 2: 1, 3: 2 };
+		const band = (row: Locatable) => bands[row.turfId] ?? 0;
 
-		it('puts sunk turf after the rest, however near', () => {
-			const rows = [turf(1, 'Far', 42.6, -83.2), turf(2, 'Near but knocked', 42.281, -83.741)];
-			const { selected } = selectNearest(rows, { location: HERE, sink });
-			expect(selected.map((t) => t.name)).toEqual(['Far', 'Near but knocked']);
+		it('puts lower bands first, however near the higher ones are', () => {
+			const rows = [
+				turf(3, 'Nearest but taken', 42.2805, -83.7405),
+				turf(2, 'Near but knocked', 42.281, -83.741),
+				turf(1, 'Far', 42.6, -83.2),
+			];
+			const { selected } = selectNearest(rows, { location: HERE, band });
+			expect(selected.map((t) => t.name)).toEqual(['Far', 'Near but knocked', 'Nearest but taken']);
 		});
 
 		it('outranks density', () => {
 			const density = (row: Locatable) => (row.turfId === 2 ? 900 : 50);
 			const rows = [turf(1, 'Sparse', 1, 1), turf(2, 'Dense but knocked', 2, 2)];
-			const { selected } = selectNearest(rows, { density, sink });
+			const { selected } = selectNearest(rows, { density, band });
 			expect(selected.map((t) => t.name)).toEqual(['Sparse', 'Dense but knocked']);
 		});
 
 		it('ranks before the cut, not after it', () => {
-			const rows = [turf(2, 'Alpha', 1, 1), turf(1, 'Bravo', 2, 2)];
-			const { selected } = selectNearest(rows, { sink, limit: 1 });
-			expect(selected.map((t) => t.name)).toEqual(['Bravo']);
+			const rows = [turf(3, 'Alpha', 1, 1), turf(2, 'Bravo', 2, 2), turf(1, 'Charlie', 3, 3)];
+			const { selected } = selectNearest(rows, { band, limit: 1 });
+			expect(selected.map((t) => t.name)).toEqual(['Charlie']);
 		});
 	});
 

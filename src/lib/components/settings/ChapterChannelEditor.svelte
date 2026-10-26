@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { errMessage } from '$lib/err-message.js';
 	import SettingsRow from './SettingsRow.svelte';
@@ -254,10 +255,9 @@
 			{#each filteredChapters as chapter (chapter.id)}
 				<li>
 					<label class="chapter-option">
-						<input
-							type="checkbox"
+						<Checkbox
 							checked={selectedChapterIds.includes(chapter.id)}
-							onchange={() => toggleChapter(chapter.id)}
+							onCheckedChange={() => toggleChapter(chapter.id)}
 						/>
 						<span class="chapter-name">{chapter.label}</span>
 						{#if channelCountByChapter.get(chapter.id)}
@@ -364,13 +364,6 @@
 
 	.chapter-filter {
 		width: 100%;
-		box-sizing: border-box;
-		padding: 6px 10px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-surface);
-		font: inherit;
-		color: inherit;
 	}
 
 	.visually-hidden {

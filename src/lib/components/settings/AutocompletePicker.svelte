@@ -158,7 +158,18 @@
 		align-items: stretch;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
-		background: var(--color-bg-surface);
+		background: var(--color-surface);
+	}
+
+	/* The row is the field, so it takes a text field's hover and focus
+	   (app.css); the input inside it draws neither. */
+	.picker-row:hover {
+		border-color: var(--color-text-muted);
+	}
+
+	.picker-row:focus-within {
+		outline: 2px solid var(--color-border-focus);
+		outline-offset: 1px;
 	}
 
 	:global(.picker-input) {

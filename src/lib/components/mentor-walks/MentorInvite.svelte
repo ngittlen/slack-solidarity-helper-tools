@@ -7,6 +7,7 @@
 	// has not agreed to the current guidelines: an organizer appointed them,
 	// or the guidelines link changed since they agreed.
 
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import './mentor-walks.css';
 
 	interface Props {
@@ -63,7 +64,7 @@
 			</a>
 		</p>
 		<label class="mw-agree">
-			<input type="checkbox" bind:checked={agreed} />
+			<Checkbox bind:checked={agreed} />
 			I've read and agree to the volunteer guidelines
 		</label>
 		<div class="mw-actions">
@@ -87,9 +88,5 @@
 		align-items: flex-start;
 		gap: var(--space-2);
 		font-weight: 600;
-	}
-
-	.mw-agree input {
-		margin-top: 0.3em;
 	}
 </style>

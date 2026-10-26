@@ -203,18 +203,7 @@
 
 	.folder-input {
 		width: 100%;
-		padding: 6px 8px;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: var(--font-size-md);
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-	}
-
-	.folder-input:focus-visible {
-		outline: 2px solid var(--color-border-focus);
-		outline-offset: 1px;
 	}
 
 	.add-chapter {

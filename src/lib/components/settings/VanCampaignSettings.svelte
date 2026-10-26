@@ -6,6 +6,7 @@
 	// Each row autosaves on its own, like the App config rows, through PATCH
 	// /api/settings/van-campaigns/<id>.
 
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import { untrack } from 'svelte';
 	import SettingsRow from './SettingsRow.svelte';
 	import VanSheetTargetsEditor from './VanSheetTargetsEditor.svelte';
@@ -115,10 +116,7 @@
 	/** The autosave helper reads `event.target.value`, which on a checkbox is
 	 *  the constant "on" — so hand it the checked state as the string it parses. */
 	function toggle(save: typeof refreshSave) {
-		return (e: Event): void => {
-			const checked = (e.currentTarget as HTMLInputElement).checked;
-			save.oninput({ target: { value: String(checked) } } as unknown as Event);
-		};
+		return (checked: boolean): void => save.setRaw(String(checked));
 	}
 
 	$effect(() => () => {
@@ -211,7 +209,7 @@
 	onRetry={refreshSave.status === 'error' ? refreshSave.retry : undefined}
 >
 	<label class="toggle">
-		<input type="checkbox" checked={refreshSave.value} onchange={toggle(refreshSave)} />
+		<Checkbox checked={refreshSave.value} onCheckedChange={toggle(refreshSave)} />
 		<span>Let the sync ask VAN to re-cut this campaign's map regions</span>
 	</label>
 	<p class="app-config-note">
@@ -233,7 +231,7 @@
 	onRetry={sheetsSave.status === 'error' ? sheetsSave.retry : undefined}
 >
 	<label class="toggle">
-		<input type="checkbox" checked={sheetsSave.value} onchange={toggle(sheetsSave)} />
+		<Checkbox checked={sheetsSave.value} onCheckedChange={toggle(sheetsSave)} />
 		<span>Record this campaign's checkouts in its Packet Tracker spreadsheets</span>
 	</label>
 	<p class="app-config-note">
@@ -308,16 +306,5 @@
 
 	.text-input {
 		width: min(100%, 24rem);
-		padding: var(--space-2) var(--space-3);
-		font: inherit;
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-	}
-
-	.text-input:focus-visible {
-		outline: 2px solid var(--color-border-focus);
-		outline-offset: 1px;
 	}
 </style>

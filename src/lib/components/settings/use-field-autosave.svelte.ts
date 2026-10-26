@@ -15,6 +15,9 @@ export interface FieldAutosave<T> {
 	readonly error: string | null;
 	/** Bind to `<input oninput={...}>`. Reads `event.target.value`, parses via opts.parse if provided. */
 	oninput: (e: Event) => void;
+	/** The same as `oninput`, from a raw value: for controls that report a
+	 *  value rather than an input event, such as a Select or a Checkbox. */
+	setRaw: (raw: string) => void;
 	/** Manual retry — no-op unless status === 'error'. */
 	retry: () => void;
 	/** Synchronous flush invoked from the module-level beforeunload handler. Editors should rarely call this directly. */
@@ -160,7 +163,10 @@ export function createFieldAutosave<T>(opts: CreateFieldAutosaveOptions<T>): Fie
 
 	function oninput(e: Event): void {
 		const target = e.target as HTMLInputElement | null;
-		const raw = target?.value ?? '';
+		setRaw(target?.value ?? '');
+	}
+
+	function setRaw(raw: string): void {
 		value = parse(raw);
 		clearDismiss();
 		error = null;
@@ -224,6 +230,7 @@ export function createFieldAutosave<T>(opts: CreateFieldAutosaveOptions<T>): Fie
 			return error;
 		},
 		oninput,
+		setRaw,
 		retry,
 		flush,
 		destroy,

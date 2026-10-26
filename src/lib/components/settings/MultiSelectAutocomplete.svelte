@@ -1,4 +1,5 @@
 <script lang="ts" generics="TId extends string | number">
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import { Combobox } from 'bits-ui';
 	import type { PickerItem } from './picker-types.js';
 	import { filterPickerItems } from './picker-logic.js';
@@ -109,14 +110,12 @@
 		{#each selectedChips as chip (chip.id)}
 			<span class="mpicker-chip" class:mpicker-chip-locked={chip.locked}>
 				{#if chipCheckbox}
-					<input
-						type="checkbox"
-						class="mpicker-chip-checkbox"
+					<Checkbox
 						checked={chipCheckbox.isChecked(chip.id)}
 						{disabled}
 						title={chipCheckbox.label(chip.label)}
 						aria-label={chipCheckbox.label(chip.label)}
-						onchange={(e) => chipCheckbox.onToggle(chip.id, e.currentTarget.checked)}
+						onCheckedChange={(checked) => chipCheckbox.onToggle(chip.id, checked)}
 					/>
 				{/if}
 				<span class="mpicker-chip-label">{chip.label}</span>
@@ -194,7 +193,18 @@
 		padding: 4px;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
-		background: var(--color-bg-surface);
+		background: var(--color-surface);
+	}
+
+	/* The row is the field, so it takes a text field's hover and focus
+	   (app.css); the input inside it draws neither. */
+	.mpicker-row:hover:not(.mpicker-disabled) {
+		border-color: var(--color-text-muted);
+	}
+
+	.mpicker-row:focus-within {
+		outline: 2px solid var(--color-border-focus);
+		outline-offset: 1px;
 	}
 
 	.mpicker-disabled {
@@ -210,16 +220,6 @@
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-sm);
 		font-size: 0.9em;
-	}
-
-	.mpicker-chip-checkbox {
-		margin: 0;
-		accent-color: var(--color-gold);
-		cursor: pointer;
-	}
-
-	.mpicker-chip-checkbox:disabled {
-		cursor: not-allowed;
 	}
 
 	.mpicker-chip-remove {

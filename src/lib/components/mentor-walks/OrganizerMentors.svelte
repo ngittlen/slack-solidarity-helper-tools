@@ -2,6 +2,7 @@
 	// Organizer view of mentors (specs/015-mentor-walks, User Story 4, FR-006):
 	// make anyone a mentor, revoke, and reinstate.
 
+	import Select from '$lib/components/ui/Select.svelte';
 	import './mentor-walks.css';
 	import type { OrganizerMentorView, PersonOption } from '$lib/mentor-walks/types.js';
 
@@ -35,12 +36,12 @@
 	>
 		<div class="mw-field">
 			<label for="mw-appoint">Make someone a mentor</label>
-			<select id="mw-appoint" bind:value={pick}>
-				<option value="">Choose a volunteer…</option>
-				{#each candidates as person (person.id)}
-					<option value={person.id}>{person.name}</option>
-				{/each}
-			</select>
+			<Select
+				id="mw-appoint"
+				items={candidates.map((person) => ({ value: person.id, label: person.name }))}
+				bind:value={pick}
+				placeholder="Choose a volunteer…"
+			/>
 		</div>
 		<button type="submit" class="mw-btn mw-btn-primary" disabled={!pick}>Make mentor</button>
 	</form>

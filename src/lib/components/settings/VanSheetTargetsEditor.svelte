@@ -274,17 +274,6 @@
 
 	.field {
 		width: 100%;
-		padding: 6px 8px;
-		font-size: var(--font-size-md);
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-	}
-
-	.field:focus-visible {
-		outline: 2px solid var(--color-border-focus);
-		outline-offset: 1px;
 	}
 
 	.add-button {

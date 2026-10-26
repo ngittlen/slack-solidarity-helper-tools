@@ -562,16 +562,6 @@
 	}
 	input[type='text'] {
 		flex: 1;
-		min-width: 0;
-		font: inherit;
-		color: var(--color-text);
-		background: var(--color-surface-alt);
-		border: 1px solid var(--color-border);
-		border-radius: 10px;
-		padding: 11px 14px;
-	}
-	input[type='text']::placeholder {
-		color: var(--color-text-faint);
 	}
 	button {
 		font: inherit;

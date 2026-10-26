@@ -32,6 +32,8 @@ const LED_FILES = /dashboard\/(LedBoard|DoorTicker|CountdownBanner)\.svelte$/;
  *  (turf-shade.ts) for the continuous doors-left colour. */
 const RUNTIME_LOCALS = new Set([
 	'bits-combobox-anchor-width',
+	'bits-select-anchor-width',
+	'bits-select-content-available-height',
 	'ticker-duration',
 	'ticker-steps',
 	'turf-t',
