@@ -3,6 +3,7 @@ import {
 	geocodeAddress,
 	lookupAddress,
 	geocodeZip,
+	findZip,
 	lookupZipCentroid,
 	normalizeZip,
 	resolveLocation,
@@ -59,12 +60,17 @@ describe('normalizeZip', () => {
 	it('trims whitespace', () => {
 		expect(normalizeZip('  48104 ')).toBe('48104');
 	});
-	it('takes the five-digit half of a ZIP+4', () => {
-		expect(normalizeZip('48104-1234')).toBe('48104');
-	});
+	it.each(['48104-1234', '48104 1234', '481041234'])(
+		'takes the five-digit half of the ZIP+4 %s',
+		(raw) => {
+			expect(normalizeZip(raw)).toBe('48104');
+		},
+	);
 	it.each([
 		['', ''],
 		['too short', '4810'],
+		['a ZIP+4 cut short', '48104123'],
+		['two hyphens', '48104--1234'],
 		['letters', 'ann arbor'],
 		['null', null],
 	])('rejects %s', (_label, raw) => {
@@ -247,6 +253,44 @@ describe('lookupZipCentroid', () => {
 		const fetchFn = vi.fn().mockResolvedValue(res(200, { features: [] }));
 		expect(await lookupZipCentroid(db, '48104', fetchFn as never)).toBeNull();
 		expect(written).toHaveLength(0);
+	});
+});
+
+describe('findZip', () => {
+	beforeEach(() => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+
+	it('answers from the cache, then from TIGERweb, caching what it finds', async () => {
+		const cached = makeDb([{ zip: '48104', lat: 42.26, lng: -83.71 }]);
+		expect(await findZip(cached.db, '48104', vi.fn() as never)).toEqual({
+			kind: 'found',
+			point: { lat: 42.26, lng: -83.71 },
+		});
+		const fresh = makeDb([]);
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
+		expect(await findZip(fresh.db, '48104', fetchFn as never)).toMatchObject({ kind: 'found' });
+		expect(fresh.written).toHaveLength(1);
+	});
+
+	// So the map search can say "try again later" rather than "no such ZIP".
+	it.each([
+		['a non-200', () => Promise.resolve(res(500, ''))],
+		['an ArcGIS error envelope', () => Promise.resolve(res(200, { error: { code: 400 } }))],
+		['a missing features envelope', () => Promise.resolve(res(200, {}))],
+		['a network failure or timeout', () => Promise.reject(new Error('TimeoutError'))],
+	])('calls %s unavailable, and caches nothing', async (_label, impl) => {
+		const { db, written } = makeDb([]);
+		expect(await findZip(db, '48104', impl as never)).toEqual({ kind: 'unavailable' });
+		expect(written).toHaveLength(0);
+	});
+
+	it('calls a ZIP that is not a ZCTA, or not a ZIP at all, not found', async () => {
+		const { db } = makeDb([]);
+		const fetchFn = vi.fn().mockResolvedValue(res(200, { features: [] }));
+		expect(await findZip(db, '00000', fetchFn as never)).toEqual({ kind: 'not-found' });
+		expect(await findZip(db, 'nope', fetchFn as never)).toEqual({ kind: 'not-found' });
+		expect(fetchFn).toHaveBeenCalledTimes(1);
 	});
 });
 

@@ -8,6 +8,7 @@
 	// nothing to drag. Moving the pin is done by changing the address.
 
 	import { createMapView, TILE_ATTRIBUTION, TILE_URL_TEMPLATE, tileUrl } from '$lib/van/tiles.js';
+	import { STREET_ZOOM } from '$lib/van/map-focus.js';
 
 	interface Props {
 		point: { lat: number; lng: number };
@@ -23,13 +24,11 @@
 		label,
 	}: Props = $props();
 
-	/** Street level: close enough to read the names of the streets around it. */
-	const ZOOM = 16;
 	const HEIGHT = 200;
 
 	let width = $state(0);
 	const view = $derived(
-		createMapView({ centre: point, zoom: ZOOM, width: width || 480, height: HEIGHT }),
+		createMapView({ centre: point, zoom: STREET_ZOOM, width: width || 480, height: HEIGHT }),
 	);
 	const pin = $derived(view.project(point));
 

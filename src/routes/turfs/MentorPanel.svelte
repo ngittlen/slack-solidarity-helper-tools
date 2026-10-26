@@ -19,7 +19,7 @@
 		PlaceLookupResult,
 		WalkDraft,
 	} from '$lib/mentor-walks/types.js';
-	import { postMentorAction, SOMETHING_WRONG, type Posted } from './mentor-post.js';
+	import { postPageAction, SOMETHING_WRONG, type Posted } from './post-action.js';
 
 	interface Props {
 		mentor: MentorPanelView;
@@ -63,7 +63,7 @@
 		return [...mentor.chapters, { chapterId: own, name: editing?.chapterName ?? '' }];
 	});
 
-	/** Posts to a form action (mentor-post.ts). A failure's message shows
+	/** Posts to a form action (post-action.ts). A failure's message shows
 	 *  below the panel, unless `quiet`, when the caller shows it, or the walk
 	 *  form's own problems list carries it. */
 	async function post(
@@ -72,7 +72,7 @@
 		{ reload = true, quiet = false } = {},
 	): Promise<Posted> {
 		error = null;
-		const result = await postMentorAction(action, fields, pageQuery, { reload });
+		const result = await postPageAction(action, fields, pageQuery, { reload });
 		if (!result.ok && !quiet && !('mentorProblems' in result.data)) error = result.message;
 		return result;
 	}

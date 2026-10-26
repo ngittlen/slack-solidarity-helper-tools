@@ -13,13 +13,20 @@ import {
 import { loadSettings, loadVanBlockedIds, type Settings } from '$lib/server/settings.js';
 import { liveNoShowDeps } from '$lib/server/mentor-walks/dispatch.js';
 import { chaptersFromChannelMap, turfChapters } from '$lib/chapter-list.js';
-import { lookupZipCentroid, normalizeZip, resolveLocation } from '$lib/server/van/zip-centroid.js';
+import {
+	lookupAddress,
+	findZip,
+	lookupZipCentroid,
+	normalizeZip,
+	resolveLocation,
+} from '$lib/server/van/zip-centroid.js';
 import {
 	loadNearbySummary,
 	loadTurfCentre,
 	type NearbySummary,
 } from '$lib/server/van/nearby-summary.js';
 import { parseCoordinates, type NearbyPlace } from '$lib/van/nearby-summary.js';
+import type { FoundPlace } from '$lib/van/map-focus.js';
 import {
 	loginRedirectPath,
 	sanitizeRedirectTarget,
@@ -104,6 +111,8 @@ export type RateLimitReason = 'chapters' | 'requests';
 
 /** Longest address we will pass to the geocoder. */
 const MAX_QUERY_LENGTH = 200;
+const QUERY_TOO_LONG = 'That address is too long. Try just the street and ZIP code.';
+const LOOKUP_DOWN = "The address lookup isn't working right now. Try again in a few minutes.";
 
 export type PublicNearby = NearbySummary & { place: NearbyPlace };
 
@@ -516,11 +525,16 @@ function chapterNamesOf(settings: Settings): Map<number, string> {
  * (store.ts newPublicId), so there's no counting through them to find walks
  * in other chapters. A failure to return, or null.
  */
-function seatLimit(viewer: { slackUserId: string; isAdmin: boolean }) {
+/** Spend one request from the viewer's turf request budget, shared with the
+ *  page load and /api/turfs. Admins are exempt. */
+function spendTurfBudget(viewer: { slackUserId: string; isAdmin: boolean }) {
 	const now = Date.now();
 	pruneRateLimitStores(now);
-	const budget = recordRequest(turfRequests, viewer.slackUserId, now, { exempt: viewer.isAdmin });
-	if (!budget.allowed) {
+	return recordRequest(turfRequests, viewer.slackUserId, now, { exempt: viewer.isAdmin });
+}
+
+function seatLimit(viewer: { slackUserId: string; isAdmin: boolean }) {
+	if (!spendTurfBudget(viewer).allowed) {
 		return fail(429, { mentorError: 'Too many requests. Slow down and try again shortly.' });
 	}
 	return null;
@@ -646,7 +660,7 @@ export const actions: Actions = {
 			return fail(400, { error: 'Enter an address or ZIP code, or use your location.' });
 		}
 		if (!coords && query.length > MAX_QUERY_LENGTH) {
-			return fail(400, { error: 'That address is too long. Try just the street and ZIP code.' });
+			return fail(400, { error: QUERY_TOO_LONG });
 		}
 
 		const now = Date.now();
@@ -693,6 +707,70 @@ export const actions: Actions = {
 			offeredChapterIds(settings),
 		);
 		return { nearby: { ...summary, place } satisfies PublicNearby };
+	},
+
+	/**
+	 * The map's address search: a street address or ZIP (`q`) in, a point to
+	 * centre on out. Only the point comes back — no turf — so it shows the
+	 * volunteer nothing their own chapter's map doesn't already.
+	 *
+	 * Behind the same gate as the map itself (turfAccess): a volunteer blocked
+	 * from turf gets no map to search. A POST for the same reason as `nearby`:
+	 * a typed street address stays out of URLs, history and access logs.
+	 * Charged to the turf request budget, since a lookup can cost a
+	 * third-party geocode. Results use `find*` keys.
+	 */
+	findAddress: async ({ request, locals }) => {
+		const session = locals.session;
+		if (!session) return fail(401, { findError: 'Sign in to search the map.' });
+		const access = turfAccess(
+			{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+			await loadVanBlockedIds(db),
+			SLACK_SUPERUSER_ID,
+		);
+		if (!access.allowed) return fail(403, { findError: access.message });
+
+		const rawQuery = (await request.formData()).get('q');
+		const query = typeof rawQuery === 'string' ? rawQuery.trim() : '';
+		if (query === '') return fail(400, { findError: 'Enter an address or ZIP code.' });
+		if (query.length > MAX_QUERY_LENGTH) return fail(400, { findError: QUERY_TOO_LONG });
+
+		const budget = spendTurfBudget(session);
+		if (!budget.allowed) {
+			return fail(429, {
+				findError: `That's a lot of lookups. Try again in ${budget.retryAfterSeconds} seconds.`,
+			});
+		}
+
+		// A ZIP centres on the ZIP, from the cache when it can; anything else
+		// goes to the address geocoder. Neither throws, and neither logs or
+		// stores the address — see zip-centroid.ts.
+		const zip = normalizeZip(query);
+		if (zip) {
+			const found = await findZip(db, zip);
+			if (found.kind === 'unavailable') return fail(503, { findError: LOOKUP_DOWN });
+			if (found.kind === 'not-found') {
+				return fail(422, { findError: `We couldn't find ZIP ${zip}. Check it and try again.` });
+			}
+			return {
+				found: { point: found.point, label: `ZIP ${zip}`, kind: 'zip' } satisfies FoundPlace,
+			};
+		}
+		const found = await lookupAddress(query);
+		if (found.kind === 'unavailable') return fail(503, { findError: LOOKUP_DOWN });
+		if (found.kind === 'not-found') {
+			return fail(422, {
+				findError:
+					"We couldn't find that address. Try a street address with the town, or a ZIP code.",
+			});
+		}
+		return {
+			found: {
+				point: found.point,
+				label: found.matchedAddress ?? query,
+				kind: 'address',
+			} satisfies FoundPlace,
+		};
 	},
 
 	// The mentor area (specs/015-mentor-walks, User Stories 1 and 2). Results

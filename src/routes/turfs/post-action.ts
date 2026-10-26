@@ -1,7 +1,7 @@
-// Posting to one of /turfs' `mentor*` form actions from a component, the way
-// MentorPanel and WalkFinder do (specs/015-mentor-walks): the screens take
-// callbacks, and each callback posts here, then reloads the page data so what
-// is shown always comes from the server.
+// Posting to one of /turfs' form actions from a component: the mentor
+// screens (specs/015-mentor-walks), which take callbacks that post here and
+// then reload the page data so what is shown always comes from the server,
+// and the map's address search, which only wants the answer.
 
 import { deserialize } from '$app/forms';
 import { invalidateAll } from '$app/navigation';
@@ -12,14 +12,24 @@ export type Posted =
 	| { ok: true; data: Record<string, unknown> }
 	| { ok: false; data: Record<string, unknown>; message: string };
 
+interface PostOptions {
+	/** Reload the page data on success. */
+	reload?: boolean;
+	/** The key a failure's message is under: each area of the page has its
+	 *  own (`mentorError`, `findError`). */
+	errorKey?: string;
+	/** Abandons the request. Its answer is then SOMETHING_WRONG, which a
+	 *  caller that aborted has stopped listening for. */
+	signal?: AbortSignal;
+}
+
 /** Post `fields` to `?/action`, keeping the page's query so a reload lands
- *  back on the same chapter. On success the page data reloads, unless
- *  `reload` is false. Never throws. */
-export async function postMentorAction(
+ *  back on the same chapter. Never throws. */
+export async function postPageAction(
 	action: string,
 	fields: Record<string, string | string[]>,
 	pageQuery: string,
-	{ reload = true } = {},
+	{ reload = true, errorKey = 'mentorError', signal }: PostOptions = {},
 ): Promise<Posted> {
 	const body = new FormData();
 	for (const [key, value] of Object.entries(fields)) {
@@ -30,6 +40,7 @@ export async function postMentorAction(
 			method: 'POST',
 			body,
 			headers: { 'x-sveltekit-action': 'true' },
+			signal,
 		});
 		const result = deserialize(await res.text());
 		if (result.type === 'success') {
@@ -38,7 +49,7 @@ export async function postMentorAction(
 		}
 		if (result.type === 'failure') {
 			const data = result.data ?? {};
-			const message = typeof data.mentorError === 'string' ? data.mentorError : SOMETHING_WRONG;
+			const message = typeof data[errorKey] === 'string' ? data[errorKey] : SOMETHING_WRONG;
 			return { ok: false, data, message };
 		}
 	} catch {

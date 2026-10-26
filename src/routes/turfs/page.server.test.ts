@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { actions, load } from './+page.server.js';
-import { PUBLIC_LOOKUPS_PER_MINUTE } from '$lib/van/request-budget.js';
+import { MAX_REQUESTS, PUBLIC_LOOKUPS_PER_MINUTE } from '$lib/van/request-budget.js';
 import { TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
 
 const mockBlockedIds = vi.hoisted(() => vi.fn());
@@ -8,6 +8,8 @@ const mockSettings = vi.hoisted(() => vi.fn());
 const mockSelect = vi.hoisted(() => vi.fn());
 const mockZipLookup = vi.hoisted(() => vi.fn());
 const mockResolveLocation = vi.hoisted(() => vi.fn());
+const mockLookupAddress = vi.hoisted(() => vi.fn());
+const mockFindZip = vi.hoisted(() => vi.fn());
 const mockNearby = vi.hoisted(() => vi.fn());
 const mockTurfCentre = vi.hoisted(() => vi.fn());
 const mockLoadNotices = vi.hoisted(() => vi.fn());
@@ -73,6 +75,8 @@ vi.mock('$lib/server/van/zip-centroid.js', async (importOriginal) => ({
 		.normalizeZip,
 	lookupZipCentroid: mockZipLookup,
 	resolveLocation: mockResolveLocation,
+	lookupAddress: mockLookupAddress,
+	findZip: mockFindZip,
 }));
 // The query has its own tests on real SQLite (nearby-summary.test.ts).
 vi.mock('$lib/server/van/nearby-summary.js', () => ({
@@ -1166,6 +1170,106 @@ describe('/turfs nearby action', () => {
 
 		address = '203.0.113.200';
 		expect(await actions.nearby(post({ q: '48104' }))).toHaveProperty('nearby');
+	});
+});
+
+describe('/turfs findAddress action', () => {
+	// The turf request budget is per user and process-wide, so each test signs
+	// in as its own volunteer.
+	let user = 0;
+	let session: { slackUserId: string; slackUserName: string; isAdmin: boolean } | null;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		session = { ...VOLUNTEER, slackUserId: `U_FIND_${++user}` };
+		mockBlockedIds.mockResolvedValue(new Set<string>());
+		mockFindZip.mockResolvedValue({ kind: 'found', point: { lat: 42.2808, lng: -83.743 } });
+		mockLookupAddress.mockResolvedValue({
+			kind: 'found',
+			point: { lat: 42.2412, lng: -83.6129 },
+			zip: '48197',
+			matchedAddress: '229 W MICHIGAN AVE, YPSILANTI, MI, 48197',
+		});
+	});
+
+	function post(q: string) {
+		const body = new FormData();
+		body.set('q', q);
+		return {
+			locals: { session },
+			request: new Request('https://app.example/turfs?/findAddress', { method: 'POST', body }),
+		} as never;
+	}
+
+	const geocodes = () => mockFindZip.mock.calls.length + mockLookupAddress.mock.calls.length;
+
+	it('finds a street address and says what it matched', async () => {
+		expect(await actions.findAddress(post('229 w michigan ypsilanti'))).toEqual({
+			found: {
+				point: { lat: 42.2412, lng: -83.6129 },
+				label: '229 W MICHIGAN AVE, YPSILANTI, MI, 48197',
+				kind: 'address',
+			},
+		});
+		expect(mockFindZip).not.toHaveBeenCalled();
+	});
+
+	it.each(['48104', ' 48104 ', '48104-1234', '481041234', '48104 1234'])(
+		'centres the ZIP %j on its ZCTA without the address geocoder',
+		async (q) => {
+			expect(await actions.findAddress(post(q))).toEqual({
+				found: { point: { lat: 42.2808, lng: -83.743 }, label: 'ZIP 48104', kind: 'zip' },
+			});
+			expect(mockFindZip).toHaveBeenCalledWith(expect.anything(), '48104');
+			expect(mockLookupAddress).not.toHaveBeenCalled();
+		},
+	);
+
+	it('tells an unknown address or ZIP apart from the lookup being down', async () => {
+		mockLookupAddress.mockResolvedValueOnce({ kind: 'not-found' });
+		expect(await actions.findAddress(post('nowhere at all'))).toMatchObject({ status: 422 });
+		mockLookupAddress.mockResolvedValueOnce({ kind: 'unavailable' });
+		expect(await actions.findAddress(post('1 Main St, Flint MI'))).toMatchObject({ status: 503 });
+		mockFindZip.mockResolvedValueOnce({ kind: 'not-found' });
+		expect(await actions.findAddress(post('00000'))).toMatchObject({ status: 422 });
+		mockFindZip.mockResolvedValueOnce({ kind: 'unavailable' });
+		expect(await actions.findAddress(post('48104'))).toMatchObject({ status: 503 });
+	});
+
+	it('refuses a signed-out visitor, an empty query and an overlong one before geocoding', async () => {
+		expect(await actions.findAddress(post('   '))).toMatchObject({ status: 400 });
+		expect(await actions.findAddress(post('x'.repeat(201)))).toMatchObject({ status: 400 });
+		session = null;
+		expect(await actions.findAddress(post('48104'))).toMatchObject({ status: 401 });
+		expect(geocodes()).toBe(0);
+	});
+
+	// The map itself is behind turfAccess, so its search is too.
+	it('refuses a volunteer blocked from turf before geocoding', async () => {
+		mockBlockedIds.mockResolvedValue(new Set([session!.slackUserId]));
+		expect(await actions.findAddress(post('48104'))).toMatchObject({ status: 403 });
+		expect(geocodes()).toBe(0);
+	});
+
+	it('spends the shared turf request budget, and a refused lookup geocodes nothing', async () => {
+		for (let i = 0; i < MAX_REQUESTS; i++) {
+			expect(await actions.findAddress(post('48104'))).toHaveProperty('found');
+		}
+		expect(await actions.findAddress(post('48104'))).toMatchObject({ status: 429 });
+		expect(await actions.findAddress(post('1 Main St, Flint MI'))).toMatchObject({ status: 429 });
+		expect(geocodes()).toBe(MAX_REQUESTS);
+
+		// The same log the page load spends from: one more turf request is
+		// refused too.
+		const page = await load(event(session, 'chapter=71'));
+		expect(page).toMatchObject({ rateLimited: expect.any(Number) });
+	});
+
+	it('never refuses an admin', async () => {
+		session = { ...session!, isAdmin: true };
+		for (let i = 0; i <= MAX_REQUESTS; i++) {
+			expect(await actions.findAddress(post('48104'))).toHaveProperty('found');
+		}
 	});
 });
 
