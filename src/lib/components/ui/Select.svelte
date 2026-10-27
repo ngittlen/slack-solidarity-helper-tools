@@ -61,6 +61,11 @@
 
 	let trigger = $state<HTMLButtonElement | null>(null);
 
+	/** Where the open list is drawn: inside the modal <dialog> the select sits
+	 *  in, if any. A modal dialog is in the top layer and makes the rest of the
+	 *  page inert, so a list drawn on <body> opens behind it, out of reach. */
+	const portalTo = $derived(trigger?.closest('dialog') ?? 'body');
+
 	const current = $derived(value ?? '');
 	const selectedLabel = $derived(items.find((item) => item.value === current)?.label ?? null);
 
@@ -110,7 +115,7 @@
 			<path d="M4 6l4 4 4-4" />
 		</svg>
 	</Select.Trigger>
-	<Select.Portal>
+	<Select.Portal to={portalTo}>
 		<Select.Content class="ui-select-content" sideOffset={4}>
 			<Select.Viewport class="ui-select-viewport">
 				{#each items as item (item.value)}
