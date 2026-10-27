@@ -1301,6 +1301,13 @@ export const vanTurfCheckouts = sqliteTable(
 			.on(table.turfId)
 			.where(sql`${table.releasedAt} IS NULL AND ${table.completedAt} IS NULL`),
 		index('van_turf_checkouts_holder').on(table.slackUserId),
+		// One per stamp, for the activity history: each page reads the newest
+		// rows by each stamp in turn (activity-store.ts loadActivityRows), and
+		// an index lets that stop after a page's worth instead of sorting every
+		// row in the period.
+		index('van_turf_checkouts_claimed_at').on(table.claimedAt),
+		index('van_turf_checkouts_released_at').on(table.releasedAt),
+		index('van_turf_checkouts_completed_at').on(table.completedAt),
 	],
 );
 

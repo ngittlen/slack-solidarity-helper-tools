@@ -32,6 +32,11 @@ main {
 	min-width: 180px;
 }
 
+.filter-search {
+	flex: 1 1 240px;
+	max-width: 360px;
+}
+
 /* --- Summary counts ------------------------------------------------------- */
 
 .summary {
@@ -214,6 +219,16 @@ tr:hover td {
 
 .cap-note {
 	font-size: var(--font-size-sm);
+}
+
+.retry {
+	padding: 0;
+	font: inherit;
+	color: var(--color-action);
+	background: none;
+	border: none;
+	text-decoration: underline;
+	cursor: pointer;
 }
 
 @media (max-width: 700px) {

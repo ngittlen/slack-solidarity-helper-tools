@@ -210,6 +210,24 @@ main {
 	overflow-x: auto;
 }
 
+/* A long table scrolls inside its own box, no taller than most of the screen,
+   so one busy table does not push the rest of the board out of reach. The
+   header stays put while its rows scroll under it. */
+.table-wrap.scrolls {
+	max-height: 75vh;
+	max-height: 75dvh;
+	overflow-y: auto;
+}
+
+.table-wrap.scrolls thead th {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	background: var(--color-bg);
+	/* The thead's own border does not travel with a sticky cell. */
+	box-shadow: inset 0 -1px 0 var(--color-border);
+}
+
 table {
 	width: 100%;
 	border-collapse: collapse;

@@ -2,7 +2,10 @@
 	import Select from '$lib/components/ui/Select.svelte';
 	import './activity.css';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
+	import LoadMore from '$lib/components/ui/LoadMore.svelte';
+	import type { ActivityPage } from './activity-page.js';
 	import {
 		ACTIVITY_KINDS,
 		activityLabel,
@@ -12,7 +15,73 @@
 
 	const { data } = $props();
 
-	const days = $derived(groupByDay(data.events));
+	/** Older pages fetched as the organizer scrolls, under the load they extend.
+	 *  `data.now` is new on every load, so a stale `loadedFor` reads as nothing
+	 *  fetched yet — a new filter starts from its own first page. Raw, because
+	 *  events are never changed after they arrive: each page replaces the
+	 *  object, and wrapping every event in a proxy would cost on each one. */
+	let older = $state.raw<(ActivityPage & { loadedFor: string }) | null>(null);
+	const extended = $derived(older?.loadedFor === data.now ? older : null);
+	const events = $derived(extended ? [...data.events, ...extended.events] : data.events);
+	const dayLabels = $derived(
+		extended ? { ...data.dayLabels, ...extended.dayLabels } : data.dayLabels,
+	);
+	const hasMore = $derived(extended ? extended.hasMore : data.hasMore);
+	/** The load whose older page failed to arrive, so a new filter does not
+	 *  inherit the retry. */
+	let failedFor = $state<string | null>(null);
+	const loadFailed = $derived(failedFor === data.now);
+
+	const days = $derived(groupByDay(events));
+
+	/** Whether an older page is on its way. Scrolling and the retry link both
+	 *  ask, and two fetches from one cursor would bring the same page twice. */
+	let loading = false;
+
+	/** The page of events older than the oldest one on screen. Dropped if the
+	 *  filters changed while it was in flight, so a stale page never lands in
+	 *  the new list. */
+	async function loadOlder() {
+		if (loading) return;
+		loading = true;
+		try {
+			await fetchOlder();
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function fetchOlder() {
+		const loadedFor = data.now;
+		const oldest = events.at(-1);
+		if (!oldest) return;
+		const params = new URLSearchParams([
+			...page.url.searchParams,
+			['before', oldest.at],
+			['after', oldest.id],
+			['now', data.now],
+		]);
+		failedFor = null;
+		let next: ActivityPage;
+		try {
+			const res = await fetch(`${resolve('/turfs/activity/more')}?${params}`);
+			if (!res.ok) throw new Error(`status ${res.status}`);
+			next = (await res.json()) as ActivityPage;
+		} catch {
+			if (data.now === loadedFor) failedFor = loadedFor;
+			return;
+		}
+		if (data.now !== loadedFor) return;
+		// The cursor never hands back an event already shown, so the page is
+		// appended as it is. A page with nothing in it would be asked for again,
+		// forever, so it ends the list whatever `hasMore` says.
+		older = {
+			loadedFor,
+			events: [...(extended?.events ?? []), ...next.events],
+			dayLabels: { ...extended?.dayLabels, ...next.dayLabels },
+			hasMore: next.hasMore && next.events.length > 0,
+		};
+	}
 
 	// Zero-count kinds are dropped rather than rendered as "0 expired" — a row of
 	// zeroes reads as a problem, and the counts are a summary, not a schema.
@@ -28,6 +97,16 @@
 		PERIOD_OPTIONS.find((o) => o.value === data.period)?.label ?? 'this period',
 	);
 
+	/** Submits the filters a moment after typing stops, so the search runs
+	 *  without an Enter but not on every keystroke. */
+	const SEARCH_DELAY_MS = 400;
+	let searchTimer: ReturnType<typeof setTimeout> | undefined;
+	function searchSoon(event: Event & { currentTarget: HTMLInputElement }) {
+		const form = event.currentTarget.form;
+		clearTimeout(searchTimer);
+		searchTimer = setTimeout(() => form?.requestSubmit(), SEARCH_DELAY_MS);
+	}
+
 	// No `ago()` here, and no clock of any kind: each event arrives with its own
 	// `agoLabel` from the load function. This file used to compute it from
 	// `Date.now()` during render, which stamped the server's clock into SSR and
@@ -36,11 +115,33 @@
 </script>
 
 <main>
-	<!-- One GET form for both facets, so changing either keeps the other. Two
+	<!-- One GET form for every filter, so changing one keeps the others. Two
 	     separate forms, or a link per chapter, would silently drop whichever
-	     filter was not being changed. Each select submits it on change; there
-	     is no Show button, so the filters need JavaScript. -->
-	<form class="filters" method="GET" action={resolve('/turfs/activity')}>
+	     filter was not being changed. Each select submits it on change, and the
+	     search box on Enter or a pause in typing. Focus stays in the box across
+	     the navigation, and the URL is replaced rather than pushed, so typing
+	     does not leave a history entry per word. -->
+	<form
+		class="filters"
+		method="GET"
+		action={resolve('/turfs/activity')}
+		data-sveltekit-keepfocus
+		data-sveltekit-replacestate
+	>
+		<div class="filter filter-search">
+			<label for="q">Search</label>
+			<input
+				id="q"
+				name="q"
+				type="search"
+				class="search"
+				placeholder="Turf, volunteer or chapter"
+				autocomplete="off"
+				value={data.search}
+				oninput={searchSoon}
+			/>
+		</div>
+
 		<div class="filter">
 			<label for="chapter">Chapter</label>
 			<Select
@@ -103,7 +204,7 @@
 		</ul>
 	{/if}
 
-	{#if data.events.length === 0}
+	{#if events.length === 0}
 		<!-- Two different nothings. With no VAN key the catalog is empty, which is
 		     the state anyone actually hits today, and reading it as "a quiet week"
 		     would send an organizer looking for volunteers instead of a key. -->
@@ -116,13 +217,15 @@
 			<p class="empty">
 				No turf activity in {periodLabel.toLowerCase()}{data.chapter
 					? ` for ${data.chapter.name}`
-					: ''}{data.campaign ? ` in ${data.campaign.name}` : ''}. Try a longer period.
+					: ''}{data.campaign ? ` in ${data.campaign.name}` : ''}{data.search
+					? ` matching “${data.search}”`
+					: ''}. {data.search ? 'Try another search or a longer period.' : 'Try a longer period.'}
 			</p>
 		{/if}
 	{:else}
 		{#each days as day (day.dayKey)}
 			<section class="day">
-				<h2 class="day-heading">{data.dayLabels[day.dayKey] ?? day.dayKey}</h2>
+				<h2 class="day-heading">{dayLabels[day.dayKey] ?? day.dayKey}</h2>
 				<div class="table-wrap">
 					<table>
 						<thead>
@@ -174,12 +277,21 @@
 			</section>
 		{/each}
 
-		{#if data.total > data.shown}
+		{#if loadFailed}
+			<p class="cap-note">
+				Couldn't load older events.
+				<button type="button" class="retry" onclick={loadOlder}>Try again</button>
+			</p>
+		{:else}
+			<LoadMore onnear={loadOlder} disabled={!hasMore} />
+		{/if}
+
+		{#if hasMore}
 			<!-- "N of M", never "M more": both halves then come from the same set,
 			     so narrowing the period cannot make them disagree. -->
 			<p class="cap-note">
-				Showing the most recent {data.shown.toLocaleString('en-US')} of
-				{data.total.toLocaleString('en-US')} events — narrow the period or pick a chapter to see the rest.
+				Showing the most recent {events.length.toLocaleString('en-US')} of
+				{data.total.toLocaleString('en-US')} events.
 			</p>
 		{/if}
 	{/if}

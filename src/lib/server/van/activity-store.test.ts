@@ -135,8 +135,8 @@ describe('loadActivityRows', () => {
 	});
 
 	describe('ordering', () => {
-		// The reason for coalesce rather than SQLite's max(): max() returns NULL
-		// if any argument is NULL, and an active claim has no terminal stamp — so
+		// Each stamp is coalesced before SQLite's max(), which returns NULL if any
+		// argument is NULL — and an active claim has no terminal stamp, so a bare
 		// max() would sort every live claim to one end regardless of its age.
 		it('orders by each row’s newest stamp, not by claim time', async () => {
 			// Distinct routes: only one claim per route may be active at a time.
@@ -168,6 +168,23 @@ describe('loadActivityRows', () => {
 			await checkout({ claimed_at: '2026-08-24T12:00:00.000Z' });
 			const rows = await loadActivityRows(db, allChapters);
 			expect(rows.map((r) => r.checkoutId)).toEqual([1, 2]);
+		});
+
+		// A later page's range ends at a cursor. A row claimed before it and
+		// completed after it can only show its claim on that page, so that is
+		// where it sorts — not at its completion, above rows really newer.
+		it('sorts by the newest stamp below the range end', async () => {
+			await checkout({
+				turf_id: 100,
+				claimed_at: '2026-08-24T09:00:00.000Z',
+				completed_at: '2026-08-24T17:00:00.000Z',
+			});
+			await checkout({ turf_id: 200, claimed_at: '2026-08-24T11:00:00.000Z' });
+			const rows = await loadActivityRows(db, {
+				chapterId: null,
+				range: { start: WEEK.start, end: '2026-08-24T12:00:00.000Z' },
+			});
+			expect(rows.map((r) => r.checkoutId)).toEqual([2, 1]);
 		});
 	});
 
@@ -201,6 +218,59 @@ describe('loadActivityRows', () => {
 		expect(rows).toHaveLength(2);
 		// The newest two, not an arbitrary two.
 		expect(rows.map((r) => r.checkoutId)).toEqual([5, 4]);
+	});
+});
+
+describe('search', () => {
+	beforeEach(async () => {
+		await checkout({ turf_id: 100, slack_user_name: 'Dana' });
+		await checkout({ turf_id: 200, slack_user_name: 'Alex' });
+	});
+
+	it.each([
+		['the turf name', 'turf 02', [2]],
+		['the region', 'detroit', [2]],
+		['the chapter', 'washtenaw', [1]],
+		['the volunteer', 'DANA', [1]],
+		['nothing', 'zzz', []],
+		['an empty search', '  ', [2, 1]],
+	])('matches %s', async (_label, search, ids) => {
+		const rows = await loadActivityRows(db, { ...allChapters, search });
+		expect(rows.map((r) => r.checkoutId)).toEqual(ids);
+	});
+
+	// LIKE wildcards in what was typed match themselves, not anything.
+	it('treats % and _ literally', async () => {
+		expect(await loadActivityRows(db, { ...allChapters, search: '%' })).toEqual([]);
+		expect(await loadActivityRows(db, { ...allChapters, search: '_' })).toEqual([]);
+	});
+
+	// The summary above the list must describe the same rows as the list.
+	it('narrows the counts too', async () => {
+		const counts = await loadActivityCounts(db, { ...allChapters, search: 'dana' });
+		expect(totalEvents(counts)).toBe(1);
+	});
+});
+
+// Each stamp is read on its own and the three merged, so the limit has to hold
+// across the merge: the newest rows overall, not the newest by any one stamp.
+describe('merging the per-stamp reads', () => {
+	it('keeps the newest rows overall when each stamp has its own newest', async () => {
+		await checkout({
+			turf_id: 100,
+			claimed_at: '2026-08-24T01:00:00.000Z',
+			completed_at: '2026-08-24T17:00:00.000Z',
+		});
+		await checkout({
+			turf_id: 200,
+			claimed_at: '2026-08-24T02:00:00.000Z',
+			released_at: '2026-08-24T16:00:00.000Z',
+			release_reason: 'volunteer',
+		});
+		await checkout({ turf_id: 300, claimed_at: '2026-08-24T15:00:00.000Z' });
+		await checkout({ turf_id: 400, claimed_at: '2026-08-24T14:00:00.000Z' });
+		const rows = await loadActivityRows(db, { ...allChapters, limit: 3 });
+		expect(rows.map((r) => r.checkoutId)).toEqual([1, 2, 3]);
 	});
 });
 

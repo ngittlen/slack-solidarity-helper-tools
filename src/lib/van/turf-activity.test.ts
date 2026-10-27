@@ -5,7 +5,7 @@ import {
 	ACTIVITY_KINDS,
 	DEFAULT_PERIOD,
 	emptyCounts,
-	EVENT_CAP,
+	EVENTS_PER_PAGE,
 	groupByDay,
 	parsePeriod,
 	PERIOD_OPTIONS,
@@ -289,9 +289,9 @@ describe('groupByDay', () => {
 	});
 });
 
-describe('EVENT_CAP', () => {
-	it('is a sane page budget', () => {
-		expect(EVENT_CAP).toBeGreaterThan(0);
-		expect(Number.isSafeInteger(EVENT_CAP)).toBe(true);
+describe('EVENTS_PER_PAGE', () => {
+	it('is a sane page size', () => {
+		expect(EVENTS_PER_PAGE).toBeGreaterThan(0);
+		expect(Number.isSafeInteger(EVENTS_PER_PAGE)).toBe(true);
 	});
 });
