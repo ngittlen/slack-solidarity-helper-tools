@@ -8,6 +8,8 @@ import {
 	getSolidarityUserLists,
 	getSolidarityMembers,
 	getSolidarityChapterMembers,
+	getSolidarityEventRecords,
+	getSolidarityEvents,
 	_resetAutocompleteCachesForTests,
 } from './autocomplete-sources.js';
 import { _resetWalkLockForTests } from './solidarity-walk-lock.js';
@@ -848,5 +850,44 @@ describe('getSolidarityChapterMembers', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(first.items).toEqual([{ id: 1, email: 'u1@example.org' }]);
 		expect(second.items).toEqual([{ id: 2, email: 'u2@example.org' }]);
+	});
+});
+
+describe('getSolidarityEventRecords', () => {
+	const SWR = { staleWhileRevalidate: true } as const;
+	const rawEvent = (id: number) => ({ id, title: `Event ${id}` });
+
+	it('walks /v1/events once for both the records and the event names', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(chaptersPage([rawEvent(1), rawEvent(2)]));
+		vi.stubGlobal('fetch', fetchMock);
+
+		const records = await getSolidarityEventRecords('tok');
+		const names = await getSolidarityEvents('tok');
+
+		expect(records.items).toHaveLength(2);
+		expect(names.items.map((e) => e.name)).toEqual(['Event 1', 'Event 2']);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('waits a minute after a failed background refresh before trying again', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-10-26T08:00:00Z').getTime());
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getSolidarityEventRecords('tok', SWR);
+		await vi.runAllTimersAsync();
+		const calls = fetchMock.mock.calls.length;
+
+		const during = await getSolidarityEventRecords('tok', SWR);
+		expect(during).toMatchObject({ items: [], refreshing: false });
+		expect(fetchMock).toHaveBeenCalledTimes(calls);
+
+		vi.advanceTimersByTime(61 * 1000);
+		fetchMock.mockResolvedValue(chaptersPage([rawEvent(1)]));
+		await getSolidarityEventRecords('tok', SWR);
+		await vi.runAllTimersAsync();
+		expect((await getSolidarityEventRecords('tok', SWR)).items).toHaveLength(1);
 	});
 });

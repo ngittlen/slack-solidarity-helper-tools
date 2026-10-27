@@ -222,6 +222,8 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			// Mentor walks ship dark, and without guidelines nobody can sign up.
 			mentorWalksVisibility: 'off',
 			volunteerGuidelinesUrl: '',
+			// No tag, no canvass events on /turfs.
+			canvassEventTag: '',
 		});
 
 		// Restore the module-level mock for subsequent tests.
@@ -528,6 +530,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'publicJoinUrl',
 				'mentorWalksVisibility',
 				'volunteerGuidelinesUrl',
+				'canvassEventTag',
 			].sort(),
 		);
 	});

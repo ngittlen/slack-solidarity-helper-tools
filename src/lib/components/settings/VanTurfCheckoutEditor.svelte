@@ -42,6 +42,7 @@
 		/** specs/015-mentor-walks, FR-040 and FR-036. */
 		mentorWalksVisibility: MentorWalksVisibility;
 		volunteerGuidelinesUrl: string;
+		canvassEventTag: string;
 	}
 
 	let {
@@ -50,6 +51,7 @@
 		vanAssignmentTtlHours,
 		mentorWalksVisibility,
 		volunteerGuidelinesUrl,
+		canvassEventTag,
 	}: Props = $props();
 
 	async function postAppConfig(patch: Record<string, unknown>): Promise<void> {
@@ -97,12 +99,20 @@
 		debounceMs: 0,
 	});
 
+	// Blank keeps canvass events off the map, so clearing the field is the off
+	// switch.
+	const canvassTagSave = createFieldAutosave<string>({
+		initial: canvassEventTag,
+		save: (value) => postAppConfig({ canvassEventTag: value }),
+	});
+
 	$effect(() => () => {
 		ttlSave.destroy();
 		capSave.destroy();
 		vanTtlSave.destroy();
 		visibilitySave.destroy();
 		guidelinesSave.destroy();
+		canvassTagSave.destroy();
 	});
 
 	/** Hours read as days once they stop being a number of hours anyone counts.
@@ -237,6 +247,29 @@
 	<p class="app-config-note">
 		Mentors agree to these before hosting a walk, and are asked again if the link changes. While
 		it's empty nobody can become a mentor, though walks already posted carry on.
+	</p>
+</SettingsRow>
+
+<SettingsRow
+	label="Canvass event tag"
+	status={canvassTagSave.status}
+	error={canvassTagSave.error}
+	onRetry={canvassTagSave.status === 'error' ? canvassTagSave.retry : undefined}
+>
+	<input
+		class="turf-url"
+		type="text"
+		maxlength="100"
+		placeholder="No canvass events on the map"
+		value={canvassTagSave.value}
+		oninput={canvassTagSave.oninput}
+		aria-label="Canvass event tag"
+	/>
+	<p class="app-config-note">
+		In-person Solidarity events with this tag show on the turf map of the chapter they belong to,
+		for the week ahead, beside the mentor walks, with a link to RSVP on the event's page. An event
+		is left off if it has no event page, hides its address until RSVP, or has no location on the
+		map. Capitals and spaces at the ends don't matter. Leave blank to show none.
 	</p>
 </SettingsRow>
 

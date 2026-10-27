@@ -12,6 +12,9 @@ import {
 } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds, type Settings } from '$lib/server/settings.js';
 import { liveNoShowDeps } from '$lib/server/mentor-walks/dispatch.js';
+import { loadCanvassCountNear, loadCanvassEvents } from '$lib/server/canvass-events.js';
+import { countWalksNear } from '$lib/server/mentor-walks/seats.js';
+import type { CanvassEventCard } from '$lib/canvass-events/types.js';
 import { chaptersFromChannelMap, turfChapters } from '$lib/chapter-list.js';
 import {
 	lookupAddress,
@@ -25,7 +28,12 @@ import {
 	loadTurfCentre,
 	type NearbySummary,
 } from '$lib/server/van/nearby-summary.js';
-import { parseCoordinates, type NearbyPlace } from '$lib/van/nearby-summary.js';
+import {
+	cappedCount,
+	NEARBY_RADIUS_MILES,
+	parseCoordinates,
+	type NearbyPlace,
+} from '$lib/van/nearby-summary.js';
 import type { FoundPlace } from '$lib/van/map-focus.js';
 import {
 	loginRedirectPath,
@@ -114,7 +122,16 @@ const MAX_QUERY_LENGTH = 200;
 const QUERY_TOO_LONG = 'That address is too long. Try just the street and ZIP code.';
 const LOOKUP_DOWN = "The address lookup isn't working right now. Try again in a few minutes.";
 
-export type PublicNearby = NearbySummary & { place: NearbyPlace };
+export type PublicNearby = NearbySummary & {
+	place: NearbyPlace;
+	/** Mentor walks a visitor could join this week within NEARBY_RADIUS_MILES,
+	 *  capped (cappedCount). Null when walks aren't open to everyone, so the
+	 *  teaser doesn't advertise what signing in wouldn't show. */
+	mentorWalks: number | null;
+	/** Canvass sessions this week within NEARBY_RADIUS_MILES, capped. Null
+	 *  when no canvass tag is set. */
+	canvasses: number | null;
+};
 
 function tileSource() {
 	return {
@@ -236,6 +253,7 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 			mentor: null as MentorPanelView | null,
 			mentorDebug: null as MentorDebugView | null,
 			walkFinder: null as WalkFinderView | null,
+			canvassEvents: [] as CanvassEventCard[],
 		};
 	}
 
@@ -319,6 +337,9 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 		mentor,
 		mentorDebug,
 		walkFinder,
+		// Only once a chapter has passed the rate limits below: like the walk
+		// cards, they say where the chapter is canvassing.
+		canvassEvents: [] as CanvassEventCard[],
 	};
 
 	if (!chapter) return empty;
@@ -392,18 +413,25 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 	// says: it carries their MiniVAN list number, and a volunteer who claimed
 	// turf on the far side of the chapter would otherwise open the page to no
 	// card at all. Both are loadChapterTurfs' `includeHeldByViewer`.
-	const { turfs, total, campaignBadges, campaignTotals } = await loadChapterTurfs(db, {
-		chapterId: chapter.chapterId,
-		viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
-		location,
-		sort,
-		includeHeldByViewer: true,
-		// So `claimable` and the at-the-limit message reflect what the claim
-		// route will actually enforce — the map and the button must not
-		// disagree with the thing they lead to.
-		claimOptions: options,
-		now: new Date(now),
-	});
+	const [{ turfs, total, campaignBadges, campaignTotals }, canvassEvents] = await Promise.all([
+		loadChapterTurfs(db, {
+			chapterId: chapter.chapterId,
+			viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+			location,
+			sort,
+			includeHeldByViewer: true,
+			// So `claimable` and the at-the-limit message reflect what the claim
+			// route will actually enforce — the map and the button must not
+			// disagree with the thing they lead to.
+			claimOptions: options,
+			now: new Date(now),
+		}),
+		loadCanvassEvents({
+			tag: settings.canvassEventTag,
+			chapterId: chapter.chapterId,
+			now: new Date(now),
+		}),
+	]);
 
 	return {
 		mode: 'member' as const,
@@ -442,6 +470,7 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 		mentor,
 		mentorDebug,
 		walkFinder,
+		canvassEvents,
 	};
 };
 
@@ -518,13 +547,6 @@ function chapterNamesOf(settings: Settings): Map<number, string> {
 	);
 }
 
-/**
- * The turf request budget, for taking or giving up a seat: each one messages
- * the mentor, and a joined card shows the mentor's number, so they spend the
- * same per-user budget as the page and the turf API. Walk ids are random
- * (store.ts newPublicId), so there's no counting through them to find walks
- * in other chapters. A failure to return, or null.
- */
 /** Spend one request from the viewer's turf request budget, shared with the
  *  page load and /api/turfs. Admins are exempt. */
 function spendTurfBudget(viewer: { slackUserId: string; isAdmin: boolean }) {
@@ -533,6 +555,13 @@ function spendTurfBudget(viewer: { slackUserId: string; isAdmin: boolean }) {
 	return recordRequest(turfRequests, viewer.slackUserId, now, { exempt: viewer.isAdmin });
 }
 
+/**
+ * The turf request budget, for taking or giving up a seat: each one messages
+ * the mentor, and a joined card shows the mentor's number, so they spend the
+ * same per-user budget as the page and the turf API. Walk ids are random
+ * (store.ts newPublicId), so there's no counting through them to find walks
+ * in other chapters. A failure to return, or null.
+ */
 function seatLimit(viewer: { slackUserId: string; isAdmin: boolean }) {
 	if (!spendTurfBudget(viewer).allowed) {
 		return fail(429, { mentorError: 'Too many requests. Slow down and try again shortly.' });
@@ -699,14 +728,30 @@ export const actions: Actions = {
 		// counts the same turf as claimable that a signed-in volunteer's map
 		// would — not turf only a chapter hidden from /turfs can see.
 		const settings = await loadSettings(db);
-		const summary = await loadNearbySummary(
-			db,
-			point,
-			new Date(now),
-			settings.vanAssignmentTtlHours,
-			offeredChapterIds(settings),
-		);
-		return { nearby: { ...summary, place } satisfies PublicNearby };
+		const chapterIds = offeredChapterIds(settings);
+		const at = new Date(now);
+		const [summary, mentorWalks, canvasses] = await Promise.all([
+			loadNearbySummary(db, point, at, settings.vanAssignmentTtlHours, chapterIds),
+			settings.mentorWalksVisibility === 'everyone'
+				? countWalksNear(db, point, NEARBY_RADIUS_MILES, chapterIds, at).then(
+						cappedCount,
+						(err) => {
+							console.error('[mentor-walks] could not count nearby walks:', errMessage(err));
+							return null;
+						},
+					)
+				: null,
+			settings.canvassEventTag
+				? loadCanvassCountNear({
+						tag: settings.canvassEventTag,
+						chapterIds,
+						point,
+						radiusMiles: NEARBY_RADIUS_MILES,
+						now: at,
+					}).then(cappedCount)
+				: null,
+		]);
+		return { nearby: { ...summary, place, mentorWalks, canvasses } satisfies PublicNearby };
 	},
 
 	/**

@@ -13,6 +13,7 @@
 	import NoticeList from './NoticeList.svelte';
 	import WalkDrawer from './WalkDrawer.svelte';
 	import NewPersonPrompt from '$lib/components/mentor-walks/NewPersonPrompt.svelte';
+	import EventCards from '$lib/components/canvass-events/EventCards.svelte';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
@@ -32,6 +33,7 @@
 		// a walk picked out on the way.
 		drawerOpen = false;
 		selectedWalkId = null;
+		selectedEventId = null;
 	});
 
 	// The dismiss form posts to `?/dismissNotice` plus the page's own query, so
@@ -110,6 +112,7 @@
 			(walkFinder !== null && linkedWalkId !== null),
 	);
 	const showFinder = $derived(walkFinder !== null && !data.needsName);
+	const canvassEvents = $derived('canvassEvents' in data ? (data.canvassEvents ?? []) : []);
 	const showMentor = $derived(data.mentor !== null && !data.needsName);
 	const notices = $derived(data.mode === 'member' ? data.notices : []);
 	const turfNotices = $derived(notices.filter((n) => !n.walk));
@@ -159,11 +162,47 @@
 	let selectedWalkId = $state<string | null>(null);
 	let memberTurfs = $state<MemberTurfs | null>(null);
 
+	/** The canvass event selected on the map. One marker is selected at a
+	 *  time, so choosing a walk or an event lets go of the other. */
+	let selectedEventId = $state<string | null>(null);
+	/** The canvass event cards start collapsed to their heading. */
+	let eventsOpen = $state(false);
+	/** So do the walk cards, except for someone who has never checked out a
+	 *  turf, who is likely looking for a way to start, and for a message's
+	 *  link to a walk, whose card has to be there to scroll to. Their own
+	 *  choice on the heading, once made, wins. */
+	let walksOpenChoice = $state<boolean | null>(null);
+	const walksOpen = $derived(
+		walksOpenChoice ?? ((walkFinder?.cardsStartOpen ?? false) || linkedWalkId !== null),
+	);
+
+	/** As for an event, selecting a walk opens its list. */
+	function selectWalk(id: string | null) {
+		selectedWalkId = id;
+		if (id === null) return;
+		selectedEventId = null;
+		walksOpenChoice = true;
+	}
+
+	/** A marker's card has to be on screen to be found, so selecting one
+	 *  opens the list. */
+	function selectEvent(id: string | null) {
+		selectedEventId = id;
+		if (id === null) return;
+		selectedWalkId = null;
+		eventsOpen = true;
+	}
+
 	/** A card selects its walk and centres the map on it, every click, so
 	 *  clicking the selected card again brings back a marker panned away. */
 	function selectWalkFromCard(id: string) {
-		selectedWalkId = id;
+		selectWalk(id);
 		memberTurfs?.centreOnWalk(id);
+	}
+
+	function selectEventFromCard(id: string) {
+		selectEvent(id);
+		memberTurfs?.centreOnEvent(id);
 	}
 
 	async function joinWalk(id: string): Promise<void> {
@@ -270,15 +309,18 @@
 					onjoin: joinWalk,
 					onleave: leaveWalk,
 					selectedId: selectedWalkId,
-					onselect: (id) => (selectedWalkId = id),
+					onselect: selectWalk,
 				}
 			: null}
+		canvassEvents={canvassEvents.length > 0
+			? { cards: canvassEvents, selectedId: selectedEventId, onselect: selectEvent }
+			: null}
 		walksButton={hasDrawer ? walksButton : undefined}
-		walksList={showFinder ? walksList : undefined}
+		walksList={showFinder || canvassEvents.length > 0 ? walksList : undefined}
 	/>
 
 	{#snippet walksList(mapShown: boolean)}
-		{#if finderState === 'prompt'}
+		{#if showFinder && finderState === 'prompt'}
 			<!-- A new person is asked once (FR-014). -->
 			<NewPersonPrompt
 				onyes={() => promptAnswer('yes')}
@@ -287,7 +329,7 @@
 				onalerts={() => openWalkAlerts({ setup: true, fromPrompt: true })}
 			/>
 		{/if}
-		{#if walkFinder && chapter}
+		{#if showFinder && walkFinder && chapter}
 			<WalkFinder
 				finder={walkFinder}
 				{chapter}
@@ -300,6 +342,17 @@
 				error={walkError}
 				{selectedWalkId}
 				onselectwalk={mapShown ? selectWalkFromCard : undefined}
+				bind:cardsOpen={() => walksOpen, (open) => (walksOpenChoice = open)}
+			/>
+		{/if}
+		{#if chapter}
+			<EventCards
+				events={canvassEvents}
+				chapterName={chapter.name}
+				location={data.location}
+				selectedId={selectedEventId}
+				onselect={mapShown ? selectEventFromCard : undefined}
+				bind:open={eventsOpen}
 			/>
 		{/if}
 	{/snippet}

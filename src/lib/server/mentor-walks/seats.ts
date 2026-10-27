@@ -19,6 +19,7 @@ import {
 	CARD_LIMIT,
 	CARD_WINDOW_DAYS,
 	CHECKIN_DAYS,
+	milesBetween,
 	snoozeUntil,
 	WALK_HOURS,
 	walkStarted,
@@ -286,6 +287,38 @@ export async function attendedCount(db: Db, holderId: string): Promise<number> {
 			),
 		);
 	return Number(row?.n ?? 0);
+}
+
+/**
+ * How many walks a signed-out visitor near `point` could join this week:
+ * scheduled, not yet started, hosted by an active mentor, in a chapter /turfs
+ * offers, and within `radiusMiles`. The same walks the cards would show, less
+ * the ones already under way, counted across chapters since a visitor has
+ * none yet.
+ */
+export async function countWalksNear(
+	db: Db,
+	point: { lat: number; lng: number },
+	radiusMiles: number,
+	chapterIds: readonly number[],
+	now: Date,
+): Promise<number> {
+	if (chapterIds.length === 0) return 0;
+	const until = new Date(now.getTime() + CARD_WINDOW_DAYS * DAY_MS).toISOString();
+	const rows = await db
+		.select({ lat: mentorWalks.lat, lng: mentorWalks.lng })
+		.from(mentorWalks)
+		.innerJoin(mentors, eq(mentors.holderId, mentorWalks.mentorId))
+		.where(
+			and(
+				inArray(mentorWalks.chapterId, [...chapterIds]),
+				eq(mentorWalks.status, 'scheduled'),
+				eq(mentors.status, 'active'),
+				gt(mentorWalks.startsAt, now.toISOString()),
+				lte(mentorWalks.startsAt, until),
+			),
+		);
+	return rows.filter((walk) => milesBetween(point, walk) <= radiusMiles).length;
 }
 
 /**

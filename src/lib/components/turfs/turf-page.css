@@ -447,7 +447,7 @@ main {
 .walks-list {
 	display: flex;
 	flex-direction: column;
-	gap: var(--space-3);
+	gap: var(--space-2);
 }
 
 .walks-list:has(> :not(.walk-finder)),
@@ -470,6 +470,37 @@ main {
 	display: flex;
 	align-items: center;
 	gap: 6px;
+}
+
+.legend-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 32px;
+	padding: 2px 8px;
+	margin: -2px -8px;
+	border: none;
+	border-radius: var(--radius-sm);
+	background: none;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+.legend-toggle:hover {
+	background: var(--color-bg-hover);
+}
+
+.legend-toggle:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: 0;
+}
+
+/* Hidden from the map: faded and struck through, so it still reads as the
+   way to bring them back. */
+.legend-toggle[aria-pressed='false'] {
+	text-decoration: line-through;
+	opacity: 0.55;
 }
 
 .swatch {

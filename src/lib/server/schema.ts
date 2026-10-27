@@ -400,6 +400,9 @@ export const appConfig = sqliteTable(
 		// The volunteer guidelines mentors agree to before hosting (FR-005,
 		// FR-036). NULL or '' means nobody can be invited or start hosting.
 		volunteerGuidelinesUrl: text('volunteer_guidelines_url'),
+		// Solidarity events carrying this tag show on /turfs beside the mentor
+		// walks. NULL or '' shows none.
+		canvassEventTag: text('canvass_event_tag'),
 		lastEditedBy: text('last_edited_by').notNull(),
 		lastEditedByName: text('last_edited_by_name').notNull(),
 		lastEditedAt: text('last_edited_at').notNull(),

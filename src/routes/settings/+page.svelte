@@ -251,6 +251,7 @@
 				vanAssignmentTtlHours={data.settings.vanAssignmentTtlHours}
 				mentorWalksVisibility={data.settings.mentorWalksVisibility}
 				volunteerGuidelinesUrl={data.settings.volunteerGuidelinesUrl}
+				canvassEventTag={data.settings.canvassEventTag}
 			/>
 		</section>
 

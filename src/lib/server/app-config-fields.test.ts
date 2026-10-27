@@ -60,9 +60,10 @@ describe('the table', () => {
 				'publicJoinUrl',
 				'mentorWalksVisibility',
 				'volunteerGuidelinesUrl',
+				'canvassEventTag',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(24);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(25);
 	});
 });
 
