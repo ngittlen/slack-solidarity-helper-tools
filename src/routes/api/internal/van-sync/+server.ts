@@ -68,10 +68,11 @@ import { secretMatches } from '$lib/server/secret-compare.js';
 //
 // There can be several VAN campaigns (specs/012-multi-van-campaigns), each with
 // its own key, folders, lock and state. `?campaign=<id>` syncs that one; the
-// scheduler calls it once per enabled campaign, with `shared=0` on all but the
-// last call of a tick so part 3 runs once a tick. With no campaign named — the
-// GitHub workflow — every enabled campaign is synced, stalest first, for as
-// long as the request budget lasts. One campaign failing never stops another.
+// scheduler calls it for every enabled campaign at once, each with `shared=0`,
+// then once more with `shared=only` so part 3 runs once a tick, after every
+// catalog. With no campaign named — the GitHub workflow — every enabled
+// campaign is synced, stalest first, for as long as the request budget lasts.
+// One campaign failing never stops another.
 
 // The workflow calls this with `curl --max-time 300`, so the whole request —
 // catalog plus geometry — has to finish inside five minutes or the run is
@@ -80,6 +81,17 @@ import { secretMatches } from '$lib/server/secret-compare.js';
 // drawn as a pin, then whatever is left goes to geometry.
 const REQUEST_BUDGET_MS = 4 * 60 * 1000 + 30 * 1000;
 const CATALOG_BUDGET_MS = 3 * 60 * 1000;
+// `budget=long`: the in-app scheduler, which waits on a call for
+// VAN_SYNC_WAIT_MS (scheduler.ts) rather than curl's five minutes, so it gives
+// the catalog room to finish every folder and the stages after it room to run.
+const LONG_REQUEST_BUDGET_MS = 8 * 60 * 1000;
+const LONG_CATALOG_BUDGET_MS = 5 * 60 * 1000;
+// Shapes for turf not on the map at all, straight after the catalog. The
+// catalog is what queues an organizer's new turf, and the stages after it —
+// placement, the refresh sweep, the contact pull — can spend the rest of the
+// request, leaving the full geometry run at the end nothing. A new turf's
+// export takes seconds; this is room for a few dozen.
+const NEW_TURF_GEOMETRY_BUDGET_MS = 45 * 1000;
 // A request working through several campaigns starts another only with this
 // much left. Less, and the catalog would skip folders and report them as
 // failures; the campaign is better left whole for the next run, where it will
@@ -107,10 +119,10 @@ const SHARED_RESERVE_MS = 15 * 1000;
 // hundred milliseconds each. What it does not reach waits for the next run.
 const PLACEMENT_BUDGET_MS = 20 * 1000;
 const MIN_PLACEMENT_BUDGET_MS = 5 * 1000;
-// Longer than the sync's own time budget, so a run killed mid-flight by Fly
-// still frees the lock within a cadence rather than blocking until someone
+// Longer than the sync's longest time budget, so a run killed mid-flight by
+// Fly still frees the lock within a cadence rather than blocking until someone
 // notices.
-const LOCK_TTL_MS = 10 * 60 * 1000;
+const LOCK_TTL_MS = 15 * 60 * 1000;
 // The housekeeping is a few small writes; a crashed holder frees it quickly.
 const LEDGER_LOCK_TTL_MS = 2 * 60 * 1000;
 // How long to wait for a campaign's lock before giving up on its catalog. A
@@ -125,7 +137,8 @@ const LOCK_POLL_MS = 2 * 1000;
 type Campaign = VanCampaignRow;
 
 /**
- * Drain one campaign's geometry queue with whatever time its catalog left.
+ * Drain one campaign's geometry queue until `geometryDeadline`: only turf not
+ * on the map yet when `unmappedOnly`, everything otherwise.
  *
  * Returns null — rather than throwing or reporting zeros — when geometry
  * cannot run at all, so "not configured" stays distinguishable from "ran and
@@ -138,10 +151,12 @@ async function runGeometry(
 	queued: number,
 	geometryDeadline: number,
 	logPrefix: string,
+	unmappedOnly = false,
 ): Promise<Awaited<ReturnType<typeof runGeometryQueue>> | null> {
 	const exportJobTypeId = vanExportJobTypeIdFor(campaign);
 	if (exportJobTypeId === null) {
-		if (queued > 0) {
+		// Said once a run, by the first of the two geometry stages.
+		if (queued > 0 && unmappedOnly) {
 			console.warn(
 				`${logPrefix} ${queued} turf(s) queued for geometry but no export job type is set — ` +
 					'they will render as pins until it is configured (5 = VoterCircle on the primary key)',
@@ -151,7 +166,10 @@ async function runGeometry(
 	}
 	const timeBudgetMs = geometryDeadline - Date.now();
 	if (timeBudgetMs < MIN_GEOMETRY_BUDGET_MS) {
-		console.warn(`${logPrefix} skipping geometry this run — the catalog used the request budget`);
+		console.warn(
+			`${logPrefix} skipping ${unmappedOnly ? 'new-turf ' : ''}geometry this run — ` +
+				'the earlier stages used the request budget',
+		);
 		return null;
 	}
 
@@ -167,6 +185,7 @@ async function runGeometry(
 			// internal endpoints. See webhook-token.ts.
 			webhookUrlFor: (turfId) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, turfId),
 			timeBudgetMs,
+			unmappedOnly,
 			alert: alertFor(logPrefix, slackTurfChannelId),
 			// Null when VAN_ID_HASH_SECRET is unset: no roster, VanID unread.
 			roster: vanPersonHasher(),
@@ -354,6 +373,7 @@ async function syncCampaign(
 	named: boolean,
 	/** Time to leave at the end for the shared stages, when this request runs them. */
 	reserveMs: number,
+	catalogBudgetMs: number,
 ): Promise<CampaignOutcome> {
 	// A single-campaign install's messages read exactly as they always have;
 	// with several, each names the campaign it is about.
@@ -427,7 +447,7 @@ async function syncCampaign(
 
 		const mappings = await loadVanChapterFolders(db, campaign.id);
 		const result = await runCatalogSync(db, client, campaign.id, mappings, {
-			timeBudgetMs: Math.min(CATALOG_BUDGET_MS, requestDeadline - Date.now()),
+			timeBudgetMs: Math.min(catalogBudgetMs, requestDeadline - Date.now()),
 			// Queue roster exports only when something can build them.
 			roster: vanPersonHasher() !== null,
 			requestedFolderId: campaign.requestedFolderId,
@@ -441,13 +461,25 @@ async function syncCampaign(
 			{ skipped: result.foldersSkipped, degraded: result.degraded },
 		);
 
-		// Requested turf that has a location since the last run — from this
-		// campaign's geometry, the export webhook or a "Sync VAN now" drain —
-		// goes to its chapter (van/turf-placement.ts). Straight after the
-		// catalog, which is what puts turf in the requested folder: later, the
-		// catalog and the contact counts could leave it nothing, and it was
-		// skipped run after run. A turf shaped on this run is placed on the
-		// next, or by the press that shaped it. Never fails the sync.
+		// Shapes for turf the map cannot draw at all — what an organizer just
+		// cut — before anything else can spend the request. Roster rebuilds and
+		// re-cut shapes wait for the full geometry run at the end.
+		const newTurfGeometry = await runGeometry(
+			campaign,
+			client,
+			result.geometryQueued,
+			Math.min(Date.now() + NEW_TURF_GEOMETRY_BUDGET_MS, requestDeadline - reserveMs),
+			logPrefix,
+			true,
+		);
+
+		// Requested turf that has a location since the last run — from the
+		// stage above, this campaign's geometry, the export webhook or a "Sync
+		// VAN now" drain — goes to its chapter (van/turf-placement.ts). After
+		// the catalog, which is what puts turf in the requested folder, and the
+		// new-turf shapes, which give it the location placement goes by: later,
+		// the contact counts could leave it nothing, and it was skipped run
+		// after run. Never fails the sync.
 		const placement = await runPlacement(campaign, requestDeadline - reserveMs, logPrefix);
 
 		// Story 4's confirmation half. The catalog read is the only place VAN's
@@ -492,11 +524,10 @@ async function syncCampaign(
 			}
 		}
 
-		// Geometry runs after the catalog because the catalog is what fills the
-		// queue: a turf cut minutes ago gets its shape on this run rather than
-		// the next one. It is also the half that is safe to cut short — an
-		// unfinished queue is turf rendered as a pin, and the rows stay
-		// resumable, whereas an unfinished catalog is turf nobody can see.
+		// The rest of the queue — roster rebuilds, re-cut shapes, new turf the
+		// stage above had no time for — with whatever is left. The half that is
+		// safe to cut short: the rows stay resumable, whereas an unfinished
+		// catalog is turf nobody can see.
 		const geometry = await runGeometry(
 			campaign,
 			client,
@@ -515,6 +546,7 @@ async function syncCampaign(
 			...result.degraded,
 			...result.warnings,
 			...(refresh?.warnings ?? []),
+			...(newTurfGeometry?.warnings ?? []),
 			...(geometry?.warnings ?? []),
 		];
 		if (notices.length > 0) {
@@ -537,6 +569,7 @@ async function syncCampaign(
 			body: {
 				campaignId: campaign.id,
 				...result,
+				newTurfGeometry,
 				geometry,
 				placement,
 				refreshesSettled,
@@ -559,7 +592,8 @@ async function syncCampaign(
  * list-expiry alerts.
  *
  * Once per request, after every campaign's catalog — and the scheduler asks
- * for them only on its last call of a tick (`shared=0` on the others). Run per
+ * for them only on its `shared=only` call, once every campaign's call of the
+ * tick has answered (`shared=0` on those). Run per
  * campaign, they did the same work once per campaign: the doors health
  * warning, which is about all campaigns, was posted once per campaign under
  * each one's name. After the catalogs, because each reads what they wrote: a
@@ -676,12 +710,16 @@ export const POST: RequestHandler = async ({ url }) => {
 	// Stamped before ANY work, the wait for a lock included. Taking it later
 	// would give the request `REQUEST_BUDGET_MS` on top of however long that
 	// took, which is precisely the overrun the budget exists to prevent.
-	const requestDeadline = Date.now() + REQUEST_BUDGET_MS;
+	const long = url.searchParams.get('budget') === 'long';
+	const requestDeadline = Date.now() + (long ? LONG_REQUEST_BUDGET_MS : REQUEST_BUDGET_MS);
+	const catalogBudgetMs = long ? LONG_CATALOG_BUDGET_MS : CATALOG_BUDGET_MS;
 
-	// `shared=0` leaves the cross-campaign stages to another call — the
-	// scheduler's last of the tick (see runSharedStages). Anything else, and
-	// every caller that does not say, runs them.
-	const runShared = url.searchParams.get('shared') !== '0';
+	// `shared=0` leaves the cross-campaign stages to another call; `shared=only`
+	// is that call — the scheduler's, once every campaign's has answered (see
+	// runSharedStages). Anything else, and every caller that does not say, runs
+	// them after its campaigns.
+	const sharedParam = url.searchParams.get('shared');
+	const runShared = sharedParam !== '0';
 
 	const campaignParam = url.searchParams.get('campaign');
 	const campaignId = campaignParam === null ? null : Number(campaignParam);
@@ -692,6 +730,10 @@ export const POST: RequestHandler = async ({ url }) => {
 	try {
 		const now = new Date();
 		const housekeeping = await runHousekeeping(now);
+
+		if (sharedParam === 'only') {
+			return json({ ...housekeeping, campaigns: [], shared: await runSharedStages(now) });
+		}
 
 		let campaigns: Campaign[];
 		if (campaignId !== null) {
@@ -728,6 +770,7 @@ export const POST: RequestHandler = async ({ url }) => {
 					now,
 					named,
 					runShared ? SHARED_RESERVE_MS : 0,
+					catalogBudgetMs,
 				),
 			);
 		}

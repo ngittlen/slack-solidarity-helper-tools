@@ -393,6 +393,7 @@ describe('POST /api/internal/van-sync', () => {
 				{
 					campaignId: 1,
 					...result,
+					newTurfGeometry: geometryResult,
 					geometry: geometryResult,
 					placement: PLACED,
 					refreshesSettled: 0,
@@ -422,14 +423,16 @@ describe('POST /api/internal/van-sync', () => {
 
 	// Requested turf shaped since the last run goes to its chapter, with the
 	// chapters the turf pickers offer.
-	it('places the campaign’s requested turf, before geometry', async () => {
+	// Placement goes by a turf's location, so requested turf shaped on this
+	// run is placed on this run, not the next one half an hour later.
+	it('places the campaign’s requested turf after the new-turf shapes, before the rest', async () => {
 		const order: string[] = [];
 		mockPlace.mockImplementation(async () => {
 			order.push('place');
 			return PLACED;
 		});
-		mockRunGeometryQueue.mockImplementation(async () => {
-			order.push('geometry');
+		mockRunGeometryQueue.mockImplementation(async (_db, _client, options) => {
+			order.push(options.unmappedOnly ? 'new turf' : 'geometry');
 			return geometryResult;
 		});
 		await POST(event());
@@ -438,7 +441,7 @@ describe('POST /api/internal/van-sync', () => {
 			expect.objectContaining({ id: 1 }),
 			expect.objectContaining({ chapters: [{ chapterId: 71, name: 'Washtenaw County' }] }),
 		);
-		expect(order).toEqual(['place', 'geometry']);
+		expect(order).toEqual(['new turf', 'place', 'geometry']);
 	});
 
 	// Later, the catalog and the contact counts could leave it nothing.
@@ -512,7 +515,7 @@ describe('POST /api/internal/van-sync', () => {
 		await POST(event());
 		// The shared stages follow every campaign's catalog and geometry; the
 		// last campaign's geometry leaves them time (SHARED_RESERVE_MS).
-		expect(order).toEqual(['catalog', 'geometry', 'drift']);
+		expect(order).toEqual(['catalog', 'geometry', 'geometry', 'drift']);
 	});
 
 	it('confirms in-flight refreshes against the regions the catalog just read', async () => {
@@ -853,7 +856,8 @@ describe('POST /api/internal/van-sync', () => {
 			expect(options.turfIds).toBeUndefined();
 			const stage = mockRunContactStage.mock.invocationCallOrder[0]!;
 			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(stage);
-			expect(stage).toBeLessThan(mockRunGeometryQueue.mock.invocationCallOrder[0]!);
+			// The full run; turf not on the map yet goes before it.
+			expect(stage).toBeLessThan(mockRunGeometryQueue.mock.invocationCallOrder[1]!);
 		});
 
 		it('reports what it did, or that it is off', async () => {
@@ -887,10 +891,10 @@ describe('POST /api/internal/van-sync', () => {
 		// them their slice — but only on the request that runs them.
 		it('leaves time for the shared stages only when this request runs them', async () => {
 			await POST(event());
-			const withShared = mockRunGeometryQueue.mock.calls[0]![2].timeBudgetMs;
+			const withShared = mockRunGeometryQueue.mock.calls[1]![2].timeBudgetMs;
 			mockRunGeometryQueue.mockClear();
 			await POST(event('cron-secret', '&shared=0'));
-			const without = mockRunGeometryQueue.mock.calls[0]![2].timeBudgetMs;
+			const without = mockRunGeometryQueue.mock.calls[1]![2].timeBudgetMs;
 			expect(without - withShared).toBeGreaterThanOrEqual(10 * 1000);
 		});
 
@@ -898,13 +902,28 @@ describe('POST /api/internal/van-sync', () => {
 			const res = await POST(event());
 			const body = await campaignOf(res);
 
-			expect(mockRunGeometryQueue).toHaveBeenCalledOnce();
+			expect(mockRunGeometryQueue).toHaveBeenCalledTimes(2);
+			expect(body.newTurfGeometry.hullsStored).toBe(3);
 			expect(body.geometry.hullsStored).toBe(3);
 			// The catalog must be written before geometry runs — a turf cut
 			// minutes ago should get its shape on this run, not the next.
 			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(
 				mockRunGeometryQueue.mock.invocationCallOrder[0],
 			);
+		});
+
+		// What an organizer just cut is what someone is waiting to see. The
+		// contact pull and the refresh sweep could leave the full run at the
+		// end nothing, run after run, so new turf gets its own slice first.
+		it('shapes turf not on the map yet before the other stages, in a short slice', async () => {
+			await POST(event());
+			const [first, second] = mockRunGeometryQueue.mock.calls.map((c) => c[2]);
+			expect(first.unmappedOnly).toBe(true);
+			expect(first.timeBudgetMs).toBeLessThanOrEqual(45 * 1000);
+			expect(second.unmappedOnly).toBe(false);
+			const newTurf = mockRunGeometryQueue.mock.invocationCallOrder[0]!;
+			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(newTurf);
+			expect(newTurf).toBeLessThan(mockRefreshSweep.mock.invocationCallOrder[0]!);
 		});
 
 		// VAN stores this URL against the export job and echoes it back on every
@@ -990,7 +1009,7 @@ describe('POST /api/internal/van-sync', () => {
 			);
 			await POST(event());
 
-			const { timeBudgetMs } = mockRunGeometryQueue.mock.calls[0]![2];
+			const { timeBudgetMs } = mockRunGeometryQueue.mock.calls.at(-1)![2];
 			// A budget stamped after the sweep would still be the full 4m30s.
 			// Stamped before it, the sweep has already come out of it.
 			expect(timeBudgetMs).toBeLessThanOrEqual(4 * 60 * 1000 + 30 * 1000 - SWEEP_MS / 2);
@@ -1105,6 +1124,32 @@ describe('POST /api/internal/van-sync', () => {
 			expect((await res.json()).skipped).toBe('campaign is disabled');
 			expect(mockSweep).toHaveBeenCalledOnce();
 			expect(mockRunCatalogSync).not.toHaveBeenCalled();
+		});
+
+		// The scheduler syncs campaigns at once, each with `shared=0`, then asks
+		// for the shared stages on their own once every catalog has landed.
+		it('runs only the housekeeping and the shared stages for shared=only', async () => {
+			const res = await POST(event('cron-secret', '&shared=only'));
+			expect(res.status).toBe(200);
+			expect(mockRunCatalogSync).not.toHaveBeenCalled();
+			expect(mockSweep).toHaveBeenCalledOnce();
+			expect(mockReconcile).toHaveBeenCalledOnce();
+			const body = await res.json();
+			expect(body.campaigns).toEqual([]);
+			expect(body.shared.reconciled).toEqual(reconcileResult);
+		});
+
+		// The in-app scheduler waits longer than the workflow's curl, so its
+		// catalog gets the time to read every folder.
+		it('gives the catalog more time on budget=long', async () => {
+			await POST(event('cron-secret', '&campaign=1'));
+			const usual = mockRunCatalogSync.mock.calls[0]![4].timeBudgetMs;
+			mockRunCatalogSync.mockClear();
+			await POST(event('cron-secret', '&campaign=1&budget=long'));
+			const long = mockRunCatalogSync.mock.calls[0]![4].timeBudgetMs;
+			expect(usual).toBeLessThanOrEqual(3 * 60 * 1000);
+			expect(long).toBeGreaterThan(4 * 60 * 1000);
+			expect(long).toBeLessThanOrEqual(5 * 60 * 1000);
 		});
 
 		it('answers 404 for a campaign that does not exist, and 400 for nonsense', async () => {

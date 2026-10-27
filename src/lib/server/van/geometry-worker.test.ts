@@ -173,7 +173,7 @@ describe('runGeometryQueue', () => {
 		expect(queuePatches.at(-1)!.status).toBe('done');
 	});
 
-	// The scheduled sync leaves this alone (2, the polite default); the backlog
+	// The scheduled sync leaves this alone (4, the client's own cap); the backlog
 	// drain script raises it, which is only safe because the VAN client keeps
 	// its own cap on calls to VAN itself.
 	it('runs more turfs at once when asked, and never fewer than one', async () => {
@@ -195,7 +195,7 @@ describe('runGeometryQueue', () => {
 			return peak;
 		}
 
-		expect(await widthOf(undefined, 6)).toBe(2);
+		expect(await widthOf(undefined, 6)).toBe(4);
 		expect(await widthOf(5, 6)).toBe(5);
 		// A nonsense value must not stall the run.
 		expect(await widthOf(0, 3)).toBe(1);
@@ -705,10 +705,10 @@ describe('runGeometryQueue', () => {
 		expect(patches[0]).toMatchObject({ status: 'failed', attempts: MAX_ATTEMPTS });
 	});
 
-	it('keeps at most two turfs in flight', async () => {
+	it('keeps at most four turfs in flight', async () => {
 		let active = 0;
 		let peak = 0;
-		const rows = Array.from({ length: 6 }, (_, i) => pendingRow({ turfId: 100 + i }));
+		const rows = Array.from({ length: 8 }, (_, i) => pendingRow({ turfId: 100 + i }));
 		const turfs = rows.map((r) => ({ turfId: r.turfId, routeSize: 76 }));
 		const { db } = makeDb(rows, turfs);
 
@@ -722,7 +722,7 @@ describe('runGeometryQueue', () => {
 				return new Response(SQUARE_CSV, { status: 200 });
 			},
 		});
-		expect(peak).toBeLessThanOrEqual(2);
+		expect(peak).toBeLessThanOrEqual(4);
 	});
 
 	it('stops when the time budget lapses and reports it', async () => {

@@ -88,23 +88,29 @@ export interface Job {
 }
 
 /**
- * How long a pass waits on one campaign's call. Twice the endpoint's own
- * budget (REQUEST_BUDGET_MS, 4½ minutes): that budget is checked between
- * stages, so a slow VAN call runs past it, and a call given up on is reported
- * as failed while the endpoint carries on and usually finishes. It is also the
- * campaign lock's lifetime (LOCK_TTL_MS in the endpoint), so a call still
- * going that late is stuck, not slow.
+ * How long a pass waits on one campaign's call. Well past the endpoint's
+ * `budget=long` budget (LONG_REQUEST_BUDGET_MS, 8 minutes): that budget is
+ * checked between stages, so a slow VAN call runs past it, and a call given up
+ * on is reported as failed while the endpoint carries on and usually finishes.
+ * It is also the campaign lock's lifetime (LOCK_TTL_MS in the endpoint), so a
+ * call still going that late is stuck, not slow.
  */
-const VAN_SYNC_WAIT_MS = 10 * MINUTE;
+const VAN_SYNC_WAIT_MS = 15 * MINUTE;
+/** The shared stages read our own tables and post to Slack; no VAN call. */
+const VAN_SHARED_WAIT_MS = 3 * MINUTE;
 
 /**
- * One pass of the VAN sync: one call per enabled campaign, stalest first, each
- * waited on for VAN_SYNC_WAIT_MS. One request cannot sync an arbitrary
- * number of catalogs, and each campaign has its own lock, so they never
- * contend. One failing does not stop the rest. With none enabled the endpoint
- * is still called once, because it also runs the ledger housekeeping —
- * expiring claims and the six-hour warnings — which must not depend on VAN at
- * all.
+ * One pass of the VAN sync: one call per enabled campaign, all at once, each
+ * waited on for VAN_SYNC_WAIT_MS. Each campaign has its own key, so its own
+ * share of VAN, and its own lock, so they never contend; one request cannot
+ * sync an arbitrary number of catalogs, and a press's map shapes wait on the
+ * slowest campaign rather than on all of them in turn. One failing does not
+ * stop the rest. With none enabled the endpoint is still called once, because it also
+ * runs the ledger housekeeping — expiring claims and the six-hour warnings —
+ * which must not depend on VAN at all.
+ *
+ * Calls ask for `budget=long`: this waits longer than the GitHub workflow's
+ * curl, so the catalog gets time to read every folder.
  *
  * Exported for the organizers' "Sync VAN now" button (van/manual-sync.ts),
  * which runs exactly this pass between slots.
@@ -134,26 +140,40 @@ export async function vanSyncPass(call: Caller, db: Db): Promise<VanSyncAnswer[]
 		await call('/api/internal/van-sync', {}, VAN_SYNC_WAIT_MS);
 		return [];
 	}
-	const answers: VanSyncAnswer[] = [];
-	for (const [i, campaign] of campaigns.entries()) {
-		// The cross-campaign stages — reconciliation, alerts, the Packet
-		// Tracker — run once a pass, on the last call, after every campaign's
-		// catalog has landed. Run on each call, they did the same work once per
-		// campaign (see runSharedStages in the endpoint).
-		const last = i === campaigns.length - 1;
+	// The cross-campaign stages — reconciliation, alerts — run once a pass,
+	// after every campaign's catalog has landed: on the one call, or on a call
+	// of their own once the campaigns' have all answered. Run on each call, they
+	// did the same work once per campaign (see runSharedStages in the endpoint).
+	const several = campaigns.length > 1;
+	const answers = await Promise.all(
+		campaigns.map(async (campaign): Promise<VanSyncAnswer> => {
+			try {
+				const response = await call(
+					'/api/internal/van-sync',
+					{
+						campaign: String(campaign.id),
+						budget: 'long',
+						...(several ? { shared: '0' } : {}),
+					},
+					VAN_SYNC_WAIT_MS,
+				);
+				const [body] = Array.isArray(response.campaigns) ? response.campaigns : [];
+				return { campaignId: campaign.id, body: body as Record<string, unknown> | undefined };
+			} catch (err) {
+				return { campaignId: campaign.id, error: err instanceof Error ? err.message : String(err) };
+			}
+		}),
+	);
+	if (several) {
 		try {
-			const response = await call(
-				'/api/internal/van-sync',
-				{ campaign: String(campaign.id), ...(last ? {} : { shared: '0' }) },
-				VAN_SYNC_WAIT_MS,
-			);
-			const [body] = Array.isArray(response.campaigns) ? response.campaigns : [];
-			answers.push({ campaignId: campaign.id, body: body as Record<string, unknown> | undefined });
+			await call('/api/internal/van-sync', { shared: 'only' }, VAN_SHARED_WAIT_MS);
 		} catch (err) {
-			answers.push({
-				campaignId: campaign.id,
-				error: err instanceof Error ? err.message : String(err),
-			});
+			// Each stage is idempotent and the next pass repeats it; the
+			// campaigns' catalogs are written either way.
+			console.error(
+				`${LOG} van-sync shared stages failed:`,
+				err instanceof Error ? err.message : err,
+			);
 		}
 	}
 	return answers;
