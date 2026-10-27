@@ -24,7 +24,7 @@
 // is picked up by the next run and POLLED rather than re-submitted, so a
 // killed worker costs one HTTP GET, not a duplicate export job.
 
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanGeometryQueue, vanTurfs } from '../schema.js';
@@ -52,14 +52,14 @@ type FetchFn = typeof fetch;
  *  hundred export jobs to rediscover that is worse than surfacing it. */
 export const MAX_ATTEMPTS = 4;
 
-/** Work items in flight. The VAN client already caps ITS OWN concurrency (2 by default),
+/** Work items in flight. The VAN client already caps ITS OWN concurrency (4 by default),
  *  but the blob download goes straight to Azure and bypasses that limiter
  *  entirely, so the cap is repeated here over whole items.
  *
- *  The default for the scheduled sync, where politeness matters more than
- *  speed. `options.concurrency` raises it for a one-off backlog drain run from
- *  a script — the VAN client's own limiter still bounds calls to VAN itself. */
-const MAX_CONCURRENCY = 2;
+ *  The default for the scheduled sync, matched to the client's cap.
+ *  `options.concurrency` raises it for a one-off backlog drain run from a
+ *  script — the VAN client's own limiter still bounds calls to VAN itself. */
+const MAX_CONCURRENCY = 4;
 
 /** Groups waiting for the writer before a worker holds off starting another
  *  turf. Only reached when the database falls well behind VAN. */
@@ -124,6 +124,11 @@ export interface GeometryWorkerOptions {
 	finishGraceMs?: number;
 	/** Cap on items per run. Null means "as many as the budget allows". */
 	maxItems?: number | null;
+	/** Only turf not on the map at all — no centroid. The sync runs this
+	 *  straight after its catalog, so turf an organizer just cut gets its shape
+	 *  before the stages that can spend the rest of the request; roster
+	 *  rebuilds and re-cut shapes wait for the full run at the end. */
+	unmappedOnly?: boolean;
 	/** Items in flight. Defaults to MAX_CONCURRENCY; a drain script raises it.
 	 *  Clamped to at least 1, so a bad value cannot stall the run entirely. */
 	concurrency?: number;
@@ -359,6 +364,7 @@ export async function runGeometryQueue(
 			and(
 				eq(vanTurfs.campaignId, options.campaignId),
 				inArray(vanGeometryQueue.status, ['pending', 'running']),
+				options.unmappedOnly ? isNull(vanTurfs.centroidLat) : undefined,
 			),
 		)
 		.orderBy(

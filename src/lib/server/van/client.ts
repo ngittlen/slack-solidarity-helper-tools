@@ -11,9 +11,10 @@
 // outside the Vite bundle.
 //
 // Two deliberate conservatisms, both from plan.md Story 1.3: VAN publishes no
-// rate limit, so we cap concurrency at 2 across the whole client and back off
+// rate limit, so we cap concurrency at 4 across the whole client and back off
 // hard on 429/5xx. A canvass launch is the wrong moment to discover a limit by
-// hitting it.
+// hitting it. Four is what the geometry drain script runs at by default
+// (scripts/van-geometry-drain.ts) without VAN pushing back.
 
 // Relative, not `$lib/...`: scripts/van-check.ts runs this file under tsx,
 // outside the Vite bundle, where the alias does not resolve.
@@ -97,7 +98,7 @@ const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_TIMED_OUT_READS = 2;
 // Concurrency across the whole client, not per call site. The app's default;
 // VanConfig.maxConcurrency overrides it per client.
-const MAX_CONCURRENCY = 2;
+const MAX_CONCURRENCY = 4;
 // VAN's documented maximum $top for /printedLists. Other endpoints allow more,
 // but this one 400s rather than clamping.
 const PRINTED_LISTS_PAGE_SIZE = 50;

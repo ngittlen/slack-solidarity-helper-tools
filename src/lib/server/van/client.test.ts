@@ -238,7 +238,7 @@ describe('createVanClient', () => {
 		);
 	});
 
-	it('caps concurrency at 2 across the whole client', async () => {
+	it('caps concurrency at 4 across the whole client', async () => {
 		let inFlight = 0;
 		let peak = 0;
 		const fetchFn = vi.fn().mockImplementation(async () => {
@@ -250,9 +250,11 @@ describe('createVanClient', () => {
 		});
 
 		const client = createVanClient(config, fetchFn as never);
-		await withTimers(Promise.all([1, 2, 3, 4, 5, 6].map((id) => client.mapRegions(id))));
-		expect(peak).toBeLessThanOrEqual(2);
-		expect(fetchFn).toHaveBeenCalledTimes(6);
+		await withTimers(
+			Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((id) => client.mapRegions(id))),
+		);
+		expect(peak).toBe(4);
+		expect(fetchFn).toHaveBeenCalledTimes(10);
 	});
 
 	it('caps concurrency at maxConcurrency when one is given', async () => {

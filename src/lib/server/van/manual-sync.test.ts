@@ -69,7 +69,7 @@ describe('startManualVanSync', () => {
 		const result = await startManualVanSync(db, call);
 		expect(result.status).toBe('started');
 		await result.done;
-		expect(calls).toEqual([{ campaign: '1' }]);
+		expect(calls).toEqual([{ campaign: '1', budget: 'long' }]);
 		expect(await lockIsFree()).toBe(true);
 	});
 
@@ -245,7 +245,7 @@ describe('startManualVanSync', () => {
 		expect(calls).toEqual([]);
 		await releaseSyncLock(db, vanSyncLock(1), scheduled);
 		await result.done;
-		expect(calls).toEqual([{ campaign: '1' }]);
+		expect(calls).toEqual([{ campaign: '1', budget: 'long' }]);
 	});
 
 	// A scheduled pass syncs campaigns one after another. One look landing
@@ -263,7 +263,7 @@ describe('startManualVanSync', () => {
 		expect(calls).toEqual([]);
 		await releaseSyncLock(db, vanSyncLock(1), second);
 		await result.done;
-		expect(calls).toEqual([{ campaign: '1' }]);
+		expect(calls).toEqual([{ campaign: '1', budget: 'long' }]);
 	});
 
 	// Each request expires claims and sends due reminders under the ledger
@@ -277,7 +277,7 @@ describe('startManualVanSync', () => {
 		expect(calls).toEqual([]);
 		await releaseSyncLock(db, VAN_LEDGER_LOCK, ledger);
 		await result.done;
-		expect(calls).toEqual([{ campaign: '1' }]);
+		expect(calls).toEqual([{ campaign: '1', budget: 'long' }]);
 	});
 
 	it('runs anyway once it has waited long enough', async () => {
@@ -285,7 +285,7 @@ describe('startManualVanSync', () => {
 		const { calls, call } = recorder();
 		const result = await startManualVanSync(db, call, { pollMs: 10, maxWaitMs: 30 });
 		await result.done;
-		expect(calls).toEqual([{ campaign: '1' }]);
+		expect(calls).toEqual([{ campaign: '1', budget: 'long' }]);
 	});
 
 	it('ignores a disabled campaign’s lock', async () => {

@@ -11,6 +11,7 @@ import {
 	localCaller,
 	nextSlot,
 	utcHoursAt,
+	vanSyncPass,
 	type Caller,
 	type Job,
 } from './scheduler.js';
@@ -133,29 +134,60 @@ describe('the van-sync job', () => {
 			},
 		]);
 
-	// The cross-campaign stages (reconciliation, alerts, the Packet Tracker) run
-	// once a tick, on the last call, after every catalog has landed.
-	it('calls the endpoint once per enabled campaign, stalest first, shared stages last', async () => {
+	// The cross-campaign stages (reconciliation, alerts) run once a tick, on a
+	// call of their own after every catalog has landed.
+	it('calls the endpoint for every enabled campaign at once, shared stages after', async () => {
 		await client.execute(
 			"INSERT INTO van_sync_state (campaign_id, last_sync_at) VALUES (1, '2026-09-25T10:00:00.000Z')",
 		);
 		await enable(2, 'other', '2026-09-25T09:00:00.000Z');
 		await enable(3, 'third', null);
-		const { calls, call } = recorder();
-		await job('van-sync').run(at('11:07'), call, db);
-		expect(calls.map((c) => c.params)).toEqual([
-			{ campaign: '3', shared: '0' },
-			{ campaign: '2', shared: '0' },
-			{ campaign: '1' },
+		let inFlight = 0;
+		let peak = 0;
+		const calls: Array<Record<string, string>> = [];
+		const call: Caller = async (_path, params) => {
+			calls.push(params);
+			if (params.shared === 'only') {
+				// Every campaign's call has answered.
+				expect(inFlight).toBe(0);
+				return {};
+			}
+			inFlight++;
+			peak = Math.max(peak, inFlight);
+			await new Promise((r) => setTimeout(r, 5));
+			inFlight--;
+			return {};
+		};
+		const answers = await vanSyncPass(call, db);
+		expect(peak).toBe(3);
+		expect(calls).toEqual([
+			{ campaign: '3', budget: 'long', shared: '0' },
+			{ campaign: '2', budget: 'long', shared: '0' },
+			{ campaign: '1', budget: 'long', shared: '0' },
+			{ shared: 'only' },
 		]);
+		expect(answers.map((a) => a.campaignId)).toEqual([3, 2, 1]);
 	});
 
-	it('skips a disabled campaign', async () => {
+	it('skips a disabled campaign, and runs the shared stages on its one call', async () => {
 		await enable(2, 'other', null);
 		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 2');
 		const { calls, call } = recorder();
 		await job('van-sync').run(at('11:07'), call, db);
-		expect(calls.map((c) => c.params)).toEqual([{ campaign: '1' }]);
+		expect(calls.map((c) => c.params)).toEqual([{ campaign: '1', budget: 'long' }]);
+	});
+
+	it('reports the campaigns, not a failure, when only the shared stages fail', async () => {
+		await enable(2, 'other', null);
+		const call: Caller = async (_path, params) => {
+			if (params.shared === 'only') throw new Error('HTTP 500');
+			return { campaigns: [{ ok: params.campaign }] };
+		};
+		const answers = await vanSyncPass(call, db);
+		expect(answers).toEqual([
+			{ campaignId: 1, body: { ok: '1' } },
+			{ campaignId: 2, body: { ok: '2' } },
+		]);
 	});
 
 	// The endpoint also expires claims and sends the six-hour warnings, which
@@ -169,18 +201,17 @@ describe('the van-sync job', () => {
 
 	it('carries on past a campaign that fails, then reports it', async () => {
 		await enable(2, 'other', null);
-		const calls: string[] = [];
+		const calls: Array<string | undefined> = [];
 		const call: Caller = async (_path, params) => {
-			calls.push(params.campaign!);
-			// Campaign 1 is called first (neither has synced, so id order) and
-			// fails; campaign 2 must still be synced.
+			calls.push(params.campaign);
+			// Campaign 1 fails; campaign 2 and the shared stages must still run.
 			if (params.campaign === '1') throw new Error('HTTP 500');
 			return {};
 		};
 		await expect(job('van-sync').run(at('11:07'), call, db)).rejects.toThrow(
 			'campaign 1: HTTP 500',
 		);
-		expect(calls).toEqual(['1', '2']);
+		expect(calls).toEqual(['1', '2', undefined]);
 	});
 });
 
