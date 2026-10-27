@@ -582,6 +582,13 @@
       "when": 1793037314818,
       "tag": "0082_canvass_event_tag",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "6",
+      "when": 1793113477805,
+      "tag": "0083_activity_stamp_indexes",
+      "breakpoints": true
     }
   ]
 }

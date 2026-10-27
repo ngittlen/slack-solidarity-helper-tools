@@ -6,11 +6,85 @@
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
+	import LoadMore from '$lib/components/ui/LoadMore.svelte';
+	import TableFilter from '$lib/components/ui/TableFilter.svelte';
+	import { matchesText } from '$lib/row-filter.js';
+	import { RowWindow } from '$lib/row-window.svelte.js';
+	import { page } from '$app/state';
 	import { campaignSheetStamp } from '$lib/campaign-time.js';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
 	import type { ActionData } from './$types';
 
 	const { data, form } = $props();
+
+	// Each long table renders a page of rows and grows as the reader scrolls
+	// toward its end. Keyed on the page's filters, so a reload in place keeps a
+	// table as far as it has grown. The text box above a table narrows it first,
+	// over every row the page holds — rows past the first page are not in the
+	// DOM, so find-in-page cannot reach them.
+	/** Tables shorter than this read at a glance, without a filter box. */
+	const FILTER_FROM = 10;
+	const filters = () =>
+		`${page.url.searchParams.get('chapter')}|${page.url.searchParams.get('campaign')}`;
+
+	let holdingQuery = $state('');
+	const holdingMatches = $derived(
+		data.holdings.filter((h) =>
+			matchesText(holdingQuery, [
+				h.turfName,
+				h.regionName,
+				h.chapterName,
+				h.slackUserName,
+				h.account?.email,
+			]),
+		),
+	);
+	const holdingRows = new RowWindow(() => holdingMatches, filters);
+
+	let suspectQuery = $state('');
+	const suspectMatches = $derived(
+		data.suspects.filter((c) =>
+			matchesText(suspectQuery, [
+				c.turfName,
+				c.regionName,
+				c.chapterName,
+				c.slackUserName,
+				c.account?.email,
+			]),
+		),
+	);
+	const suspectRows = new RowWindow(() => suspectMatches, filters);
+
+	let driftQuery = $state('');
+	const driftMatches = $derived(
+		data.drift.items.filter((i) =>
+			matchesText(driftQuery, [
+				i.turfName,
+				i.regionName,
+				i.chapterName,
+				i.heldBy,
+				i.account?.email,
+				driftLabel(i.kind),
+			]),
+		),
+	);
+	const driftRows = new RowWindow(() => driftMatches, filters);
+
+	let requestedQuery = $state('');
+	const requestedMatches = $derived(
+		data.requestedTurf.filter((t) =>
+			matchesText(requestedQuery, [t.name, t.regionName, t.placedLabel]),
+		),
+	);
+	const requestedRows = new RowWindow(() => requestedMatches, filters);
+
+	let hiddenQuery = $state('');
+	const hiddenMatches = $derived(
+		data.hidden.filter((t) =>
+			matchesText(hiddenQuery, [t.turfName, t.regionName, t.chapterName, t.hiddenBy]),
+		),
+	);
+	const hiddenRows = new RowWindow(() => hiddenMatches, filters);
 
 	/** While the "Sync VAN now" press is in flight. The sync itself runs on in
 	 *  the background long after; this only covers starting it. */
@@ -303,7 +377,16 @@
 				No turf is checked out in {scope} at the moment.
 			</p>
 		{:else}
-			<div class="table-wrap">
+			{#if data.holdings.length > FILTER_FROM}
+				<TableFilter
+					bind:value={holdingQuery}
+					label="Filter turf out right now"
+					placeholder="Turf, volunteer or chapter"
+					matched={holdingMatches.length}
+					total={data.holdings.length}
+				/>
+			{/if}
+			<div class="table-wrap scrolls">
 				<table>
 					<thead>
 						<tr>
@@ -316,7 +399,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each data.holdings as held (held.checkoutId)}
+						{#each holdingRows.visible as held (held.checkoutId)}
 							<tr class="urgency-{held.urgency}">
 								<td>
 									<span class="turf-name">{held.turfName}</span>
@@ -366,6 +449,7 @@
 						{/each}
 					</tbody>
 				</table>
+				<LoadMore onnear={() => holdingRows.more()} disabled={!holdingRows.hasMore} />
 			</div>
 		{/if}
 	</section>
@@ -407,7 +491,16 @@
 				These were marked done, but VAN's door count didn't move — almost always a MiniVAN that was
 				never synced, so the canvass results are still on a phone.
 			</p>
-			<div class="table-wrap">
+			{#if data.suspects.length > FILTER_FROM}
+				<TableFilter
+					bind:value={suspectQuery}
+					label="Filter possible missed syncs"
+					placeholder="Turf, volunteer or chapter"
+					matched={suspectMatches.length}
+					total={data.suspects.length}
+				/>
+			{/if}
+			<div class="table-wrap scrolls">
 				<table>
 					<thead>
 						<tr>
@@ -417,7 +510,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each data.suspects as suspect (suspect.checkoutId)}
+						{#each suspectRows.visible as suspect (suspect.checkoutId)}
 							<tr>
 								<td>
 									<span class="turf-name">{suspect.turfName}</span>
@@ -437,6 +530,7 @@
 						{/each}
 					</tbody>
 				</table>
+				<LoadMore onnear={() => suspectRows.more()} disabled={!suspectRows.hasMore} />
 			</div>
 		{/if}
 	</section>
@@ -478,7 +572,16 @@
 				{data.drift.items.length === 1 ? 'turf' : 'turfs'}: claimed here, but the volunteer hasn't
 				loaded the list in MiniVAN yet.
 			</p>
-			<div class="table-wrap">
+			{#if data.drift.items.length > FILTER_FROM}
+				<TableFilter
+					bind:value={driftQuery}
+					label="Filter VAN mismatches"
+					placeholder="Turf, volunteer or chapter"
+					matched={driftMatches.length}
+					total={data.drift.items.length}
+				/>
+			{/if}
+			<div class="table-wrap scrolls">
 				<table>
 					<thead>
 						<tr>
@@ -489,7 +592,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each data.drift.items as item (item.kind + ':' + item.turfId)}
+						{#each driftRows.visible as item (item.kind + ':' + item.turfId)}
 							<tr class="drift-{item.kind}">
 								<td class="col-flag">
 									<span class="badge badge-{item.kind}">{driftLabel(item.kind)}</span>
@@ -516,6 +619,7 @@
 						{/each}
 					</tbody>
 				</table>
+				<LoadMore onnear={() => driftRows.more()} disabled={!driftRows.hasMore} />
 			</div>
 		{/if}
 	</section>
@@ -540,7 +644,16 @@
 					those not placed yet first, then the newest.
 				</p>
 			{/if}
-			<div class="table-wrap">
+			{#if data.requestedTurf.length > FILTER_FROM}
+				<TableFilter
+					bind:value={requestedQuery}
+					label="Filter requested turf"
+					placeholder="Turf or region"
+					matched={requestedMatches.length}
+					total={data.requestedTurf.length}
+				/>
+			{/if}
+			<div class="table-wrap scrolls">
 				<table>
 					<thead>
 						<tr>
@@ -550,7 +663,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each data.requestedTurf as turf (turf.turfId)}
+						{#each requestedRows.visible as turf (turf.turfId)}
 							<tr>
 								<td>
 									<span class="turf-name">{turf.name}</span>
@@ -616,6 +729,7 @@
 						{/each}
 					</tbody>
 				</table>
+				<LoadMore onnear={() => requestedRows.more()} disabled={!requestedRows.hasMore} />
 			</div>
 		</section>
 	{/if}
@@ -634,7 +748,16 @@
 			<p class="section-note">
 				Volunteers can't see or check out these. Untick one to put it back on the turf page.
 			</p>
-			<div class="table-wrap">
+			{#if data.hidden.length > FILTER_FROM}
+				<TableFilter
+					bind:value={hiddenQuery}
+					label="Filter hidden turf"
+					placeholder="Turf, chapter or who hid it"
+					matched={hiddenMatches.length}
+					total={data.hidden.length}
+				/>
+			{/if}
+			<div class="table-wrap scrolls">
 				<table>
 					<thead>
 						<tr>
@@ -644,7 +767,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each data.hidden as turf (turf.turfId)}
+						{#each hiddenRows.visible as turf (turf.turfId)}
 							<tr>
 								<td>
 									<span class="turf-name">{turf.turfName}</span>
@@ -694,6 +817,7 @@
 						{/each}
 					</tbody>
 				</table>
+				<LoadMore onnear={() => hiddenRows.more()} disabled={!hiddenRows.hasMore} />
 			</div>
 		{/if}
 	</section>

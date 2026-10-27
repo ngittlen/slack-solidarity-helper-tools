@@ -74,14 +74,14 @@ export interface ActivityEvent {
 }
 
 /**
- * Events per page load.
+ * Events per page of the history.
  *
- * A history is for reading, not for exporting: past a few hundred rows nobody
- * scrolls, and the honest move is to say how many were left out and let the
- * period filter do the narrowing. Also bounds the payload — the same concern
- * measured for the turf map in plan.md 6.2b, at a much smaller scale.
+ * A page size, not a ceiling: the page loads this many, then fetches the next
+ * batch as the organizer scrolls toward the end. Small enough that the first
+ * render and each fetch are quick; large enough that an ordinary scroll does
+ * not outrun the next batch.
  */
-export const EVENT_CAP = 500;
+export const EVENTS_PER_PAGE = 100;
 
 export type Period = '1' | '7' | '30' | 'all';
 
@@ -199,11 +199,33 @@ export function activityEvents(
 		}
 	}
 
-	// Newest first, with the checkout id as a tiebreak so two events stamped in
-	// the same millisecond render in a stable order rather than shuffling
-	// between loads.
-	events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : b.checkoutId - a.checkoutId));
+	events.sort(compareEvents);
 	return events;
+}
+
+/** Where a page of the history ends: the oldest event on it. */
+export type ActivityCursor = Pick<ActivityEvent, 'at' | 'checkoutId' | 'id'>;
+
+/**
+ * The history's order: newest first, then by checkout id and event id, so two
+ * events stamped in the same millisecond render in a stable order rather than
+ * shuffling between loads. Total, which paging relies on: an event is either
+ * before a cursor or after it, never level with one it is not.
+ */
+export function compareEvents(a: ActivityCursor, b: ActivityCursor): number {
+	if (a.at !== b.at) return a.at < b.at ? 1 : -1;
+	if (a.checkoutId !== b.checkoutId) return b.checkoutId - a.checkoutId;
+	return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** `checkoutId:kind`, as activityEvents builds it, back into a cursor. Null for
+ *  anything else — the value round-trips through the browser. */
+export function parseCursor(at: string | null, id: string | null): ActivityCursor | null {
+	if (!at || !id) return null;
+	const match = /^(\d+):([a-z-]+)$/.exec(id);
+	const time = Date.parse(at);
+	if (!match || Number.isNaN(time)) return null;
+	return { at: new Date(time).toISOString(), checkoutId: Number(match[1]), id };
 }
 
 /** Human label for an event. One place decides this, so the list, the summary

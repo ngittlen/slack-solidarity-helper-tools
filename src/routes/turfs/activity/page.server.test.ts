@@ -19,7 +19,7 @@ vi.mock('$lib/server/van/activity-store.js', () => ({
 	hasAnyTurf: mockHasAnyTurf,
 }));
 
-const { emptyCounts } = await import('$lib/van/turf-activity.js');
+const { emptyCounts, EVENTS_PER_PAGE } = await import('$lib/van/turf-activity.js');
 
 // Two rows per chapter, because chapter_channel_map is keyed by CHANNEL and in
 // production every chapter has two. The single-row-per-chapter fixture this
@@ -190,6 +190,19 @@ describe('/turfs/activity filters', () => {
 		);
 	});
 
+	it('passes the search to both queries, trimmed and capped', async () => {
+		const data = await run(event(ADMIN, `q=${encodeURIComponent('  kent  ')}`));
+		expect(data.search).toBe('kent');
+		for (const mock of [mockRows, mockCounts]) {
+			expect(mock).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ search: 'kent' }),
+			);
+		}
+		const long = await run(event(ADMIN, `q=${'a'.repeat(500)}`));
+		expect(long.search).toHaveLength(100);
+	});
+
 	it('falls back to the default period for junk', async () => {
 		expect((await run(event(ADMIN, 'days=banana'))).period).toBe('7');
 	});
@@ -259,13 +272,38 @@ describe('/turfs/activity payload', () => {
 		expect(data.dayLabels['2026-08-22']).toBe('Saturday, Aug 22');
 	});
 
-	// The total comes from SQL, not from the capped list, so "showing N of M"
-	// stays honest.
-	it('reports the counted total alongside what it is showing', async () => {
+	// The total comes from SQL, not from the loaded page, so "showing N of M"
+	// stays honest while the list pages.
+	it('reports the counted total alongside the first page', async () => {
 		mockCounts.mockResolvedValue({ ...emptyCounts(), claimed: 900, completed: 340 });
 		const data = await run(event(ADMIN));
 		expect(data.total).toBe(1240);
-		expect(data.shown).toBe(1);
+		expect(data.events).toHaveLength(1);
+		expect(data.hasMore).toBe(false);
+	});
+
+	// One row past the page is how the load knows another page exists.
+	it('fetches one row past the page and reports more when it is there', async () => {
+		mockRows.mockResolvedValue(
+			Array.from({ length: EVENTS_PER_PAGE + 1 }, (_, i) =>
+				row({
+					checkoutId: i + 1,
+					claimedAt: new Date(Date.UTC(2026, 7, 24, 12, 0, i)).toISOString(),
+				}),
+			),
+		);
+		const data = await run(event(ADMIN));
+		expect(mockRows).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ limit: EVENTS_PER_PAGE + 1 }),
+		);
+		expect(data.events).toHaveLength(EVENTS_PER_PAGE);
+		expect(data.hasMore).toBe(true);
+	});
+
+	// Later pages measure their period and "ago" labels against this.
+	it('carries the load time for the pages that follow', async () => {
+		expect((await run(event(ADMIN))).now).toBe('2026-08-24T18:00:00.000Z');
 	});
 
 	it('distinguishes an empty catalog from a quiet period', async () => {
