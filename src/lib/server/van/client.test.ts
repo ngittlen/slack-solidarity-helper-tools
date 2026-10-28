@@ -311,6 +311,21 @@ describe('createVanClient', () => {
 			expect(url.searchParams.has('folderIds')).toBe(false);
 			expect(url.searchParams.get('$top')).toBe('50');
 		});
+
+		// 200 pages of 50 is 10,000 lists, and a real campaign held more: the
+		// walk threw on the shared cap and the sync lost its list-number backfill.
+		it('walks past the shared 200-page cap', async () => {
+			let page = 0;
+			const fetchFn = vi.fn(async () => {
+				page++;
+				return res(200, {
+					items: [{ printedListNumber: `L${page}` }],
+					nextPageLink: page < 250 ? `${VAN_BASE_URL}/printedLists?$skip=${page * 50}` : null,
+				});
+			});
+			const lists = await createVanClient(config, fetchFn as never).printedLists([1]);
+			expect(lists).toHaveLength(250);
+		});
 	});
 
 	describe('minivanExportsSince', () => {

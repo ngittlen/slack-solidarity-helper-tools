@@ -110,6 +110,11 @@ const SAVED_LISTS_PAGE_SIZE = 100;
 // so this is far above any real folder while still bounding a server that
 // hands back a self-referencing nextPageLink.
 const MAX_PAGES = 200;
+// /printedLists outgrows that cap: at its 50 a page, 200 pages is only 10,000
+// lists, and One Team Michigan's folders hold more than that — the walk threw
+// on the cap every sync and the list-number backfill was lost. 1,000 pages is
+// 50,000 lists.
+const PRINTED_LISTS_MAX_PAGES = 1000;
 
 /**
  * A paginated walk that could not be finished.
@@ -372,7 +377,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	 * what the sync's per-folder error path is for — it skips the folder and
 	 * leaves its turf exactly as it was.
 	 */
-	async function paginate<T>(path: string): Promise<T[]> {
+	async function paginate<T>(path: string, maxPages = MAX_PAGES): Promise<T[]> {
 		const all: T[] = [];
 		// Cycle guard. Comparing each link to the previous one is not enough —
 		// the first `next` is a relative path while `nextPageLink` is absolute,
@@ -381,7 +386,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 		// longer cycles (A → B → A) that a one-step check never would.
 		const visited = new Set<string>();
 		let next: string | null = path;
-		for (let page = 0; page < MAX_PAGES && next; page++) {
+		for (let page = 0; page < maxPages && next; page++) {
 			const absolute = next.startsWith('http') ? next : `${baseUrl}${next}`;
 			if (visited.has(absolute)) {
 				throw new VanIncompleteError(path, `pagination cycled back to ${absolute}`);
@@ -398,7 +403,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 			next = items.length > 0 ? (body?.nextPageLink ?? null) : null;
 		}
 		if (next) {
-			throw new VanIncompleteError(path, `more than ${MAX_PAGES} pages`);
+			throw new VanIncompleteError(path, `more than ${maxPages} pages`);
 		}
 		return all;
 	}
@@ -447,6 +452,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 					folderIds: folderIds && [...new Set(folderIds)].join(','),
 					$top: PRINTED_LISTS_PAGE_SIZE,
 				})}`,
+				PRINTED_LISTS_MAX_PAGES,
 			),
 
 		// $top=100 is this endpoint's maximum (200 is a 400), versus a default of 50.

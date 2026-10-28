@@ -4,12 +4,25 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { SLACK_BOT_TOKEN, SLACK_GROWTH_REPORT_CHANNEL_ID } from './env.js';
 import { loadSettings } from './settings.js';
 import { errMessage } from '../err-message.js';
+import { timeDependency } from './request-timing.js';
+
+/**
+ * The bot client, its calls timed against the request that makes them (see
+ * request-timing.ts). Every method — `conversations.info`, `paginate` — goes
+ * through `apiCall`, bound in WebClient's constructor, so overriding it here
+ * catches them all, retries included.
+ */
+class TimedWebClient extends WebClient {
+	override apiCall(...args: Parameters<WebClient['apiCall']>): ReturnType<WebClient['apiCall']> {
+		return timeDependency('slack', () => super.apiCall(...args));
+	}
+}
 
 let _slack: WebClient | null = null;
 
 export function getSlack(): WebClient {
 	if (!_slack) {
-		_slack = new WebClient(SLACK_BOT_TOKEN);
+		_slack = new TimedWebClient(SLACK_BOT_TOKEN);
 	}
 	return _slack;
 }
