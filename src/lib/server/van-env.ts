@@ -27,6 +27,7 @@ import {
 	VAN_CAMPAIGN_PREFIX,
 } from './van/campaign-credentials.js';
 import { createVanClient, type VanClient } from './van/client.js';
+import { timedFetch } from './request-timing.js';
 import { createPersonHasher, type PersonHasher } from './van/person-hash.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -62,11 +63,15 @@ export function vanClientFor(campaign: Pick<VanCampaignRow, 'credentialKey'>): V
 	}
 	return {
 		ok: true,
-		client: createVanClient({
-			appName: credential.appName,
-			apiKey: credential.apiKey,
-			databaseMode: credential.databaseMode,
-		}),
+		// Timed against the request it serves; see request-timing.ts.
+		client: createVanClient(
+			{
+				appName: credential.appName,
+				apiKey: credential.apiKey,
+				databaseMode: credential.databaseMode,
+			},
+			timedFetch('van'),
+		),
 	};
 }
 

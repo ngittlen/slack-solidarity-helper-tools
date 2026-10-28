@@ -1,5 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
-import { json, redirect, text } from '@sveltejs/kit';
+import { isHttpError, isRedirect, json, redirect, text } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { db, sessionStore } from '$lib/server/db.js';
@@ -12,6 +12,7 @@ import { startLiveContactPoll } from '$lib/server/van/live-contacts.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
 import { applyDevViewAs, parseDevViewAs } from '$lib/server/dev-view-as.js';
 import { gateTurfOnlySession } from '$lib/server/turf-only-access.js';
+import { requestLabel, timeRequest } from '$lib/server/request-timing.js';
 
 export async function init() {
 	validateEnv();
@@ -54,7 +55,21 @@ export async function init() {
 	}
 }
 
-export const handle: Handle = async ({ event, resolve }) => {
+/** Every request, timed: a slow one is logged with the time it spent on
+ *  Turso, Slack and VAN (see src/lib/server/request-timing.ts). A redirect or
+ *  error thrown from the handler is logged with its own status. */
+export const handle: Handle = (input) =>
+	timeRequest(
+		requestLabel(input.event.request.method, input.event.route.id, input.event.url),
+		async () => handleRequest(input),
+		(outcome) => {
+			if (outcome.ok) return outcome.value.status;
+			const err = outcome.error;
+			return isRedirect(err) || isHttpError(err) ? err.status : null;
+		},
+	);
+
+const handleRequest: Handle = async ({ event, resolve }) => {
 	// Stands in for SvelteKit's own CSRF check, which is disabled in
 	// svelte.config.js so Slack's Origin-less form posts can reach
 	// /api/slack/*. Matches Kit's dev exemption so local form testing behaves
