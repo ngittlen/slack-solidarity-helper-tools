@@ -3,9 +3,13 @@
 	import './activity.css';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { afterNavigate, beforeNavigate } from '$app/navigation';
+	import { onMount, untrack } from 'svelte';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import LoadMore from '$lib/components/ui/LoadMore.svelte';
 	import type { ActivityPage } from './activity-page.js';
+	import { FILTER_DELAY_MS } from '$lib/row-filter.js';
+	import { debounced } from '$lib/debounce.js';
 	import {
 		ACTIVITY_KINDS,
 		activityLabel,
@@ -97,15 +101,48 @@
 		PERIOD_OPTIONS.find((o) => o.value === data.period)?.label ?? 'this period',
 	);
 
-	/** Submits the filters a moment after typing stops, so the search runs
-	 *  without an Enter but not on every keystroke. */
-	const SEARCH_DELAY_MS = 400;
-	let searchTimer: ReturnType<typeof setTimeout> | undefined;
-	function searchSoon(event: Event & { currentTarget: HTMLInputElement }) {
-		const form = event.currentTarget.form;
-		clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => form?.requestSubmit(), SEARCH_DELAY_MS);
+	/** Submits the filters once typing pauses, so the search runs without an
+	 *  Enter but not on every keystroke. Enter, or emptying the box, submits at
+	 *  once; any submit drops the one still waiting, so a search is not run
+	 *  twice. */
+	let filters: HTMLFormElement | undefined;
+	const searchSoon = debounced(() => filters?.requestSubmit(), FILTER_DELAY_MS);
+
+	/** What the search box shows. Its own state rather than `data.search`: a
+	 *  search that lands while the organizer is still typing would otherwise
+	 *  put back the text it searched for, and drop every key typed since.
+	 *  Seeded once from the load; afterNavigate keeps it in step from then on. */
+	let searchText = $state(untrack(() => data.search));
+
+	function typed(event: Event & { currentTarget: HTMLInputElement }) {
+		// Emptied, by backspace or the clear button. Not whitespace, which is the
+		// start of typing more and would reload the history for nothing.
+		if (event.currentTarget.value === '') searchSoon.now();
+		else searchSoon.call();
 	}
+
+	// Any navigation but this form's own — a nav link, Back — drops the search
+	// still waiting, which would otherwise submit over it, and shows the search
+	// the new URL holds. This form's own leave the box alone: the organizer may
+	// have typed on while it loaded. Nor does the first load ('enter'): the box
+	// was seeded from it, and may hold text typed before the script ran.
+	beforeNavigate((navigation) => {
+		if (navigation.type !== 'form') searchSoon.cancel();
+	});
+	afterNavigate((navigation) => {
+		if (navigation.type !== 'form' && navigation.type !== 'enter') searchText = data.search;
+	});
+
+	// Text typed before the page's script ran is picked up by the binding, but
+	// typed no keys since — search it, or the box and the list disagree. After
+	// the usual pause, not at once: this runs while the page hydrates, before
+	// SvelteKit is listening for submits, and a submit now would reload the
+	// whole document.
+	onMount(() => {
+		if (searchText !== data.search) searchSoon.call();
+	});
+
+	$effect(() => searchSoon.cancel);
 
 	// No `ago()` here, and no clock of any kind: each event arrives with its own
 	// `agoLabel` from the load function. This file used to compute it from
@@ -127,6 +164,8 @@
 		action={resolve('/turfs/activity')}
 		data-sveltekit-keepfocus
 		data-sveltekit-replacestate
+		onsubmit={searchSoon.cancel}
+		bind:this={filters}
 	>
 		<div class="filter filter-search">
 			<label for="q">Search</label>
@@ -137,8 +176,8 @@
 				class="search"
 				placeholder="Turf, volunteer or chapter"
 				autocomplete="off"
-				value={data.search}
-				oninput={searchSoon}
+				bind:value={searchText}
+				oninput={typed}
 			/>
 		</div>
 
