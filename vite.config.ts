@@ -18,12 +18,32 @@ export default defineConfig(({ mode }) => {
 		plugins: [sveltekit()],
 		server: { allowedHosts },
 		test: {
-			include: [
-				'src/**/*.{test,spec}.{js,ts}',
-				'mobilize-migrator/**/*.{test,spec}.{js,ts}',
-				'scripts/**/*.{test,spec}.{js,ts}',
+			projects: [
+				{
+					extends: true,
+					test: {
+						name: 'server',
+						include: [
+							'src/**/*.{test,spec}.{js,ts}',
+							'mobilize-migrator/**/*.{test,spec}.{js,ts}',
+							'scripts/**/*.{test,spec}.{js,ts}',
+						],
+						exclude: ['src/**/*.svelte.{test,spec}.{js,ts}'],
+						environment: 'node',
+					},
+				},
+				// Component tests mount into a DOM, which needs Svelte's browser
+				// build: the default server build has no `mount`.
+				{
+					extends: true,
+					resolve: { conditions: ['browser'] },
+					test: {
+						name: 'client',
+						include: ['src/**/*.svelte.{test,spec}.{js,ts}'],
+						environment: 'jsdom',
+					},
+				},
 			],
-			environment: 'node',
 		},
 	};
 });

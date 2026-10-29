@@ -8,11 +8,11 @@
 	// waiting for a scroll that may never come.
 	//
 	// The button is the way in without a scroll: hidden until focused, so a
-	// keyboard reader can tab to it, and visible if the browser turns out to
-	// have no IntersectionObserver. The server cannot know that, so it renders
-	// the same markup as a browser that has one, and the attachment — which
-	// only runs in the browser — finds out.
+	// keyboard or screen-reader user can reach it. When a press loads the last
+	// page, the button goes with it, and focus moves to the first row it
+	// added — so the reader carries on from there, not from the top.
 
+	import { tick } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 
 	interface Props {
@@ -28,8 +28,37 @@
 	 *  ordinary scroll does not outrun a fetch. */
 	const NEAR_PX = 600;
 
-	let unobservable = $state(false);
 	let busy = false;
+
+	let sentinel = $state<HTMLElement>();
+	let button = $state<HTMLButtonElement>();
+
+	/** The rows on screen when the button took focus or was last pressed: the
+	 *  ones a load did not add. */
+	let seen: { container: Element; rows: Set<Element> } | null = null;
+
+	function noteRows() {
+		const container = sentinel?.parentElement;
+		if (container) seen = { container, rows: new Set(container.querySelectorAll('tr, li')) };
+	}
+
+	/** Focus the first row not in `before`, or failing that the last row it
+	 *  held. A row is not focusable by default, so it takes tabindex -1:
+	 *  reachable by script, still out of the tab order. */
+	function focusFirstNewRow(before: NonNullable<typeof seen>) {
+		const rows = [...before.container.querySelectorAll('tr, li')];
+		const row = rows.find((r) => !before.rows.has(r)) ?? rows.findLast((r) => before.rows.has(r));
+		if (!(row instanceof HTMLElement)) return;
+		row.tabIndex = -1;
+		row.focus();
+	}
+
+	// Runs ahead of the {#if} below, so the button is still on the page.
+	$effect.pre(() => {
+		if (!disabled || !seen || !button || document.activeElement !== button) return;
+		const before = seen;
+		void tick().then(() => focusFirstNewRow(before));
+	});
 
 	/** The nearest ancestor that scrolls vertically, or null for the page. */
 	function scrollRoot(el: Element): Element | null {
@@ -63,10 +92,6 @@
 	}
 
 	const watch: Attachment<HTMLElement> = (el) => {
-		if (typeof IntersectionObserver === 'undefined') {
-			unobservable = true;
-			return;
-		}
 		const root = scrollRoot(el);
 		const observer = new IntersectionObserver(
 			(entries) => {
@@ -80,8 +105,17 @@
 </script>
 
 {#if !disabled}
-	<div class="sentinel" aria-hidden="true" {@attach watch}></div>
-	<button type="button" class={['more', { hidden: !unobservable }]} onclick={() => load(null)}>
+	<div class="sentinel" aria-hidden="true" bind:this={sentinel} {@attach watch}></div>
+	<button
+		type="button"
+		class="more"
+		bind:this={button}
+		onfocus={noteRows}
+		onclick={() => {
+			noteRows();
+			void load(null);
+		}}
+	>
 		Show more
 	</button>
 {/if}
@@ -104,11 +138,16 @@
 		cursor: pointer;
 	}
 
-	/* Off screen, not display: none, so it stays in the tab order. */
-	.more.hidden:not(:focus) {
-		position: absolute;
+	/* Off screen, not display: none, so it stays in the tab order. In flow
+	   rather than absolute: inside a scrolling table box, an absolute button
+	   escapes the box and sits at the foot of the table's full height,
+	   stretching the page with blank scroll room. */
+	.more:not(:focus) {
 		width: 1px;
 		height: 1px;
+		margin: -1px 0 0;
+		padding: 0;
+		border: 0;
 		overflow: hidden;
 		clip-path: inset(50%);
 		white-space: nowrap;
