@@ -1,5 +1,5 @@
 import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
-import { createClient } from '@libsql/client';
+import { createClient, type InStatement } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import type { VanClient } from './client.js';
@@ -1013,6 +1013,34 @@ describe('stampDoorsKnocked', () => {
 		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
 		expect(await knocked(2)).toBeNull();
 		expect(await knocked(3)).toBeNull();
+	});
+
+	// The planner, left to itself, walked every contact in the campaign per
+	// checkout: 126s in production, with the database's writes queued behind
+	// it. The count must start from the turf's roster and look each person up.
+	it('reads the roster first and each contact by its key', async () => {
+		const sent: InStatement[] = [];
+		const capturing = new Proxy(client, {
+			get(target, prop) {
+				const value: unknown = Reflect.get(target, prop, target);
+				if (prop === 'execute') {
+					return (stmt: InStatement) => {
+						sent.push(stmt);
+						return target.execute(stmt);
+					};
+				}
+				return typeof value === 'function' ? value.bind(target) : value;
+			},
+		});
+		await stampDoorsKnocked(drizzle(capturing), { campaignId: 1, now: NOW });
+		const [stmt] = sent;
+		if (!stmt || typeof stmt === 'string') throw new Error('no statement captured');
+		const plan = await client.execute({ sql: `EXPLAIN QUERY PLAN ${stmt.sql}`, args: stmt.args });
+		const contactSearches = plan.rows
+			.map((row) => String(row.detail))
+			.filter((detail) => detail.startsWith('SEARCH c '));
+		expect(contactSearches.length).toBeGreaterThan(0);
+		for (const detail of contactSearches) expect(detail).toContain('person_hash=?');
 	});
 });
 
