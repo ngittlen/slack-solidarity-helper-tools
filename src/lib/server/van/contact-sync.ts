@@ -537,10 +537,16 @@ export async function stampDoorsKnocked(
 						sql`, `,
 					)})`;
 	const window = checkoutKnockWindow('van_turf_checkouts');
+	// CROSS JOIN pins the order: the turf's roster by turf_id, then each
+	// person's contact by its primary key. Left to choose, the planner walked
+	// every contact in the campaign for each checkout, twice (SET and the
+	// guard below): 126s on One Team Michigan's 58,000 contacts (2026-10-29),
+	// with every other write and many reads queued behind it. Pinned, the same
+	// stamp takes under a tenth of a second.
 	const knocked = sql`(
 		SELECT count(DISTINCT r.door_hash)
 		FROM van_turf_roster r
-		JOIN van_person_contacts c
+		CROSS JOIN van_person_contacts c
 			ON c.campaign_id = ${options.campaignId} AND c.person_hash = r.person_hash
 		WHERE r.turf_id = van_turf_checkouts.turf_id
 			AND c.last_in_person_at >= ${window.from}
