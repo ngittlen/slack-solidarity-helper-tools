@@ -20,3 +20,11 @@ export function matchesText(
 		.map((field) => field.toLowerCase());
 	return words.every((word) => haystack.some((field) => field.includes(word)));
 }
+
+/**
+ * How long typing has to pause before a filter box applies what was typed.
+ * Applying on every keystroke re-filters a long table, or reloads the activity
+ * history, between keys, and the box falls behind the typing. Enter, or
+ * emptying the box, applies at once.
+ */
+export const FILTER_DELAY_MS = 500;
