@@ -35,13 +35,14 @@ import {
 	type NearbyPlace,
 } from '$lib/van/nearby-summary.js';
 import type { FoundPlace } from '$lib/van/map-focus.js';
+import { claimOptionsFor } from '$lib/van/checkout.js';
 import {
 	loginRedirectPath,
 	sanitizeRedirectTarget,
 	withRedirectTo,
 } from '$lib/server/post-login-redirect.js';
 import { visitorAddress } from '$lib/server/visitor-address.js';
-import { turfAccess } from '$lib/van/access.js';
+import { isTurfStaff, turfAccess } from '$lib/van/access.js';
 import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js';
 import { PUBLIC_LOOKUPS_PER_MINUTE, recordRequest } from '$lib/van/request-budget.js';
 import {
@@ -209,11 +210,7 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 	// needsSlackHref, shipped on every member branch below.
 	const needsName = session.needsName === true;
 
-	const options = {
-		ttlHours: settings.vanTurfClaimTtlHours,
-		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
-		vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
-	};
+	const options = claimOptionsFor(settings, session);
 
 	const access = turfAccess(
 		{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
@@ -371,7 +368,7 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 	}
 
 	const limit = recordChapterView(chapterVisits, session.slackUserId, chapter.chapterId, now, {
-		exempt: session.isAdmin,
+		exempt: isTurfStaff(session),
 		folderIds: await foldersForChapter(db, chapter.chapterId),
 	});
 	if (!limit.allowed) {

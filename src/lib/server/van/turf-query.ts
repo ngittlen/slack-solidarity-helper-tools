@@ -41,6 +41,7 @@ import {
 	canClaim,
 	type ClaimOptions,
 	type ClaimSnapshot,
+	withoutClaimCap,
 } from '../../van/checkout.js';
 import type { BoundingBox, LatLng } from '../../van/geometry.js';
 import {
@@ -223,7 +224,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	const walkReports = await latestWalkReports(db, boxedIds);
 	// No cap: being at the limit is about the viewer, not the turf — see
 	// `claimableOnly` — and would otherwise rank every turf as taken.
-	const ignoringCap = { ...claimOptions, maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
+	const ignoringCap = withoutClaimCap(claimOptions);
 	const takeable = new Set(
 		boxed
 			.filter((row) => {

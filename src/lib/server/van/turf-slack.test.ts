@@ -16,7 +16,10 @@ vi.mock('$lib/server/env.js', () => ({
 	APP_URL: 'https://app.example.org',
 	SLACK_SUPERUSER_ID: 'U_SUPER',
 }));
-vi.mock('$lib/server/slack-admin.js', () => ({ isSlackAdmin: mockIsSlackAdmin }));
+vi.mock('$lib/server/slack-admin.js', () => ({
+	isSlackAdmin: mockIsSlackAdmin,
+	slackRole: async (id: string) => ((await mockIsSlackAdmin(id)) ? 'admin' : null),
+}));
 vi.mock('$lib/server/slack-display-name.js', () => ({ displayName: mockDisplayName }));
 vi.mock('$lib/server/settings.js', () => ({
 	loadVanBlockedIds: mockBlockedIds,

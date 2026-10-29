@@ -33,7 +33,7 @@ import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { turfCampaignEnabled } from './campaigns.js';
 import { visibleToAnyChapter } from './chapter-visibility.js';
 import { chunked } from './sql-chunk.js';
-import { canClaim, isActive } from '../../van/checkout.js';
+import { canClaim, isActive, withoutClaimCap } from '../../van/checkout.js';
 import { latestWalkReports } from './checkout-store.js';
 import { haversineMeters, type LatLng } from '../../van/geometry.js';
 import { doorsLeft, parseHull, turfSnapshot } from '../../van/turf-view.js';
@@ -69,7 +69,7 @@ const HULL_REACH_MILES = 1;
 /** No viewer: the question is whether ANYONE could take a turf, so the
  *  per-volunteer cap is lifted and no claim can be this id's own. */
 const ANYONE = '';
-const NO_CAP = { maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
+const NO_CAP = withoutClaimCap({});
 
 export async function loadNearbySummary(
 	db: Db,

@@ -30,6 +30,15 @@ export const BLOCKED_MESSAGE =
 	"Turf checkout isn't available for your account. Contact an organizer if you think that's wrong.";
 
 /**
+ * Admins and moderators. Exempt from the per-volunteer claim cap and the
+ * chapter-view limit; holder names, hiding turf and the request-budget
+ * exemption stay with `isAdmin` alone.
+ */
+export function isTurfStaff(viewer: { isAdmin: boolean; isModerator?: boolean }): boolean {
+	return viewer.isAdmin || viewer.isModerator === true;
+}
+
+/**
  * Whether `viewer` may use turf checkout.
  *
  * Admins and the superuser are never blocked, so an accidental or malicious

@@ -33,7 +33,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { zipChapterMap } from '../schema.js';
 import { SLACK_SUPERUSER_ID, APP_URL } from '../env.js';
 import { loadSettings, loadVanBlockedIds } from '../settings.js';
-import { isSlackAdmin } from '../slack-admin.js';
+import { isSlackAdmin, slackRole } from '../slack-admin.js';
 import { displayName } from '../slack-display-name.js';
 import { claimTurf, endClaim } from './checkout-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from './packet-tracker-live.js';
@@ -57,12 +57,12 @@ import {
 	type LocationPrompt,
 	type SlackMessage,
 } from './turf-command.js';
-import { turfAccess } from '../../van/access.js';
+import { isTurfStaff, turfAccess } from '../../van/access.js';
 import { chaptersSeen, recordChapterView } from '../../van/chapter-rate-limit.js';
 import { recordRequest } from '../../van/request-budget.js';
 import { chapterVisits, pruneRateLimitStores, turfRequests } from './rate-limit-store.js';
 import type { LatLng } from '../../van/geometry.js';
-import { resolveClaimOptions, type ClaimOptions } from '../../van/checkout.js';
+import { claimOptionsFor, type ClaimOptions } from '../../van/checkout.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -409,17 +409,15 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 	// only have refused them before knowing they were exempt. The cost is that a
 	// request already over budget now does three lookups before being turned
 	// away — cheap, and only on the path that is already being throttled.
-	const [isAdmin, blockedIds, settings] = await Promise.all([
-		isSlackAdmin(ctx.slackUserId),
+	const [role, blockedIds, settings] = await Promise.all([
+		slackRole(ctx.slackUserId),
 		loadVanBlockedIds(db),
 		loadSettings(db),
 	]);
+	const isAdmin = role === 'admin';
+	const isModerator = role === 'moderator';
 	const viewer = { slackUserId: ctx.slackUserId, isAdmin };
-	const claimOptions = resolveClaimOptions({
-		ttlHours: settings.vanTurfClaimTtlHours,
-		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
-		vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
-	});
+	const claimOptions = claimOptionsFor(settings, { isAdmin, isModerator });
 
 	// Counted against the same store the web API spends, so the budget follows
 	// the user rather than the surface they came in through — and so does the
@@ -495,7 +493,7 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 	// is free, so paging and claiming within one county cost nothing — and so
 	// is a chapter whose VAN folders were already seen through another one.
 	const limit = recordChapterView(chapterVisits, ctx.slackUserId, chapter.chapterId, now, {
-		exempt: isAdmin,
+		exempt: isTurfStaff({ isAdmin, isModerator }),
 		folderIds: await foldersForChapter(db, chapter.chapterId),
 	});
 	if (!limit.allowed) {

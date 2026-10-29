@@ -4,7 +4,8 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
-import { turfAccess } from '$lib/van/access.js';
+import { isTurfStaff, turfAccess } from '$lib/van/access.js';
+import { claimOptionsFor } from '$lib/van/checkout.js';
 import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js';
 import { recordRequest } from '$lib/van/request-budget.js';
 import {
@@ -93,7 +94,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// free (a repeat chapter never costs a slot), so this only bites someone
 	// sweeping chapters through the API.
 	const limit = recordChapterView(chapterVisits, session.slackUserId, chapterId, now, {
-		exempt: session.isAdmin,
+		exempt: isTurfStaff(session),
 		folderIds: await foldersForChapter(db, chapterId),
 	});
 	if (!limit.allowed) {
@@ -134,11 +135,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		// Same claim options as the page load. An endpoint that skipped them
 		// would mark turf claimable on pan that the page had greyed out — and
 		// the claim would then be refused on click.
-		claimOptions: {
-			ttlHours: settings.vanTurfClaimTtlHours,
-			maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
-			vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
-		},
+		claimOptions: claimOptionsFor(settings, session),
 	});
 
 	// `total` is the chapter's, matching the page load. A per-viewport remainder

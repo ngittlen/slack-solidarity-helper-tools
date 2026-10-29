@@ -186,6 +186,27 @@ describe('/turfs/organizer access', () => {
 		expect(mockHoldings).not.toHaveBeenCalled();
 		expect(mockCompletions).not.toHaveBeenCalled();
 	});
+
+	it('lets a moderator read the board, without the controls', async () => {
+		const data = await run(event({ ...ADMIN, isAdmin: false, isModerator: true }));
+		expect(data.holdings).toHaveLength(1);
+		expect(data.canManage).toBe(false);
+		expect(mockSyncView).not.toHaveBeenCalled();
+		expect(data.manualSync).toBeNull();
+	});
+
+	// An account carries an outside volunteer's email, which is for admins alone.
+	it('names holders to a moderator without their accounts', async () => {
+		const data = await run(event({ ...ADMIN, isAdmin: false, isModerator: true }));
+		expect(data.holdings[0].account).toBeNull();
+		expect(data.suspects.every((c: { account: unknown }) => c.account === null)).toBe(true);
+	});
+
+	it('gives an admin the controls and the accounts', async () => {
+		const data = await run(event(ADMIN));
+		expect(data.canManage).toBe(true);
+		expect(data.holdings[0].account).not.toBeNull();
+	});
 });
 
 describe('/turfs/organizer filters', () => {
@@ -686,6 +707,10 @@ describe('/turfs/organizer VAN sync', () => {
 	it.each([
 		['no session', null],
 		['a non-admin', { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false }],
+		[
+			'a moderator',
+			{ slackUserId: 'U_MOD', slackUserName: 'Mo', isAdmin: false, isModerator: true },
+		],
 	])('refuses %s without starting anything', async (_label, session) => {
 		await expect(press(session)).resolves.toMatchObject({ status: 403 });
 		expect(mockStartSync).not.toHaveBeenCalled();
