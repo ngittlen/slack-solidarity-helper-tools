@@ -8,7 +8,17 @@
 // calls it made to each of them, and one that took SLOW_REQUEST_MS or more is
 // logged with it:
 //
-//   [slow] GET / → 200 in 48210ms — db 14 calls 1.1s (slowest 0.4s), slack 23 calls 46.8s (slowest 31.2s); 2 others in flight
+//   [slow] GET /turfs → 200 in 7309ms — db 44 calls 8.0s (slowest 6.9s, #1: select "data", "expires_at" from "sessions" where …); 0 others in flight
+//
+// A database or Slack call that takes SLOW_CALL_MS by itself is also logged on
+// its own, with when it started and what made it — a page, or work running
+// outside one (a sync's poll, the recount after a turf is walked):
+//
+//   [slow call] db 14.0s from 23:48:53.120: update "van_turfs" set "uncontacted_doors" = … — after POST /api/turfs/[turfId]
+//
+// Each dependency's slowest call is named, with its place among that
+// dependency's calls: once the slow requests were seen to be one call stalling
+// for seconds while the rest took tens of milliseconds, the question was which.
 //
 // Times are summed per call, so calls made side by side (a Promise.all) can
 // add up to more than the request took. VAN's time is until response headers,
@@ -22,6 +32,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Client, Transaction } from '@libsql/client';
 
 export const SLOW_REQUEST_MS = 2_000;
+export const SLOW_CALL_MS = 2_000;
 /** Query parameters safe and worth naming in a label: which campaign a VAN
  *  sync call is for, and whether it is the shared stages. */
 const REQUEST_LABEL_PARAMS = ['campaign', 'shared'] as const;
@@ -33,12 +44,23 @@ interface Tally {
 	calls: number;
 	totalMs: number;
 	slowestMs: number;
+	/** What the slowest call was — see `what` on timeDependency — and its
+	 *  place among this dependency's calls, from 1, in the order they started.
+	 *  A stall that always lands on #1 is the connection, not the statement. */
+	slowest: string;
+	slowestIndex: number;
 }
+
+/** Long enough to tell statements apart, short enough to keep a line a line. */
+const MAX_WHAT = 80;
 
 interface RequestTiming {
 	label: string;
 	startedAt: number;
 	tallies: Map<Dependency, Tally>;
+	/** Set once the request has answered and been logged. Calls made after it
+	 *  belong to work it left running. */
+	finished: boolean;
 }
 
 const storage = new AsyncLocalStorage<RequestTiming>();
@@ -66,7 +88,7 @@ export async function timeRequest<T>(
 	statusOf: (outcome: { ok: true; value: T } | { ok: false; error: unknown }) => number | null,
 	now = Date.now,
 ): Promise<T> {
-	const timing: RequestTiming = { label, startedAt: now(), tallies: new Map() };
+	const timing: RequestTiming = { label, startedAt: now(), tallies: new Map(), finished: false };
 	inFlight++;
 	let status: number | null = null;
 	try {
@@ -77,69 +99,184 @@ export async function timeRequest<T>(
 		status = statusOf({ ok: false, error });
 		throw error;
 	} finally {
+		timing.finished = true;
 		inFlight--;
 		const ms = now() - timing.startedAt;
 		if (ms >= SLOW_REQUEST_MS) console.warn(formatSlowRequest(timing, status, ms, inFlight));
 	}
 }
 
-/** Time one call to a dependency against the request it is made for. Outside
- *  a request — a scheduler tick, the live contact poll — it just runs. */
+/**
+ * Time one call to a dependency against the request it is made for. Outside
+ * a request — a scheduler tick, the live contact poll — it just runs.
+ *
+ * `what` names the call should it be the slowest: a statement, a Slack
+ * method, a URL path. Never anything carrying a value or a secret.
+ */
 export async function timeDependency<T>(
 	dependency: Dependency,
 	call: () => Promise<T>,
+	what = '',
 	now = Date.now,
 ): Promise<T> {
 	const timing = storage.getStore();
-	if (!timing) return call();
+	if (!timing || timing.finished) return timeLoneCall(dependency, call, what, timing, now);
 	const startedAt = now();
+	const tally = timing.tallies.get(dependency) ?? {
+		calls: 0,
+		totalMs: 0,
+		slowestMs: 0,
+		slowest: '',
+		slowestIndex: 0,
+	};
+	timing.tallies.set(dependency, tally);
+	const index = ++tally.calls;
 	try {
 		return await call();
 	} finally {
 		const ms = now() - startedAt;
-		const tally = timing.tallies.get(dependency) ?? { calls: 0, totalMs: 0, slowestMs: 0 };
-		tally.calls++;
+		// Finished first: the request answered while this call ran on.
+		logSlowCall(
+			dependency,
+			what,
+			startedAt,
+			ms,
+			`${timing.finished ? 'after ' : ''}${timing.label}`,
+		);
 		tally.totalMs += ms;
-		tally.slowestMs = Math.max(tally.slowestMs, ms);
-		timing.tallies.set(dependency, tally);
+		if (ms > tally.slowestMs || tally.slowestIndex === 0) {
+			tally.slowestMs = ms;
+			tally.slowest = what;
+			tally.slowestIndex = index;
+		}
 	}
 }
 
-/** `fetch`, timed as `dependency`. For clients that take their fetch injected. */
-export function timedFetch(dependency: Dependency, fetchFn: typeof fetch = fetch): typeof fetch {
-	return (input, init) => timeDependency(dependency, () => fetchFn(input, init));
+/** A call made outside any request, or by work a request started and did not
+ *  wait for (the contact nudge after a turf is walked): no tally to add it
+ *  to, but a slow one is still logged. */
+async function timeLoneCall<T>(
+	dependency: Dependency,
+	call: () => Promise<T>,
+	what: string,
+	startedBy: RequestTiming | undefined,
+	now: () => number,
+): Promise<T> {
+	const startedAt = now();
+	try {
+		return await call();
+	} finally {
+		const context = startedBy ? `after ${startedBy.label}` : 'outside a request';
+		logSlowCall(dependency, what, startedAt, now() - startedAt, context);
+	}
 }
+
+/**
+ * One call that took SLOW_CALL_MS by itself, whoever made it. Requests that
+ * stall together show up here side by side with what they stalled behind —
+ * the call that started first and ran longest. Not VAN: its exports and long
+ * pages are slow by nature, and no page waits on them.
+ */
+function logSlowCall(
+	dependency: Dependency,
+	what: string,
+	startedAt: number,
+	ms: number,
+	context: string,
+): void {
+	if (dependency === 'van' || ms < SLOW_CALL_MS) return;
+	console.warn(
+		`[slow call] ${dependency} ${seconds(ms)} from ${new Date(startedAt).toISOString().slice(11, 23)}` +
+			`${what ? `: ${what}` : ''} — ${context}`,
+	);
+}
+
+/** `fetch`, timed as `dependency` and named by host and path — never the
+ *  query, which for a VAN export's blob is a signed token. For clients that
+ *  take their fetch injected. */
+export function timedFetch(dependency: Dependency, fetchFn: typeof fetch = fetch): typeof fetch {
+	return (input, init) =>
+		timeDependency(dependency, () => fetchFn(input, init), describeUrl(input));
+}
+
+function describeUrl(input: string | URL | Request): string {
+	try {
+		const url = new URL(input instanceof Request ? input.url : input);
+		return `${url.host}${url.pathname}`;
+	} catch {
+		return '';
+	}
+}
+
+/** A statement's SQL, on one line and cut short. drizzle sends values as `?`
+ *  parameters, so the text carries none of them. */
+function describeStatement(stmt: unknown): string {
+	const text = typeof stmt === 'string' ? stmt : (stmt as { sql?: unknown } | undefined)?.sql;
+	if (typeof text !== 'string') return '';
+	const flat = text.replace(/\s+/g, ' ').trim();
+	return flat.length > MAX_WHAT ? `${flat.slice(0, MAX_WHAT)}…` : flat;
+}
+
+const describeBatch = (args: unknown[]) => {
+	const stmts = Array.isArray(args[0]) ? args[0] : [];
+	return `batch of ${stmts.length}: ${describeStatement(stmts[0])}`;
+};
+
+type Describe = (args: unknown[]) => string;
+
+const TRANSACTION_METHODS: Record<string, Describe> = {
+	execute: (args) => describeStatement(args[0]),
+	batch: describeBatch,
+	executeMultiple: (args) => describeStatement(args[0]),
+	commit: () => 'commit',
+	rollback: () => 'rollback',
+};
 
 /** The libsql client's round trips, timed as `db`: what drizzle calls for a
  *  query, a batch, and each statement of a transaction. The transaction's own
  *  begin, commit and rollback count too — begin is where a write waits its
  *  turn behind another. */
 export function timedLibsqlClient(client: Client): Client {
-	return timeMethods(client, ['execute', 'batch', 'migrate', 'executeMultiple'], {
-		transaction: (tx) =>
-			timeMethods(tx as Transaction, ['execute', 'batch', 'executeMultiple', 'commit', 'rollback']),
-	});
+	return timeMethods(
+		client,
+		{
+			execute: (args) => describeStatement(args[0]),
+			batch: describeBatch,
+			migrate: (args) => `migrate of ${Array.isArray(args[0]) ? args[0].length : 0}`,
+			executeMultiple: (args) => describeStatement(args[0]),
+		},
+		{
+			transaction: {
+				describe: () => 'begin transaction',
+				wrap: (tx) => timeMethods(tx as Transaction, TRANSACTION_METHODS),
+			},
+		},
+	);
 }
 
-/** A view of `target` whose `names` methods are timed as `db`, and whose
+/** A view of `target` whose `methods` are timed as `db`, and whose
  *  `wrapResult` methods are timed and have their result wrapped. */
 function timeMethods<T extends object>(
 	target: T,
-	names: readonly string[],
-	wrapResult: Record<string, (result: unknown) => unknown> = {},
+	methods: Record<string, Describe>,
+	wrapResult: Record<string, { describe: Describe; wrap: (result: unknown) => unknown }> = {},
 ): T {
 	return new Proxy(target, {
 		get(obj, prop) {
 			const value: unknown = Reflect.get(obj, prop, obj);
 			if (typeof value !== 'function') return value;
 			const method = value as (...args: unknown[]) => unknown;
-			if (typeof prop === 'string' && names.includes(prop)) {
-				return (...args: unknown[]) => timeDependency('db', async () => method.apply(obj, args));
+			const describe = typeof prop === 'string' ? methods[prop] : undefined;
+			if (describe) {
+				return (...args: unknown[]) =>
+					timeDependency('db', async () => method.apply(obj, args), describe(args));
 			}
-			const wrap = typeof prop === 'string' ? wrapResult[prop] : undefined;
-			if (wrap) {
+			const wrapped = typeof prop === 'string' ? wrapResult[prop] : undefined;
+			if (wrapped) {
 				return async (...args: unknown[]) =>
-					wrap(await timeDependency('db', async () => method.apply(obj, args)));
+					wrapped.wrap(
+						await timeDependency('db', async () => method.apply(obj, args), wrapped.describe(args)),
+					);
 			}
 			return method.bind(obj);
 		},
@@ -159,7 +296,12 @@ function formatSlowRequest(
 		if (!tally) return [];
 		return [
 			`${dependency} ${tally.calls} call${tally.calls === 1 ? '' : 's'} ${seconds(tally.totalMs)} ` +
-				`(slowest ${seconds(tally.slowestMs)})`,
+				// No slowest until a call has finished; one still running is in
+				// the [slow call] lines when it ends.
+				(tally.slowestIndex > 0
+					? `(slowest ${seconds(tally.slowestMs)}, #${tally.slowestIndex}` +
+						`${tally.slowest ? `: ${tally.slowest}` : ''})`
+					: '(none finished)'),
 		];
 	});
 	return (

@@ -14,7 +14,7 @@ import { timeDependency } from './request-timing.js';
  */
 class TimedWebClient extends WebClient {
 	override apiCall(...args: Parameters<WebClient['apiCall']>): ReturnType<WebClient['apiCall']> {
-		return timeDependency('slack', () => super.apiCall(...args));
+		return timeDependency('slack', () => super.apiCall(...args), args[0]);
 	}
 }
 
