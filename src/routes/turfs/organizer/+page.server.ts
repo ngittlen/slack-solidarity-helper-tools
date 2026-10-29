@@ -132,9 +132,11 @@ function doorsNow(history: TurfHistory): TurfHistoryView['doorsNow'] {
 export const load: PageServerLoad = async ({ locals, url }) => {
 	// Checked here, not just in +layout.server.ts — layout and page loads run
 	// concurrently, so an unauthenticated request still reaches this function.
-	// One check covers both cases: a missing session and a signed-in non-admin
+	// One check covers both cases: a missing session and a signed-in volunteer
 	// both get the same bare 302, per the constitution's Principle I.
-	if (!locals.session?.isAdmin) redirect(302, '/');
+	// Moderators may read the board; the actions below stay admin-only.
+	const session = locals.session;
+	if (!session?.isAdmin && !session?.isModerator) redirect(302, '/');
 
 	const settings = await loadSettings(db);
 	// Deduplicated, not just sorted — the channel map lists a chapter once per
@@ -185,7 +187,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// Every campaign's, whatever the filters: a request placed in the wrong
 		// chapter is exactly what the chapter filter would hide.
 		loadRequestedTurf(db),
-		readManualSync(now),
+		// Only an admin's page shows the sync controls.
+		session.isAdmin ? readManualSync(now) : null,
 	]);
 
 	// Story 8.2. Both sides of the comparison are our own columns — the sync
@@ -195,13 +198,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const current = currentHoldings(holdingRows, now);
 	const suspected = suspectCompletions(completionRows);
 	// Every holder this page names, in one read; and how far each claim has
-	// got, in another.
+	// got, in another. Accounts carry outside volunteers' emails, which are
+	// for admins alone: a moderator's board names holders without them.
 	const [accounts, progress] = await Promise.all([
-		loadHolderAccounts(db, [
-			...current.map((h) => h.slackUserId),
-			...suspected.map((c) => c.slackUserId),
-			...drift.items.map((i) => i.heldByUserId),
-		]),
+		session.isAdmin
+			? loadHolderAccounts(db, [
+					...current.map((h) => h.slackUserId),
+					...suspected.map((c) => c.slackUserId),
+					...drift.items.map((i) => i.heldByUserId),
+				])
+			: new Map<string, HolderAccount>(),
 		claimDoorProgress(
 			db,
 			current.map((h) => h.checkoutId),
@@ -230,6 +236,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	return {
 		pageTitle: 'Turf right now',
+		// Whether to show the controls: sync, place, unhide, history. False for
+		// moderators, whose view is read-only; the actions refuse them regardless.
+		canManage: session.isAdmin,
 		drift: {
 			...drift,
 			items: drift.items.map((item) => ({

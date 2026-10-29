@@ -254,26 +254,40 @@ describe('POST /api/turfs/[turfId] — configured claim options', () => {
 		mockLoadSettings.mockResolvedValue({
 			vanTurfClaimTtlHours: 12,
 			vanTurfMaxConcurrentClaims: 5,
+			vanAssignmentTtlHours: 24,
 		});
 
 		await POST(event(VOLUNTEER, { action: 'claim' }));
 
 		expect(mockClaim).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ options: { ttlHours: 12, maxConcurrentClaims: 5 } }),
+			expect.objectContaining({
+				options: { ttlHours: 12, maxConcurrentClaims: 5, vanAssignmentTtlHours: 24 },
+			}),
 		);
+	});
+
+	it.each([
+		['an admin', { ...VOLUNTEER, isAdmin: true }],
+		['a moderator', { ...VOLUNTEER, isModerator: true }],
+	])('lifts the cap for %s', async (_label, session) => {
+		await POST(event(session, { action: 'claim' }));
+
+		const options = mockClaim.mock.calls[0]![1].options as Record<string, number>;
+		expect(options.maxConcurrentClaims).toBe(Number.MAX_SAFE_INTEGER);
 	});
 
 	it('does not fall back to the built-in defaults once configured', async () => {
 		mockLoadSettings.mockResolvedValue({
 			vanTurfClaimTtlHours: 1,
 			vanTurfMaxConcurrentClaims: 1,
+			vanAssignmentTtlHours: 1,
 		});
 
 		await POST(event(VOLUNTEER, { action: 'claim' }));
 
 		const options = mockClaim.mock.calls[0]![1].options as Record<string, number>;
-		expect(options).toEqual({ ttlHours: 1, maxConcurrentClaims: 1 });
+		expect(options).toEqual({ ttlHours: 1, maxConcurrentClaims: 1, vanAssignmentTtlHours: 1 });
 	});
 
 	// Release and complete carry no TTL and no cap, so they must not pay for a

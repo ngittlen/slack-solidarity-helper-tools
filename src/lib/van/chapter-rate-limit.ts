@@ -97,16 +97,16 @@ export interface RateLimitDecision {
  * feature properly while barely inconveniencing a script.
  */
 export interface ChapterViewOptions {
-	/** Never refuse this viewer. Admins are exempt, because the compartment
-	 *  this enforces does not apply to them: `/turfs/organizer` and the drift
-	 *  report already show every chapter at once, by design and without a
-	 *  limiter. Capping the map at a dozen counties an hour therefore withheld
-	 *  nothing an admin could not read on the next page over, while breaking
-	 *  the one job — checking turf across a state on launch night — that needs
-	 *  to move faster than a volunteer ever would.
+	/** Never refuse this viewer. Admins and moderators are exempt, because the
+	 *  compartment this enforces does not apply to them: `/turfs/organizer`
+	 *  shows them every chapter at once, by design and without a limiter, so
+	 *  a cap on the map would withhold nothing they cannot read on the next
+	 *  page over. It would only slow the one job — checking turf across a
+	 *  state on launch night — that needs to move faster than a volunteer
+	 *  ever would.
 	 *
-	 *  Views are still RECORDED and still cross `CHAPTER_LOG_THRESHOLD`, so an
-	 *  admin sweeping every county remains visible in the log. Removing the
+	 *  Views are still RECORDED and still cross `CHAPTER_LOG_THRESHOLD`, so
+	 *  staff sweeping every county remain visible in the log. Removing the
 	 *  throttle is not the same as removing the audit trail, and an insider is
 	 *  exactly who that line is for. */
 	exempt?: boolean;

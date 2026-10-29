@@ -14,6 +14,7 @@
 // ran, and a volunteer standing in front of that turf would be told it was
 // taken by someone who has long since gone home.
 
+import { isTurfStaff } from './access.js';
 import type { TurfStatus } from './turf-status.js';
 
 /** The turf fields the rules actually depend on. Deliberately narrow so the
@@ -152,6 +153,40 @@ export function resolveClaimOptions(
 			DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 		),
 	};
+}
+
+/** `options` with the per-volunteer cap lifted. */
+export function withoutClaimCap<T extends ClaimOptions>(options: T): T {
+	return { ...options, maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
+}
+
+/** The claim settings as loadSettings resolves them from /settings. */
+export interface ClaimSettings {
+	vanTurfClaimTtlHours: number;
+	vanTurfMaxConcurrentClaims: number;
+	vanAssignmentTtlHours: number;
+}
+
+/**
+ * The claim options `viewer` is held to. Every caller that claims, or shows
+ * what is claimable, on a viewer's behalf builds its options here, so the
+ * page, the map's viewport endpoint, the claim route and the `/turfs` Slack
+ * command give that viewer the same answer.
+ *
+ * Turf staff (admins and moderators) are uncapped: the cap is there to stop
+ * one volunteer taking a neighbourhood, and organizers hold turf on others'
+ * behalf.
+ */
+export function claimOptionsFor(
+	settings: ClaimSettings,
+	viewer: { isAdmin: boolean; isModerator?: boolean },
+): Required<ClaimOptions> {
+	const options = resolveClaimOptions({
+		ttlHours: settings.vanTurfClaimTtlHours,
+		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+		vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
+	});
+	return isTurfStaff(viewer) ? withoutClaimCap(options) : options;
 }
 
 function clamp(

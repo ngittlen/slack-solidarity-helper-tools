@@ -44,6 +44,7 @@
 				? [
 						{ href: '/members', label: 'Member lookup' },
 						{ href: '/turfs', label: 'Turf checkout' },
+						{ href: '/turfs/organizer', label: 'Turf right now' },
 						{ href: '/post-as-you', label: 'Post as you' },
 					]
 				: [],

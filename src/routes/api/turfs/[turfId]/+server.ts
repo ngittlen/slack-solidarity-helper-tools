@@ -4,6 +4,7 @@ import { db } from '$lib/server/db.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
 import { turfAccess } from '$lib/van/access.js';
+import { claimOptionsFor } from '$lib/van/checkout.js';
 import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
 import { setTurfHidden } from '$lib/server/van/turf-hide-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from '$lib/server/van/packet-tracker-live.js';
@@ -155,11 +156,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			slackUserId: session.slackUserId,
 			slackUserName: session.slackUserName,
 			now: new Date(now),
-			options: {
-				ttlHours: settings.vanTurfClaimTtlHours,
-				maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
-				vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
-			},
+			options: claimOptionsFor(settings, session),
 			acknowledgedKnocked: acknowledgedKnocked === true,
 			sheetCheck: packetTrackerCheck(db),
 		});

@@ -3,6 +3,7 @@ import {
 	activeClaimFor,
 	activeClaimsFor,
 	canClaim,
+	claimOptionsFor,
 	DEFAULT_CLAIM_TTL_HOURS,
 	DEFAULT_MAX_CONCURRENT_CLAIMS,
 	DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
@@ -171,6 +172,24 @@ describe('canClaim', () => {
 			ok: false,
 			reason: 'at-claim-limit',
 		});
+	});
+
+	it.each([
+		['an admin', { isAdmin: true }, true],
+		['a moderator', { isAdmin: false, isModerator: true }, true],
+		['a volunteer', { isAdmin: false }, false],
+	])('holds %s to the cap only when not turf staff', (_label, viewer, uncapped) => {
+		const held = [
+			claim({ turfId: 4200, slackUserId: 'U_BOB' }),
+			claim({ turfId: 4201, slackUserId: 'U_BOB' }),
+		];
+		const settings = {
+			vanTurfClaimTtlHours: DEFAULT_CLAIM_TTL_HOURS,
+			vanTurfMaxConcurrentClaims: 2,
+			vanAssignmentTtlHours: DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
+		};
+		const decision = canClaim(turf(), held, 'U_BOB', NOW, claimOptionsFor(settings, viewer));
+		expect(decision.ok).toBe(uncapped);
 	});
 
 	it('does not count finished claims toward the cap', () => {

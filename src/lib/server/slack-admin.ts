@@ -33,7 +33,8 @@ export async function slackRole(slackUserId: string): Promise<SlackRole> {
 }
 
 /** Admins only. For the places a moderator must NOT reach — today, the admin
- *  view /turfs gives in Slack (holder names, no rate limit; see turf-slack.ts). */
+ *  view /turfs gives in Slack: holder names and no request budget. Moderators
+ *  share the chapter-view and claim-cap exemptions (see turf-slack.ts). */
 export async function isSlackAdmin(slackUserId: string): Promise<boolean> {
 	return (await slackRole(slackUserId)) === 'admin';
 }

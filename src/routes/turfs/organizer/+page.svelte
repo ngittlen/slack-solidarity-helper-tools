@@ -104,7 +104,7 @@
 	 *  reload the board once so the turf it picked up is in the tables. */
 	const POLL_MS = 5000;
 	$effect(() => {
-		if (!syncRunning) return;
+		if (!syncRunning || !data.canManage) return;
 		let stopped = false;
 		const timer = setInterval(async () => {
 			try {
@@ -216,119 +216,125 @@
 				/>
 			</div>
 		{/if}
-		<a class="cross-link" href={resolve('/turfs/activity')}>See what already happened →</a>
-		<a class="cross-link" href={resolve('/turfs/organizer/mentor-walks')}>Mentor walks →</a>
+		<!-- Both admin-only pages. -->
+		{#if data.canManage}
+			<a class="cross-link" href={resolve('/turfs/activity')}>See what already happened →</a>
+			<a class="cross-link" href={resolve('/turfs/organizer/mentor-walks')}>Mentor walks →</a>
+		{/if}
 	</form>
 
-	<!-- For turf just cut in VAN to answer a request: pull the catalog now
-	     rather than at the next scheduled sync. Works with JavaScript off too. -->
-	<form
-		class="van-sync"
-		method="POST"
-		action="?/syncVan"
-		use:enhance={() => {
-			syncStarting = true;
-			return async ({ update }) => {
-				await update();
-				// The load just read the press afresh.
-				polled = null;
-				syncStarting = false;
-			};
-		}}
-	>
-		<button type="submit" class="van-sync-button" disabled={syncStarting}>
-			{syncStarting ? 'Starting…' : 'Sync VAN now'}
-		</button>
-		<p
-			class="van-sync-status"
-			class:is-error={form?.syncError || (sync?.stalled && !form?.syncJoined)}
-			role="status"
+	<!-- Admin-only, like the syncVan action behind it. -->
+	{#if data.canManage}
+		<!-- For turf just cut in VAN to answer a request: pull the catalog now
+		     rather than at the next scheduled sync. Works with JavaScript off too. -->
+		<form
+			class="van-sync"
+			method="POST"
+			action="?/syncVan"
+			use:enhance={() => {
+				syncStarting = true;
+				return async ({ update }) => {
+					await update();
+					// The load just read the press afresh.
+					polled = null;
+					syncStarting = false;
+				};
+			}}
 		>
-			{#if form?.syncError}
-				{form.syncError}
-			{:else if form?.syncJoined}
-				A sync is already running. It will read VAN again within a couple of minutes and pick up
-				your new turf — no need to press again.
-			{:else if sync}
-				{sync.status}
-				<!-- A press's report must not hide a campaign whose syncs have
-				     failed since. -->
-				{#if lastSyncFailed}
-					{@render lastSynced(data.lastVanSync.perCampaign ?? [])}
+			<button type="submit" class="van-sync-button" disabled={syncStarting}>
+				{syncStarting ? 'Starting…' : 'Sync VAN now'}
+			</button>
+			<p
+				class="van-sync-status"
+				class:is-error={form?.syncError || (sync?.stalled && !form?.syncJoined)}
+				role="status"
+			>
+				{#if form?.syncError}
+					{form.syncError}
+				{:else if form?.syncJoined}
+					A sync is already running. It will read VAN again within a couple of minutes and pick up
+					your new turf — no need to press again.
+				{:else if sync}
+					{sync.status}
+					<!-- A press's report must not hide a campaign whose syncs have
+					     failed since. -->
+					{#if lastSyncFailed}
+						{@render lastSynced(data.lastVanSync.perCampaign ?? [])}
+					{/if}
+				{:else if form?.syncQueued}
+					A scheduled sync is running now. Your new turf will load automatically once it finishes,
+					then its map shapes — no need to press again.
+				{:else if form?.syncStarted}
+					Sync started. New turf usually shows up within a few minutes, then appears on the map as
+					its shape loads — reload to check.
+				{:else if data.lastVanSync.perCampaign}
+					{@render lastSynced(data.lastVanSync.perCampaign)}
+				{:else if data.lastVanSync.label}
+					VAN last synced {data.lastVanSync.label}.
+				{:else}
+					VAN has not synced yet.
 				{/if}
-			{:else if form?.syncQueued}
-				A scheduled sync is running now. Your new turf will load automatically once it finishes,
-				then its map shapes — no need to press again.
-			{:else if form?.syncStarted}
-				Sync started. New turf usually shows up within a few minutes, then appears on the map as its
-				shape loads — reload to check.
-			{:else if data.lastVanSync.perCampaign}
-				{@render lastSynced(data.lastVanSync.perCampaign)}
-			{:else if data.lastVanSync.label}
-				VAN last synced {data.lastVanSync.label}.
-			{:else}
-				VAN has not synced yet.
-			{/if}
-		</p>
-	</form>
+			</p>
+		</form>
 
-	{#snippet lastSynced(campaigns: NonNullable<typeof data.lastVanSync.perCampaign>)}
-		VAN last synced:
-		{#each campaigns as campaign, i (campaign.id)}
-			{i > 0 ? ' · ' : ''}{campaign.name}
-			{campaign.label ?? 'not yet'}{#if campaign.failed}
-				(<a
-					class="van-sync-failed"
-					href={resolve('/settings/van/[campaignId]', { campaignId: String(campaign.id) })}
-					>last sync failed</a
-				>){/if}{i === campaigns.length - 1 ? '.' : ''}
-		{/each}
-	{/snippet}
+		{#snippet lastSynced(campaigns: NonNullable<typeof data.lastVanSync.perCampaign>)}
+			VAN last synced:
+			{#each campaigns as campaign, i (campaign.id)}
+				{i > 0 ? ' · ' : ''}{campaign.name}
+				{campaign.label ?? 'not yet'}{#if campaign.failed}
+					(<a
+						class="van-sync-failed"
+						href={resolve('/settings/van/[campaignId]', { campaignId: String(campaign.id) })}
+						>last sync failed</a
+					>){/if}{i === campaigns.length - 1 ? '.' : ''}
+			{/each}
+		{/snippet}
 
-	{#if sync && !form?.syncError}
-		<!-- What the press found: kept apart from the status line, which is a
-		     live region, so a poll does not read the whole list out again. -->
-		<div class="van-sync-report">
-			{#if sync.notes.length > 0}
-				<ul class="van-sync-notes">
-					{#each sync.notes as note, i (i)}
-						<li class:is-error={note.error}>
-							{note.text}
-							{#if note.campaignId !== undefined}
-								<a
-									href={resolve('/settings/van/[campaignId]', {
-										campaignId: String(note.campaignId),
-									})}>Campaign settings</a
-								>
-							{/if}
-						</li>
-					{/each}
-				</ul>
-			{/if}
-			{#if sync.newTurf.length > 0}
-				<p class="van-sync-new-heading">
-					{sync.running ? 'Picked up so far' : 'Picked up'}:
-					{sync.newTurfTotal.toLocaleString('en-US')} new requested turf{sync.newTurfTotal >
-					sync.newTurf.length
-						? ` (the first ${sync.newTurf.length} below; the rest are under Requested turf)`
-						: ''}
-				</p>
-				<ul class="van-sync-new">
-					{#each sync.newTurf as turf (turf.turfId)}
-						<li class:is-ready={turf.ready}>
-							<span class="turf-name">{turf.name}</span>
-							{#if turf.regionName}<span class="turf-sub">{turf.regionName}</span>{/if}
-							<span class="van-sync-new-status">{turf.label}</span>
-							{#each turf.caveats as caveat (caveat)}
-								<span class="van-sync-new-caveat">{caveat}</span>
-							{/each}
-						</li>
-					{/each}
-				</ul>
-			{:else if sync.running}
-				<p class="van-sync-new-heading">No new requested turf yet.</p>
-			{/if}
-		</div>
+		{#if sync && !form?.syncError}
+			<!-- What the press found: kept apart from the status line, which is a
+			     live region, so a poll does not read the whole list out again. -->
+			<div class="van-sync-report">
+				{#if sync.notes.length > 0}
+					<ul class="van-sync-notes">
+						{#each sync.notes as note, i (i)}
+							<li class:is-error={note.error}>
+								{note.text}
+								{#if note.campaignId !== undefined}
+									<a
+										href={resolve('/settings/van/[campaignId]', {
+											campaignId: String(note.campaignId),
+										})}>Campaign settings</a
+									>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if sync.newTurf.length > 0}
+					<p class="van-sync-new-heading">
+						{sync.running ? 'Picked up so far' : 'Picked up'}:
+						{sync.newTurfTotal.toLocaleString('en-US')} new requested turf{sync.newTurfTotal >
+						sync.newTurf.length
+							? ` (the first ${sync.newTurf.length} below; the rest are under Requested turf)`
+							: ''}
+					</p>
+					<ul class="van-sync-new">
+						{#each sync.newTurf as turf (turf.turfId)}
+							<li class:is-ready={turf.ready}>
+								<span class="turf-name">{turf.name}</span>
+								{#if turf.regionName}<span class="turf-sub">{turf.regionName}</span>{/if}
+								<span class="van-sync-new-status">{turf.label}</span>
+								{#each turf.caveats as caveat (caveat)}
+									<span class="van-sync-new-caveat">{caveat}</span>
+								{/each}
+							</li>
+						{/each}
+					</ul>
+				{:else if sync.running}
+					<p class="van-sync-new-heading">No new requested turf yet.</p>
+				{/if}
+			</div>
+		{/if}
 	{/if}
 
 	<!-- Counts first: on a canvass morning this row is the whole answer. -->
@@ -679,51 +685,55 @@
 									{/each}
 								</td>
 								<td>
-									<!-- One form per row, sent as soon as the choice changes. A
-									     refusal re-creates the picker, which puts back the choice
-									     the turf still has. -->
-									<form
-										method="POST"
-										action="?/placeTurf"
-										use:enhance={() => {
-											placing[turf.turfId] = true;
-											return async ({ result, update }) => {
-												await update();
-												if (result.type !== 'success') {
-													refused[turf.turfId] = (refused[turf.turfId] ?? 0) + 1;
-												}
-												delete placing[turf.turfId];
-											};
-										}}
-									>
-										<input type="hidden" name="turfId" value={turf.turfId} />
-										{#key refused[turf.turfId]}
-											<Select
-												name="chapterId"
-												items={[
-													{
-														value: '',
-														label: `Automatic${
-															turf.placement && turf.placement.source !== 'organizer'
-																? ` (${turf.placement.chapterName})`
-																: ''
-														}`,
-													},
-													...data.placementChoices.map((choice) => ({
-														value: String(choice.chapterId),
-														label: choice.name,
-													})),
-												]}
-												value={turf.placement?.source === 'organizer'
-													? String(turf.placement.chapterId)
-													: ''}
-												disabled={placing[turf.turfId]}
-												aria-label="Chapter for {turf.name}"
-												size="sm"
-												submitOnChange
-											/>
-										{/key}
-									</form>
+									{#if data.canManage}
+										<!-- One form per row, sent as soon as the choice changes. A
+										     refusal re-creates the picker, which puts back the choice
+										     the turf still has. -->
+										<form
+											method="POST"
+											action="?/placeTurf"
+											use:enhance={() => {
+												placing[turf.turfId] = true;
+												return async ({ result, update }) => {
+													await update();
+													if (result.type !== 'success') {
+														refused[turf.turfId] = (refused[turf.turfId] ?? 0) + 1;
+													}
+													delete placing[turf.turfId];
+												};
+											}}
+										>
+											<input type="hidden" name="turfId" value={turf.turfId} />
+											{#key refused[turf.turfId]}
+												<Select
+													name="chapterId"
+													items={[
+														{
+															value: '',
+															label: `Automatic${
+																turf.placement && turf.placement.source !== 'organizer'
+																	? ` (${turf.placement.chapterName})`
+																	: ''
+															}`,
+														},
+														...data.placementChoices.map((choice) => ({
+															value: String(choice.chapterId),
+															label: choice.name,
+														})),
+													]}
+													value={turf.placement?.source === 'organizer'
+														? String(turf.placement.chapterId)
+														: ''}
+													disabled={placing[turf.turfId]}
+													aria-label="Chapter for {turf.name}"
+													size="sm"
+													submitOnChange
+												/>
+											{/key}
+										</form>
+									{:else}
+										{turf.placement?.chapterName ?? '—'}
+									{/if}
 								</td>
 							</tr>
 						{/each}
@@ -746,7 +756,9 @@
 			</p>
 		{:else}
 			<p class="section-note">
-				Volunteers can't see or check out these. Untick one to put it back on the turf page.
+				Volunteers can't see or check out these.{data.canManage
+					? ' Untick one to put it back on the turf page.'
+					: ''}
 			</p>
 			{#if data.hidden.length > FILTER_FROM}
 				<TableFilter
@@ -785,33 +797,37 @@
 									<span class="turf-sub">{turf.hiddenAgoLabel}</span>
 								</td>
 								<td class="col-flag">
-									<!-- One form per row, sent as soon as the box is unticked.
-									     A refusal resets the form, which ticks the box back:
-									     `checked` here is the box's default, not a binding. -->
-									<form
-										method="POST"
-										action="?/unhide"
-										use:enhance={() => {
-											unhiding[turf.turfId] = true;
-											return async ({ result, update }) => {
-												await update();
-												if (result.type !== 'success') {
-													refused[turf.turfId] = (refused[turf.turfId] ?? 0) + 1;
-												}
-												delete unhiding[turf.turfId];
-											};
-										}}
-									>
-										<input type="hidden" name="turfId" value={turf.turfId} />
-										{#key refused[turf.turfId]}
-											<Checkbox
-												checked
-												disabled={unhiding[turf.turfId]}
-												aria-label="Hidden: untick to show {turf.turfName} to volunteers"
-												submitOnChange
-											/>
-										{/key}
-									</form>
+									{#if data.canManage}
+										<!-- One form per row, sent as soon as the box is unticked.
+										     A refusal resets the form, which ticks the box back:
+										     `checked` here is the box's default, not a binding. -->
+										<form
+											method="POST"
+											action="?/unhide"
+											use:enhance={() => {
+												unhiding[turf.turfId] = true;
+												return async ({ result, update }) => {
+													await update();
+													if (result.type !== 'success') {
+														refused[turf.turfId] = (refused[turf.turfId] ?? 0) + 1;
+													}
+													delete unhiding[turf.turfId];
+												};
+											}}
+										>
+											<input type="hidden" name="turfId" value={turf.turfId} />
+											{#key refused[turf.turfId]}
+												<Checkbox
+													checked
+													disabled={unhiding[turf.turfId]}
+													aria-label="Hidden: untick to show {turf.turfName} to volunteers"
+													submitOnChange
+												/>
+											{/key}
+										</form>
+									{:else}
+										Yes
+									{/if}
 								</td>
 							</tr>
 						{/each}
@@ -822,183 +838,185 @@
 		{/if}
 	</section>
 
-	<section class="board">
-		<h2>Turf history</h2>
-		<p class="section-note">
-			Every cut of a turf in VAN, when its doors were knocked, and who claimed it here — for when a
-			volunteer says they knocked a turf that now looks untouched. Search part of a turf's name, its
-			region, or its turf id.
-		</p>
-		<!-- Enter submits it like the button. The answer goes to `searched`, not
-		     through update(): a search must not reload the board above, nor
-		     touch `form`, which the other actions on this page answer through. -->
-		<form
-			class="history-search"
-			method="POST"
-			action="?/turfHistory"
-			use:enhance={() => {
-				historyLoading = true;
-				return async ({ result, update }) => {
-					if (result.type === 'success' || result.type === 'failure') {
-						searched = result.data as HistoryResult;
-					} else {
-						await update();
-					}
-					historyLoading = false;
-				};
-			}}
-		>
-			<input
-				class="history-input"
-				type="search"
-				name="query"
-				value={history?.historyQuery ?? ''}
-				placeholder="R02F_037_Kent_PlainfieldTowns_003 Turf 05"
-				aria-label="Turf name, region, or turf id"
-				required
-			/>
-			<button type="submit" class="van-sync-button" disabled={historyLoading}>
-				{historyLoading ? 'Loading…' : 'Look up'}
-			</button>
-		</form>
+	{#if data.canManage}
+		<section class="board">
+			<h2>Turf history</h2>
+			<p class="section-note">
+				Every cut of a turf in VAN, when its doors were knocked, and who claimed it here — for when
+				a volunteer says they knocked a turf that now looks untouched. Search part of a turf's name,
+				its region, or its turf id.
+			</p>
+			<!-- Enter submits it like the button. The answer goes to `searched`, not
+			     through update(): a search must not reload the board above, nor
+			     touch `form`, which the other actions on this page answer through. -->
+			<form
+				class="history-search"
+				method="POST"
+				action="?/turfHistory"
+				use:enhance={() => {
+					historyLoading = true;
+					return async ({ result, update }) => {
+						if (result.type === 'success' || result.type === 'failure') {
+							searched = result.data as HistoryResult;
+						} else {
+							await update();
+						}
+						historyLoading = false;
+					};
+				}}
+			>
+				<input
+					class="history-input"
+					type="search"
+					name="query"
+					value={history?.historyQuery ?? ''}
+					placeholder="R02F_037_Kent_PlainfieldTowns_003 Turf 05"
+					aria-label="Turf name, region, or turf id"
+					required
+				/>
+				<button type="submit" class="van-sync-button" disabled={historyLoading}>
+					{historyLoading ? 'Loading…' : 'Look up'}
+				</button>
+			</form>
 
-		{#if history?.historyError}
-			<p class="section-note is-error" role="alert">{history.historyError}</p>
-		{:else if history?.histories}
-			{#if history.histories.length === 0}
-				<p class="empty">No turf matches “{history.historyQuery}”.</p>
-			{:else if history.historyTruncated}
-				<p class="section-note">
-					Showing the first {history.histories.length} matches. Search a turf's full name or id to see
-					one that isn't here.
-				</p>
-			{/if}
-			{#each history.histories as turf (turf.campaignId + ':' + turf.name)}
-				<div class="history-turf">
-					<h3 class="history-name">
-						{turf.name}<span class="turf-sub">{campaignSuffix(turf.campaignId)}</span>
-					</h3>
-					{#if turf.why}
-						<p class="callout is-quiet">{turf.why}</p>
-					{/if}
-					{#if turf.doorsNow}
-						<!-- The turf as it stands: every door in the live cut, by the day
-						     it was last knocked, whichever cut that was under. -->
-						<p class="section-note">
-							{turf.doorsNow.doors.toLocaleString('en-US')} doors in the turf now ·
-							{turf.doorsNow.knocked.toLocaleString('en-US')} knocked. Each door counts once, on the day
-							it was last knocked — only a door's latest knock is kept.
-						</p>
-						{#if turf.doorsNow.byDay.length > 0}
-							<div class="table-wrap history-days">
-								<table>
-									<thead>
-										<tr>
-											<th>Day</th>
-											<th class="col-num">Doors knocked</th>
-										</tr>
-									</thead>
-									<tbody>
-										{#each turf.doorsNow.byDay as day (day.day)}
-											<tr>
-												<td>{day.day}</td>
-												<td class="col-num">{day.doors.toLocaleString('en-US')}</td>
-											</tr>
-										{/each}
-									</tbody>
-								</table>
-							</div>
+			{#if history?.historyError}
+				<p class="section-note is-error" role="alert">{history.historyError}</p>
+			{:else if history?.histories}
+				{#if history.histories.length === 0}
+					<p class="empty">No turf matches “{history.historyQuery}”.</p>
+				{:else if history.historyTruncated}
+					<p class="section-note">
+						Showing the first {history.histories.length} matches. Search a turf's full name or id to see
+						one that isn't here.
+					</p>
+				{/if}
+				{#each history.histories as turf (turf.campaignId + ':' + turf.name)}
+					<div class="history-turf">
+						<h3 class="history-name">
+							{turf.name}<span class="turf-sub">{campaignSuffix(turf.campaignId)}</span>
+						</h3>
+						{#if turf.why}
+							<p class="callout is-quiet">{turf.why}</p>
 						{/if}
-					{/if}
-					<div class="table-wrap">
-						<table>
-							<thead>
-								<tr>
-									<th>Cut</th>
-									<th>Doors</th>
-									<th>Knocked</th>
-									<th>Claims here</th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each turf.cuts as cut (cut.turfId)}
+						{#if turf.doorsNow}
+							<!-- The turf as it stands: every door in the live cut, by the day
+							     it was last knocked, whichever cut that was under. -->
+							<p class="section-note">
+								{turf.doorsNow.doors.toLocaleString('en-US')} doors in the turf now ·
+								{turf.doorsNow.knocked.toLocaleString('en-US')} knocked. Each door counts once, on the
+								day it was last knocked — only a door's latest knock is kept.
+							</p>
+							{#if turf.doorsNow.byDay.length > 0}
+								<div class="table-wrap history-days">
+									<table>
+										<thead>
+											<tr>
+												<th>Day</th>
+												<th class="col-num">Doors knocked</th>
+											</tr>
+										</thead>
+										<tbody>
+											{#each turf.doorsNow.byDay as day (day.day)}
+												<tr>
+													<td>{day.day}</td>
+													<td class="col-num">{day.doors.toLocaleString('en-US')}</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							{/if}
+						{/if}
+						<div class="table-wrap">
+							<table>
+								<thead>
 									<tr>
-										<td>
-											<span class="turf-name">{campaignSheetStamp(cut.cutAt)}</span>
-											<span class="turf-sub">
-												{cut.retiredAt ? `retired ${campaignSheetStamp(cut.retiredAt)}` : 'Live'}
-											</span>
-											<span class="turf-sub">
-												turf {cut.turfId} · list {cut.savedListId ?? '—'}
-											</span>
-										</td>
-										<td class="col-num">
-											{cut.doorCount.toLocaleString('en-US')} in VAN
-											<span class="turf-sub">
-												{#if cut.uncontactedDoors !== null && cut.rosterCurrent}
-													app shows {cut.uncontactedDoors.toLocaleString('en-US')} left
-												{:else}
-													no roster — app shows VAN's count
-												{/if}
-											</span>
-										</td>
-										<td>
-											{#if cut.rosterDoors === null}
-												<span class="turf-sub">No roster, so no knock history</span>
-											{:else}
-												{cut.knockedSinceCut} of {cut.rosterDoors} since this cut
-												{#if cut.knockedBeforeCut > 0}
-													<span class="turf-sub">
-														{cut.knockedBeforeCut} before it (not counted against this cut)
-													</span>
-												{/if}
-												{#if cut.knockedByDay.length > 0}
-													<span class="turf-sub">
-														By day of latest knock: {cut.knockedByDay
-															.map((d) => `${d.day} ${d.doors}`)
-															.join(', ')}
-													</span>
-												{/if}
-											{/if}
-										</td>
-										<td>
-											{#if cut.claims.length === 0}
-												<span class="turf-sub">None</span>
-											{:else}
-												<ul class="history-claims">
-													{#each cut.claims as claim (claim.checkoutId)}
-														<li>
-															{claim.slackUserName}
-															<span class="turf-sub">
-																claimed {campaignSheetStamp(claim.claimedAt)} ·
-																{#if claim.completedAt}
-																	marked walked {campaignSheetStamp(
-																		claim.completedAt,
-																	)}{claim.reportedPercent !== null
-																		? ` at ${claim.reportedPercent}%`
-																		: ''}
-																{:else if claim.releasedAt}
-																	{claim.releaseReason ?? 'released'}
-																	{campaignSheetStamp(claim.releasedAt)}
-																{:else}
-																	still held
-																{/if}
-																{#if claim.doorsKnocked !== null}
-																	· {claim.doorsKnocked} doors knocked
-																{/if}
-															</span>
-														</li>
-													{/each}
-												</ul>
-											{/if}
-										</td>
+										<th>Cut</th>
+										<th>Doors</th>
+										<th>Knocked</th>
+										<th>Claims here</th>
 									</tr>
-								{/each}
-							</tbody>
-						</table>
+								</thead>
+								<tbody>
+									{#each turf.cuts as cut (cut.turfId)}
+										<tr>
+											<td>
+												<span class="turf-name">{campaignSheetStamp(cut.cutAt)}</span>
+												<span class="turf-sub">
+													{cut.retiredAt ? `retired ${campaignSheetStamp(cut.retiredAt)}` : 'Live'}
+												</span>
+												<span class="turf-sub">
+													turf {cut.turfId} · list {cut.savedListId ?? '—'}
+												</span>
+											</td>
+											<td class="col-num">
+												{cut.doorCount.toLocaleString('en-US')} in VAN
+												<span class="turf-sub">
+													{#if cut.uncontactedDoors !== null && cut.rosterCurrent}
+														app shows {cut.uncontactedDoors.toLocaleString('en-US')} left
+													{:else}
+														no roster — app shows VAN's count
+													{/if}
+												</span>
+											</td>
+											<td>
+												{#if cut.rosterDoors === null}
+													<span class="turf-sub">No roster, so no knock history</span>
+												{:else}
+													{cut.knockedSinceCut} of {cut.rosterDoors} since this cut
+													{#if cut.knockedBeforeCut > 0}
+														<span class="turf-sub">
+															{cut.knockedBeforeCut} before it (not counted against this cut)
+														</span>
+													{/if}
+													{#if cut.knockedByDay.length > 0}
+														<span class="turf-sub">
+															By day of latest knock: {cut.knockedByDay
+																.map((d) => `${d.day} ${d.doors}`)
+																.join(', ')}
+														</span>
+													{/if}
+												{/if}
+											</td>
+											<td>
+												{#if cut.claims.length === 0}
+													<span class="turf-sub">None</span>
+												{:else}
+													<ul class="history-claims">
+														{#each cut.claims as claim (claim.checkoutId)}
+															<li>
+																{claim.slackUserName}
+																<span class="turf-sub">
+																	claimed {campaignSheetStamp(claim.claimedAt)} ·
+																	{#if claim.completedAt}
+																		marked walked {campaignSheetStamp(
+																			claim.completedAt,
+																		)}{claim.reportedPercent !== null
+																			? ` at ${claim.reportedPercent}%`
+																			: ''}
+																	{:else if claim.releasedAt}
+																		{claim.releaseReason ?? 'released'}
+																		{campaignSheetStamp(claim.releasedAt)}
+																	{:else}
+																		still held
+																	{/if}
+																	{#if claim.doorsKnocked !== null}
+																		· {claim.doorsKnocked} doors knocked
+																	{/if}
+																</span>
+															</li>
+														{/each}
+													</ul>
+												{/if}
+											</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
 					</div>
-				</div>
-			{/each}
-		{/if}
-	</section>
+				{/each}
+			{/if}
+		</section>
+	{/if}
 </main>
