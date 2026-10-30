@@ -46,24 +46,24 @@ describe('roster person index', () => {
 	});
 
 	it('restores only what is missing', async () => {
-		expect(await restoreRosterPersonIndex(db)).toBe(false);
+		expect(await restoreRosterPersonIndex(db)).toBe('present');
 		await dropRosterPersonIndex(db);
-		expect(await restoreRosterPersonIndex(db)).toBe(true);
+		expect(await restoreRosterPersonIndex(db)).toBe('rebuilt');
 		expect(await rosterPersonIndexExists(db)).toBe(true);
 	});
 
 	it('leaves it down while a drain holds the bulk lock, and restores once it lets go', async () => {
 		const token = await acquireSyncLock(db, VAN_ROSTER_BULK_LOCK, 60_000);
 		await dropRosterPersonIndex(db);
-		expect(await restoreRosterPersonIndex(db)).toBe(false);
+		expect(await restoreRosterPersonIndex(db)).toBe('missing');
 		expect(await rosterPersonIndexExists(db)).toBe(false);
 		await releaseSyncLock(db, VAN_ROSTER_BULK_LOCK, token!);
-		expect(await restoreRosterPersonIndex(db)).toBe(true);
+		expect(await restoreRosterPersonIndex(db)).toBe('rebuilt');
 	});
 
 	it('restores after a drain died and its bulk lock lapsed', async () => {
 		await acquireSyncLock(db, VAN_ROSTER_BULK_LOCK, -1);
 		await dropRosterPersonIndex(db);
-		expect(await restoreRosterPersonIndex(db)).toBe(true);
+		expect(await restoreRosterPersonIndex(db)).toBe('rebuilt');
 	});
 });

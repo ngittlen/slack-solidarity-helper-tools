@@ -19,7 +19,10 @@ import {
 	upsertContacts,
 	WINDOW_MS,
 } from './contact-sync.js';
+import { acquireSyncLock, releaseSyncLock } from '../sync-lock.js';
+import { VAN_ROSTER_BULK_LOCK } from './locks.js';
 import { createPersonHasher } from './person-hash.js';
+import { dropRosterPersonIndex } from './roster-index.js';
 import type { VanChangedEntityExportJob } from './types.js';
 
 // A real in-memory libsql: the count is one SQL statement joining two blob-keyed
@@ -584,6 +587,75 @@ describe('runContactSync', () => {
 			sleep: noSleep,
 		});
 		expect((await counts(1)).knocked_before_cut).toBe(0);
+	});
+
+	describe('while a drain holds the person index down', () => {
+		let token: string;
+		beforeEach(async () => {
+			await contact('111', '2026-08-20T00:00:00.000Z');
+			await client.execute('UPDATE van_turfs SET knocked_before_cut = 1');
+			await client.execute(
+				`INSERT INTO van_contact_sync_state (campaign_id, full_recompute_at)
+				 VALUES (1, '2026-09-01T00:00:00.000Z')`,
+			);
+			token = (await acquireSyncLock(db, VAN_ROSTER_BULK_LOCK, 60_000))!;
+			await dropRosterPersonIndex(db);
+		});
+
+		it('leaves the touched turfs to a full recount once the index is back', async () => {
+			const { van, fetchFn } = fakeVan(() => []);
+			const run = () =>
+				runContactSync(db, van.client, {
+					campaignId: 1,
+					hasher,
+					now: NOW,
+					fetchFn,
+					sleep: noSleep,
+				});
+
+			await run();
+			expect((await counts(1)).knocked_before_cut).toBe(1);
+			expect((await state()).full_recompute_at).toBeNull();
+			// Its completions are not in the count, so the claim gate keeps waiting.
+			expect((await state()).counted_through).toBeNull();
+
+			await releaseSyncLock(db, VAN_ROSTER_BULK_LOCK, token);
+			await run();
+			expect((await counts(1)).knocked_before_cut).toBe(0);
+			expect((await state()).full_recompute_at).toBe(NOW.toISOString());
+			expect((await state()).counted_through).toBe(NOW.toISOString());
+		});
+
+		it('still recounts the nudge’s own turf', async () => {
+			const { van, fetchFn } = fakeVan(() => []);
+			await runContactSync(db, van.client, {
+				campaignId: 1,
+				hasher,
+				now: NOW,
+				fetchFn,
+				sleep: noSleep,
+				recomputeTurfIds: [1],
+			});
+			expect((await counts(1)).knocked_before_cut).toBe(0);
+			// Its own completion is in the count; the campaign's others are not.
+			const mark = await client.execute('SELECT counted_through FROM van_turfs WHERE turf_id = 1');
+			expect(mark.rows[0]!.counted_through).toBe(NOW.toISOString());
+			expect((await state()).counted_through).toBeNull();
+		});
+
+		it('keeps the recount it owes when the run touched nobody', async () => {
+			// Nothing to prune: nobody's turf needs a recount.
+			await client.execute('DELETE FROM van_person_contacts');
+			const { van, fetchFn } = fakeVan(() => []);
+			await runContactSync(db, van.client, {
+				campaignId: 1,
+				hasher,
+				now: NOW,
+				fetchFn,
+				sleep: noSleep,
+			});
+			expect((await state()).full_recompute_at).toBe('2026-09-01T00:00:00.000Z');
+		});
 	});
 
 	it('does nothing but recompute when there is no turf to count for', async () => {

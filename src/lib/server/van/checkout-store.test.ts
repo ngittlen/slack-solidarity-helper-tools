@@ -609,6 +609,20 @@ describe('latestWalkReports', () => {
 		expect((await latestWalkReports(db, [100])).get(100)?.awaitingCount).toBe(true);
 	});
 
+	it('marks a completion counted once a nudge has recounted its turf past it', async () => {
+		await completed('2026-08-23T12:00:00.000Z', 40);
+		await countedThrough('2026-08-23T11:30:00.000Z');
+		const turfMark = (at: string) =>
+			client.execute({
+				sql: 'UPDATE van_turfs SET counted_through = ? WHERE turf_id = 100',
+				args: [at],
+			});
+		await turfMark('2026-08-23T12:00:30.000Z');
+		expect((await latestWalkReports(db, [100])).get(100)?.awaitingCount).toBe(false);
+		await turfMark('2026-08-23T11:59:00.000Z');
+		expect((await latestWalkReports(db, [100])).get(100)?.awaitingCount).toBe(true);
+	});
+
 	async function claim() {
 		return claimTurf(db, {
 			turfId: 100,

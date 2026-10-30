@@ -51,9 +51,11 @@ export type ReleaseResult = { ok: true } | { ok: false; status: 400 | 404 | 409;
 export interface WalkReport {
 	percent: number | null;
 	at: string;
-	/** No scheduled contact sync has caught up since this completion, so the
-	 *  uncontacted count does not include its doors yet (contact-sync.ts,
-	 *  `countedThrough`). Keeps a turf with a count out of the pool meanwhile. */
+	/** No scheduled contact sync has caught up since this completion, and no
+	 *  nudge has recounted its turf while the person index was down, so the
+	 *  uncontacted count does not include its doors yet (contact-sync.ts, the
+	 *  campaign's and the turf's `countedThrough`). Keeps a turf with a count
+	 *  out of the pool meanwhile. */
 	awaitingCount: boolean;
 }
 
@@ -77,6 +79,7 @@ export async function latestWalkReports(
 			.select({
 				turfId: vanTurfCheckouts.turfId,
 				campaignId: vanTurfs.campaignId,
+				turfCountedThrough: vanTurfs.countedThrough,
 				percent: vanTurfCheckouts.reportedPercent,
 				at: vanTurfCheckouts.completedAt,
 			})
@@ -95,11 +98,14 @@ export async function latestWalkReports(
 		for (const row of rows) {
 			// Newest first, so the first row per route is the one that counts.
 			if (!reports.has(row.turfId) && row.at !== null) {
-				const { countedThrough } = marksFor(marks, row.campaignId);
+				const at = row.at;
+				const counted = (mark: string | null) => mark !== null && at < mark;
 				reports.set(row.turfId, {
 					percent: row.percent,
-					at: row.at,
-					awaitingCount: countedThrough === null || row.at >= countedThrough,
+					at,
+					awaitingCount:
+						!counted(marksFor(marks, row.campaignId).countedThrough) &&
+						!counted(row.turfCountedThrough),
 				});
 			}
 		}

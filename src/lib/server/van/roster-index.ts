@@ -6,10 +6,13 @@
 // roster row with the index, against ~0ms without — writer transactions fell
 // from ~9s to 0.1s and the drain cleared twice the turfs per slice.
 //
-// Only the contact pull reads the index (turfsWithPeople in contact-sync.ts),
-// and without it that lookup scans the roster rather than failing. So a drain
-// with a big roster pass ahead drops it, and builds it again in one sorted
-// pass at the end, which costs far less than keeping it up row by row.
+// Only the contact pull reads the index (turfsWithPeople in contact-sync.ts).
+// Without it that lookup would scan the whole roster once per batch of
+// people, so the pull skips it: it recounts only a nudge's own turf, and
+// leaves the rest to a full recount once the index is back. So a drain with a
+// big roster pass ahead can drop it, and build it again in one sorted pass at
+// the end, which costs far less than keeping it up row by row. The counts of
+// turfs other than nudged ones stand still meanwhile.
 //
 // The drain holds VAN_ROSTER_BULK_LOCK while the index is down. A drain that
 // dies without rebuilding it lets that lock lapse, and the next contact pull
@@ -48,11 +51,12 @@ export async function createRosterPersonIndex(db: Db): Promise<void> {
 
 /**
  * Build it if it is missing and no drain is loading rosters. Returns whether
- * it built it. A read when the index is there, which is almost always.
+ * it was already there, was built just now, or is still missing because a
+ * drain holds it down. A read when the index is there, which is almost always.
  */
-export async function restoreRosterPersonIndex(db: Db): Promise<boolean> {
-	if (await rosterPersonIndexExists(db)) return false;
-	if ((await heldSyncLocks(db, [VAN_ROSTER_BULK_LOCK])).length > 0) return false;
+export async function restoreRosterPersonIndex(db: Db): Promise<'present' | 'rebuilt' | 'missing'> {
+	if (await rosterPersonIndexExists(db)) return 'present';
+	if ((await heldSyncLocks(db, [VAN_ROSTER_BULK_LOCK])).length > 0) return 'missing';
 	await createRosterPersonIndex(db);
-	return true;
+	return 'rebuilt';
 }
