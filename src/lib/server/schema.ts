@@ -1174,6 +1174,16 @@ export const vanTurfs = sqliteTable(
 		index('van_turfs_region').on(table.mapRegionId),
 		uniqueIndex('van_turfs_campaign_route').on(table.campaignId, table.vanMapRouteId),
 		index('van_turfs_campaign_folder').on(table.campaignId, table.folderId),
+		// Partial: most rows are retired routes from earlier cuts, kept for
+		// their checkouts, and the readers that want only live turf (the drift
+		// report on every organizer page load) would otherwise read them all.
+		index('van_turfs_live_campaign')
+			.on(table.campaignId)
+			.where(sql`${table.retiredAt} IS NULL`),
+		// Partial: the drift alert's stamp sweep reads the few stamped turfs.
+		index('van_turfs_drift_alerted')
+			.on(table.campaignId)
+			.where(sql`${table.driftAlertedKind} IS NOT NULL`),
 	],
 );
 

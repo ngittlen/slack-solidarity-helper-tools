@@ -9,6 +9,7 @@ import {
 	SLOW_CALL_MS,
 	SLOW_REQUEST_MS,
 	requestLabel,
+	setRoundTripProbe,
 	timeDependency,
 	timeRequest,
 	timedFetch,
@@ -265,6 +266,91 @@ describe('timeDependency', () => {
 			c.now,
 		);
 		expect(slowCalls()).toEqual([]);
+	});
+});
+
+describe('round-trip probe', () => {
+	/** A database call held open until `release`. */
+	function stalled() {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		return { call: () => gate, release };
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers({ now: new Date('2026-10-30T01:24:24.000Z') });
+	});
+
+	afterEach(() => {
+		setRoundTripProbe(null);
+		vi.useRealTimers();
+	});
+
+	it('sends select 1 beside a db call still running at SLOW_CALL_MS, and logs its time', async () => {
+		const execute = vi.fn(async () => {
+			await new Promise((r) => setTimeout(r, 2140));
+			return {};
+		});
+		setRoundTripProbe({ execute } as never);
+		const { call, release } = stalled();
+		const done = timeDependency('db', call, 'select "data" from "sessions"');
+
+		await vi.advanceTimersByTimeAsync(SLOW_CALL_MS);
+		expect(execute).toHaveBeenCalledWith('select 1');
+		await vi.advanceTimersByTimeAsync(2140);
+		release();
+		await done;
+		expect(lines('[db probe]')).toEqual([
+			'[db probe] select 1 in 2140ms from 01:24:26.000, beside a db call 2.0s in',
+		]);
+	});
+
+	it('sends one probe for calls that stall together', async () => {
+		const execute = vi.fn(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+			return {};
+		});
+		setRoundTripProbe({ execute } as never);
+		const a = stalled();
+		const b = stalled();
+		const done = Promise.all([timeDependency('db', a.call), timeDependency('db', b.call)]);
+
+		await vi.advanceTimersByTimeAsync(SLOW_CALL_MS + 30);
+		a.release();
+		b.release();
+		await done;
+		expect(execute).toHaveBeenCalledTimes(1);
+		expect(lines('[db probe]')).toEqual([
+			'[db probe] select 1 in 30ms from 01:24:26.000, beside a db call 2.0s in',
+		]);
+	});
+
+	it('leaves quick db calls and other dependencies alone', async () => {
+		const execute = vi.fn(async () => ({}));
+		setRoundTripProbe({ execute } as never);
+		await timeDependency('db', async () => {});
+		const slack = stalled();
+		const done = timeDependency('slack', slack.call, 'users.list');
+		await vi.advanceTimersByTimeAsync(SLOW_CALL_MS * 2);
+		slack.release();
+		await done;
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it('says when the probe itself failed', async () => {
+		setRoundTripProbe({
+			execute: async () => {
+				throw new Error('connection reset');
+			},
+		} as never);
+		const { call, release } = stalled();
+		const done = timeDependency('db', call);
+		await vi.advanceTimersByTimeAsync(SLOW_CALL_MS);
+		release();
+		await done;
+		expect(lines('[db probe]')).toEqual([
+			'[db probe] select 1 failed after 0ms from 01:24:26.000, beside a db call 2.0s in: connection reset',
+		]);
 	});
 });
 

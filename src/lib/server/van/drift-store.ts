@@ -64,9 +64,9 @@ function exportsVisibleCampaigns(): SQL {
 		and ${vanSyncState.lastError} is null`;
 }
 
-/** Every turf in scope, claimed or not. Retired rows come back and the pure
- *  rule drops them, so the "skip retired" decision stays in one place next to
- *  the reasoning for it. */
+/** Every live turf in scope, claimed or not. Retired rows stay in the
+ *  database and out of here: they are most of the table, and the pure rule
+ *  skips them anyway (turf-drift.ts says why). */
 export async function loadDriftTurfs(db: Db, query: DriftQuery): Promise<DriftTurfRow[]> {
 	return db
 		.select({
@@ -82,7 +82,7 @@ export async function loadDriftTurfs(db: Db, query: DriftQuery): Promise<DriftTu
 			retiredAt: vanTurfs.retiredAt,
 		})
 		.from(vanTurfs)
-		.where(and(scopeFilter(query), exportsVisibleFilter()));
+		.where(and(scopeFilter(query), isNull(vanTurfs.retiredAt), exportsVisibleFilter()));
 }
 
 /**
