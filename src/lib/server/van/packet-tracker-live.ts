@@ -75,6 +75,17 @@ async function trackedCampaignOf(db: Db, turfId: number): Promise<TrackedCampaig
 	return row ?? null;
 }
 
+function mergeCounts<K extends string>(
+	a: Partial<Record<K, number>>,
+	b: Partial<Record<K, number>>,
+): Partial<Record<K, number>> {
+	const merged = { ...a };
+	for (const [key, n] of Object.entries(b) as Array<[K, number]>) {
+		merged[key] = (merged[key] ?? 0) + n;
+	}
+	return merged;
+}
+
 /** Two runs' results as one, for a sync that covered several campaigns. */
 function mergeResults(a: TrackerResult, b: TrackerResult): TrackerResult {
 	return {
@@ -84,6 +95,7 @@ function mergeResults(a: TrackerResult, b: TrackerResult): TrackerResult {
 		walkInsFilled: a.walkInsFilled + b.walkInsFilled,
 		walkInsCleared: a.walkInsCleared + b.walkInsCleared,
 		deferred: a.deferred + b.deferred,
+		deferredFor: mergeCounts(a.deferredFor, b.deferredFor),
 		unrouted: a.unrouted + b.unrouted,
 		unroutedRegions: [...a.unroutedRegions, ...b.unroutedRegions],
 		assignmentsChanged: a.assignmentsChanged + b.assignmentsChanged,

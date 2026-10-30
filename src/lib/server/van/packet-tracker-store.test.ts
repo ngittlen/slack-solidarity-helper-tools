@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import {
 	_resetLiveReadsForTests,
+	describeDeferrals,
 	liveAssignment,
 	parseSheetState,
 	syncPacketTracker,
@@ -87,6 +88,11 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 	/** Runs once, after the run's read of a tab and before the re-check —
 	 *  the window in which an organizer might sort the sheet. */
 	let between: (() => void) | null = null;
+	/** When Drive says each spreadsheet last changed, once a test tracks it
+	 *  (trackDrive). Until then Drive says every spreadsheet has just changed,
+	 *  so every run reads them all, whatever the test does to the sheet. */
+	let drive: Map<string, string> | null = null;
+	const stamp = (spreadsheetId: string) => drive?.set(spreadsheetId, new Date().toISOString());
 
 	// The Packet Tracker is keyed by spreadsheet id, the Walk Ins tab by
 	// `id/Walk Ins` (absent unless a test adds it), and its calls carry a
@@ -131,6 +137,7 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 			calls.push(`${prefix(tabName)}write:${spreadsheetId}:${rowIndex}`);
 			const fail = failing.get(`${prefix(tabName)}write:${spreadsheetId}`);
 			if (fail) return { ok: false, ...fail };
+			stamp(spreadsheetId);
 			const sheet = sheets.get(key(spreadsheetId, tabName))!;
 			while (sheet.length <= rowIndex) sheet.push([]);
 			const row = sheet[rowIndex]!;
@@ -142,6 +149,7 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 			calls.push(`${prefix(tabName)}highlight:${spreadsheetId}:${rowIndex}:${on ? 'on' : 'off'}`);
 			const fail = failing.get(`${prefix(tabName)}highlight:${spreadsheetId}`);
 			if (fail) return { ok: false, ...fail };
+			stamp(spreadsheetId);
 			for (const c of columns) {
 				const key = `${spreadsheetId}/${tabName}:${rowIndex}:${c}`;
 				if (on) yellow.add(key);
@@ -153,6 +161,7 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 			calls.push(`${prefix(tabName)}clear:${spreadsheetId}:${fromRowIndex}`);
 			const fail = failing.get(`${prefix(tabName)}clear:${spreadsheetId}`);
 			if (fail) return { ok: false, ...fail };
+			stamp(spreadsheetId);
 			for (const key of [...yellow]) {
 				const [tab, row] = key.split(':');
 				if (tab === `${spreadsheetId}/${tabName}` && Number(row) >= fromRowIndex)
@@ -170,6 +179,7 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 			calls.push(`${prefix(tabName)}grow:${spreadsheetId}:${rowIndex}`);
 			const fail = failing.get(`${prefix(tabName)}grow:${spreadsheetId}`);
 			if (fail) return { ok: false, ...fail };
+			stamp(spreadsheetId);
 			return { ok: true, value: true };
 		},
 		async describe() {
@@ -177,6 +187,19 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 		},
 		async replaceTab() {
 			throw new Error('the Packet Tracker never replaces a tab');
+		},
+		async modifiedSince({ since }) {
+			calls.push('drive');
+			const fail = failing.get('drive');
+			if (fail) return { ok: false, ...fail };
+			if (!drive) {
+				const soon = new Date(Date.now() + 60_000).toISOString();
+				return {
+					ok: true,
+					value: new Map([...sheets.keys()].map((k) => [k.split('/')[0]!, soon])),
+				};
+			}
+			return { ok: true, value: new Map([...drive].filter(([, at]) => at > since)) };
 		},
 	};
 
@@ -206,6 +229,15 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 		},
 		between(fn: () => void) {
 			between = fn;
+		},
+		/** Have Drive report when each spreadsheet last changed: on the fake's
+		 *  own writes, and on `edit`. */
+		trackDrive() {
+			drive = new Map();
+		},
+		/** Someone edits the spreadsheet, as Drive sees it. */
+		edit(id: string) {
+			stamp(id);
 		},
 		/** The columns highlighted on the packet's row, by name. */
 		highlighted(id: string, list = LIST): string[] {
@@ -638,7 +670,11 @@ describe('the campaign’s entries are never overwritten', () => {
 
 		const result = await run(fake.api);
 
-		expect(result).toMatchObject({ filled: 0, deferred: 1 });
+		expect(result).toMatchObject({
+			filled: 0,
+			deferred: 1,
+			deferredFor: { 'packet row moved': 1 },
+		});
 		expect(writes(fake.calls)).toEqual([]);
 		expect(fake.sheet('sheet-downriver')[2]).toEqual(other);
 		// Picked up next run, at the packet's new row.
@@ -889,7 +925,7 @@ describe('Google’s 60-a-minute quota and the run’s time', () => {
 
 		const result = await run(fake.api, { targets: [DOWNRIVER, WESTERN] });
 
-		expect(result.deferred).toBe(2);
+		expect(result.deferredFor).toEqual({ quota: 2 });
 		expect(writes(fake.calls)).toHaveLength(1);
 	});
 
@@ -951,6 +987,116 @@ describe('alerts', () => {
 		expect(result.failed).toBe(1);
 		expect(writes(fake.calls)).toEqual([]);
 		expect(vi.mocked(postAlert).mock.calls[0]?.[1]).toContain('"Status"');
+	});
+});
+
+describe('spreadsheets that have not changed', () => {
+	const reads = (calls: string[]) => calls.filter((c) => /^(read|readTabs):/.test(c));
+	/** Our clock, for when a read went out and Drive's times. */
+	let clock = Date.parse('2026-09-19T18:00:00.000Z');
+	const later = (minutes: number) => vi.setSystemTime((clock += minutes * 60_000));
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(clock);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** A packet filled in, and read again once to settle: the run that wrote it
+	 *  changed both the sheet and the ledger. */
+	async function settled() {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		fake.trackDrive();
+		await run(fake.api);
+		later(5);
+		await run(fake.api);
+		later(5);
+		fake.calls.length = 0;
+		return fake;
+	}
+
+	it('are not read again until something changes', async () => {
+		const fake = await settled();
+
+		await run(fake.api);
+
+		expect(fake.calls).toEqual(['drive']);
+	});
+
+	it('are read once someone edits them', async () => {
+		const fake = await settled();
+		fake.edit('sheet-downriver');
+		later(1);
+
+		await run(fake.api);
+
+		expect(reads(fake.calls)).toEqual(['read:sheet-downriver']);
+	});
+
+	it('are read when a checkout of theirs changes', async () => {
+		const fake = await settled();
+		await update(1, "completed_at = '2026-09-19T17:00:00.000Z', reported_percent = 100");
+
+		const result = await run(fake.api);
+
+		expect(reads(fake.calls)).toEqual(['read:sheet-downriver']);
+		expect(result.updated).toBe(1);
+	});
+
+	it('are read again after an edit made just before the last read, in case it was not in it', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		fake.trackDrive();
+		await run(fake.api);
+		later(5);
+		fake.edit('sheet-downriver');
+		later(1);
+		await run(fake.api);
+		later(5);
+		fake.calls.length = 0;
+
+		await run(fake.api);
+
+		expect(reads(fake.calls)).toEqual(['read:sheet-downriver']);
+	});
+
+	it('are read anyway an hour on', async () => {
+		const fake = await settled();
+		later(61);
+
+		await run(fake.api);
+
+		expect(reads(fake.calls)).toContain('read:sheet-downriver');
+	});
+
+	it('are all read when Drive cannot be asked, and that is said once an hour', async () => {
+		const fake = await settled();
+		fake.failing.set('drive', { status: 403, error: 'Drive API has not been used' });
+
+		await run(fake.api);
+		later(15);
+		await run(fake.api);
+
+		expect(reads(fake.calls)).toEqual(['read:sheet-downriver', 'read:sheet-downriver']);
+		const said = vi
+			.mocked(console.warn)
+			.mock.calls.filter(([line]) => String(line).includes('could not ask Drive'));
+		expect(said).toHaveLength(1);
+	});
+
+	it('are still read for a nudge', async () => {
+		const fake = await settled();
+
+		await run(fake.api, { onlyTurfId: 100 });
+
+		expect(fake.calls).not.toContain('drive');
+		expect(reads(fake.calls)).toEqual(['read:sheet-downriver']);
 	});
 });
 
@@ -1059,6 +1205,14 @@ describe('one campaign at a time', () => {
 
 		expect(await assignedTo(100)).toBe('Organizer Olu');
 		expect(await assignedTo(200)).toBeNull();
+	});
+});
+
+describe('describeDeferrals', () => {
+	it('says why each checkout waits, most first', () => {
+		expect(describeDeferrals({ 'walk-in row in use': 1, 'out of time': 10, quota: 2 })).toBe(
+			'10 out of time, 2 quota, 1 walk-in row in use',
+		);
 	});
 });
 
@@ -1566,6 +1720,7 @@ describe('the Walk Ins tab', () => {
 		const result = await run(fake.api);
 
 		expect(result.walkInsFilled).toBe(1);
+		expect(result.deferredFor).toEqual({ 'walk-in row in use': 1 });
 		expect(fake.walkInSheet('sheet-downriver').map((r) => r[0])).toEqual(['Name', 'Gus', '*Eli']);
 	});
 

@@ -28,6 +28,7 @@ const result = {
 	walkInsFilled: 0,
 	walkInsCleared: 0,
 	deferred: 0,
+	deferredFor: {},
 	unrouted: 0,
 	unroutedRegions: [] as string[],
 	assignmentsChanged: 40,

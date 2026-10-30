@@ -36,6 +36,14 @@ const SYNC_LOCK_TTL_MS = 90 * 60 * 1000;
 // after the last deadline check.
 const DEFAULT_BUDGET_MS = SYNC_LOCK_TTL_MS - 10 * 60 * 1000;
 
+// A windowed run is the every-30-minutes pass: normally a few minutes, and the
+// scheduler waits 15 for it. Its own shorter lock and budget, so a run stuck
+// on a slow upstream, or killed mid-run by a deploy, holds up the next passes
+// for 25 minutes rather than 90. The same ten minutes of headroom as above,
+// plus five for reads that run long before the budget is next checked.
+const WINDOWED_LOCK_TTL_MS = 25 * 60 * 1000;
+const WINDOWED_BUDGET_MS = WINDOWED_LOCK_TTL_MS - 15 * 60 * 1000;
+
 // Mirrors Mobilize signups into Solidarity as event RSVPs, so organizers only
 // have to look in one place. Auth via ?key=<INTERNAL_CRON_SECRET>.
 //
@@ -44,7 +52,8 @@ const DEFAULT_BUDGET_MS = SYNC_LOCK_TTL_MS - 10 * 60 * 1000;
 //   ?lookback=48      also include sessions that started within N hours (default 48)
 //   ?maxProfiles=N    raise the new-profile guardrail
 //   ?budgetMs=N       shorten how long the run may spend writing (never lengthen
-//                     it past the lock — see DEFAULT_BUDGET_MS)
+//                     it past the lock — see DEFAULT_BUDGET_MS and
+//                     WINDOWED_BUDGET_MS)
 //
 // Two cadences: every 30 minutes with a 4.5h look-ahead so organizers have
 // accurate lists before doors open, and nightly with no window so events further
@@ -115,10 +124,13 @@ export const POST: RequestHandler = async ({ url }) => {
 	// Clamped, not just defaulted: an override longer than the lock would put
 	// the run back outside its own lock, which is the thing the budget exists to
 	// prevent. A caller asking for more silently gets the safe maximum.
-	const budgetMs = Math.min(budgetOverride ?? DEFAULT_BUDGET_MS, DEFAULT_BUDGET_MS);
+	const windowed = windowHours !== undefined;
+	const lockTtlMs = windowed ? WINDOWED_LOCK_TTL_MS : SYNC_LOCK_TTL_MS;
+	const maxBudgetMs = windowed ? WINDOWED_BUDGET_MS : DEFAULT_BUDGET_MS;
+	const budgetMs = Math.min(budgetOverride ?? maxBudgetMs, maxBudgetMs);
 
 	try {
-		const run = await withSyncLock(db, SYNC_LOCK_NAME, SYNC_LOCK_TTL_MS, () =>
+		const run = await withSyncLock(db, SYNC_LOCK_NAME, lockTtlMs, () =>
 			runSolidarityAttendeeSync(db, {
 				apply: !dryRun,
 				windowHours,

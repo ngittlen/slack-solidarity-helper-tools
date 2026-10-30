@@ -37,7 +37,15 @@ import { createSign } from 'node:crypto';
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
-const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
+/** The spreadsheets, and Drive's metadata of them: when each last changed
+ *  (modifiedSince). Never Drive file contents. */
+const SCOPE = [
+	'https://www.googleapis.com/auth/spreadsheets',
+	'https://www.googleapis.com/auth/drive.metadata.readonly',
+].join(' ');
+/** Pages of Drive's file list read at most: a thousand files each. */
+const MAX_DRIVE_PAGES = 10;
 
 /** The status a call reports when the run's deadline left no time to make
  *  it. Not an answer from Google: nothing was sent, and the caller should
@@ -257,6 +265,18 @@ export interface SheetsClient {
 			deadline?: number;
 		} & Urgency,
 	): Promise<SheetsResult<{ title: string; hasTab: boolean; tabs: string[] }>>;
+	/**
+	 * When each spreadsheet the service account can see last changed, by
+	 * spreadsheet id, for those Drive says changed after `since` (ISO). From
+	 * Drive, not Sheets: one request a thousand files, none of the Sheets
+	 * quota's 60 a minute, so a run can tell which spreadsheets it need not
+	 * read. Drive's list may lag an edit by a little; a caller that keeps its
+	 * own "read at" until it reads again sees the edit on a later call.
+	 */
+	modifiedSince(input: {
+		since: string;
+		deadline?: number;
+	}): Promise<SheetsResult<Map<string, string>>>;
 }
 
 function base64url(input: string | Buffer): string {
@@ -506,6 +526,8 @@ export function createSheetsClient(
 		init: RequestInit,
 		deadline?: number,
 		urgency: Urgency = {},
+		/** Counted against the Sheets quota. Not a Drive call, which has its own. */
+		paced = true,
 	): Promise<SheetsResult<string>> {
 		const auth = await accessToken(deadline);
 		if (!auth.ok) return auth;
@@ -519,7 +541,7 @@ export function createSheetsClient(
 			if (budget(deadline) < MIN_REQUEST_MS) {
 				return outOfTime('no time left in the run for this request');
 			}
-			if (!(await slot(kind, urgency, deadline))) {
+			if (paced && !(await slot(kind, urgency, deadline))) {
 				return outOfTime(
 					urgency.signal?.aborted
 						? 'withdrawn: the run stopped'
@@ -990,6 +1012,48 @@ export function createSheetsClient(
 			} catch {
 				return { ok: false, status: 0, error: 'spreadsheet metadata was not JSON' };
 			}
+		},
+
+		async modifiedSince({ since, deadline }) {
+			const changed = new Map<string, string>();
+			const query = [
+				"mimeType = 'application/vnd.google-apps.spreadsheet'",
+				`modifiedTime > '${since}'`,
+				'trashed = false',
+			].join(' and ');
+			let pageToken: string | undefined;
+			for (let page = 0; page < MAX_DRIVE_PAGES; page++) {
+				const params = new URLSearchParams({
+					q: query,
+					fields: 'nextPageToken,files(id,modifiedTime)',
+					pageSize: '1000',
+					corpora: 'allDrives',
+					includeItemsFromAllDrives: 'true',
+					supportsAllDrives: 'true',
+				});
+				if (pageToken) params.set('pageToken', pageToken);
+				const res = await request(
+					`${DRIVE_FILES}?${params}`,
+					{ method: 'GET' },
+					deadline,
+					{},
+					false,
+				);
+				if (!res.ok) return res;
+				const body = parseJson<{
+					nextPageToken?: string;
+					files?: Array<{ id?: string; modifiedTime?: string }>;
+				}>(res.value);
+				if (!body) return { ok: false, status: 0, error: 'Drive file list was not JSON' };
+				for (const file of body.files ?? []) {
+					if (file.id && file.modifiedTime) changed.set(file.id, file.modifiedTime);
+				}
+				pageToken = body.nextPageToken;
+				if (!pageToken) return { ok: true, value: changed };
+			}
+			// A partial list would read as "unchanged" for files on the pages
+			// not read.
+			return { ok: false, status: 0, error: `Drive listed more than ${MAX_DRIVE_PAGES} pages` };
 		},
 	};
 }

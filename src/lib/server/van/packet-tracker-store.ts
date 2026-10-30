@@ -233,8 +233,11 @@ export interface TrackerResult {
 	walkInsFilled: number;
 	walkInsCleared: number;
 	/** Checkouts left for the next run because Google's per-minute quota or
-	 *  the run's own time ran out. Not a failure: nothing is alerted. */
+	 *  the run's own time ran out, or a row changed under the run. Not a
+	 *  failure: nothing is alerted. */
 	deferred: number;
+	/** `deferred`, by why. */
+	deferredFor: Partial<Record<DeferReason, number>>;
 	/** Checkouts whose region matched no rule. */
 	unrouted: number;
 	unroutedRegions: string[];
@@ -246,6 +249,9 @@ export interface TrackerResult {
 	warnings: string[];
 }
 
+/** Why a checkout waits for the next run. */
+export type DeferReason = 'quota' | 'out of time' | 'packet row moved' | 'walk-in row in use';
+
 const EMPTY_RESULT: TrackerResult = {
 	filled: 0,
 	updated: 0,
@@ -253,6 +259,7 @@ const EMPTY_RESULT: TrackerResult = {
 	walkInsFilled: 0,
 	walkInsCleared: 0,
 	deferred: 0,
+	deferredFor: {},
 	unrouted: 0,
 	unroutedRegions: [],
 	assignmentsChanged: 0,
@@ -457,6 +464,25 @@ function isDeferral(failure: SheetFailure): boolean {
 	return failure.status === RATE_LIMITED || failure.status === OUT_OF_TIME;
 }
 
+/** Count `count` checkouts as waiting for the next run, and why. */
+function defer(result: TrackerResult, reason: DeferReason, count: number): void {
+	if (count <= 0) return;
+	result.deferred += count;
+	result.deferredFor[reason] = (result.deferredFor[reason] ?? 0) + count;
+}
+
+/** Why a deferral (isDeferral) stops the run. */
+const deferredBy = (failure: SheetFailure): DeferReason =>
+	failure.status === RATE_LIMITED ? 'quota' : 'out of time';
+
+/** "10 out of time, 1 walk-in row in use", most first. */
+export function describeDeferrals(counts: TrackerResult['deferredFor']): string {
+	return Object.entries(counts)
+		.sort(([, a], [, b]) => b - a)
+		.map(([reason, n]) => `${n} ${reason}`)
+		.join(', ');
+}
+
 /**
  * Read the spreadsheet's Packet Tracker tab, and its Walk Ins tab with it when
  * `walkIns` says the run has work there: one request either way, of the
@@ -530,6 +556,32 @@ const NO_WALK_INS_MS = 60 * 60 * 1000;
 
 const noWalkInsTab = new Map<string, number>();
 
+/**
+ * Spreadsheets the scheduled run read in full and brought up to date: when the
+ * read went out, and the run's work for it as loaded then (`workFingerprint`).
+ * A spreadsheet Drive says has not changed since, whose work is the same, has
+ * nothing for the next run to do, and is not read: the run reads about 70
+ * spreadsheets against 45 reads a minute, and most have not changed.
+ *
+ * In memory: a restart, or the other machine's first run, reads everything
+ * once. A run that changed something — a write, a ledger save — is read again
+ * next run, since Drive and the work both show it, and settles on the run
+ * after.
+ */
+const fullReads = new Map<string, { at: number; fingerprint: string }>();
+/** Drive's times are Google's clock and ours is ours, and an edit saved just
+ *  as the read went out may not be in it: a spreadsheet is skipped only when
+ *  it last changed this long before the read. */
+const MODIFIED_MARGIN_MS = 2 * 60 * 1000;
+/** Read anyway once the last full read is this old. Values that come from
+ *  formulas — IMPORTRANGE, a lookup — change without Drive saying so, and
+ *  what the run remembers for an hour (a tab that refused a highlight) ends
+ *  without the work changing. */
+const FULL_READ_MAX_AGE_MS = 60 * 60 * 1000;
+/** When the run last said it could not ask Drive, so it says so hourly, not
+ *  every run. */
+let driveRefusedSaidAt = 0;
+
 function walkInsTabMissing(spreadsheetId: string): boolean {
 	const since = noWalkInsTab.get(spreadsheetId);
 	return since !== undefined && Date.now() - since < NO_WALK_INS_MS;
@@ -562,6 +614,8 @@ export function _resetLiveReadsForTests(): void {
 	noWalkInsTab.clear();
 	highlightRefused.clear();
 	highlightsSwept.clear();
+	fullReads.clear();
+	driveRefusedSaidAt = 0;
 }
 
 type Outcome = 'filled' | 'updated' | 'unchanged' | 'moved' | SheetFailure;
@@ -1393,6 +1447,57 @@ async function refreshAssignments(
 	return [...byName.values()].reduce((n, ids) => n + ids.length, 0);
 }
 
+/** Everything the run does to a spreadsheet follows from: its checkouts and
+ *  turfs as the ledger has them, our entries in it, the tab, and the canvass
+ *  day. */
+function workFingerprint(
+	work: { candidates: Candidate[]; turfs: unknown[] },
+	ours: ReadonlyMap<string, string>,
+	tabName: string,
+	day: string,
+): string {
+	return JSON.stringify([tabName, day, work.candidates, work.turfs, [...ours]]);
+}
+
+/**
+ * The spreadsheets the run can leave unread: read in full within the hour,
+ * the same work since, and no change Drive knows of since that read. None
+ * when Drive cannot be asked — every spreadsheet is read, as it would be
+ * without this.
+ */
+async function unchangedSpreadsheets(
+	client: SheetsClient,
+	fingerprints: ReadonlyMap<string, string>,
+	deadline: number,
+): Promise<Set<string>> {
+	const unchanged = new Set<string>();
+	const recent = [...fingerprints].flatMap(([spreadsheetId, fingerprint]) => {
+		const read = fullReads.get(spreadsheetId);
+		const fresh = read && Date.now() - read.at < FULL_READ_MAX_AGE_MS;
+		return fresh && read.fingerprint === fingerprint ? [{ spreadsheetId, at: read.at }] : [];
+	});
+	if (recent.length === 0) return unchanged;
+	const since = Math.min(...recent.map((r) => r.at)) - MODIFIED_MARGIN_MS;
+	const changed = await client.modifiedSince({ since: new Date(since).toISOString(), deadline });
+	if (!changed.ok) {
+		if (Date.now() - driveRefusedSaidAt >= FULL_READ_MAX_AGE_MS) {
+			driveRefusedSaidAt = Date.now();
+			console.warn(
+				`${LOG} could not ask Drive which spreadsheets changed, so every one is read: ` +
+					`${changed.status} ${changed.error}`,
+			);
+		}
+		return unchanged;
+	}
+	for (const { spreadsheetId, at } of recent) {
+		const modified = changed.value.get(spreadsheetId);
+		if (modified === undefined || Date.parse(modified) < at - MODIFIED_MARGIN_MS) {
+			unchanged.add(spreadsheetId);
+		}
+	}
+	return unchanged;
+}
+
 /**
  * Sync every pending checkout to its spreadsheet's Packet Tracker, and read
  * the campaign's own assignments back.
@@ -1484,13 +1589,27 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		...EMPTY_RESULT,
 		unrouted,
 		unroutedRegions: [...unroutedRegions].sort(),
+		deferredFor: {},
 		warnings: [],
 	};
+
+	// The scheduled run only: a nudge reads its one spreadsheet regardless.
+	const scheduled = options.onlyTurfId === undefined;
+	const today = walkInDay(now.toISOString());
+	const fingerprints = new Map(
+		[...bySpreadsheet].map(([spreadsheetId, work]) => [
+			spreadsheetId,
+			workFingerprint(work, oursIn(spreadsheetId), tabName, today),
+		]),
+	);
+	const unchanged = scheduled
+		? await unchangedSpreadsheets(client, fingerprints, deadline)
+		: new Set<string>();
 
 	// Spreadsheets with an entry to write go first; the rest are only being
 	// read for the campaign's assignments, and go in a different order each run
 	// so that a run cut short does not skip the same ones every time.
-	const order = shuffled([...bySpreadsheet.keys()]).sort(
+	const order = shuffled([...bySpreadsheet.keys()].filter((id) => !unchanged.has(id))).sort(
 		(a, b) =>
 			Number(bySpreadsheet.get(b)!.candidates.length > 0) -
 			Number(bySpreadsheet.get(a)!.candidates.length > 0),
@@ -1502,10 +1621,13 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	// any still outstanding when it returns, before they spend a read nobody
 	// will use, after the lock is released.
 	const opening = new Map<string, ReturnType<typeof openTab>>();
+	/** When each read went out, for `fullReads`. */
+	const openedAt = new Map<string, number>();
 	const ahead = new AbortController();
 	const open = (spreadsheetId: string) => {
 		let pending = opening.get(spreadsheetId);
 		if (!pending) {
+			openedAt.set(spreadsheetId, Date.now());
 			const work = bySpreadsheet.get(spreadsheetId)!;
 			pending = openTab(client, spreadsheetId, tabName, deadline, oursIn(spreadsheetId), {
 				walkIns: walkInJobs(work.candidates, spreadsheetId, now).length > 0,
@@ -1519,6 +1641,8 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	// Set once Google says the minute's quota is spent or the run's time is
 	// up: everything after would be refused the same way.
 	let stopped = false;
+	/** What stopped it, for the checkouts left after. */
+	let stoppedFor: DeferReason = 'out of time';
 	/** Spreadsheets whose tab this run read, of `order.length`. Logged, so a
 	 *  run the quota cuts short says how far it got. */
 	let reached = 0;
@@ -1529,7 +1653,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			result.budgetLapsed = true;
 		}
 		if (stopped) {
-			result.deferred += work.candidates.length;
+			defer(result, stoppedFor, work.candidates.length);
 			continue;
 		}
 		for (const ahead of order.slice(index, index + READ_CONCURRENCY)) void open(ahead);
@@ -1537,7 +1661,8 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		if (!opened.ok) {
 			if (isDeferral(opened)) {
 				stopped = true;
-				result.deferred += work.candidates.length;
+				stoppedFor = deferredBy(opened);
+				defer(result, stoppedFor, work.candidates.length);
 				continue;
 			}
 			result.failed += work.candidates.length;
@@ -1577,13 +1702,14 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			}
 			if (outcome === 'filled') result.filled += 1;
 			else if (outcome === 'updated') result.updated += 1;
-			else if (outcome === 'moved') result.deferred += 1;
+			else if (outcome === 'moved') defer(result, 'packet row moved', 1);
 			else if (outcome !== 'unchanged') {
 				// The next checkout would fail the same way; all of them wait.
 				const waiting = work.candidates.length - i;
 				if (isDeferral(outcome)) {
 					stopped = true;
-					result.deferred += waiting;
+					stoppedFor = deferredBy(outcome);
+					defer(result, stoppedFor, waiting);
 				} else {
 					failedHere = outcome.error;
 					result.failed += waiting;
@@ -1612,12 +1738,13 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			}
 			result.walkInsFilled += walkIns.filled;
 			result.walkInsCleared += walkIns.cleared;
-			result.deferred += walkIns.deferred;
+			defer(result, 'walk-in row in use', walkIns.deferred);
 			if (walkIns.failure) {
 				const waiting = walkIns.waiting ?? 0;
 				if (isDeferral(walkIns.failure)) {
 					stopped = true;
-					result.deferred += waiting;
+					stoppedFor = deferredBy(walkIns.failure);
+					defer(result, stoppedFor, waiting);
 				} else {
 					failedHere = walkIns.failure.error;
 					result.failed += waiting;
@@ -1626,12 +1753,21 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		}
 
 		if (failedHere) {
+			fullReads.delete(spreadsheetId);
 			await safely(
 				() => recordFailure(db, spreadsheetId, failedHere!, now.toISOString()),
 				'health',
 			);
 		} else if (!stopped) {
+			if (scheduled) {
+				fullReads.set(spreadsheetId, {
+					at: openedAt.get(spreadsheetId)!,
+					fingerprint: fingerprints.get(spreadsheetId)!,
+				});
+			}
 			await safely(() => recordSuccess(db, spreadsheetId), 'health');
+		} else {
+			fullReads.delete(spreadsheetId);
 		}
 	}
 	// Reads started ahead that the loop never reached: withdrawn, so one still
@@ -1662,7 +1798,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 
 	if (result.deferred > 0) {
 		console.warn(
-			`${LOG} ${result.deferred} checkout(s) wait for the next run (quota, time, or a tab that changed mid-run)`,
+			`${LOG} ${result.deferred} checkout(s) wait for the next run: ${describeDeferrals(result.deferredFor)}`,
 		);
 	}
 	const walkIns = result.walkInsFilled + result.walkInsCleared;
@@ -1679,7 +1815,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			`${LOG} packet tracker: filled=${result.filled} updated=${result.updated} ` +
 				`failed=${result.failed} unrouted=${unrouted} assignments=${result.assignmentsChanged} ` +
 				`walk-ins=+${result.walkInsFilled}/-${result.walkInsCleared} ` +
-				`spreadsheets=${reached}/${order.length}`,
+				`spreadsheets=${reached}/${order.length} unchanged=${unchanged.size}`,
 		);
 	}
 	return result;
