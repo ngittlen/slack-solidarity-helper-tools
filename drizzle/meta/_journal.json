@@ -610,6 +610,13 @@
       "when": 1793326386151,
       "tag": "0086_person_contacts_at",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "6",
+      "when": 1793331476372,
+      "tag": "0087_person_contacts_without_rowid",
+      "breakpoints": true
     }
   ]
 }

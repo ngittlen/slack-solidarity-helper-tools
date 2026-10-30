@@ -6,6 +6,7 @@ import { createClient, type Client } from '@libsql/client';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
 import {
+	PROBE_GIVE_UP_MS,
 	SLOW_CALL_MS,
 	SLOW_REQUEST_MS,
 	requestLabel,
@@ -335,6 +336,30 @@ describe('round-trip probe', () => {
 		slack.release();
 		await done;
 		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it('gives up on a probe that never answers, and probes the next stall', async () => {
+		const execute = vi
+			.fn()
+			.mockImplementationOnce(() => new Promise(() => {}))
+			.mockImplementation(async () => ({}));
+		setRoundTripProbe({ execute } as never);
+		const first = stalled();
+		const firstDone = timeDependency('db', first.call);
+		await vi.advanceTimersByTimeAsync(SLOW_CALL_MS + PROBE_GIVE_UP_MS);
+		first.release();
+		await firstDone;
+		expect(lines('[db probe]')).toEqual([
+			'[db probe] select 1 still waiting after 30.0s from 01:24:26.000, beside a db call 2.0s in',
+		]);
+
+		const second = stalled();
+		const secondDone = timeDependency('db', second.call);
+		await vi.advanceTimersByTimeAsync(SLOW_CALL_MS);
+		second.release();
+		await secondDone;
+		expect(execute).toHaveBeenCalledTimes(2);
+		expect(lines('[db probe]')).toHaveLength(2);
 	});
 
 	it('says when the probe itself failed', async () => {
