@@ -1,0 +1,2 @@
+CREATE INDEX `van_turfs_live_campaign` ON `van_turfs` (`campaign_id`) WHERE "van_turfs"."retired_at" IS NULL;--> statement-breakpoint
+CREATE INDEX `van_turfs_drift_alerted` ON `van_turfs` (`campaign_id`) WHERE "van_turfs"."drift_alerted_kind" IS NOT NULL;

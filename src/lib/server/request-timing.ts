@@ -20,6 +20,17 @@
 // dependency's calls: once the slow requests were seen to be one call stalling
 // for seconds while the rest took tens of milliseconds, the question was which.
 //
+// A database call still running at SLOW_CALL_MS sends a `select 1` down the
+// same connection, and logs how long that took:
+//
+//   [db probe] select 1 in 2140ms from 01:24:26.002, beside a db call 2.0s in
+//
+// Turso's own latency chart can sit flat while every call here takes seconds,
+// and Fly's CPU can sit idle. A probe as slow as the stalled call puts the time
+// in the round trip — the connection, the network, Turso's front door — and
+// not in any statement; a quick one puts it in the stalled statement, or in
+// what that statement waits behind inside the database.
+//
 // Times are summed per call, so calls made side by side (a Promise.all) can
 // add up to more than the request took. VAN's time is until response headers,
 // as that is all `fetch` waits for, and excludes the client's own queue. A
@@ -30,6 +41,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Client, Transaction } from '@libsql/client';
+import { errMessage } from '../err-message.js';
 
 export const SLOW_REQUEST_MS = 2_000;
 export const SLOW_CALL_MS = 2_000;
@@ -65,6 +77,16 @@ interface RequestTiming {
 
 const storage = new AsyncLocalStorage<RequestTiming>();
 let inFlight = 0;
+
+/** The connection the round-trip probe runs on: the app's own client, before
+ *  timedLibsqlClient wraps it, so a probe is in no request's tally. */
+let probeClient: Pick<Client, 'execute'> | null = null;
+/** One probe at a time: calls that stall together are one stall. */
+let probing = false;
+
+export function setRoundTripProbe(client: Pick<Client, 'execute'> | null): void {
+	probeClient = client;
+}
 
 /** `GET /turfs/organizer`, or `POST /api/internal/van-sync?campaign=3`. */
 export function requestLabel(method: string, routeId: string | null, url: URL): string {
@@ -132,7 +154,7 @@ export async function timeDependency<T>(
 	timing.tallies.set(dependency, tally);
 	const index = ++tally.calls;
 	try {
-		return await call();
+		return await probedCall(dependency, call, now);
 	} finally {
 		const ms = now() - startedAt;
 		// Finished first: the request answered while this call ran on.
@@ -164,11 +186,48 @@ async function timeLoneCall<T>(
 ): Promise<T> {
 	const startedAt = now();
 	try {
-		return await call();
+		return await probedCall(dependency, call, now);
 	} finally {
 		const context = startedBy ? `after ${startedBy.label}` : 'outside a request';
 		logSlowCall(dependency, what, startedAt, now() - startedAt, context);
 	}
+}
+
+/** `call`, with a round-trip probe sent should a database call still be
+ *  running at SLOW_CALL_MS. */
+async function probedCall<T>(
+	dependency: Dependency,
+	call: () => Promise<T>,
+	now: () => number,
+): Promise<T> {
+	if (dependency !== 'db') return call();
+	const timer = setTimeout(() => probeRoundTrip(now), SLOW_CALL_MS);
+	timer.unref?.();
+	try {
+		return await call();
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+function probeRoundTrip(now: () => number): void {
+	const client = probeClient;
+	if (!client || probing) return;
+	probing = true;
+	const startedAt = now();
+	const from = `from ${clockTime(startedAt)}, beside a db call ${seconds(SLOW_CALL_MS)} in`;
+	client
+		.execute('select 1')
+		.then(
+			() => console.warn(`[db probe] select 1 in ${now() - startedAt}ms ${from}`),
+			(err) =>
+				console.warn(
+					`[db probe] select 1 failed after ${now() - startedAt}ms ${from}: ${errMessage(err)}`,
+				),
+		)
+		.finally(() => {
+			probing = false;
+		});
 }
 
 /**
@@ -186,7 +245,7 @@ function logSlowCall(
 ): void {
 	if (dependency === 'van' || ms < SLOW_CALL_MS) return;
 	console.warn(
-		`[slow call] ${dependency} ${seconds(ms)} from ${new Date(startedAt).toISOString().slice(11, 23)}` +
+		`[slow call] ${dependency} ${seconds(ms)} from ${clockTime(startedAt)}` +
 			`${what ? `: ${what}` : ''} — ${context}`,
 	);
 }
@@ -284,6 +343,8 @@ function timeMethods<T extends object>(
 }
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+/** `01:24:26.002`, UTC like the rest of the log. */
+const clockTime = (ms: number) => new Date(ms).toISOString().slice(11, 23);
 
 function formatSlowRequest(
 	timing: RequestTiming,

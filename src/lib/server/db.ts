@@ -4,7 +4,7 @@ import { and, eq, gt } from 'drizzle-orm';
 import { TURSO_DATABASE_URL, TURSO_AUTH_TOKEN } from './env.js';
 import { sessions } from './schema.js';
 import type { OutsideProvider } from './identity.js';
-import { timedLibsqlClient } from './request-timing.js';
+import { setRoundTripProbe, timedLibsqlClient } from './request-timing.js';
 
 export interface SessionData {
 	slackUserId: string;
@@ -33,9 +33,9 @@ export interface SessionData {
 let _db: ReturnType<typeof drizzle> | undefined;
 function getDb() {
 	if (!_db) {
-		_db = drizzle(
-			timedLibsqlClient(createClient({ url: TURSO_DATABASE_URL, authToken: TURSO_AUTH_TOKEN })),
-		);
+		const client = createClient({ url: TURSO_DATABASE_URL, authToken: TURSO_AUTH_TOKEN });
+		setRoundTripProbe(client);
+		_db = drizzle(timedLibsqlClient(client));
 	}
 	return _db;
 }
