@@ -1,0 +1,1 @@
+CREATE INDEX `van_turfs_retired_routes` ON `van_turfs` (`campaign_id`,`van_map_route_id`,`retired_at`) WHERE "van_turfs"."retired_at" IS NOT NULL;

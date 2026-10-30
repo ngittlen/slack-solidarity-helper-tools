@@ -65,6 +65,50 @@ describe('edge challenge pages', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
+	it('says each retry in the log, with the path and the wait', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		stubSequence(
+			{ status: 530, text: CHALLENGE_PAGE },
+			{ status: 200, text: JSON.stringify({ data: [], next: null }) },
+		);
+		vi.useFakeTimers();
+
+		const pending = listEventAttendances(API, 1025563);
+		await vi.runAllTimersAsync();
+		await pending;
+
+		expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+			expect.stringMatching(
+				/^\[mobilize\] 530 on \/.*1025563.* — retrying in 2s \(attempt 2\/6\)$/,
+			),
+		]);
+		warn.mockRestore();
+	});
+
+	it('lets go of the response it is retrying before the wait', async () => {
+		const cancel = vi.fn(async () => {});
+		const fetchMock = vi.fn(async () =>
+			fetchMock.mock.calls.length === 1
+				? { ok: false, status: 429, body: { cancel }, headers: new Headers() }
+				: {
+						ok: true,
+						status: 200,
+						text: async () => JSON.stringify({ data: [], next: null }),
+						headers: new Headers(),
+					},
+		);
+		vi.stubGlobal('fetch', fetchMock);
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.useFakeTimers();
+
+		const pending = listEventAttendances(API, 1025563);
+		await vi.runAllTimersAsync();
+		await pending;
+
+		expect(cancel).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+
 	// A 530 never reached Mobilize, but a 5xx on a write can mean the origin
 	// processed it and only the reply was lost — replaying that creates a
 	// second event, so writes stay on 429-only.

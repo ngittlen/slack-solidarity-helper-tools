@@ -10,6 +10,7 @@
 // Every response is enveloped as {data, error, count, next, previous}; list
 // endpoints are followed through `next` rather than by counting pages.
 
+import { timedFetch } from '../../src/lib/server/request-timing.js';
 import { env, requireEnv } from './env.js';
 
 const BASE = 'https://api.mobilize.us/v1';
@@ -150,18 +151,27 @@ async function request(
 
 	const retryable = retryableStatuses(init);
 	for (let attempt = 0; ; attempt++) {
-		const res = await fetch(url, { ...init, headers });
+		// Timed against the request it serves; see request-timing.ts.
+		const res = await timedFetch('mobilize')(url, { ...init, headers });
 		if (!retryable.has(res.status) || attempt >= MAX_ATTEMPTS - 1) return res;
 		// Mobilize sends Retry-After on some 429s; prefer it over guessing, but
 		// cap it — an upstream answering `Retry-After: 3600` would otherwise
 		// park the sync for an hour per attempt. Both sibling clients bound it
 		// the same way (van/client.ts, solidarity-paginate.ts).
 		const retryAfter = Number(res.headers.get('retry-after'));
-		await sleep(
+		const wait =
 			Number.isFinite(retryAfter) && retryAfter > 0
 				? Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS)
-				: BACKOFF_MS * (attempt + 1),
+				: BACKOFF_MS * (attempt + 1);
+		// Said out loud: these waits add up to minutes when Mobilize is
+		// rate-limiting, and nothing else in the log would show them.
+		console.warn(
+			`[mobilize] ${res.status} on ${new URL(url).pathname} — retrying in ` +
+				`${Math.round(wait / 1000)}s (attempt ${attempt + 2}/${MAX_ATTEMPTS})`,
 		);
+		// An unread body holds its connection open through the wait.
+		await res.body?.cancel();
+		await sleep(wait);
 	}
 }
 

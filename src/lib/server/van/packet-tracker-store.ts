@@ -184,6 +184,10 @@ export interface WalkInState {
 	/** A row whose highlight we could not take off when we cleared it, to try
 	 *  again while it is still that day and still empty. */
 	yellowRow?: number;
+	/** The night's sweep (highlightSweepDay) that took this row's yellow off
+	 *  while it was still held, so the yellow on it is the repaint and that
+	 *  sweep is not run on its spreadsheet again. */
+	sweptOn?: string;
 	gone?: true;
 }
 
@@ -202,6 +206,7 @@ export function parseWalkInState(raw: string | null): WalkInState | null {
 			...(parsed.painted ? { painted: true as const } : {}),
 			...(typeof parsed.yellowRow === 'number' ? { yellowRow: parsed.yellowRow } : {}),
 			...(typeof parsed.day === 'string' ? { day: parsed.day } : {}),
+			...(typeof parsed.sweptOn === 'string' ? { sweptOn: parsed.sweptOn } : {}),
 			...(parsed.gone ? { gone: true as const } : {}),
 		};
 	} catch {
@@ -538,8 +543,9 @@ const NO_HIGHLIGHT_MS = 60 * 60 * 1000;
 const highlightRefused = new Map<string, number>();
 
 /** The canvass day each spreadsheet's Walk Ins highlights were last taken off
- *  for. In memory: a restart in the small hours takes them off once more,
- *  which costs only a repaint of the rows still held. */
+ *  for, so the rest of the night's runs on this machine skip the ledger read.
+ *  Whether a sweep is owed is the ledger's to say (loadPaintRecords), so a
+ *  restart or the other machine does not repeat one. */
 const highlightsSwept = new Map<string, string>();
 /** What a refusal is: Google saying no, not Google failing to answer. */
 const REFUSALS: ReadonlySet<number> = new Set([400, 403, 404]);
@@ -1090,8 +1096,15 @@ async function syncWalkIns(
 			if (rowIndex === recorded) {
 				if (isEmptyWalkIn(fresh.value, layout)) {
 					// Emptied already — the campaign clearing the tab early.
-					// Nothing of ours left to take back.
-					await save(candidate.checkoutId, { spreadsheetId, rowIndex: null, name: null });
+					// Its clear leaves the yellow, which is still ours to take
+					// off ('unhighlight', or the night's sweep).
+					await save(candidate.checkoutId, {
+						spreadsheetId,
+						rowIndex: null,
+						name: null,
+						day: today,
+						...(state!.painted ? { yellowRow: recorded } : {}),
+					});
 				} else {
 					// Escaped: a Google or Apple volunteer picks their own name.
 					warnings.push(
@@ -1166,13 +1179,18 @@ async function syncWalkIns(
 }
 
 /**
- * Take every highlight off each spreadsheet's Walk Ins tab, once a night
- * (highlightSweepDay). The campaign empties the tab's values each night and
- * the yellow stays behind on rows nobody is in any more.
+ * Take every highlight off the Walk Ins tab of each spreadsheet where a row
+ * this app painted may still be yellow, once a night (highlightSweepDay). The
+ * campaign empties the tab's values each night and the yellow stays behind on
+ * rows nobody is in any more.
  *
- * Every row below the header, whoever coloured it. A row a checkout still
- * holds for the closing day loses its yellow too, and is marked to have it
- * put back: run before the ledger is read, so this same run repaints it.
+ * Only those spreadsheets: the sweep is for our yellow, and the ledger records
+ * each row we painted. Asking Google of every spreadsheet costs a read and a
+ * write each — seventy-odd, paced, which fills the run before any packet is
+ * written. Within one, every row below the header loses its yellow, whoever
+ * coloured it. A row a checkout still holds for the closing day loses its
+ * yellow too, and is marked to have it put back: run before the ledger is
+ * read, so this same run repaints it.
  *
  * Best effort: a failure is logged, and the next run before the rollover
  * tries again. Only the minute's quota or the run's time stops the rest.
@@ -1186,8 +1204,15 @@ async function sweepWalkInHighlights(
 ): Promise<void> {
 	const day = highlightSweepDay(now);
 	if (day === null) return;
-	for (const spreadsheetId of spreadsheetIds) {
-		if (highlightsSwept.get(spreadsheetId) === day) continue;
+	const unswept = spreadsheetIds.filter((id) => highlightsSwept.get(id) !== day);
+	if (unswept.length === 0) return;
+	const records = await loadPaintRecords(db, day, now);
+	for (const spreadsheetId of unswept) {
+		const ours = records.filter((r) => r.state.spreadsheetId === spreadsheetId);
+		if (ours.length === 0) {
+			highlightsSwept.set(spreadsheetId, day);
+			continue;
+		}
 		if (refusesHighlight(spreadsheetId, WALK_IN_TAB_NAME)) continue;
 		if (walkInsTabMissing(spreadsheetId)) continue;
 
@@ -1222,36 +1247,66 @@ async function sweepWalkInHighlights(
 			continue;
 		}
 		highlightsSwept.set(spreadsheetId, day);
-		const repaint = await unpaintHeldRows(db, spreadsheetId, day, now);
+		const repaint = await unpaintHeldRows(db, ours, day);
 		console.log(
 			`${LOG} took the highlights off the Walk Ins tab in ${spreadsheetId}; ${repaint} row(s) to repaint`,
 		);
 	}
 }
 
+interface PaintRecord {
+	id: number;
+	/** The stored `walk_in_state`, as read. */
+	raw: string;
+	state: WalkInState;
+}
+
 /**
- * After the sweep: forget that this spreadsheet's rows for `day` have their
- * yellow, so a row still held is repainted ('paint') and a cleared one is not
- * chased for a highlight that is already gone ('unhighlight'). Returns how
- * many rows are still held and so owed their yellow back.
+ * Checkouts whose Walk Ins row this app painted and may still be yellow, from
+ * the day being swept or one before it whose sweep was missed. Not a row
+ * repainted after this night's sweep: the ledger is shared, so a sweep one
+ * machine has done is not repeated by the other.
  */
-async function unpaintHeldRows(db: Db, spreadsheetId: string, day: string, now: Date) {
+async function loadPaintRecords(db: Db, day: string, now: Date): Promise<PaintRecord[]> {
 	// As loadHeldRows: two days back covers a canvass day past midnight.
 	const since = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString();
 	const rows = await db
 		.select({ id: vanTurfCheckouts.id, walkInState: vanTurfCheckouts.walkInState })
 		.from(vanTurfCheckouts)
 		.where(and(isNotNull(vanTurfCheckouts.walkInState), gte(vanTurfCheckouts.claimedAt, since)));
-	let held = 0;
+	const records: PaintRecord[] = [];
 	for (const row of rows) {
 		const state = parseWalkInState(row.walkInState);
-		if (!state || state.spreadsheetId !== spreadsheetId || state.day !== day) continue;
-		if (!state.painted && state.yellowRow === undefined) continue;
+		if (!state?.day || state.day > day || state.sweptOn === day) continue;
+		if (state.painted || state.yellowRow !== undefined) {
+			records.push({ id: row.id, raw: row.walkInState!, state });
+		}
+	}
+	return records;
+}
+
+/**
+ * After the sweep of one spreadsheet: forget that its rows have their yellow,
+ * so a row still held is repainted ('paint') and a cleared one is not chased
+ * for a highlight that is already gone ('unhighlight'). Returns how many rows
+ * are still held and so owed their yellow back.
+ */
+async function unpaintHeldRows(db: Db, records: readonly PaintRecord[], day: string) {
+	let held = 0;
+	for (const { id, raw, state } of records) {
 		const rest: WalkInState = { ...state };
 		delete rest.painted;
 		delete rest.yellowRow;
-		await saveWalkInState(db, row.id, rest);
-		if (rest.rowIndex !== null && !rest.gone) held += 1;
+		const holds = rest.day === day && rest.rowIndex !== null && !rest.gone;
+		if (holds) rest.sweptOn = day;
+		// Only over the state as read, which was before the sweep's paced calls
+		// to Google. A nudge that took the lock from a run past its lifetime may
+		// have saved a newer one since, and that one stands.
+		const saved = await db
+			.update(vanTurfCheckouts)
+			.set({ walkInState: JSON.stringify(rest) })
+			.where(and(eq(vanTurfCheckouts.id, id), eq(vanTurfCheckouts.walkInState, raw)));
+		if (holds && saved.rowsAffected > 0) held += 1;
 	}
 	return held;
 }

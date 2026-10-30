@@ -1180,6 +1180,13 @@ export const vanTurfs = sqliteTable(
 		index('van_turfs_live_campaign')
 			.on(table.campaignId)
 			.where(sql`${table.retiredAt} IS NULL`),
+		// Partial, and holding every column the catalog sync reads of a retired
+		// turf (sync.ts): the turf id comes with it, as the row's key. Retired
+		// routes outnumber live ones several times over and each row carries its
+		// hull, so reading them from the table costs the sync seconds.
+		index('van_turfs_retired_routes')
+			.on(table.campaignId, table.vanMapRouteId, table.retiredAt)
+			.where(sql`${table.retiredAt} IS NOT NULL`),
 		// Partial: the drift alert's stamp sweep reads the few stamped turfs.
 		index('van_turfs_drift_alerted')
 			.on(table.campaignId)
