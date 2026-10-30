@@ -30,14 +30,15 @@ const LOG = '[sheets]';
  *  both insert a row for one checkout. Short: a run is bounded by its own
  *  budget, and a crashed holder should not stall the tracker for long. */
 const TRACKER_LOCK = 'packet-tracker';
-const TRACKER_LOCK_TTL_MS = 2 * 60 * 1000;
+const TRACKER_LOCK_TTL_MS = 3 * 60 * 1000;
 
 /** A nudge is one volunteer's turf: one spreadsheet, a few calls. */
 const NUDGE_BUDGET_MS = 20 * 1000;
 /** Waits between nudge attempts when the sync holds the lock. The sync may have
  *  read the ledger before this claim existed, so a skipped nudge tries again
- *  rather than leaving the row for the next scheduled run. */
-const NUDGE_RETRY_MS = [5_000, 15_000, 45_000];
+ *  rather than leaving the row for the next scheduled run. Two minutes in all:
+ *  past the scheduled run's 100-second budget. */
+const NUDGE_RETRY_MS = [5_000, 15_000, 45_000, 55_000];
 
 /** The most the claim waits for the live check before trusting the last sync.
  *  Normally a fraction of this — two parallel reads. Not lower: the Sheets

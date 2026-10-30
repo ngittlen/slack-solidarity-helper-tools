@@ -298,6 +298,42 @@ async function createOrAdoptRsvp(
 }
 
 /**
+ * Already mirrored and nothing changed — the common case on re-runs.
+ *
+ * modified_date is checked as well as status and attendance, so an edit that
+ * changes neither (someone corrects their email in Mobilize) is still picked
+ * up. Ledger rows written before that column existed carry 0, so they fail
+ * this check and are reprocessed exactly once; that pass stores the real
+ * modified_date and they settle from then on.
+ */
+function alreadyMirrored(
+	participation: MobilizeParticipation,
+	prior: RsvpRecord | undefined,
+): boolean {
+	return (
+		prior !== undefined &&
+		prior.status === participation.status &&
+		prior.attended === Boolean(participation.attended) &&
+		prior.modifiedDate >= participation.modifiedDate
+	);
+}
+
+/** Why the signup loop passes over a signup, or null when it writes it: a
+ *  status it does not mirror, no way to find the person, or nothing new since
+ *  the ledger last had it. Also what decides which sessions the run reads, so
+ *  the two cannot disagree about which signups will be written. */
+function skipReason(
+	participation: MobilizeParticipation,
+	prior: RsvpRecord | undefined,
+): 'unknown-status' | 'no-contact' | 'unchanged' | null {
+	if (!attendingFor(participation.status)) return 'unknown-status';
+	if (!normalizeEmail(participation.email) && !normalizePhone(participation.phone)) {
+		return 'no-contact';
+	}
+	return alreadyMirrored(participation, prior) ? 'unchanged' : null;
+}
+
+/**
  * Does this event still exist for our organization? `null` when the check itself
  * failed, so callers can tell "confirmed gone" from "couldn't tell" and only
  * prune on the former.
@@ -435,7 +471,19 @@ export async function runAttendeeSync(
 			startsAt: link.startsAt,
 		});
 	}
-	for (const sessionId of new Set(pending.map((p) => p.link.solidaritySessionId))) {
+	// Only the sessions this run can act on: one with a signup to write, and
+	// one with a cap still ahead of us, for the over-capacity check below. A
+	// session whose every signup is already mirrored has nothing to compare
+	// against, and each read spends one of Solidarity's 60 requests per 30s —
+	// on a quiet run, every one of them.
+	const sessionsToRead = new Set<number>();
+	for (const { link, participation } of pending) {
+		const capped = link.sessionCapacity !== null && link.startsAt > runStartedAt;
+		if (capped || skipReason(participation, known.get(participation.id)) === null) {
+			sessionsToRead.add(link.solidaritySessionId);
+		}
+	}
+	for (const sessionId of sessionsToRead) {
 		try {
 			const rows = await listSessionRsvps(config.solidarityToken, sessionId);
 			existingBySession.set(
@@ -482,36 +530,17 @@ export async function runAttendeeSync(
 			break;
 		}
 
-		const attending = attendingFor(participation.status);
-		if (!attending) {
-			report.skippedUnknownStatus++;
-			continue;
-		}
+		const priorRecord = known.get(participation.id);
+		const skip = skipReason(participation, priorRecord);
+		if (skip === 'unknown-status') report.skippedUnknownStatus++;
+		else if (skip === 'no-contact') report.skippedNoContact++;
+		else if (skip === 'unchanged') report.unchanged++;
+		if (skip !== null) continue;
 
+		// skipReason has checked both: a status it mirrors, and an email or phone.
+		const attending = attendingFor(participation.status)!;
 		const email = normalizeEmail(participation.email);
 		const phone = normalizePhone(participation.phone);
-		if (!email && !phone) {
-			report.skippedNoContact++;
-			continue;
-		}
-
-		const priorRecord = known.get(participation.id);
-		// Already mirrored and nothing changed — the common case on re-runs.
-		//
-		// modified_date is checked as well as status and attendance, so an edit
-		// that changes neither (someone corrects their email in Mobilize) is still
-		// picked up. Ledger rows written before that column existed carry 0, so
-		// they fail this check and are reprocessed exactly once; that pass stores
-		// the real modified_date and they settle from then on.
-		if (
-			priorRecord &&
-			priorRecord.status === participation.status &&
-			priorRecord.attended === Boolean(participation.attended) &&
-			priorRecord.modifiedDate >= participation.modifiedDate
-		) {
-			report.unchanged++;
-			continue;
-		}
 
 		try {
 			let userId = priorRecord?.solidarityUserId ?? null;

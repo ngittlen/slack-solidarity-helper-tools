@@ -21,14 +21,16 @@ import { secretMatches } from '$lib/server/secret-compare.js';
 // The tracker's own lock keeps a run from overlapping a nudge (or itself); a
 // run that finds it held skips, and the holder is doing the same work.
 
-// Half the tracker lock's two minutes (packet-tracker-live.ts), which nothing
-// renews: the budget stops new spreadsheets, not the one under way, and a run
-// past the lock could write a row a nudge is writing too. A run reads every
-// spreadsheet the campaigns route to — seventy-odd — but Google allows 60
-// reads a minute, shared with the claims' live checks, so a minute is about
-// what one run can use anyway. The order is shuffled each run, so what one
-// run misses the next reaches.
-const BUDGET_MS = 60 * 1000;
+// A run reads every spreadsheet the campaigns route to — seventy-odd, one read
+// each, plus a re-read of each row before it is written. The Sheets client
+// paces them at 45 a minute (the rest of Google's 60 is the claims' live
+// checks'), so seventy-odd take a little over a minute; this leaves room for
+// the writes. Well inside the tracker lock's three minutes
+// (packet-tracker-live.ts), which nothing renews: the budget stops new
+// spreadsheets, not the one under way, and a run past the lock could write a
+// row a nudge is writing too. The order is shuffled each run, so whatever one
+// run does not reach, the next does.
+const BUDGET_MS = 100 * 1000;
 
 export const POST: RequestHandler = async ({ url }) => {
 	if (!INTERNAL_CRON_SECRET) {

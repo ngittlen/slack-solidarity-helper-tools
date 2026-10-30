@@ -100,7 +100,7 @@ describe('authentication', () => {
 	// The sync reads several spreadsheets at once; a cold client must not
 	// mint a token for each.
 	it('mints one token for parallel requests on a cold client', async () => {
-		const fetchFn = vi.fn(async (url: string) =>
+		const fetchFn = vi.fn(async (url: string | URL | Request) =>
 			url === 'https://oauth2.googleapis.com/token' ? tokenResponse() : WROTE(),
 		);
 		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
@@ -124,6 +124,155 @@ describe('authentication', () => {
 
 		expect(res.ok).toBe(false);
 		expect(fetchFn).not.toHaveBeenCalled();
+	});
+});
+
+describe('readTabs', () => {
+	it('reads several tabs of one spreadsheet in ONE request, in the order asked', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(
+				ok({
+					valueRanges: [
+						{ range: "'Packet Tracker'!A1:B2", values: [['Packet Name'], ['Turf 01', 120]] },
+						{ range: "'Walk Ins'!A1:A1" },
+					],
+				}),
+			);
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.readTabs({
+			spreadsheetId: 'sheet-1',
+			tabNames: ['Packet Tracker', 'Walk Ins'],
+		});
+
+		expect(fetchFn).toHaveBeenCalledTimes(2); // token + one read
+		expect(res).toEqual({ ok: true, value: [[['Packet Name'], ['Turf 01', '120']], []] });
+		const [url] = fetchFn.mock.calls[1] as [string];
+		expect(url).toContain('/values:batchGet?');
+		expect(url).toContain(`ranges=${encodeURIComponent("'Packet Tracker'")}`);
+		expect(url).toContain(`ranges=${encodeURIComponent("'Walk Ins'")}`);
+	});
+
+	it('fails the whole read as a 404 when one tab is missing', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ error: { message: "Unable to parse range: 'Walk Ins'" } }), {
+					status: 400,
+				}),
+			);
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.readTabs({
+			spreadsheetId: 's',
+			tabNames: ['Packet Tracker', 'Walk Ins'],
+		});
+
+		expect(res).toMatchObject({ ok: false, status: 404 });
+	});
+});
+
+describe("pacing under Google's per-minute quota", () => {
+	const read = (client: ReturnType<typeof createSheetsClient>, extra: object = {}) =>
+		client.readTab({ spreadsheetId: 's', tabName: 'Packet Tracker', ...extra });
+	const reads = (fetchFn: Mock) =>
+		fetchFn.mock.calls.filter(([url]) => String(url).includes('/values/')).length;
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('holds a read past the ceiling until the oldest of the minute ages out', async () => {
+		const fetchFn = vi.fn(async (url: string | URL | Request) =>
+			String(url).includes('oauth2') ? tokenResponse() : ok({ values: [] }),
+		);
+		const client = createSheetsClient(CONFIG, { fetchFn, quota: { paced: 2, urgent: 3 } });
+		const deadline = Date.now() + 120_000;
+
+		await read(client, { deadline });
+		await vi.advanceTimersByTimeAsync(10_000);
+		await read(client, { deadline });
+		const third = read(client, { deadline });
+		await vi.advanceTimersByTimeAsync(49_000);
+		expect(reads(fetchFn)).toBe(2);
+		await vi.advanceTimersByTimeAsync(1_000);
+
+		expect(await third).toMatchObject({ ok: true });
+		expect(reads(fetchFn)).toBe(3);
+	});
+
+	it("lets the claim's live check past the run's ceiling, up to its own", async () => {
+		const fetchFn = vi.fn(async (url: string | URL | Request) =>
+			String(url).includes('oauth2') ? tokenResponse() : ok({ values: [] }),
+		);
+		const client = createSheetsClient(CONFIG, { fetchFn, quota: { paced: 2, urgent: 3 } });
+		const deadline = Date.now() + 6_000;
+
+		await read(client, { deadline });
+		await read(client, { deadline });
+		expect(await read(client, { deadline, urgent: true })).toMatchObject({ ok: true });
+		expect(await read(client, { deadline, urgent: true })).toMatchObject({
+			ok: false,
+			status: 408,
+		});
+		expect(reads(fetchFn)).toBe(3);
+	});
+
+	it('answers 408 without sending when the wait would outrun the deadline', async () => {
+		const fetchFn = vi.fn(async (url: string | URL | Request) =>
+			String(url).includes('oauth2') ? tokenResponse() : ok({ values: [] }),
+		);
+		const client = createSheetsClient(CONFIG, { fetchFn, quota: { paced: 1, urgent: 1 } });
+
+		await read(client, { deadline: Date.now() + 30_000 });
+		const res = await read(client, { deadline: Date.now() + 30_000 });
+
+		expect(res).toMatchObject({ ok: false, status: 408 });
+		expect(reads(fetchFn)).toBe(1);
+	});
+
+	it('withdraws a read still waiting for a slot when its signal aborts, sending nothing', async () => {
+		const fetchFn = vi.fn(async (url: string | URL | Request) =>
+			String(url).includes('oauth2') ? tokenResponse() : ok({ values: [] }),
+		);
+		const client = createSheetsClient(CONFIG, { fetchFn, quota: { paced: 1, urgent: 1 } });
+		const deadline = Date.now() + 120_000;
+		const stop = new AbortController();
+
+		await read(client, { deadline });
+		const waiting = read(client, { deadline, signal: stop.signal });
+		await vi.advanceTimersByTimeAsync(10_000);
+		stop.abort();
+
+		expect(await waiting).toMatchObject({
+			ok: false,
+			status: 408,
+			error: expect.stringMatching(/withdrawn/),
+		});
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(reads(fetchFn)).toBe(1);
+	});
+
+	it('counts writes against their own quota, not the reads', async () => {
+		const fetchFn = vi.fn(async (url: string | URL | Request) =>
+			String(url).includes('oauth2')
+				? tokenResponse()
+				: String(url).includes('/values/')
+					? ok({ values: [] })
+					: WROTE(),
+		);
+		const client = createSheetsClient(CONFIG, { fetchFn, quota: { paced: 1, urgent: 1 } });
+		const deadline = Date.now() + 30_000;
+
+		expect(await read(client, { deadline })).toMatchObject({ ok: true });
+		expect(await client.writeCells({ ...write(), deadline })).toEqual({ ok: true, value: true });
 	});
 });
 
@@ -322,8 +471,7 @@ describe('highlightCells', () => {
 			.fn()
 			.mockResolvedValueOnce(tokenResponse())
 			.mockResolvedValueOnce(TABS())
-			.mockResolvedValueOnce(quota())
-			.mockResolvedValueOnce(quota())
+			// No deadline, so no room to wait out the minute: one 429, handed back.
 			.mockResolvedValueOnce(quota())
 			.mockResolvedValueOnce(bad())
 			.mockResolvedValueOnce(TABS())
@@ -765,6 +913,73 @@ describe('writeCells', () => {
 			expect(res).toMatchObject({ ok: false, status });
 			expect(fetchFn).toHaveBeenCalledTimes(2);
 		}
+	});
+
+	describe('a 429', () => {
+		const quota = (retryAfter?: string) =>
+			new Response(JSON.stringify({ error: { message: 'Quota exceeded' } }), {
+				status: 429,
+				headers: retryAfter ? { 'Retry-After': retryAfter } : {},
+			});
+		const clock = () => {
+			let t = 1_000_000;
+			return { now: () => t, advance: (ms: number) => (t += ms) };
+		};
+
+		beforeEach(() => {
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+			vi.restoreAllMocks();
+		});
+
+		it('comes straight back when the deadline has no room for the minute', async () => {
+			const c = clock();
+			const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValue(quota());
+			const client = createSheetsClient(CONFIG, { fetchFn, now: c.now });
+
+			const res = await client.writeCells({ ...write(), deadline: c.now() + 45_000 });
+
+			expect(res).toMatchObject({ ok: false, status: 429 });
+			expect(fetchFn).toHaveBeenCalledTimes(2);
+		});
+
+		it('waits out the minute and tries again when the deadline allows', async () => {
+			vi.useFakeTimers();
+			const c = clock();
+			const fetchFn = vi
+				.fn()
+				.mockResolvedValueOnce(tokenResponse())
+				.mockResolvedValueOnce(quota())
+				.mockResolvedValueOnce(ok({}));
+			const client = createSheetsClient(CONFIG, { fetchFn, now: c.now });
+
+			const pending = client.writeCells({ ...write(), deadline: c.now() + 120_000 });
+			await vi.advanceTimersByTimeAsync(59_000);
+			expect(fetchFn).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(1_000);
+
+			expect(await pending).toEqual({ ok: true, value: true });
+			expect(fetchFn).toHaveBeenCalledTimes(3);
+		});
+
+		it("waits Google's Retry-After instead, when it names one", async () => {
+			vi.useFakeTimers();
+			const c = clock();
+			const fetchFn = vi
+				.fn()
+				.mockResolvedValueOnce(tokenResponse())
+				.mockResolvedValueOnce(quota('5'))
+				.mockResolvedValueOnce(ok({}));
+			const client = createSheetsClient(CONFIG, { fetchFn, now: c.now });
+
+			const pending = client.writeCells({ ...write(), deadline: c.now() + 45_000 });
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect(await pending).toEqual({ ok: true, value: true });
+		});
 	});
 
 	it('reports 408, having sent nothing, with no time left in the run', async () => {
