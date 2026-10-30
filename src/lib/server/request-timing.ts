@@ -83,6 +83,10 @@ let inFlight = 0;
 let probeClient: Pick<Client, 'execute'> | null = null;
 /** One probe at a time: calls that stall together are one stall. */
 let probing = false;
+/** How long a probe holds that slot. The client has no timeout of its own,
+ *  and a `select 1` that never answers is the stall a probe is for: past
+ *  this it is logged as still waiting, and the next stall gets a probe. */
+export const PROBE_GIVE_UP_MS = 30_000;
 
 export function setRoundTripProbe(client: Pick<Client, 'execute'> | null): void {
 	probeClient = client;
@@ -200,7 +204,7 @@ async function probedCall<T>(
 	call: () => Promise<T>,
 	now: () => number,
 ): Promise<T> {
-	if (dependency !== 'db') return call();
+	if (dependency !== 'db' || !probeClient) return call();
 	const timer = setTimeout(() => probeRoundTrip(now), SLOW_CALL_MS);
 	timer.unref?.();
 	try {
@@ -216,18 +220,26 @@ function probeRoundTrip(now: () => number): void {
 	probing = true;
 	const startedAt = now();
 	const from = `from ${clockTime(startedAt)}, beside a db call ${seconds(SLOW_CALL_MS)} in`;
-	client
-		.execute('select 1')
-		.then(
-			() => console.warn(`[db probe] select 1 in ${now() - startedAt}ms ${from}`),
-			(err) =>
-				console.warn(
-					`[db probe] select 1 failed after ${now() - startedAt}ms ${from}: ${errMessage(err)}`,
-				),
-		)
-		.finally(() => {
-			probing = false;
-		});
+	// The first of the answer, the error and the give-up logs; the others
+	// are dropped.
+	let settled = false;
+	const finish = (line: string) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(giveUp);
+		probing = false;
+		console.warn(line);
+	};
+	const giveUp = setTimeout(
+		() => finish(`[db probe] select 1 still waiting after ${seconds(PROBE_GIVE_UP_MS)} ${from}`),
+		PROBE_GIVE_UP_MS,
+	);
+	giveUp.unref?.();
+	client.execute('select 1').then(
+		() => finish(`[db probe] select 1 in ${now() - startedAt}ms ${from}`),
+		(err) =>
+			finish(`[db probe] select 1 failed after ${now() - startedAt}ms ${from}: ${errMessage(err)}`),
+	);
 }
 
 /**

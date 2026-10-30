@@ -1511,6 +1511,12 @@ export const vanTurfRoster = sqliteTable(
 // only people already on a roster: rosters arrive turf by turf over hours, and
 // filtering on them would silently drop contacts made before a turf's roster
 // landed. Pruned below the oldest live turf's cut date. Same hashing as above.
+//
+// WITHOUT ROWID (drizzle/0087_person_contacts_without_rowid.sql), which
+// drizzle-kit cannot declare: each row lives in its primary key, so the
+// counts that look a roster's people up by person read the date with the key.
+// A migration drizzle-kit generates that rebuilds this table drops it; add
+// WITHOUT ROWID back by hand.
 export const vanPersonContacts = sqliteTable(
 	'van_person_contacts',
 	{
