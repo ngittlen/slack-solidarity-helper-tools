@@ -1144,6 +1144,11 @@ export const vanTurfs = sqliteTable(
 		 *  list shows it already. Computed alongside `uncontactedDoors`, and
 		 *  null whenever it is. */
 		knockedBeforeCut: integer('knocked_before_cut'),
+		/** The start of a completion nudge that caught up and recounted this
+		 *  turf while the roster's person index was down, when the campaign's
+		 *  `countedThrough` does not move (contact-sync.ts). A completion before
+		 *  either is in the count. */
+		countedThrough: text('counted_through'),
 		/** The savedListId van_turf_roster was built from. Differs from
 		 *  `savedListId` (or is null) when the roster is missing or describes an
 		 *  older cut, which is what queues a fresh export. Written only by the

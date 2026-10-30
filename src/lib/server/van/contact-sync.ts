@@ -47,7 +47,7 @@ import { vanContactSyncState, vanPersonContacts, vanTurfRoster, vanTurfs } from 
 import type { VanClient } from './client.js';
 import { csvRows, responseChunks, type RosterEntry } from './hull-extract.js';
 import type { PersonHasher } from './person-hash.js';
-import { restoreRosterPersonIndex } from './roster-index.js';
+import { restoreRosterPersonIndex, rosterPersonIndexExists } from './roster-index.js';
 import { chunked } from './sql-chunk.js';
 import type { VanChangedEntityExportJob } from './types.js';
 
@@ -580,9 +580,10 @@ export interface ContactSyncOptions {
 	now?: Date;
 	timeBudgetMs?: number;
 	/** A completion nudge: recompute these turfs as well as the ones the pull
-	 *  touched — whoever it pulled or pruned. Omitted means a scheduled run —
-	 *  the only kind that recomputes every turf (see `needsFullRecompute`),
-	 *  stamps doors knocked, and moves `countedThrough`. */
+	 *  touched — whoever it pulled or pruned (only these, while the person
+	 *  index is down). Omitted means a scheduled run — the only kind that
+	 *  recomputes every turf (see `needsFullRecompute`), stamps doors knocked,
+	 *  and moves the campaign's `countedThrough`. */
 	recomputeTurfIds?: readonly number[];
 	/** For the blob download — never the VAN client, which would send our
 	 *  Basic credentials to a different host. */
@@ -738,6 +739,13 @@ function isDeadDownload(status: number): boolean {
  * those with a person in the contacts this run pulled or pruned, plus the
  * nudge's own. Nothing else moves a count: a new roster is recomputed by the
  * geometry worker that wrote it.
+ *
+ * While a drain holds the roster's person index down (roster-index.ts), only
+ * the nudge's own turf is recomputed: finding the touched people's turfs would
+ * scan the roster. They wait for the first scheduled run with the index back,
+ * which recomputes every turf. Meanwhile no scheduled run stamps doors knocked
+ * or moves the campaign's `countedThrough`; a nudge that catches up moves its
+ * own turf's instead.
  *
  * Never throws for a VAN failure: the error is recorded on the state row and
  * returned, and the recompute still runs over whatever is stored — a stale
@@ -972,14 +980,44 @@ export async function runContactSync(
 	}
 
 	result.cursor = cursor;
-	// A drain that died with the person index dropped leaves it to the next
-	// pull; turfsWithPeople scans the roster without it. Caught: a slow scan
-	// is no reason to lose the counts.
-	try {
-		if (await restoreRosterPersonIndex(db)) console.log('[van] rebuilt van_turf_roster_person');
-	} catch (err) {
-		console.warn('[van] could not rebuild van_turf_roster_person:', errMessage(err));
+	// Caught up: nothing failed, no job left waiting, and the cursor reached
+	// this run's start. Only then is a completion before `now` in the count.
+	const caughtUp =
+		result.error === null &&
+		!result.pending &&
+		cursor !== null &&
+		now.getTime() - Date.parse(cursor) < MIN_WINDOW_MS;
+
+	// Without the person index, turfsWithPeople scans the whole roster once per
+	// batch of people — ~30s each on Turso, back to back, starving every page
+	// that reads the database. So while a drain holds the index down, only the
+	// nudge's own turf is recounted, and the turfs of the people this run
+	// touched wait for the first scheduled run with the index back, which
+	// recounts every turf. The campaign's `countedThrough` stays put: other
+	// turfs' completions are not in the count. The nudge's own turf is, so it
+	// gets a mark of its own.
+	if (!(await personIndexReady(db))) {
+		console.log(
+			`[van] contact pull ${campaignId}: person index down, ` +
+				`${touched.size} touched people wait for a full recount`,
+		);
+		if (touched.size > 0) await saveState({ fullRecomputeAt: null });
+		const own = options.recomputeTurfIds ?? [];
+		result.turfsRecomputed = await recomputeUncontacted(db, { now, campaignId, turfIds: own });
+		result.percentsStamped = await stampWalkPercents(db, {
+			now,
+			campaignId,
+			turfIds: options.recomputeTurfIds,
+		});
+		if (caughtUp && own.length > 0) {
+			await db
+				.update(vanTurfs)
+				.set({ countedThrough: now.toISOString() })
+				.where(inArray(vanTurfs.turfId, [...own]));
+		}
+		return result;
 	}
+
 	const full = scheduled && (!state?.fullRecomputeAt || (await needsFullRecompute(db, campaignId)));
 	const recomputeIds = full
 		? undefined
@@ -1000,19 +1038,35 @@ export async function runContactSync(
 		campaignId,
 		turfIds: options.recomputeTurfIds,
 	});
-
-	// Caught up: nothing failed, no job left waiting, and the cursor reached
-	// this run's start. Only then is a completion before `now` in the count.
-	const caughtUp =
-		result.error === null &&
-		!result.pending &&
-		cursor !== null &&
-		now.getTime() - Date.parse(cursor) < MIN_WINDOW_MS;
 	if (scheduled && caughtUp) {
 		result.doorsKnockedStamped = await stampDoorsKnocked(db, { now, campaignId });
 		await saveState({ countedThrough: now.toISOString() });
 	}
 	return result;
+}
+
+/**
+ * Whether the roster's person index is there, after rebuilding it if a drain
+ * that dropped it is gone. A rebuild that throws is checked again rather than
+ * taken as missing: the build may have landed before the error, or only the
+ * read before it failed. Still missing, it is logged as an error on every
+ * run, because the counts of everyone's turf but the nudged one wait for it.
+ */
+async function personIndexReady(db: Db): Promise<boolean> {
+	try {
+		const index = await restoreRosterPersonIndex(db);
+		if (index === 'rebuilt') console.log('[van] rebuilt van_turf_roster_person');
+		return index !== 'missing';
+	} catch (err) {
+		const exists = await rosterPersonIndexExists(db).catch(() => false);
+		if (!exists) {
+			console.error(
+				'[van] could not rebuild van_turf_roster_person; touched turfs wait for it:',
+				errMessage(err),
+			);
+		}
+		return exists;
+	}
 }
 
 /** Live turfs, and how many have a roster for their current saved list. */
