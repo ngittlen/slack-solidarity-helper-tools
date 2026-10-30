@@ -3,7 +3,10 @@
 //
 // Intentionally has no `$env/*` or `$lib/*` imports so the standalone
 // scripts/solidarity-snapshot.ts (which runs outside the Vite bundle via tsx)
-// can resolve it by relative path. Only `fetch`, `console`, and `setTimeout`.
+// can resolve it by relative path. Only `fetch`, `console`, `setTimeout`, and
+// request-timing.ts, which has no `$` imports either.
+
+import { timedFetch } from './request-timing.js';
 
 const PAGE_LIMIT = 100;
 // Generous safety cap; callers early-terminate via a short final page.
@@ -61,8 +64,11 @@ export async function fetchWithRetry(
 	budget: RetryBudget,
 ): Promise<Response> {
 	for (;;) {
-		const res = await fetch(url, init);
+		// Timed against the request it serves; see request-timing.ts.
+		const res = await timedFetch('solidarity')(url, init);
 		if (res.status !== 429) return res;
+		// An unread body holds its connection open through the wait.
+		await res.body?.cancel();
 		if (budget.retriesUsed >= MAX_RETRIES) {
 			throw new Error(
 				`Solidarity ${label} rate-limit retry budget exhausted (${MAX_RETRIES} retries)`,

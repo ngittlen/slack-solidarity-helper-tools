@@ -36,9 +36,10 @@ const TRACKER_LOCK_TTL_MS = 3 * 60 * 1000;
 const NUDGE_BUDGET_MS = 20 * 1000;
 /** Waits between nudge attempts when the sync holds the lock. The sync may have
  *  read the ledger before this claim existed, so a skipped nudge tries again
- *  rather than leaving the row for the next scheduled run. Two minutes in all:
- *  past the scheduled run's 100-second budget. */
-const NUDGE_RETRY_MS = [5_000, 15_000, 45_000, 55_000];
+ *  rather than leaving the row for the next scheduled run. Two hundred seconds
+ *  in all: past the lock's lifetime, which a run can hold beyond its
+ *  100-second budget while it finishes the spreadsheet it is on. */
+const NUDGE_RETRY_MS = [5_000, 15_000, 45_000, 60_000, 75_000];
 
 /** The most the claim waits for the live check before trusting the last sync.
  *  Normally a fraction of this — two parallel reads. Not lower: the Sheets

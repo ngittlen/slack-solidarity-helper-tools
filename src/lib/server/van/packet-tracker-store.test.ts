@@ -1521,6 +1521,21 @@ describe('the Walk Ins tab', () => {
 		expect(await walkInState()).toMatchObject({ rowIndex: null });
 	});
 
+	it('takes its yellow off a row the campaign emptied before it was given back', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+		fake.walkInSheet('sheet-downriver')[1] = []; // the values, not the colour
+
+		await update(1, GIVEN_BACK);
+		await run(fake.api);
+		expect(await walkInState()).toMatchObject({ rowIndex: null, yellowRow: 1 });
+		await run(fake.api);
+
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(false);
+		expect(await walkInState()).not.toHaveProperty('yellowRow');
+	});
+
 	// 11pm claim, given back at 12:30am: still that night's walk-in.
 	it('clears a row given back just after midnight', async () => {
 		const fake = await withWalkIns();
@@ -1761,7 +1776,9 @@ describe('the Walk Ins tab', () => {
 		const ONE_AM = new Date('2026-09-20T05:30:00.000Z');
 		const sweeps = (calls: string[]) => calls.filter((c) => c.startsWith('walkins-clear:'));
 
-		/** Yellow the campaign's nightly clear left behind on emptied rows. */
+		/** Yellow the campaign's nightly clear left behind on emptied rows, and
+		 *  the ledger's record that this app painted a row there that day —
+		 *  which is what the sweep goes by. */
 		async function leftover(fake: ReturnType<typeof fakeSheets>, ...rows: number[]) {
 			for (const rowIndex of rows) {
 				await fake.api.highlightCells({
@@ -1772,6 +1789,23 @@ describe('the Walk Ins tab', () => {
 					on: true,
 				});
 			}
+			await painted(900);
+		}
+
+		/** A checkout given back earlier in the day, whose Walk Ins row this
+		 *  app painted. */
+		async function painted(id: number, spreadsheetId = 'sheet-downriver') {
+			await checkout({ id, releasedAt: '2026-09-19T16:00:00.000Z' });
+			await update(
+				id,
+				`walk_in_state = '${JSON.stringify({
+					spreadsheetId,
+					rowIndex: null,
+					name: null,
+					day: '2026-09-19',
+					painted: true,
+				})}'`,
+			);
 		}
 
 		it('takes every highlight below the header off at midnight', async () => {
@@ -1790,6 +1824,76 @@ describe('the Walk Ins tab', () => {
 			expect(fake.walkInYellow('sheet-downriver', 0)).toBe(true);
 		});
 
+		it('leaves alone a spreadsheet where this app painted nothing, without asking Google', async () => {
+			const fake = await withWalkIns([]);
+
+			await run(fake.api, { now: MIDNIGHT });
+
+			expect(sweeps(fake.calls)).toEqual([]);
+			expect(fake.calls.filter((c) => c.startsWith('walkins-read:'))).toEqual([]);
+		});
+
+		it('is not repeated by the other machine once done', async () => {
+			const fake = await withWalkIns([]);
+			await leftover(fake, 1);
+
+			await run(fake.api, { now: MIDNIGHT });
+			// The other machine: none of this one's memory, only the ledger.
+			_resetLiveReadsForTests();
+			await run(fake.api, { now: ONE_AM });
+
+			expect(sweeps(fake.calls)).toHaveLength(1);
+		});
+
+		it('is not repeated by the other machine for a row still held', async () => {
+			const fake = await withWalkIns();
+			await checkout();
+			await run(fake.api);
+
+			await run(fake.api, { now: MIDNIGHT });
+			_resetLiveReadsForTests();
+			await run(fake.api, { now: ONE_AM });
+
+			expect(sweeps(fake.calls)).toHaveLength(1);
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+		});
+
+		it('leaves a state saved during the sweep as it was saved', async () => {
+			const fake = await withWalkIns();
+			await checkout();
+			await run(fake.api);
+			// A nudge, between the sweep's ledger read and its write, finds the
+			// row written over by hand and leaves it to whoever did.
+			const ceded = { ...(await walkInState()), gone: true };
+			const clear = fake.api.clearHighlights;
+			fake.api.clearHighlights = async (args) => {
+				fake.walkInSheet('sheet-downriver')[1] = theirs('Ari');
+				await update(1, `walk_in_state = '${JSON.stringify(ceded)}'`);
+				return clear(args);
+			};
+
+			const result = await run(fake.api, { now: MIDNIGHT });
+
+			expect(sweeps(fake.calls)).toHaveLength(1);
+			expect(await walkInState()).toEqual(ceded);
+			// Not told twice that the row was changed by hand.
+			expect(result.warnings).toEqual([]);
+		});
+
+		it('sweeps a row the campaign emptied before it was given back', async () => {
+			const fake = await withWalkIns();
+			await checkout();
+			await run(fake.api);
+			fake.walkInSheet('sheet-downriver')[1] = [];
+			await update(1, GIVEN_BACK);
+			await run(fake.api);
+
+			await run(fake.api, { now: MIDNIGHT });
+
+			expect(sweeps(fake.calls)).toEqual(['walkins-clear:sheet-downriver:1']);
+			expect(fake.walkInYellow('sheet-downriver', 1)).toBe(false);
+		});
+
 		it('does nothing during the day', async () => {
 			const fake = await withWalkIns([]);
 			await leftover(fake, 1);
@@ -1802,9 +1906,16 @@ describe('the Walk Ins tab', () => {
 
 		it('sweeps once a night', async () => {
 			const fake = await withWalkIns([]);
+			await painted(900);
 
 			await run(fake.api, { now: MIDNIGHT });
-			await leftover(fake, 1);
+			await fake.api.highlightCells({
+				spreadsheetId: 'sheet-downriver',
+				tabName: WALK_IN_TAB_NAME,
+				rowIndex: 1,
+				columns: [0, 1],
+				on: true,
+			});
 			await run(fake.api, { now: ONE_AM });
 
 			expect(sweeps(fake.calls)).toHaveLength(1);

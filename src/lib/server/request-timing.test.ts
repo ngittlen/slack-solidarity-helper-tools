@@ -121,7 +121,7 @@ describe('timeRequest', () => {
 			statusOf,
 			c.now,
 		);
-		expect(logged()).toContain('no db, slack or van calls');
+		expect(logged()).toContain('no calls to a dependency');
 	});
 
 	it('logs a request that threw, and lets the error through', async () => {
@@ -206,6 +206,36 @@ describe('timeDependency', () => {
 		);
 		expect(slowCalls()).toEqual([
 			'[slow call] db 14.0s from 23:48:53.120: select "data" from "sessions" — GET /turfs',
+		]);
+	});
+
+	it('logs no slow call for VAN or Mobilize, whose long pages and walks are normal', async () => {
+		const c = clock();
+		for (const dependency of ['van', 'mobilize'] as const) {
+			await timeDependency(
+				dependency,
+				async () => {
+					c.advance(SLOW_CALL_MS * 5);
+				},
+				'',
+				c.now,
+			);
+		}
+		expect(slowCalls()).toEqual([]);
+	});
+
+	it('logs a slow Solidarity call, which pages wait on', async () => {
+		const c = clock(Date.parse('2026-10-28T23:48:53.000Z'));
+		await timeDependency(
+			'solidarity',
+			async () => {
+				c.advance(SLOW_CALL_MS);
+			},
+			'GET api.solidarity.tech/v1/users',
+			c.now,
+		);
+		expect(slowCalls()).toEqual([
+			'[slow call] solidarity 2.0s from 23:48:53.000: GET api.solidarity.tech/v1/users — outside a request',
 		]);
 	});
 
