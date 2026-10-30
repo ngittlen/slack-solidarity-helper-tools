@@ -1520,7 +1520,15 @@ export const vanPersonContacts = sqliteTable(
 		personHash: blob('person_hash', { mode: 'buffer' }).notNull(),
 		lastInPersonAt: text('last_in_person_at').notNull(),
 	},
-	(table) => [primaryKey({ columns: [table.campaignId, table.personHash] })],
+	(table) => [
+		primaryKey({ columns: [table.campaignId, table.personHash] }),
+		// For the prune every pull ends with, contacts older than the history
+		// kept, and the daily door report's contacts of one day. The primary
+		// key orders a campaign's contacts by person, not by date, so without
+		// this both read every contact in the campaign — the prune while
+		// holding the write lock, with every other write waiting on it.
+		index('van_person_contacts_campaign_at').on(table.campaignId, table.lastInPersonAt),
+	],
 );
 
 // Progress record for each campaign's ContactHistory pull. The pull walks forward

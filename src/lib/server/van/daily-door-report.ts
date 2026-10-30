@@ -143,13 +143,16 @@ export async function countDoorsByTurf(
 				AND c.last_in_person_at < ${to}
 		),
 		-- One row per door, on its chosen turf. Through the app when any of its
-		-- people contacted on that turf were knocked inside a checkout there.
+		-- people contacted on that turf were knocked inside a checkout there: a
+		-- window over the door's hits on the turf, in the same pass that picks
+		-- the turf.
 		doors AS (
-			SELECT p.turf_id AS turf_id, max(h.in_app) AS in_app
-			FROM hits p
-			JOIN hits h ON h.door_hash = p.door_hash AND h.turf_id = p.turf_id
-			WHERE p.pick = 1
-			GROUP BY p.door_hash, p.turf_id
+			SELECT turf_id, in_app FROM (
+				SELECT turf_id, pick,
+					max(in_app) OVER (PARTITION BY door_hash, turf_id) AS in_app
+				FROM hits
+			)
+			WHERE pick = 1
 		)
 		SELECT t.turf_id AS turfId, t.folder_id AS folderId, t.name AS turfName,
 			t.region_name AS regionName, count(*) AS doors, sum(d.in_app) AS appDoors,

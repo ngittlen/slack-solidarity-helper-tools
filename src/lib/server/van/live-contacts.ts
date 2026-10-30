@@ -351,33 +351,30 @@ export async function claimDoorProgress(
 	const progress = new Map<number, ClaimDoorProgress>();
 	const since = sql`strftime('%Y-%m-%dT%H:%M:%fZ', ${vanTurfCheckouts.claimedAt}, ${`${-KNOCK_LEAD_MS / 1000} seconds`})`;
 	for (const batch of chunked([...new Set(checkoutIds)])) {
-		const rows = await db
-			.select({
-				checkoutId: vanTurfCheckouts.id,
-				doors: sql<number>`count(DISTINCT ${vanTurfRoster.doorHash})`,
-				knocked: sql<number>`count(DISTINCT CASE WHEN ${vanPersonContacts.lastInPersonAt} >= ${since}
-					THEN ${vanTurfRoster.doorHash} END)`,
-			})
-			.from(vanTurfCheckouts)
-			.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfCheckouts.turfId))
-			.innerJoin(vanTurfRoster, eq(vanTurfRoster.turfId, vanTurfCheckouts.turfId))
-			.leftJoin(
-				vanPersonContacts,
-				and(
-					eq(vanPersonContacts.campaignId, vanTurfs.campaignId),
-					eq(vanPersonContacts.personHash, vanTurfRoster.personHash),
-				),
-			)
-			.where(
-				and(
-					inArray(vanTurfCheckouts.id, batch),
-					eq(vanTurfs.rosterSavedListId, vanTurfs.savedListId),
-				),
-			)
-			.groupBy(vanTurfCheckouts.id);
+		// CROSS JOIN pins the order: each claim by its id, its turf, the turf's
+		// roster by turf_id, then each person's contact by its primary key.
+		// Started from the roster or the contacts instead, the planner walks a
+		// whole table for a board of a few dozen claims.
+		const rows = (await db.all(sql`
+			SELECT ${vanTurfCheckouts.id} AS checkoutId,
+				count(DISTINCT ${vanTurfRoster.doorHash}) AS doors,
+				count(DISTINCT CASE WHEN ${vanPersonContacts.lastInPersonAt} >= ${since}
+					THEN ${vanTurfRoster.doorHash} END) AS knocked
+			FROM ${vanTurfCheckouts}
+			CROSS JOIN ${vanTurfs} ON ${vanTurfs.turfId} = ${vanTurfCheckouts.turfId}
+			CROSS JOIN ${vanTurfRoster} ON ${vanTurfRoster.turfId} = ${vanTurfCheckouts.turfId}
+			LEFT JOIN ${vanPersonContacts}
+				ON ${vanPersonContacts.campaignId} = ${vanTurfs.campaignId}
+				AND ${vanPersonContacts.personHash} = ${vanTurfRoster.personHash}
+			WHERE ${inArray(vanTurfCheckouts.id, batch)}
+				AND ${vanTurfs.rosterSavedListId} = ${vanTurfs.savedListId}
+			GROUP BY ${vanTurfCheckouts.id}
+		`)) as Array<{ checkoutId: unknown; doors: unknown; knocked: unknown }>;
 		for (const row of rows) {
 			const doors = Number(row.doors);
-			if (doors > 0) progress.set(row.checkoutId, { doors, knocked: Number(row.knocked) });
+			if (doors > 0) {
+				progress.set(Number(row.checkoutId), { doors, knocked: Number(row.knocked) });
+			}
 		}
 	}
 	return progress;

@@ -1,0 +1,1 @@
+CREATE INDEX `van_person_contacts_campaign_at` ON `van_person_contacts` (`campaign_id`,`last_in_person_at`);
