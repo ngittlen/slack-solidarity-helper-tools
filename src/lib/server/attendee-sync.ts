@@ -148,10 +148,19 @@ export interface AttendeeSyncResult extends AttendeeSyncReport {
 	zipsPruned: number;
 }
 
-const ZIP_MAP_MAX_AGE_MS = 24 * 3600_000;
+/** The age at which the nightly windowless run rebuilds the zip map. Under a
+ *  day, so the next night's run always finds it due, however much the start
+ *  times drift. */
+const ZIP_MAP_NIGHTLY_AGE_MS = 20 * 3600_000;
+/** The age at which a windowed run rebuilds it: only once nightly runs have
+ *  been missed. The rebuild walks every Solidarity user, minutes of paced
+ *  reads that a windowed run's budget cannot stop, and the next windowed runs
+ *  wait behind it. */
+const ZIP_MAP_MAX_AGE_MS = 48 * 3600_000;
 
-/** True when the derived zip map is missing or older than a day. */
-async function zipMapIsStale(db: Db): Promise<boolean> {
+/** True when the derived zip map is missing, or old enough for this run to
+ *  rebuild it: `windowed` runs wait longer. */
+export async function zipMapIsStale(db: Db, windowed: boolean): Promise<boolean> {
 	const rows = await db
 		.select({ updatedAt: zipChapterMap.updatedAt })
 		.from(zipChapterMap)
@@ -159,7 +168,8 @@ async function zipMapIsStale(db: Db): Promise<boolean> {
 		.limit(1);
 	const newest = rows[0]?.updatedAt;
 	if (!newest) return true;
-	return Date.now() - Date.parse(newest) > ZIP_MAP_MAX_AGE_MS;
+	const maxAge = windowed ? ZIP_MAP_MAX_AGE_MS : ZIP_MAP_NIGHTLY_AGE_MS;
+	return Date.now() - Date.parse(newest) > maxAge;
 }
 
 /**
@@ -308,10 +318,10 @@ export async function runSolidarityAttendeeSync(
 
 	// Rebuilt on staleness rather than on a separate nightly schedule, so this
 	// whole sync needs only one cron entry. Walking every Solidarity user is
-	// expensive, hence once a day rather than every run.
+	// expensive, hence once a day, by the nightly run unless it has been missed.
 	let zipsMapped = 0;
 	let zipsPruned = 0;
-	if (apply && (await zipMapIsStale(db))) {
+	if (apply && (await zipMapIsStale(db, windowHours !== null))) {
 		const refresh = await refreshZipChapterMap(db, options.zipExcludedChapterIds);
 		zipsMapped = refresh.mapped;
 		zipsPruned = refresh.pruned;

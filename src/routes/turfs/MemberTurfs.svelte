@@ -211,9 +211,10 @@
 		checkedAgeMs: number | null;
 	}
 	let syncChecks = $state<Record<number, SyncCheck | 'error'>>({});
-	/** The server's answer moves at most every half minute; this only bounds
-	 *  how long after that the card shows it. */
-	const SYNC_CHECK_MS = 10_000;
+	/** The server's answer moves at most every half minute, so asking more
+	 *  often learns nothing. Each check spends the turf request budget the map
+	 *  and chapter switches share, once per ticked turf. */
+	const SYNC_CHECK_MS = 30_000;
 
 	/** Browser geolocation, requested once and never blocking. A volunteer who
 	 *  declines still gets the map (framed on all the turf) and the full list —
@@ -287,6 +288,14 @@
 	 *  itself stops it at the source: the same view never fetches twice. */
 	let lastBbox = '';
 
+	/** Turf that only a viewport fetch brought in, left out of the map's
+	 *  opening frame. `lastBbox` stops the loop above only when the box comes
+	 *  back identical, and it rarely does: a fetch returns turf in the frame's
+	 *  padding, the frame grows to take it in, and the next box is a little
+	 *  larger, until the whole chapter is framed or the request budget runs
+	 *  out. Framing on turf the viewport did not fetch keeps the box still. */
+	let viewportOnly = $state<Record<number, true>>({});
+
 	/** The chapter currently on screen, as a plain value.
 	 *
 	 *  This exists so the effect below can depend on the chapter ID rather than
@@ -308,6 +317,7 @@
 		totalNow = null;
 		pagedTotals = {};
 		lastBbox = '';
+		viewportOnly = {};
 		lastNear = '';
 		campaignFilter = null;
 		foundPlace = null;
@@ -377,7 +387,11 @@
 	/** `onMap` less a cleared turf drawn only because it is selected, so the
 	 *  map's opening view does not move as it comes and goes. */
 	const framing = $derived(
-		drawable.filter((t) => shownOnMap(t, { showCleared: canShowCleared && showCleared })),
+		drawable.filter(
+			(t) =>
+				!(t.turfId in viewportOnly) &&
+				shownOnMap(t, { showCleared: canShowCleared && showCleared }),
+		),
 	);
 	/** What ticking the box adds: turf the map leaves off by default. Turf you
 	 *  hold is on it either way. */
@@ -396,13 +410,17 @@
 	);
 	const shown = $derived(turfs.length);
 
-	/** Fold an /api/turfs answer into `paged`. */
-	function mergeFetched(body: {
-		turfs: TurfView[];
-		total: number;
-		campaignBadges: CampaignBadges | null;
-		campaignTotals: CampaignTotals | null;
-	}) {
+	/** Fold an /api/turfs answer into `paged`. `fromViewport` marks what it
+	 *  added as `viewportOnly`. */
+	function mergeFetched(
+		body: {
+			turfs: TurfView[];
+			total: number;
+			campaignBadges: CampaignBadges | null;
+			campaignTotals: CampaignTotals | null;
+		},
+		fromViewport = false,
+	) {
 		// Only reassign when something genuinely new arrived. A fresh object
 		// every time would re-trigger every downstream derived — including
 		// the map's own framing — for no change in content.
@@ -411,6 +429,11 @@
 			const next = { ...paged };
 			for (const turf of added) next[turf.turfId] = turf;
 			paged = next;
+			if (fromViewport) {
+				const marked = { ...viewportOnly };
+				for (const turf of added) marked[turf.turfId] = true;
+				viewportOnly = marked;
+			}
 		}
 		const newBadges = Object.entries(body.campaignBadges ?? {}).filter(
 			([id]) => !(id in pagedBadges),
@@ -527,7 +550,7 @@
 				lastBbox = '';
 				return;
 			}
-			mergeFetched(await res.json());
+			mergeFetched(await res.json(), true);
 		} catch {
 			// Offline or a dropped request. Keep what we have — but forget the
 			// box, for the same reason the !res.ok branch above does: otherwise

@@ -74,7 +74,8 @@ describe('authentication', () => {
 		});
 		expect(JSON.parse(Buffer.from(rawClaims!, 'base64url').toString())).toEqual({
 			iss: CONFIG.clientEmail,
-			scope: 'https://www.googleapis.com/auth/spreadsheets',
+			scope:
+				'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.metadata.readonly',
 			aud: 'https://oauth2.googleapis.com/token',
 			iat: 1_700_000_000,
 			exp: 1_700_000_000 + 3600,
@@ -1063,5 +1064,66 @@ describe('describe', () => {
 		const res = await client.describe({ spreadsheetId: 'sheet-1', tabName: 'Log' });
 
 		expect(res.ok && res.value.hasTab).toBe(false);
+	});
+});
+
+describe('modifiedSince', () => {
+	it('asks Drive which spreadsheets changed since then, page by page', async () => {
+		const fetchFn = vi.fn(async (url: string | URL | Request) => {
+			const u = String(url);
+			if (u.includes('oauth2')) return tokenResponse();
+			return u.includes('pageToken=next')
+				? ok({ files: [{ id: 'sheet-2', modifiedTime: '2026-10-30T15:05:00.000Z' }] })
+				: ok({
+						nextPageToken: 'next',
+						files: [{ id: 'sheet-1', modifiedTime: '2026-10-30T15:01:00.000Z' }],
+					});
+		});
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.modifiedSince({ since: '2026-10-30T15:00:00.000Z' });
+
+		expect(res).toEqual({
+			ok: true,
+			value: new Map([
+				['sheet-1', '2026-10-30T15:01:00.000Z'],
+				['sheet-2', '2026-10-30T15:05:00.000Z'],
+			]),
+		});
+		const listed = new URL(String(fetchFn.mock.calls[1]![0]));
+		expect(listed.origin + listed.pathname).toBe('https://www.googleapis.com/drive/v3/files');
+		expect(listed.searchParams.get('q')).toBe(
+			"mimeType = 'application/vnd.google-apps.spreadsheet' and " +
+				"modifiedTime > '2026-10-30T15:00:00.000Z' and trashed = false",
+		);
+	});
+
+	it("spends none of the Sheets quota's minute", async () => {
+		const fetchFn = vi.fn(async (url: string | URL | Request) =>
+			String(url).includes('oauth2') ? tokenResponse() : ok({ values: [], files: [] }),
+		);
+		const client = createSheetsClient(CONFIG, { fetchFn, quota: { paced: 1, urgent: 1 } });
+		const deadline = Date.now() + 10_000;
+
+		await client.readTab({ spreadsheetId: 's', tabName: 'Packet Tracker', deadline });
+		const res = await client.modifiedSince({ since: '2026-10-30T15:00:00.000Z', deadline });
+
+		expect(res).toEqual({ ok: true, value: new Map() });
+	});
+
+	it('fails, rather than answering for part of the list, when Drive refuses', async () => {
+		const fetchFn = vi.fn(async (url: string | URL | Request) =>
+			String(url).includes('oauth2')
+				? tokenResponse()
+				: new Response(
+						JSON.stringify({ error: { message: 'Google Drive API has not been used in project' } }),
+						{ status: 403 },
+					),
+		);
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.modifiedSince({ since: '2026-10-30T15:00:00.000Z' });
+
+		expect(res).toMatchObject({ ok: false, status: 403 });
 	});
 });

@@ -31,6 +31,7 @@ const EMPTY_RESULT = {
 	updated: 0,
 	failed: 0,
 	deferred: 0,
+	deferredFor: {},
 	unrouted: 0,
 	unroutedRegions: [],
 	assignmentsChanged: 0,
