@@ -516,6 +516,45 @@ describe('runAttendeeSync change detection', () => {
 		expect(report.unchanged).toBe(0);
 		expect(report.rsvpsUpdated).toBe(1);
 	});
+
+	const rsvpReads = (spy: ReturnType<typeof mockApis>) =>
+		spy.mock.calls.filter(([url]) => String(url).includes('/v1/event_rsvps')).length;
+
+	it('reads no session RSVPs when every signup is already mirrored', async () => {
+		const spy = mockApis({ attendances: [attendance()], userFound: true });
+
+		await run(ledgerWith([prior]));
+
+		expect(rsvpReads(spy)).toBe(0);
+	});
+
+	it('still reads an upcoming capped session, for the over-capacity check', async () => {
+		const spy = mockApis({
+			attendances: [attendance()],
+			userFound: true,
+			sessionRsvps: [
+				{ id: 1, user_id: 1, is_attending: 'yes' },
+				{ id: 2, user_id: 2, is_attending: 'yes' },
+			],
+		});
+		const capped = { ...LINK, sessionCapacity: 1, startsAt: Date.now() + 86_400_000 };
+
+		const report = await run(ledgerWith([prior]), false, [capped]);
+
+		expect(rsvpReads(spy)).toBe(1);
+		expect(report.overCapacity).toHaveLength(1);
+	});
+
+	it('reads the session of a signup that changed', async () => {
+		const spy = mockApis({
+			attendances: [attendance({ modified_date: 1785009999 })],
+			userFound: true,
+		});
+
+		await run(ledgerWith([prior]));
+
+		expect(rsvpReads(spy)).toBe(1);
+	});
 });
 
 describe('runAttendeeSync rsvp payload', () => {

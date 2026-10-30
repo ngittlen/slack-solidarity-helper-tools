@@ -64,6 +64,22 @@ const HIGHLIGHT = { red: 1, green: 1, blue: 0 };
 const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 8_000;
+/** Google's quota window: 60 reads, and separately 60 writes, a minute for
+ *  this service account. */
+const QUOTA_WINDOW_MS = 60_000;
+/** Requests a minute this client sends of each kind, for a caller that can
+ *  wait (the scheduled run, the nudge) and one that cannot (the claim's live
+ *  check). The run is paced under the lower figure, so the gap is the live
+ *  checks' to use; both stay under 60 for the requests another machine sends,
+ *  which this one cannot count. */
+const PACED_PER_MINUTE = 45;
+const URGENT_PER_MINUTE = 55;
+
+/** How long a 429 waits when Google names no Retry-After. The quota is 60
+ *  reads (or writes) a minute: a retry a second or two later is refused
+ *  again and spends another request, where a minute on the oldest have aged
+ *  out of the window. */
+const RATE_LIMIT_WAIT_MS = 60_000;
 
 /** Refresh this long before the token actually expires, so a token minted at
  *  the top of a run cannot lapse midway through it. */
@@ -82,6 +98,20 @@ export interface SheetsClientOptions {
 	fetchFn?: FetchFn;
 	/** Overridable for tests. */
 	now?: () => number;
+	/** Requests a minute of each kind; see PACED_PER_MINUTE. For tests. */
+	quota?: { paced: number; urgent: number };
+}
+
+/** How a read waits its turn in the minute's quota. */
+interface Urgency {
+	/** Someone is waiting on the answer — a volunteer's claim, an admin's
+	 *  save: allowed past the scheduled run's pace, into the share of the
+	 *  minute kept for them. */
+	urgent?: boolean;
+	/** Withdraws a read still waiting for a slot, or still in flight: a run
+	 *  that stops cancels the reads it started ahead. It answers OUT_OF_TIME
+	 *  and has spent nothing if it had not been sent. */
+	signal?: AbortSignal;
 }
 
 /** Every call returns one of these rather than throwing. `status` is 0 for a
@@ -103,11 +133,26 @@ export interface SheetsClient {
 	 * few dozen spreadsheets. A missing tab is a 404 rather than a created one:
 	 * the tab is the campaign's.
 	 */
-	readTab(input: {
-		spreadsheetId: string;
-		tabName: string;
-		deadline?: number;
-	}): Promise<SheetsResult<string[][]>>;
+	readTab(
+		input: {
+			spreadsheetId: string;
+			tabName: string;
+			deadline?: number;
+		} & Urgency,
+	): Promise<SheetsResult<string[][]>>;
+	/**
+	 * Several tabs of one spreadsheet, as displayed, in a single read: the
+	 * quota counts requests, not ranges. In the order asked. A missing tab
+	 * fails the whole read, as a 404 — read the tabs one at a time to tell
+	 * which.
+	 */
+	readTabs(
+		input: {
+			spreadsheetId: string;
+			tabNames: readonly string[];
+			deadline?: number;
+		} & Urgency,
+	): Promise<SheetsResult<string[][][]>>;
 	/** One row, as displayed — the check just before a write that the row is
 	 *  still the packet the caller means. `rowIndex` is 0-based. */
 	readRow(input: {
@@ -205,11 +250,13 @@ export interface SheetsClient {
 	/** Whether the spreadsheet is reachable and whether it already has the tab.
 	 *  Read-only — what `sheets:check` uses to tell "never shared with us" from
 	 *  "shared, no tab" without writing anything. */
-	describe(input: {
-		spreadsheetId: string;
-		tabName: string;
-		deadline?: number;
-	}): Promise<SheetsResult<{ title: string; hasTab: boolean; tabs: string[] }>>;
+	describe(
+		input: {
+			spreadsheetId: string;
+			tabName: string;
+			deadline?: number;
+		} & Urgency,
+	): Promise<SheetsResult<{ title: string; hasTab: boolean; tabs: string[] }>>;
 }
 
 function base64url(input: string | Buffer): string {
@@ -218,6 +265,12 @@ function base64url(input: string | Buffer): string {
 		.replace(/\+/g, '-')
 		.replace(/\//g, '_')
 		.replace(/=+$/, '');
+}
+
+/** Retry-After when Google gives one, else the quota's minute. */
+function rateLimitWaitMs(retryAfter: string | null): number {
+	const parsed = parseInt(retryAfter ?? '', 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : RATE_LIMIT_WAIT_MS;
 }
 
 function backoffMs(attempt: number, retryAfter: string | null): number {
@@ -269,6 +322,24 @@ function missingTab<T>(
 	return res;
 }
 
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(done, ms);
+		function done() {
+			clearTimeout(timer);
+			signal?.removeEventListener('abort', done);
+			resolve();
+		}
+		signal?.addEventListener('abort', done, { once: true });
+	});
+}
+
+/** Rows as Google displays them, every cell a string. */
+function displayed(values: unknown[][] | undefined): string[][] {
+	return (values ?? []).map((row) => row.map((cell) => String(cell ?? '')));
+}
+
 function parseJson<T>(body: string): T | null {
 	try {
 		return JSON.parse(body) as T;
@@ -283,6 +354,40 @@ export function createSheetsClient(
 ): SheetsClient {
 	const fetchFn = options.fetchFn ?? fetch;
 	const now = options.now ?? Date.now;
+	const quota = options.quota ?? { paced: PACED_PER_MINUTE, urgent: URGENT_PER_MINUTE };
+
+	/** When each request of the last minute went out, oldest first, by the
+	 *  quota it counts against. */
+	const sent: Record<'read' | 'write', number[]> = { read: [], write: [] };
+
+	/**
+	 * Wait for room in the minute's quota, and take it. False when the wait
+	 * would not leave the caller's deadline time for the request itself: the
+	 * caller gets an OUT_OF_TIME and the work waits for the next run, as it
+	 * would for a 429 — but without spending a request to learn it.
+	 */
+	async function slot(
+		kind: 'read' | 'write',
+		{ urgent, signal }: Urgency,
+		deadline: number | undefined,
+	): Promise<boolean> {
+		const ceiling = urgent ? quota.urgent : quota.paced;
+		const times = sent[kind];
+		const latest = (deadline ?? now() + TIMEOUT_MS) - MIN_REQUEST_MS;
+		for (;;) {
+			if (signal?.aborted) return false;
+			const t = now();
+			while (times.length > 0 && times[0]! <= t - QUOTA_WINDOW_MS) times.shift();
+			if (times.length < ceiling) {
+				times.push(t);
+				return true;
+			}
+			// The send that has to age out for this one to fit.
+			const wait = times[times.length - ceiling]! + QUOTA_WINDOW_MS - t;
+			if (t + wait > latest) return false;
+			await sleep(wait, signal);
+		}
+	}
 
 	/** Cached across every spreadsheet in a run — one token serves them all. */
 	let token: { value: string; expiresAt: number } | null = null;
@@ -389,30 +494,41 @@ export function createSheetsClient(
 		return { ok: true, value: token.value };
 	}
 
-	/** One authenticated request, retrying 429 and 5xx. Other 4xx answers come
-	 *  straight back: a 403 means the spreadsheet was never shared with the
-	 *  service account, and retrying it three more times just spends the run's
-	 *  budget on an answer that will not change. */
+	/** One authenticated request, retrying 5xx, and a 429 once the minute's
+	 *  quota has had time to free up — only when the caller's deadline leaves
+	 *  room for that wait, so a run with seconds left gets its 429 at once and
+	 *  leaves the rest for the next run. Other 4xx answers come straight back:
+	 *  a 403 means the spreadsheet was never shared with the service account,
+	 *  and retrying it three more times just spends the run's budget on an
+	 *  answer that will not change. */
 	async function request(
 		url: string,
 		init: RequestInit,
 		deadline?: number,
+		urgency: Urgency = {},
 	): Promise<SheetsResult<string>> {
 		const auth = await accessToken(deadline);
 		if (!auth.ok) return auth;
+		const kind = (init.method ?? 'GET') === 'GET' ? 'read' : 'write';
 
 		let lastError = 'request failed';
 		let lastStatus = 0;
 		for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 			const isLast = attempt === MAX_ATTEMPTS - 1;
-			const timeoutMs = budget(deadline);
-			if (timeoutMs < MIN_REQUEST_MS) {
-				return {
-					ok: false,
-					status: OUT_OF_TIME,
-					error: 'no time left in the run for this request',
-				};
+			const outOfTime = (error: string) => ({ ok: false, status: OUT_OF_TIME, error }) as const;
+			if (budget(deadline) < MIN_REQUEST_MS) {
+				return outOfTime('no time left in the run for this request');
 			}
+			if (!(await slot(kind, urgency, deadline))) {
+				return outOfTime(
+					urgency.signal?.aborted
+						? 'withdrawn: the run stopped'
+						: "no time left in the run to wait for Google's per-minute quota",
+				);
+			}
+			// After the wait for a slot, which may have used much of the budget.
+			const timeoutMs = budget(deadline);
+			const timeout = AbortSignal.timeout(timeoutMs);
 
 			let res: Response;
 			try {
@@ -423,12 +539,13 @@ export function createSheetsClient(
 						Authorization: `Bearer ${auth.value}`,
 						'Content-Type': 'application/json',
 					},
-					signal: AbortSignal.timeout(timeoutMs),
+					signal: urgency.signal ? AbortSignal.any([urgency.signal, timeout]) : timeout,
 				});
 			} catch (err) {
+				if (urgency.signal?.aborted) return outOfTime('withdrawn: the run stopped');
 				lastError = `network failure: ${err instanceof Error ? err.name : String(err)}`;
 				lastStatus = 0;
-				if (!isLast) await new Promise((r) => setTimeout(r, backoffMs(attempt, null)));
+				if (!isLast) await sleep(backoffMs(attempt, null), urgency.signal);
 				continue;
 			}
 
@@ -437,11 +554,21 @@ export function createSheetsClient(
 
 			lastStatus = res.status;
 			lastError = parseError(body);
-			if (res.status === 429 || res.status >= 500) {
+			if (res.status === 429) {
+				const wait = rateLimitWaitMs(res.headers.get('Retry-After'));
+				const room = deadline === undefined ? 0 : deadline - now() - wait;
+				if (isLast || room < MIN_REQUEST_MS) {
+					return { ok: false, status: 429, error: lastError };
+				}
+				console.warn(`[sheets] 429 — quota spent, retrying in ${Math.round(wait / 1000)}s`);
+				await sleep(wait, urgency.signal);
+				continue;
+			}
+			if (res.status >= 500) {
 				if (!isLast) {
 					const wait = backoffMs(attempt, res.headers.get('Retry-After'));
 					console.warn(`[sheets] ${res.status} — retrying in ${Math.round(wait / 1000)}s`);
-					await new Promise((r) => setTimeout(r, wait));
+					await sleep(wait, urgency.signal);
 				}
 				continue;
 			}
@@ -500,18 +627,33 @@ export function createSheetsClient(
 	}
 
 	return {
-		async readTab({ spreadsheetId, tabName, deadline }) {
+		async readTab({ spreadsheetId, tabName, deadline, urgent, signal }) {
 			const res = await request(
 				`${base(spreadsheetId)}/values/${encodeURIComponent(tabRange(tabName))}` +
 					`?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
 				{ method: 'GET' },
 				deadline,
+				{ urgent, signal },
 			);
 			if (!res.ok) return missingTab(res, tabName);
 			const body = parseJson<{ values?: unknown[][] }>(res.value);
+			return { ok: true, value: displayed(body?.values) };
+		},
+
+		async readTabs({ spreadsheetId, tabNames, deadline, urgent, signal }) {
+			const ranges = tabNames.map((name) => `ranges=${encodeURIComponent(tabRange(name))}`);
+			const res = await request(
+				`${base(spreadsheetId)}/values:batchGet?${ranges.join('&')}` +
+					`&majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
+				{ method: 'GET' },
+				deadline,
+				{ urgent, signal },
+			);
+			if (!res.ok) return missingTab(res, tabNames.join('" or "'));
+			const body = parseJson<{ valueRanges?: Array<{ values?: unknown[][] }> }>(res.value);
 			return {
 				ok: true,
-				value: (body?.values ?? []).map((row) => row.map((cell) => String(cell ?? ''))),
+				value: tabNames.map((_, i) => displayed(body?.valueRanges?.[i]?.values)),
 			};
 		},
 
@@ -821,11 +963,12 @@ export function createSheetsClient(
 			return { ok: true, value: { sheetId } };
 		},
 
-		async describe({ spreadsheetId, tabName, deadline }) {
+		async describe({ spreadsheetId, tabName, deadline, urgent, signal }) {
 			const res = await request(
 				`${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}?fields=properties.title,sheets.properties.title`,
 				{ method: 'GET' },
 				deadline,
+				{ urgent, signal },
 			);
 			if (!res.ok) return res;
 			try {

@@ -434,6 +434,9 @@ interface OpenTab {
 	tabName: string;
 	values: string[][];
 	layout: ColumnLayout;
+	/** The Walk Ins tab, read in the same request when the run has walk-in
+	 *  work for this spreadsheet. */
+	walkIns?: string[][];
 }
 
 /** A failed Google call, with its status so a rate limit or a lapsed budget
@@ -449,16 +452,44 @@ function isDeferral(failure: SheetFailure): boolean {
 	return failure.status === RATE_LIMITED || failure.status === OUT_OF_TIME;
 }
 
+/**
+ * Read the spreadsheet's Packet Tracker tab, and its Walk Ins tab with it when
+ * `walkIns` says the run has work there: one request either way, of the
+ * minute's 60. A spreadsheet with no Walk Ins tab fails the pair, so its
+ * Packet Tracker tab is read on its own and the missing tab remembered.
+ */
 async function openTab(
 	client: SheetsClient,
 	spreadsheetId: string,
 	tabName: string,
 	deadline: number,
 	ours: ReadonlyMap<string, string>,
+	options: { walkIns?: boolean; urgent?: boolean; signal?: AbortSignal } = {},
 ): Promise<{ ok: true; tab: OpenTab } | ({ ok: false } & SheetFailure)> {
-	const read = await client.readTab({ spreadsheetId, tabName, deadline });
-	if (!read.ok) return { ok: false, error: read.error, status: read.status };
-	const found = findLayout(read.value);
+	const { urgent, signal } = options;
+	let values: string[][];
+	let walkIns: string[][] | undefined;
+	const pair =
+		options.walkIns && !walkInsTabMissing(spreadsheetId)
+			? await client.readTabs({
+					spreadsheetId,
+					tabNames: [tabName, WALK_IN_TAB_NAME],
+					deadline,
+					urgent,
+					signal,
+				})
+			: null;
+	if (pair?.ok) {
+		[values, walkIns] = pair.value as [string[][], string[][]];
+	} else {
+		if (pair && pair.status !== 404) return { ok: false, error: pair.error, status: pair.status };
+		const read = await client.readTab({ spreadsheetId, tabName, deadline, urgent, signal });
+		if (!read.ok) return { ok: false, error: read.error, status: read.status };
+		// The pair failed for a missing tab, and it was not this one.
+		if (pair) noWalkInsTab.set(spreadsheetId, Date.now());
+		values = read.value;
+	}
+	const found = findLayout(values);
 	if (!found.ok) {
 		return {
 			ok: false,
@@ -466,7 +497,13 @@ async function openTab(
 			error: `the "${tabName}" tab has no ${found.missing.map((c) => `"${c}"`).join(', ')} column`,
 		};
 	}
-	const tab: OpenTab = { spreadsheetId, tabName, values: read.value, layout: found.layout };
+	const tab: OpenTab = {
+		spreadsheetId,
+		tabName,
+		values,
+		layout: found.layout,
+		...(walkIns ? { walkIns } : {}),
+	};
 	recentAssignments.set(`${spreadsheetId}\u0000${tabName}`, {
 		at: Date.now(),
 		assigned: campaignAssignments(tab.values, tab.layout, ours),
@@ -487,6 +524,11 @@ const recentAssignments = new Map<string, { at: number; assigned: Map<string, st
 const NO_WALK_INS_MS = 60 * 60 * 1000;
 
 const noWalkInsTab = new Map<string, number>();
+
+function walkInsTabMissing(spreadsheetId: string): boolean {
+	const since = noWalkInsTab.get(spreadsheetId);
+	return since !== undefined && Date.now() - since < NO_WALK_INS_MS;
+}
 
 /** How long a tab that refused a highlight is not asked again. A refusal that
  *  is not the quota or the clock — protected cells, most likely — will refuse
@@ -850,12 +892,30 @@ async function loadHeldRows(
 	});
 }
 
+/** The checkouts with something to do on this spreadsheet's Walk Ins tab
+ *  this run. */
+function walkInJobs(
+	candidates: readonly Candidate[],
+	spreadsheetId: string,
+	now: Date,
+): Array<{ candidate: Candidate; work: WalkInWork }> {
+	const today = walkInDay(now.toISOString());
+	// Yellow alone is not worth a read of the tab while it refuses highlights.
+	const refusing = refusesHighlight(spreadsheetId, WALK_IN_TAB_NAME);
+	return candidates.flatMap((candidate) => {
+		const work = walkInWork(candidate, spreadsheetId, today);
+		if (!work || (refusing && (work === 'paint' || work === 'unhighlight'))) return [];
+		return [{ candidate, work }];
+	});
+}
+
 /**
  * Bring the spreadsheet's Walk Ins tab in line with its checkouts: add a row
  * for each new claim, mark it Completed when walked, clear it when given back
  * or lapsed.
  *
- * Reads the tab only when there is something to do. A spreadsheet without a
+ * Reads the tab only when there is something to do, and not at all when the
+ * run read it with the Packet Tracker tab (`preRead`). A spreadsheet without a
  * Walk Ins tab is skipped quietly — not every campaign sheet has one.
  */
 async function syncWalkIns(
@@ -866,26 +926,22 @@ async function syncWalkIns(
 	now: Date,
 	deadline: number,
 	warnings: string[],
+	preRead?: string[][],
 ): Promise<WalkInsOutcome> {
 	const outcome: WalkInsOutcome = { filled: 0, cleared: 0, deferred: 0 };
 	const today = walkInDay(now.toISOString());
-	// Yellow alone is not worth a read of the tab while it refuses highlights.
-	const refusing = refusesHighlight(spreadsheetId, WALK_IN_TAB_NAME);
-	const jobs = candidates.flatMap((candidate) => {
-		const work = walkInWork(candidate, spreadsheetId, today);
-		if (!work || (refusing && (work === 'paint' || work === 'unhighlight'))) return [];
-		return [{ candidate, work }];
-	});
+	const jobs = walkInJobs(candidates, spreadsheetId, now);
 	if (jobs.length === 0) return outcome;
-	const missingSince = noWalkInsTab.get(spreadsheetId);
-	if (missingSince !== undefined && Date.now() - missingSince < NO_WALK_INS_MS) return outcome;
+	if (walkInsTabMissing(spreadsheetId)) return outcome;
 	const fail = (failure: SheetFailure, waiting: number): WalkInsOutcome => ({
 		...outcome,
 		waiting,
 		failure: walkInFailure(failure.error, failure.status),
 	});
 
-	const read = await client.readTab({ spreadsheetId, tabName: WALK_IN_TAB_NAME, deadline });
+	const read = preRead
+		? { ok: true as const, value: preRead }
+		: await client.readTab({ spreadsheetId, tabName: WALK_IN_TAB_NAME, deadline });
 	if (!read.ok) {
 		if (read.status === 404) {
 			noWalkInsTab.set(spreadsheetId, Date.now());
@@ -1133,8 +1189,7 @@ async function sweepWalkInHighlights(
 	for (const spreadsheetId of spreadsheetIds) {
 		if (highlightsSwept.get(spreadsheetId) === day) continue;
 		if (refusesHighlight(spreadsheetId, WALK_IN_TAB_NAME)) continue;
-		const missingSince = noWalkInsTab.get(spreadsheetId);
-		if (missingSince !== undefined && Date.now() - missingSince < NO_WALK_INS_MS) continue;
+		if (walkInsTabMissing(spreadsheetId)) continue;
 
 		const read = await client.readTab({ spreadsheetId, tabName: WALK_IN_TAB_NAME, deadline });
 		if (!read.ok) {
@@ -1386,13 +1441,21 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			Number(bySpreadsheet.get(a)!.candidates.length > 0),
 	);
 
-	// A few reads in flight at once: one at a time, a few dozen spreadsheets do
-	// not fit the budget. The per-minute quota caps the count, not the pace.
+	// A few reads started ahead, so the next spreadsheet's tab is in hand when
+	// this one is done. The Sheets client paces them through the minute's
+	// quota, so one started ahead may wait its turn there: the run withdraws
+	// any still outstanding when it returns, before they spend a read nobody
+	// will use, after the lock is released.
 	const opening = new Map<string, ReturnType<typeof openTab>>();
+	const ahead = new AbortController();
 	const open = (spreadsheetId: string) => {
 		let pending = opening.get(spreadsheetId);
 		if (!pending) {
-			pending = openTab(client, spreadsheetId, tabName, deadline, oursIn(spreadsheetId));
+			const work = bySpreadsheet.get(spreadsheetId)!;
+			pending = openTab(client, spreadsheetId, tabName, deadline, oursIn(spreadsheetId), {
+				walkIns: walkInJobs(work.candidates, spreadsheetId, now).length > 0,
+				signal: ahead.signal,
+			});
 			opening.set(spreadsheetId, pending);
 		}
 		return pending;
@@ -1401,6 +1464,9 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	// Set once Google says the minute's quota is spent or the run's time is
 	// up: everything after would be refused the same way.
 	let stopped = false;
+	/** Spreadsheets whose tab this run read, of `order.length`. Logged, so a
+	 *  run the quota cuts short says how far it got. */
+	let reached = 0;
 	for (const [index, spreadsheetId] of order.entries()) {
 		const work = bySpreadsheet.get(spreadsheetId)!;
 		if (!stopped && Date.now() >= deadline) {
@@ -1427,6 +1493,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			continue;
 		}
 		const tab = opened.tab;
+		reached += 1;
 
 		try {
 			result.assignmentsChanged += await refreshAssignments(
@@ -1481,6 +1548,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 					now,
 					deadline,
 					result.warnings,
+					tab.walkIns,
 				);
 			} catch (err) {
 				// As above: Google accepted, the ledger did not. Repeated next run.
@@ -1511,8 +1579,10 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			await safely(() => recordSuccess(db, spreadsheetId), 'health');
 		}
 	}
-	// Reads started ahead that the loop never reached still resolve; nothing
-	// waits on them, and their only side effect is the live-check memory.
+	// Reads started ahead that the loop never reached: withdrawn, so one still
+	// waiting for a slot in the quota is never sent. Each still resolves, as
+	// OUT_OF_TIME, and nothing waits on it.
+	ahead.abort();
 	for (const pending of opening.values()) void pending.catch(() => undefined);
 
 	if (unrouted > 0) {
@@ -1553,7 +1623,8 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		console.log(
 			`${LOG} packet tracker: filled=${result.filled} updated=${result.updated} ` +
 				`failed=${result.failed} unrouted=${unrouted} assignments=${result.assignmentsChanged} ` +
-				`walk-ins=+${result.walkInsFilled}/-${result.walkInsCleared}`,
+				`walk-ins=+${result.walkInsFilled}/-${result.walkInsCleared} ` +
+				`spreadsheets=${reached}/${order.length}`,
 		);
 	}
 	return result;
@@ -1593,6 +1664,7 @@ export async function liveAssignment(
 			tabName,
 			Date.now() + input.timeBudgetMs,
 			ours,
+			{ urgent: true },
 		);
 		if (!opened.ok) return undefined;
 		recent = recentAssignments.get(key);

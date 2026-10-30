@@ -55,6 +55,7 @@ interface CapturedDelete {
 
 interface MockDb {
 	select: ReturnType<typeof vi.fn>;
+	batch: ReturnType<typeof vi.fn>;
 	insert: ReturnType<typeof vi.fn>;
 	delete: ReturnType<typeof vi.fn>;
 	_pushSelect: (rows: unknown[]) => void;
@@ -107,8 +108,13 @@ function makeDb(): MockDb {
 		},
 	}));
 
+	// The queries are built, and so take their rows, in the order loadSettings
+	// lists them; the batch resolves them in that order.
+	const batch = vi.fn((queries: unknown[]) => Promise.all(queries));
+
 	return {
 		select,
+		batch,
 		insert,
 		delete: del,
 		_pushSelect: (rows) => selectQueue.push(rows),

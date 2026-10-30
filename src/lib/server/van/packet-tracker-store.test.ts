@@ -76,6 +76,8 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 		);
 	const failing = new Map<string, { status: number; error: string }>();
 	const calls: string[] = [];
+	/** The signals the run handed its tab reads. */
+	const signals: AbortSignal[] = [];
 	/** The Walk Ins tab's Shift Start drop-down. */
 	let dropdown: Array<{ label: string; text: boolean }> | null = ['10am', '1pm', '4pm', '6pm'].map(
 		(label) => ({ label, text: true }),
@@ -94,13 +96,29 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 	const prefix = (tabName: string) => (tabName === WALK_IN_TAB_NAME ? 'walkins-' : '');
 
 	const api: SheetsClient = {
-		async readTab({ spreadsheetId, tabName }) {
+		async readTab({ spreadsheetId, tabName, signal }) {
+			if (signal) signals.push(signal);
 			calls.push(`${prefix(tabName)}read:${spreadsheetId}`);
 			const fail = failing.get(`${prefix(tabName)}${spreadsheetId}`);
 			if (fail) return { ok: false, ...fail };
 			const sheet = sheets.get(key(spreadsheetId, tabName));
 			if (!sheet) return { ok: false, status: 404, error: 'no tab' };
 			return { ok: true, value: sheet.map((r) => [...r]) };
+		},
+		// One call for every tab, as Google's batchGet: a missing tab or a
+		// failing one fails the lot.
+		async readTabs({ spreadsheetId, tabNames, signal }) {
+			if (signal) signals.push(signal);
+			calls.push(`readTabs:${spreadsheetId}`);
+			const values: string[][][] = [];
+			for (const tabName of tabNames) {
+				const fail = failing.get(`${prefix(tabName)}${spreadsheetId}`);
+				if (fail) return { ok: false, ...fail };
+				const sheet = sheets.get(key(spreadsheetId, tabName));
+				if (!sheet) return { ok: false, status: 404, error: 'no tab' };
+				values.push(sheet.map((r) => [...r]));
+			}
+			return { ok: true, value: values };
 		},
 		async readRow({ spreadsheetId, tabName, rowIndex }) {
 			const fn = between;
@@ -165,6 +183,7 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 	return {
 		api,
 		calls,
+		signals,
 		failing,
 		sheet: (id: string) => sheets.get(id)!,
 		setDropdown(next: typeof dropdown) {
@@ -807,14 +826,24 @@ describe('Google’s 60-a-minute quota and the run’s time', () => {
 		await run(fake.api);
 
 		expect(fake.calls).toEqual([
+			// Both tabs in one read, for the claim's walk-in row. This sheet has
+			// no Walk Ins tab, so the pair fails and the Packet Tracker tab is
+			// read alone; the missing tab is remembered for an hour rather than
+			// asked every run.
+			'readTabs:sheet-downriver',
 			'read:sheet-downriver',
 			'readRow:sheet-downriver:2',
 			// A write too, against the per-minute write quota, not the reads.
 			'highlight:sheet-downriver:2:on',
 			'write:sheet-downriver:2',
-			// Looking for a Walk Ins tab: this sheet has none, which is
-			// remembered for an hour rather than asked every run.
-			'walkins-read:sheet-downriver',
+		]);
+
+		await run(fake.api);
+		expect(fake.calls.filter((c) => c.startsWith('read'))).toEqual([
+			'readTabs:sheet-downriver',
+			'read:sheet-downriver',
+			'readRow:sheet-downriver:2',
+			'read:sheet-downriver',
 		]);
 	});
 
@@ -833,6 +862,17 @@ describe('Google’s 60-a-minute quota and the run’s time', () => {
 		expect(postAlert).not.toHaveBeenCalled();
 		fake.failing.delete('sheet-downriver');
 		expect((await run(fake.api)).filled).toBe(1);
+	});
+
+	it('withdraws the reads it started ahead when it returns', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+
+		await run(fake.api);
+
+		expect(fake.signals.length).toBeGreaterThan(0);
+		expect(fake.signals.every((s) => s.aborted)).toBe(true);
 	});
 
 	it('stops calling Google once the quota is spent', async () => {
@@ -1067,6 +1107,18 @@ describe('the Walk Ins tab', () => {
 		fake.walkIns('sheet-downriver', [WALK_IN_HEADER, ...rows]);
 		return fake;
 	}
+
+	it('reads the Packet Tracker and Walk Ins tabs in one request', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+
+		const result = await run(fake.api);
+
+		expect(result).toMatchObject({ filled: 1, walkInsFilled: 1 });
+		expect(fake.calls.filter((c) => /^(walkins-)?read(Tabs)?:/.test(c))).toEqual([
+			'readTabs:sheet-downriver',
+		]);
+	});
 
 	it('fills in the first empty row with Name and shift, highlighted', async () => {
 		const fake = await withWalkIns(theirs('Ari'), [], theirs('Bo'));

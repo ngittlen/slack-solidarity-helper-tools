@@ -65,6 +65,9 @@ async function resolveLabel(spreadsheetId: string): Promise<string> {
 			// `describe` wants a tab to report on; the title is what we are after
 			// and comes back regardless of whether that tab exists.
 			tabName: DEFAULT_SHEET_TAB_NAME,
+			// An admin is waiting on the save: not behind the scheduled run's
+			// pace through the minute's quota.
+			urgent: true,
 		});
 		return res.ok && res.value.title.trim() !== '' ? res.value.title.trim() : spreadsheetId;
 	} catch {

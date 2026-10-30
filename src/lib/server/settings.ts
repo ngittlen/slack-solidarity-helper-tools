@@ -251,12 +251,15 @@ export type AppConfigPatch = Partial<{
 export const SYSTEM_EDITOR: Editor = { id: 'U0000000000', name: 'System' } as const;
 
 export async function loadSettings(db: Database): Promise<Settings> {
-	// Five parallel reads. The coalition map is DB-only — an empty table simply
-	// means "nothing mapped" (a delete must stay deleted). The chapter map,
-	// allowed-users, and excluded-chapters lists shadow the env list entirely
-	// when non-empty (FR-012). The app_config singleton row falls back
-	// per-field (FR-013): a NULL column means "use env for that field", while
-	// a missing row means "use env for all three".
+	// Every table in one batch: one round trip to Turso, where eleven separate
+	// reads sent at once cost the slowest of eleven requests — 0.4–1.1s on
+	// tables of a few rows, on nearly every page and job. The coalition map is
+	// DB-only — an empty table simply means "nothing mapped" (a delete must
+	// stay deleted). The chapter map, allowed-users, and excluded-chapters
+	// lists shadow the env list entirely when non-empty (FR-012). The
+	// app_config singleton row falls back per-field (FR-013): a NULL column
+	// means "use env for that field", while a missing row means "use env for
+	// all three".
 	const [
 		chapterRows,
 		coalitionRows,
@@ -269,7 +272,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		moderatorRows,
 		turfHiddenRows,
 		turfCustomRows,
-	] = await Promise.all([
+	] = await db.batch([
 		db.select().from(chapterChannelMap),
 		db.select().from(coalitionChannelMap),
 		db.select().from(allowedSlackUsers),
