@@ -33,7 +33,7 @@ import {
 	type TurfCampaigns,
 } from './campaigns.js';
 import { refreshingRegionIds } from './refresh.js';
-import { lastCheckedOutBy, latestWalkReports } from './checkout-store.js';
+import { latestWalkReports } from './checkout-store.js';
 import { loadContactMarks, marksFor, type ContactMarks } from './contact-sync.js';
 import { chunked } from './sql-chunk.js';
 import {
@@ -268,12 +268,6 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// this is usually empty and never more than a handful — and an empty page
 	// skips it entirely, like the claim query above.
 	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<string>();
-	// Striped turf on this page the viewer checked out last, which checks out
-	// without the knocked-before question. Skipped when none is striped.
-	const striped = selected.filter(hasContactHistory).map((r) => r.turfId);
-	const lastCheckedOutByViewer = new Set(
-		striped.length > 0 ? await lastCheckedOutBy(db, striped, viewer.slackUserId) : [],
-	);
 	// The uncontacted count's "as of" — per campaign, since each pulls its own
 	// ContactHistory. One small read, skipped for an empty page.
 	const contactMarks =
@@ -320,7 +314,6 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				showCampaign: badged.has(row.campaignId),
 				disabledCampaigns: campaigns.disabled,
 				holderAccounts,
-				lastCheckedOutByViewer,
 			}),
 		),
 		total: counted.length,

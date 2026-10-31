@@ -217,17 +217,6 @@ describe('buildTurfListBlocks', () => {
 		expect(decodeTurfAction(fresh!.value)).not.toHaveProperty('acknowledgedKnocked');
 	});
 
-	it('does not ask the volunteer who checked the knocked turf out last', () => {
-		const { blocks } = buildTurfListBlocks({
-			...base,
-			turfs: [view({ contactHistory: true, lastCheckedOutByYou: true })],
-		});
-		const [button] = blocks.flatMap((b) =>
-			b.type === 'section' && b.accessory ? [b.accessory] : [],
-		);
-		expect(button).not.toHaveProperty('confirm');
-		expect(decodeTurfAction(button!.value)).not.toHaveProperty('acknowledgedKnocked');
-	});
 
 	// specs/012-multi-van-campaigns: while more than one campaign is enabled.
 	it('names the turf’s campaign when the payload carries a badge for it', () => {

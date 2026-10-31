@@ -460,12 +460,11 @@ describe('shownOnMap', () => {
 });
 
 describe('needsKnockedConfirm', () => {
-	it('asks before checking out turf knocked by someone else', () => {
+	it('asks before checking out turf knocked before its cut', () => {
 		expect(needsKnockedConfirm({ contactHistory: true })).toBe(true);
 	});
 
-	it('does not ask the volunteer who checked it out last, or about fresh turf', () => {
-		expect(needsKnockedConfirm({ contactHistory: true, lastCheckedOutByYou: true })).toBe(false);
+	it('does not ask about fresh turf', () => {
 		expect(needsKnockedConfirm({})).toBe(false);
 	});
 });

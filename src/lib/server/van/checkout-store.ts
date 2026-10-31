@@ -151,31 +151,6 @@ async function relevantClaims(
 	}));
 }
 
-/** The routes among `turfIds` whose most recent checkout, live or ended, was
- *  `slackUserId`'s. */
-export async function lastCheckedOutBy(
-	db: Db,
-	turfIds: readonly number[],
-	slackUserId: string,
-): Promise<number[]> {
-	const mine: number[] = [];
-	for (const batch of chunked(turfIds)) {
-		const rows = await db
-			.select({ turfId: vanTurfCheckouts.turfId, slackUserId: vanTurfCheckouts.slackUserId })
-			.from(vanTurfCheckouts)
-			.where(inArray(vanTurfCheckouts.turfId, batch))
-			.orderBy(desc(vanTurfCheckouts.claimedAt), desc(vanTurfCheckouts.id));
-		const seen = new Set<number>();
-		for (const row of rows) {
-			// Newest first, so the first row per route is the last checkout.
-			if (seen.has(row.turfId)) continue;
-			seen.add(row.turfId);
-			if (row.slackUserId === slackUserId) mine.push(row.turfId);
-		}
-	}
-	return mine;
-}
-
 /** Claim `turfId` for `session`. */
 export async function claimTurf(
 	db: Db,
@@ -186,7 +161,7 @@ export async function claimTurf(
 		now: Date;
 		options?: ClaimOptions;
 		/** The volunteer was shown KNOCKED_CLAIM_WARNING and agreed. Required
-		 *  for turf knocked before its cut, unless they checked it out last. */
+		 *  for turf knocked before its cut. */
 		acknowledgedKnocked?: boolean;
 		/** A live look at the campaign's Packet Tracker: who it says has this
 		 *  turf, null for nobody, undefined for "could not tell". See
@@ -234,13 +209,9 @@ export async function claimTurf(
 	// Here rather than in canClaim, which decides what the page offers: this
 	// turf is offered, just behind a question. Enforced here so a page left
 	// open from before the turf was striped, or a hand-built request, cannot
-	// skip it. The volunteer who checked it out last is not asked: those are
-	// their own knocks.
-	if (
-		hasContactHistory(row) &&
-		input.acknowledgedKnocked !== true &&
-		(await lastCheckedOutBy(db, [turfId], slackUserId)).length === 0
-	) {
+	// skip it. Everyone is asked, the last holder included: see
+	// `needsKnockedConfirm`.
+	if (hasContactHistory(row) && input.acknowledgedKnocked !== true) {
 		return { ok: false, status: 409, message: KNOCKED_CLAIM_WARNING, needsAcknowledgement: true };
 	}
 
