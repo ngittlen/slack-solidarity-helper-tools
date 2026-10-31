@@ -2,12 +2,7 @@ import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import {
-	claimTurf,
-	endClaim,
-	latestWalkReports,
-	sweepExpiredClaims,
-} from './checkout-store.js';
+import { claimTurf, endClaim, latestWalkReports, sweepExpiredClaims } from './checkout-store.js';
 
 // A real in-memory libsql rather than a chained-db fake, for the same reason
 // activity-store.test.ts uses one: the behaviour under test is a collaboration

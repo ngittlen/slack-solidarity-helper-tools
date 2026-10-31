@@ -217,7 +217,6 @@ describe('buildTurfListBlocks', () => {
 		expect(decodeTurfAction(fresh!.value)).not.toHaveProperty('acknowledgedKnocked');
 	});
 
-
 	// specs/012-multi-van-campaigns: while more than one campaign is enabled.
 	it('names the turf’s campaign when the payload carries a badge for it', () => {
 		const turfs = [view({ campaignId: 2 }), view({ turfId: 101, name: 'Turf 02' })];

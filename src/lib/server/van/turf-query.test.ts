@@ -218,7 +218,6 @@ describe('loadChapterTurfs', () => {
 		expect(omitted).toBe(3);
 	});
 
-
 	// The reason densest is sorted here and not only in the browser: in a
 	// chapter larger than the payload, the densest turf can be past the cut by
 	// name and by distance alike.
