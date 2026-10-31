@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
 vi.mock('$lib/server/env', () => ({ SLACK_CLIENT_SECRET: 'client-secret' }));
@@ -27,6 +28,40 @@ describe('oauth state', () => {
 		});
 	});
 
+	// The login and post-as-you flows share one callback; the purpose is what
+	// tells it which one came back.
+	it('round-trips the purpose, defaulting to login', () => {
+		const grant = verifyState(
+			signState({ destination: null, isRetry: false, purpose: 'post-as-you' }).state,
+		);
+		const login = verifyState(signState({ destination: null, isRetry: false }).state);
+
+		expect(grant.ok && grant.state.purpose).toBe('post-as-you');
+		expect(login.ok && login.state.purpose).toBe('login');
+		const google = verifyState(
+			signState({ destination: null, isRetry: false, purpose: 'google-login' }).state,
+		);
+		expect(google.ok && google.state.purpose).toBe('google-login');
+		const apple = verifyState(
+			signState({ destination: null, isRetry: false, purpose: 'apple-login' }).state,
+		);
+		expect(apple.ok && apple.state.purpose).toBe('apple-login');
+	});
+
+	it('reads a state minted before the purpose existed as a login', () => {
+		// Signed exactly as the code before the field did — same key derivation
+		// as oauth-state.ts — so this is a genuine legacy state, not a forged one.
+		const key = createHmac('sha256', 'client-secret').update('oauth-state-v1').digest();
+		const encoded = Buffer.from(
+			JSON.stringify({ n: 'nonce', d: null, t: Date.now(), r: false }),
+			'utf8',
+		).toString('base64url');
+		const legacy = `${encoded}.${createHmac('sha256', key).update(encoded).digest('base64url')}`;
+
+		const verdict = verifyState(legacy);
+		expect(verdict.ok && verdict.state.purpose).toBe('login');
+	});
+
 	it('gives every attempt its own nonce', () => {
 		const a = signState({ destination: null, isRetry: false });
 		const b = signState({ destination: null, isRetry: false });
@@ -50,6 +85,15 @@ describe('oauth state', () => {
 			const { state } = signState({ destination: '/', isRetry: false });
 			const forged = restate(state, (p) => {
 				p.d = '/settings';
+			});
+
+			expect(verifyState(forged)).toEqual({ ok: false, reason: 'bad-signature' });
+		});
+
+		it('a rewritten purpose — a login must not become a grant, or back', () => {
+			const { state } = signState({ destination: null, isRetry: false });
+			const forged = restate(state, (p) => {
+				p.p = 'post-as-you';
 			});
 
 			expect(verifyState(forged)).toEqual({ ok: false, reason: 'bad-signature' });
@@ -117,7 +161,25 @@ describe('oauth state', () => {
 			const { state } = signState({ destination: null, isRetry: false });
 			vi.advanceTimersByTime(STATE_TTL_MS + 1000);
 
-			expect(verifyState(state)).toEqual({ ok: false, reason: 'expired' });
+			expect(verifyState(state)).toEqual({
+				ok: false,
+				reason: 'expired',
+				destination: null,
+				purpose: 'login',
+			});
+		});
+
+		it('still reports the signed destination of an expired state', () => {
+			vi.useFakeTimers({ toFake: ['Date'] });
+			const { state } = signState({ destination: '/members?user=U123', isRetry: false });
+			vi.advanceTimersByTime(STATE_TTL_MS + 1000);
+
+			expect(verifyState(state)).toEqual({
+				ok: false,
+				reason: 'expired',
+				destination: '/members?user=U123',
+				purpose: 'login',
+			});
 		});
 	});
 

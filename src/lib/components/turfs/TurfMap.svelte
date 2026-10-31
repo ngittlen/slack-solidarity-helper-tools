@@ -6,8 +6,6 @@
 	// + stylesheet + an SSR guard for its window access) would supply all of it,
 	// and the honest accounting of what we gave up is:
 	//
-	//   - fractional zoom. Ours snaps to integer levels, because tiles only
-	//     exist at integer zooms and scaling bitmaps means blur.
 	//   - tile retention during a zoom. Leaflet keeps the old layer underneath
 	//     while the new one loads; we swap and briefly show the graticule.
 	//   - tile prefetch beyond the viewport, so ours pop in at the edges.
@@ -35,16 +33,33 @@
 		createMapView,
 		fitZoom,
 		metresPerPixel,
+		scaleBarStep,
 		MAX_ZOOM,
 		MIN_ZOOM,
 		TILE_ATTRIBUTION,
-		TILE_SIZE,
 		TILE_URL_TEMPLATE,
+		splitLabelLayers,
 		tileUrl,
 	} from '$lib/van/tiles.js';
 	import { statusLabel, type VolunteerStatus } from '$lib/van/turf-status.js';
-	import { shadeLabel, turfShade } from '$lib/van/turf-shade.js';
-	import type { MappableTurf } from '$lib/van/turf-view.js';
+	import {
+		KNOCKED_LABEL,
+		rampStyle,
+		spokenShade,
+		STRIPE_PERIOD_PX,
+		stripeOffset,
+		turfShade,
+	} from '$lib/van/turf-shade.js';
+	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
+	import {
+		focusZoom,
+		isBoxVisible,
+		placeZoom,
+		STREET_ZOOM,
+		type FoundPlace,
+	} from '$lib/van/map-focus.js';
+	import { tick, untrack } from 'svelte';
+	import type { CampaignBadges, MappableTurf } from '$lib/van/turf-view.js';
 
 	interface Props {
 		/** Only turf with geometry — filter with `mappableTurfs()`. Turf without
@@ -52,13 +67,17 @@
 		 *  the list view carries it instead of this component inventing a
 		 *  location for it. */
 		turfs: MappableTurf[];
+		/** The turf the opening view frames, when not all of `turfs`: one
+		 *  drawn only because it is selected must not move the camera as it
+		 *  comes and goes. Defaults to `turfs`. */
+		framing?: MappableTurf[];
 		selectedId: number | null;
 		/** Where the volunteer is. Null when geolocation was declined or is
 		 *  unavailable — the map still works, it just frames all the turf
 		 *  instead of the nearest few, and draws no "you" marker. Declining
 		 *  location must not cost you the map. */
 		location: LatLng | null;
-		onselect: (mapRouteId: number) => void;
+		onselect: (turfId: number) => void;
 		/** Basemap source. Passed in rather than imported so moving to a keyed
 		 *  account is a secret to set, not a deploy (plan.md 6.3). */
 		tiles?: { urlTemplate: string; attribution: string };
@@ -66,16 +85,69 @@
 		 *  can fetch turf outside the rows it was given. Debounced by the
 		 *  caller — a drag emits one of these, not sixty. */
 		onviewport?: (bounds: BoundingBox) => void;
+		/** Campaign id → badge, for turf carrying `campaignId`. Spoken with each
+		 *  shape's label, as the list row beside the map shows it. */
+		campaignBadges?: CampaignBadges;
+		/** Mentor walks (specs/015-mentor-walks, User Story 8), drawn as round
+		 *  badges that can't be mistaken for turf. */
+		walks?: MapWalk[];
+		selectedWalkId?: string | null;
+		onselectwalk?: (id: string) => void;
+		/** Canvass events from Solidarity, drawn as square badges so they read
+		 *  apart from the walks. */
+		events?: MapEvent[];
+		selectedEventId?: string | null;
+		onselectevent?: (id: string) => void;
+		/** Look up an address or ZIP for the map's search box: the place, or
+		 *  a message saying why not. No search box without it. `signal` is
+		 *  aborted when the search is dismissed or gives up waiting. */
+		findPlace?: (query: string, signal: AbortSignal) => Promise<FoundPlace | string>;
+		/** The place the search found, pinned on the map. Bindable, so it
+		 *  outlives this component: the parent takes the map down whenever a
+		 *  filter leaves nothing to draw. */
+		place?: FoundPlace | null;
 	}
+
+	interface MapWalk {
+		id: string;
+		point: LatLng;
+		/** Spoken: "Mentor walk with Sam R., Today at 5:30 PM". */
+		label: string;
+		/** The viewer holds a seat on it. */
+		joined: boolean;
+	}
+
+	interface MapEvent {
+		id: string;
+		point: LatLng;
+		/** Spoken: "Canvass: Door knock, Sat, Nov 1 at 10:00 AM". */
+		label: string;
+	}
+
+	/** The two kinds of badge a tap selects, by the attribute each carries. */
+	type MarkerKind = 'walk' | 'event';
 
 	let {
 		turfs,
+		framing,
 		selectedId,
 		location,
 		onselect,
 		tiles = { urlTemplate: TILE_URL_TEMPLATE, attribution: TILE_ATTRIBUTION },
 		onviewport,
+		campaignBadges = {},
+		walks = [],
+		selectedWalkId = null,
+		onselectwalk,
+		events = [],
+		selectedEventId = null,
+		onselectevent,
+		findPlace,
+		place = $bindable(null),
 	}: Props = $props();
+
+	const walkMarkers = $derived(walks.map((walk) => ({ walk, at: view.project(walk.point) })));
+	const eventMarkers = $derived(events.map((event) => ({ event, at: view.project(event.point) })));
 
 	/** Fallback viewport, used for SSR and for the first frame before the
 	 *  element has been measured. Matches the desktop aspect ratio the
@@ -109,31 +181,60 @@
 	 *  PIN_BELOW_PX because a 20px polygon can be drawn but not labelled. */
 	const LABEL_ABOVE_PX = 34;
 
+	/** Turf fills are drawn only as a band inside each hull's edge, so the
+	 *  streets in the middle of a turf — and wherever hulls overlap — stay
+	 *  visible. Full strength for the first 16px, then two 4px steps a third
+	 *  of the way at a time down to BAND_CENTRE, the share of the normal fill
+	 *  left tinting the middle so it still reads as inside a turf. */
+	const BAND_CENTRE = 0.15;
+
+	/** The steps as nested strokes on the hull's own path, widest first so
+	 *  each narrower one paints over it. A stroke straddles the edge, so its
+	 *  width is twice the step's distance in from it; the half outside the
+	 *  hull is never drawn. Opaque greys rather than white at partial opacity,
+	 *  because overlapping translucent strokes would compound; the luminance
+	 *  mask reads each grey as that step's strength. */
+	const BAND_STEPS = [
+		{ insetPx: 24, strength: BAND_CENTRE + (1 - BAND_CENTRE) / 3 },
+		{ insetPx: 20, strength: BAND_CENTRE + ((1 - BAND_CENTRE) * 2) / 3 },
+		{ insetPx: 16, strength: 1 },
+	].map((step) => ({ width: step.insetPx * 2, grey: maskGrey(step.strength) }));
+	const BAND_CENTRE_GREY = maskGrey(BAND_CENTRE);
+
+	function maskGrey(strength: number): string {
+		const v = Math.round(strength * 255);
+		return `rgb(${v} ${v} ${v})`;
+	}
+
 	// With a location, open on the volunteer plus the nearest few turfs: a
 	// chapter can run 150 miles across and framing the whole thing shows a
 	// scatter of dots nobody can act on. Without one, all the turf is the only
 	// honest frame.
+	const framed = $derived(framing && framing.length > 0 ? framing : turfs);
 	const nearbyBounds = $derived.by((): BoundingBox => {
-		if (location) return padBounds(boundsForNearest(location, turfs, NEARBY_COUNT), 0.15);
+		if (location) return padBounds(boundsForNearest(location, framed, NEARBY_COUNT), 0.15);
 		// Every turf here is mappable by the prop's contract, so unionBounds
 		// only returns null for an empty list — which the parent does not
 		// render this component for. The fallback keeps the type honest without
 		// a cast.
-		const all = unionBounds(turfs.map((t) => t.bounds));
+		const all = unionBounds(framed.map((t) => t.bounds));
 		return all ? padBounds(all, 0.1) : { minLat: 0, maxLat: 0, minLng: 0, maxLng: 0 };
 	});
 
 	const allBounds = $derived.by(() => {
-		const boxes = turfs.map((t) => t.bounds);
+		const boxes = framed.map((t) => t.bounds);
 		if (location) boxes.push(boundingBox([location])!);
 		return padBounds(unionBounds(boxes) ?? nearbyBounds, 0.1);
 	});
 
 	// Camera. Seeded from the fit, then owned by the user once they pan or
 	// zoom — `moved` is what stops a re-render from yanking the view back.
-	let moved = $state(false);
-	let centre = $state<LatLng | null>(null);
-	let zoom = $state<number | null>(null);
+	// A map put back up with a searched place opens on that place, where the
+	// volunteer left it.
+	const openingPlace = untrack(() => place);
+	let moved = $state(openingPlace !== null);
+	let centre = $state<LatLng | null>(openingPlace?.point ?? null);
+	let zoom = $state<number | null>(openingPlace ? placeZoom(openingPlace.kind) : null);
 
 	const view = $derived(
 		createMapView({
@@ -150,7 +251,235 @@
 		moved = true;
 	}
 
+	/** Enough edge that a turf counted as "on screen" is one you can actually
+	 *  read, rather than two pixels of hull against the frame. */
+	const FOCUS_MARGIN_PX = 24;
+
+	// Selecting a turf brings it into view — but only if it is not already
+	// there.
+	//
+	// The list and the map are two views of one selection, so reading down the
+	// list must not drag the camera along behind it; that would make the map
+	// useless for comparing a turf against its neighbours, which is most of
+	// what it is for. It also means clicking a turf ON the map never moves
+	// anything, since a turf you just clicked is by definition visible — the
+	// visibility test gets that for free rather than needing to know where the
+	// selection came from.
+	//
+	// Only `selectedId` is tracked. Everything the decision reads — the camera,
+	// the turf list, the element size — is untracked, because reading the view
+	// reactively would make this effect a feedback loop: it moves the camera,
+	// the camera invalidates the view, the effect runs again.
+	$effect(() => {
+		const id = selectedId;
+		if (id === null) return;
+		untrack(() => {
+			if (mapWidth === 0 || mapHeight === 0) return;
+			const turf = turfs.find((t) => t.turfId === id);
+			if (!turf) return;
+
+			const nw = view.project({ lat: turf.bounds.maxLat, lng: turf.bounds.minLng });
+			const se = view.project({ lat: turf.bounds.minLat, lng: turf.bounds.maxLng });
+			const box = { minX: nw.x, minY: nw.y, maxX: se.x, maxY: se.y };
+			if (isBoxVisible(box, mapWidth, mapHeight, FOCUS_MARGIN_PX)) return;
+
+			// Padded so a turf that only just fits does not land flush against
+			// the frame, which reads as "still cut off".
+			const framed = fitZoom(padBounds(turf.bounds, 0.25), mapWidth, mapHeight, PADDING);
+			centre = boundsCentre(turf.bounds);
+			zoom = focusZoom(zoom ?? fitZoom(nearbyBounds, mapWidth, mapHeight, PADDING), framed);
+			moved = true;
+		});
+	});
+
+	function markerPoint(kind: MarkerKind, id: string): LatLng | null {
+		const list: { id: string; point: LatLng }[] = kind === 'walk' ? walks : events;
+		return list.find((m) => m.id === id)?.point ?? null;
+	}
+
+	function centreOnMarker(kind: MarkerKind, id: string, atZoom = view.zoom) {
+		const point = markerPoint(kind, id);
+		if (!point) return;
+		centre = point;
+		zoom = atZoom;
+		moved = true;
+	}
+
+	/** Centre on a marker for its card, zoomed in to street level. The card is
+	 *  in the list, so the marker may be anywhere, or off the map. As for a
+	 *  searched address, the card is a place to go, and the streets around it
+	 *  say how to get there. Never out, for someone already closer. */
+	function showMarkerForCard(kind: MarkerKind, id: string) {
+		centreOnMarker(kind, id, Math.max(view.zoom, STREET_ZOOM));
+	}
+
+	/** A walk's card asking for its marker. */
+	export function centreOnWalk(id: string) {
+		showMarkerForCard('walk', id);
+	}
+
+	/** The same for a canvass event. */
+	export function centreOnEvent(id: string) {
+		showMarkerForCard('event', id);
+	}
+
+	/** How near the frame a tapped marker has to be for the map to centre it:
+	 *  a little more than the marker, so one cut off by the edge comes in. */
+	const WALK_EDGE_PX = 48;
+
+	// A tapped marker is already in view, so the map only moves for one at
+	// the edge. Moving it from under the finger would put whatever comes next
+	// under a second tap meant to unselect it.
+	function selectMarker(kind: MarkerKind, id: string) {
+		const selecting = id !== (kind === 'walk' ? selectedWalkId : selectedEventId);
+		(kind === 'walk' ? onselectwalk : onselectevent)?.(id);
+		if (!selecting) return;
+		const point = markerPoint(kind, id);
+		if (!point) return;
+		const at = view.project(point);
+		const nearEdge =
+			at.x < WALK_EDGE_PX ||
+			at.y < WALK_EDGE_PX ||
+			at.x > mapWidth - WALK_EDGE_PX ||
+			at.y > mapHeight - WALK_EDGE_PX;
+		if (nearEdge) centreOnMarker(kind, id);
+	}
+
 	const me = $derived(location ? view.project(location) : null);
+
+	// --- Address search -----------------------------------------------------
+	// With a chapter's turf over every street, the basemap alone is hard to
+	// read a position off. The search takes the volunteer to an address they
+	// know and leaves a pin there. It stays a button until asked for, so it
+	// costs the map one corner, not a bar across the top of it.
+
+	/** How long a lookup may take before the search gives up on it. The
+	 *  server allows the geocoder four seconds; the rest is a phone signal. */
+	const SEARCH_TIMEOUT_MS = 12_000;
+
+	let searchOpen = $state(false);
+	let searchQuery = $state('');
+	/** The query that found `place`. */
+	let placeQuery = '';
+	let searchError = $state<string | null>(null);
+	/** Said to a screen reader when the map moves to a found place: the map
+	 *  moving is otherwise silent, and success sounds like nothing happened. */
+	let searchAnnouncement = $state('');
+	/** The lookup in flight. Dismissing the search aborts it, so a slow answer
+	 *  can't move the map after the volunteer has moved on. */
+	let searchRequest = $state<AbortController | null>(null);
+	const searching = $derived(searchRequest !== null);
+
+	let searchInput = $state<HTMLInputElement | undefined>();
+	let searchToggle = $state<HTMLButtonElement | undefined>();
+	let placeButton = $state<HTMLButtonElement | undefined>();
+
+	const placeAt = $derived(place ? view.project(place.point) : null);
+
+	function cancelSearchRequest() {
+		searchRequest?.abort();
+		searchRequest = null;
+	}
+
+	$effect(() => () => searchRequest?.abort());
+
+	/** Focus what the search area shows when the form is closed: the chip for
+	 *  a pinned place, else the button that opens the search. The control
+	 *  that had focus has just been taken off the page. */
+	async function focusSearchArea() {
+		await tick();
+		(placeButton ?? searchToggle)?.focus();
+	}
+
+	async function openSearch() {
+		searchOpen = true;
+		searchError = null;
+		await tick();
+		searchInput?.select();
+	}
+
+	function closeSearch() {
+		cancelSearchRequest();
+		searchOpen = false;
+		searchError = null;
+		void focusSearchArea();
+	}
+
+	function clearPlace() {
+		cancelSearchRequest();
+		place = null;
+		searchQuery = '';
+		searchOpen = false;
+		searchError = null;
+		void focusSearchArea();
+	}
+
+	function showPlace(found: FoundPlace) {
+		centre = found.point;
+		zoom = placeZoom(found.kind);
+		moved = true;
+	}
+
+	async function submitSearch(event: SubmitEvent) {
+		event.preventDefault();
+		if (!findPlace || searching) return;
+		const query = searchQuery.trim();
+		if (query === '') {
+			searchError = 'Enter an address or ZIP code.';
+			return;
+		}
+		// The place already pinned: go back to it rather than ask again.
+		if (place && query === placeQuery) {
+			showPlace(place);
+			searchOpen = false;
+			void focusSearchArea();
+			return;
+		}
+		const request = new AbortController();
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			request.abort();
+		}, SEARCH_TIMEOUT_MS);
+		searchRequest = request;
+		searchError = null;
+		try {
+			const found = await findPlace(query, request.signal);
+			if (timedOut) {
+				searchError = 'The lookup is taking too long. Check your signal and try again.';
+				return;
+			}
+			// Dismissed while it was in flight: the volunteer has moved on.
+			if (request.signal.aborted) return;
+			if (typeof found === 'string') {
+				searchError = found;
+				return;
+			}
+			place = found;
+			placeQuery = query;
+			showPlace(found);
+			searchOpen = false;
+			searchAnnouncement = `Map moved to ${found.label}`;
+			void focusSearchArea();
+		} finally {
+			clearTimeout(timer);
+			if (searchRequest === request) searchRequest = null;
+		}
+	}
+
+	function onSearchKeyDown(event: KeyboardEvent) {
+		// An Escape while composing belongs to the input method: it dismisses
+		// the candidate list, not the search.
+		if (event.key === 'Escape' && !event.isComposing) {
+			event.preventDefault();
+			closeSearch();
+		}
+	}
+
+	/** Where the knocked-turf stripe tile starts, so the stripes stay on the
+	 *  ground while the map pans. Any fixed point does; this one is simply
+	 *  easy to name. See stripeOffset. */
+	const stripeShift = $derived(stripeOffset(view.project({ lat: 0, lng: 0 })));
 
 	// Report the visible area after it settles, so the page can fetch turf
 	// outside the rows it was handed. The debounce lives here rather than in
@@ -177,6 +506,11 @@
 	const tilesBroken = $derived(
 		view.tiles.length > 0 && view.tiles.every((t) => failedTiles[t.key]),
 	);
+
+	/** Positron split into a label-free base and a labels overlay drawn above
+	 *  the turfs; null for a provider that doesn't publish the split. */
+	const layers = $derived(splitLabelLayers(tiles.urlTemplate));
+	let failedLabelTiles = $state<Record<string, boolean>>({});
 
 	/** "Ward 3 Turf 01" → "01". The card carries the full name; the map only
 	 *  needs to tell neighbours apart. */
@@ -246,11 +580,51 @@
 	// and finger, and setPointerCapture keeps a gesture alive when the cursor
 	// leaves the svg mid-drag.
 	//
-	// `touch-action: none` in the stylesheet suppresses the browser's own pan
-	// and pinch, which means we owe the user a replacement for BOTH. One finger
-	// pans; two fingers pinch. Volunteers use this standing on a pavement, so
-	// pinch is not a nicety — without it a phone can only zoom via the +/−
-	// buttons.
+	// Above the phone breakpoint the map sits beside the list with page either
+	// side of it, so it can own every gesture over it: `touch-action: none`
+	// suppresses the browser's own pan and pinch, one finger pans, two fingers
+	// pinch, and the wheel zooms.
+	//
+	// At phone width it is full-bleed and most of the screen, so the swipe and
+	// the plain wheel are how the page is read and the map must leave them
+	// alone — a map that swallows them strands the reader on it. What is left
+	// belongs to the map: two fingers pan, a pinch zooms, and Ctrl/⌘ + wheel
+	// zooms. Volunteers use this standing on a pavement, so a gesture the map
+	// declines says so on screen rather than looking broken.
+
+	/** Matches the .map-frame breakpoint in this file's stylesheet: the rule
+	 *  that makes the map full-bleed is the reason the gestures change. */
+	const NARROW_QUERY = '(max-width: 640px)';
+	let narrow = $state(false);
+
+	$effect(() => {
+		const query = window.matchMedia(NARROW_QUERY);
+		const sync = () => (narrow = query.matches);
+		sync();
+		query.addEventListener('change', sync);
+		return () => query.removeEventListener('change', sync);
+	});
+
+	function pageOwnsSwipe(event: PointerEvent): boolean {
+		return !swipePansMap({ narrow, pointerType: event.pointerType });
+	}
+
+	/** A one-line nudge over the map, shown when a gesture was left to the
+	 *  page. Nothing about the map moves in that case, and silence reads as a
+	 *  broken map rather than as a deliberate handover. */
+	let gestureHint = $state<string | null>(null);
+	let hintTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function flashGestureHint(message: string) {
+		gestureHint = message;
+		clearTimeout(hintTimer);
+		hintTimer = setTimeout(() => (gestureHint = null), 2400);
+	}
+
+	$effect(() => () => clearTimeout(hintTimer));
+
+	/** The svg itself, for the one listener that cannot be an attribute. */
+	let svg = $state<SVGSVGElement | undefined>();
 
 	let dragging = $state(false);
 	let dragMoved = false;
@@ -271,6 +645,13 @@
 
 	/** Gesture baseline, captured when the second finger lands. */
 	let pinch: { distance: number; zoom: number } | null = null;
+	/** Where the two fingers were centred at the last move, in client pixels.
+	 *  Two fingers pan by the drift of this point. */
+	let pinchMidpoint = { x: 0, y: 0 };
+
+	function midpointOf(pair: [ActivePointer, ActivePointer]) {
+		return { x: (pair[0].x + pair[1].x) / 2, y: (pair[0].y + pair[1].y) / 2 };
+	}
 
 	function trackPointer(event: PointerEvent) {
 		const existing = activePointers.find((p) => p.id === event.pointerId);
@@ -299,10 +680,20 @@
 	 *  not an option: it is what keeps a drag alive when the pointer leaves the
 	 *  svg mid-pan. */
 	let pressedTurfId: number | null = null;
+	/** The same for a walk's or a canvass event's marker. */
+	let pressedMarker: { kind: MarkerKind; id: string } | null = null;
 
 	function turfIdAt(target: EventTarget | null): number | null {
 		const el = (target as Element | null)?.closest?.('[data-turf-id]');
 		return el ? Number(el.getAttribute('data-turf-id')) : null;
+	}
+
+	function markerAt(target: EventTarget | null): { kind: MarkerKind; id: string } | null {
+		const el = (target as Element | null)?.closest?.('[data-walk-id], [data-event-id]');
+		if (!el) return null;
+		const walkId = el.getAttribute('data-walk-id');
+		if (walkId !== null) return { kind: 'walk', id: walkId };
+		return { kind: 'event', id: el.getAttribute('data-event-id') ?? '' };
 	}
 
 	function onPointerDown(event: PointerEvent) {
@@ -315,57 +706,107 @@
 			// Second finger down: stop panning, start pinching.
 			dragging = false;
 			pressedTurfId = null;
+			pressedMarker = null;
 			pinch = { distance: distanceBetween(pair[0], pair[1]), zoom: view.zoom };
+			pinchMidpoint = midpointOf(pair);
 			return;
 		}
 
-		dragging = true;
 		dragMoved = false;
+		// The origin is recorded either way: a swipe the page owns still has to
+		// be measured, to tell it apart from a tap that selects a turf.
+		dragOrigin = { x: event.clientX, y: event.clientY };
 		// Read before any movement: the capture retargets later events to the
 		// svg, so this is the last point at which the shape under the finger is
 		// still the event target.
 		pressedTurfId = turfIdAt(event.target);
-		dragOrigin = { x: event.clientX, y: event.clientY };
+		pressedMarker = markerAt(event.target);
+		if (pageOwnsSwipe(event)) return;
+
+		dragging = true;
 	}
+
+	/** Two fingers are the map's gesture at phone width, so take the sequence
+	 *  back from the scroller the moment the second one lands. `touch-action`
+	 *  has no way to say this — it can allow the one-finger pan or forbid it,
+	 *  and the count is the whole distinction here. A second finger arriving
+	 *  mid-scroll is uncancellable, and the page keeps that one. */
+	function onTouchStart(event: TouchEvent) {
+		if (narrow && event.touches.length >= 2 && event.cancelable) event.preventDefault();
+	}
+
+	// Attached by hand rather than as an `ontouchstart` attribute. Svelte
+	// delegates touchstart to the app root and registers it passive, and a
+	// passive listener's preventDefault does nothing — which is the entire
+	// mechanism above.
+	$effect(() => {
+		const el = svg;
+		if (!el) return;
+		el.addEventListener('touchstart', onTouchStart, { passive: false });
+		return () => el.removeEventListener('touchstart', onTouchStart);
+	});
 
 	function onPointerMove(event: PointerEvent) {
 		if (!activePointers.some((p) => p.id === event.pointerId)) return;
 		trackPointer(event);
 
-		const svg = event.currentTarget as SVGSVGElement;
+		const element = event.currentTarget as SVGSVGElement;
 		const pair = pointerPair();
 
 		if (pair && pinch) {
+			const midpoint = midpointOf(pair);
+			// Two fingers pan as well as scale. At phone width this is the only
+			// way to move the map, and at any width a pinch that drifts should
+			// carry the map with it instead of pivoting in place.
+			panBy(midpoint.x - pinchMidpoint.x, midpoint.y - pinchMidpoint.y, element);
+			pinchMidpoint = midpoint;
+			dragMoved = true;
+
 			const distance = distanceBetween(pair[0], pair[1]);
 			if (distance < 20 || pinch.distance < 20) return; // fingers too close to be stable
 
-			// Continuous pinch scale, snapped to the nearest integer zoom.
-			// Tiles only exist at integer zooms, so a fractional zoom would mean
-			// scaling bitmaps and taking the blur; snapping keeps them crisp and
-			// still tracks the gesture closely enough to feel connected.
+			// Straight off the gesture: the fingers' separation IS the scale, and
+			// log2 of it is the zoom. Nothing is rounded, so the map tracks the
+			// pinch continuously rather than jumping a level at a time.
 			const target = pinch.zoom + Math.log2(distance / pinch.distance);
-			const next = Math.round(target);
-			if (next !== view.zoom) {
-				const midpoint = {
-					clientX: (pair[0].x + pair[1].x) / 2,
-					clientY: (pair[0].y + pair[1].y) / 2,
-				};
-				changeZoom(next - view.zoom, toViewBox(midpoint, svg));
-			}
-			dragMoved = true;
+			changeZoom(
+				target - view.zoom,
+				toViewBox({ clientX: midpoint.x, clientY: midpoint.y }, element),
+			);
 			return;
 		}
 
-		if (!dragging) return;
 		const dx = event.clientX - dragOrigin.x;
 		const dy = event.clientY - dragOrigin.y;
-		if (Math.abs(dx) + Math.abs(dy) < 3) return;
-
-		// The svg is scaled to its container, so a client-pixel delta is not a
-		// viewBox-unit delta. Convert through the rendered width.
-		const unitsPerPixel = mapWidth / svg.getBoundingClientRect().width;
-
+		const travelled = Math.abs(dx) + Math.abs(dy);
+		if (travelled < 3) return;
+		// Recorded before the pan, and whether or not there is one: a swipe the
+		// page took is still a swipe, and lifting out of it must not land as a
+		// tap on whatever turf it started over.
 		dragMoved = true;
+
+		if (!dragging) {
+			// A swipe the page is scrolling. Say what does move the map, once
+			// the travel is past anything a fingertip does on a tap. `dragOrigin`
+			// stands still while the page owns the gesture, so this measures the
+			// whole swipe rather than one move's delta.
+			if (travelled > 16 && pageOwnsSwipe(event)) {
+				flashGestureHint('Use two fingers to move the map');
+			}
+			return;
+		}
+
+		panBy(dx, dy, element);
+		dragOrigin = { x: event.clientX, y: event.clientY };
+	}
+
+	/** Shift the centre by a client-pixel delta. The svg is scaled to its
+	 *  container, so a client-pixel delta is not a viewBox-unit delta —
+	 *  converting through the rendered width is what keeps the map pinned to
+	 *  the finger. */
+	function panBy(dx: number, dy: number, element: SVGSVGElement) {
+		if (dx === 0 && dy === 0) return;
+		const unitsPerPixel = mapWidth / element.getBoundingClientRect().width;
 		// Dragging right moves the map right, i.e. the centre moves left.
 		centre = view.unproject({
 			x: mapWidth / 2 - dx * unitsPerPixel,
@@ -373,7 +814,6 @@
 		});
 		zoom = view.zoom;
 		moved = true;
-		dragOrigin = { x: event.clientX, y: event.clientY };
 	}
 
 	function onPointerUp(event: PointerEvent) {
@@ -383,7 +823,11 @@
 		if (!dragMoved && pressedTurfId !== null && activePointers.length === 1) {
 			onselect(pressedTurfId);
 		}
+		if (!dragMoved && pressedMarker !== null && activePointers.length === 1) {
+			selectMarker(pressedMarker.kind, pressedMarker.id);
+		}
 		pressedTurfId = null;
+		pressedMarker = null;
 
 		activePointers = activePointers.filter((p) => p.id !== event.pointerId);
 		(event.currentTarget as SVGSVGElement).releasePointerCapture?.(event.pointerId);
@@ -394,7 +838,7 @@
 		// panning from where it actually is, or the map jumps by the distance
 		// between the two fingers.
 		const [remaining] = activePointers;
-		if (remaining) {
+		if (remaining && !pageOwnsSwipe(event)) {
 			dragging = true;
 			dragOrigin = { x: remaining.x, y: remaining.y };
 		} else {
@@ -406,6 +850,7 @@
 	 *  Not a tap, whatever the pointer did before it was cancelled. */
 	function onPointerCancel(event: PointerEvent) {
 		pressedTurfId = null;
+		pressedMarker = null;
 		onPointerUp(event);
 	}
 
@@ -432,10 +877,10 @@
 
 		if (event.key === '+' || event.key === '=') {
 			event.preventDefault();
-			changeZoom(1);
+			stepZoom(1);
 		} else if (event.key === '-' || event.key === '_') {
 			event.preventDefault();
-			changeZoom(-1);
+			stepZoom(-1);
 		} else if (event.key === 'Home') {
 			event.preventDefault();
 			resetView();
@@ -448,6 +893,20 @@
 	 *  county overview to a single turf is six or seven zoom levels, and
 	 *  centre-only zoom loses whatever you were aiming at within two of them.
 	 *  Defaults to the middle, which is what the +/− buttons want. */
+	/** One whole level, for the keyboard and the +/− buttons.
+	 *
+	 *  A discrete control has to land somewhere predictable, and from a zoom
+	 *  part-way between levels that means the next whole one — not a whole step
+	 *  from wherever a pinch happened to stop. The epsilon keeps a zoom already
+	 *  sitting on a level (to within floating-point noise) from counting as
+	 *  part-way past it and stepping only a fraction. */
+	function stepZoom(direction: 1 | -1) {
+		const EPSILON = 1e-6;
+		const target =
+			direction > 0 ? Math.floor(view.zoom + EPSILON) + 1 : Math.ceil(view.zoom - EPSILON) - 1;
+		changeZoom(target - view.zoom);
+	}
+
 	function changeZoom(delta: number, anchor = { x: mapWidth / 2, y: mapHeight / 2 }) {
 		const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.zoom + delta));
 		if (nextZoom === view.zoom) return;
@@ -482,18 +941,20 @@
 		};
 	}
 
-	// Trackpads emit a stream of small deltas; one zoom level per event would
-	// fly from a county to a doorstep on a single flick. Accumulate instead.
-	let wheelAccumulator = 0;
-	const WHEEL_STEP = 120;
-
 	function onWheel(event: WheelEvent) {
+		if (!wheelZoomsMap({ narrow, ctrlKey: event.ctrlKey, metaKey: event.metaKey })) {
+			flashGestureHint('Pinch, or hold Ctrl or ⌘ and scroll, to zoom');
+			return;
+		}
 		event.preventDefault();
-		wheelAccumulator += event.deltaY;
-		const steps = Math.trunc(wheelAccumulator / WHEEL_STEP);
-		if (steps === 0) return;
-		wheelAccumulator -= steps * WHEEL_STEP;
-		changeZoom(-steps, toViewBox(event, event.currentTarget as SVGSVGElement));
+		// Applied as it arrives, fractional and all. A trackpad's stream of
+		// small deltas becomes a smooth ramp; a mouse notch is still one level.
+		const delta = wheelZoomDelta({
+			deltaY: event.deltaY,
+			deltaMode: event.deltaMode,
+			height: mapHeight,
+		});
+		if (delta !== 0) changeZoom(delta, toViewBox(event, event.currentTarget as SVGSVGElement));
 	}
 
 	function resetView() {
@@ -504,22 +965,18 @@
 
 	// --- Scale bar ----------------------------------------------------------
 
-	const scale = $derived.by(() => {
-		const mpp = metresPerPixel(
-			view.unproject({ x: mapWidth / 2, y: mapHeight / 2 }).lat,
-			view.zoom,
-		);
-		const target = mapWidth / 4;
-		const choice = [2000, 1000, 500, 250, 100, 50].find((m) => m / mpp <= target) ?? 50;
-		return {
-			px: choice / mpp,
-			label: choice >= 1000 ? `${choice / 1000} km` : `${choice} m`,
-		};
-	});
+	const scale = $derived.by(() =>
+		scaleBarStep(
+			metresPerPixel(view.unproject({ x: mapWidth / 2, y: mapHeight / 2 }).lat, view.zoom),
+			mapWidth / 4,
+		),
+	);
 
 	/** True when at least one turf is off-screen — the only time offering
 	 *  "Show all" is meaningful. Falls out of the cull for free. */
 	const hasOffscreenTurfs = $derived(rendered.length < turfs.length);
+
+	const selectedItem = $derived(rendered.find((item) => item.turf.turfId === selectedId));
 
 	function statusClass(turf: MappableTurf): string {
 		// Two classes, doing two jobs: the status sets the hue, the shade sets
@@ -527,8 +984,10 @@
 		// door ramp apply to available turf without touching the colours that
 		// mean "yours" and "taken".
 		const shade = turfShade(turf.status, turf.doorsRemaining);
-		const selected = turf.mapRouteId === selectedId ? ' is-selected' : '';
-		return `turf turf-${turf.status} shade-${shade}${selected}`;
+		const selected = turf.turfId === selectedId ? ' is-selected' : '';
+		const noList = turf.noListNumber ? ' is-no-list' : '';
+		const knocked = turf.contactHistory ? ' is-knocked' : '';
+		return `turf turf-${turf.status} shade-${shade}${noList}${knocked}${selected}`;
 	}
 
 	function ariaLabelFor(turf: MappableTurf): string {
@@ -538,14 +997,126 @@
 		const status = turf.status as VolunteerStatus;
 		const doors =
 			status === 'available'
-				? `, ${turf.doorsRemaining} doors remaining, ${shadeLabel(turfShade(status, turf.doorsRemaining))}`
+				? `, ${turf.doorsRemaining} doors remaining, ${spokenShade(turfShade(status, turf.doorsRemaining), turf.contactHistory ?? false)}`
 				: '';
-		return `${turf.name}, ${statusLabel(status)}${doors}`;
+		const noList = turf.noListNumber ? ', no list number yet' : '';
+		const knocked = turf.contactHistory ? `, ${KNOCKED_LABEL}` : '';
+		const badge = turf.campaignId === undefined ? undefined : campaignBadges[turf.campaignId];
+		const campaign = badge ? `, ${badge}` : '';
+		return `${turf.name}${campaign}, ${statusLabel(status)}${noList}${doors}${knocked}`;
 	}
 </script>
 
 <figure class="map-figure">
 	<div class="map-frame" bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}>
+		<!-- Everything over the top of the map, in one row: the search and its
+		     messages on the left, the camera buttons on the right. Sharing a row
+		     is what stops a long address from running under the zoom buttons
+		     however many of them are showing. Ahead of the svg so the search is
+		     the first tab stop, not the last behind every turf on the map. -->
+		<div class="map-overlay">
+			<div class="overlay-start">
+				{#if findPlace}
+					{#if searchOpen}
+						<form class="search-form" onsubmit={submitSearch} role="search">
+							<!-- Plain text, not type="search": the browser's own clear
+							     button would sit beside the × that closes the search.
+							     No autocomplete: an address autofill fills the street
+							     line alone, which the geocoder can't place. -->
+							<input
+								bind:this={searchInput}
+								bind:value={searchQuery}
+								onkeydown={onSearchKeyDown}
+								type="text"
+								name="q"
+								enterkeyhint="search"
+								autocomplete="off"
+								placeholder="Full address, or ZIP"
+								aria-label="Find an address or ZIP code on the map"
+								aria-invalid={searchError !== null}
+								aria-describedby={searchError ? 'map-search-error' : undefined}
+								maxlength="200"
+							/>
+							<button type="submit" class="map-btn" disabled={searching}>
+								{searching ? 'Finding…' : 'Go'}
+							</button>
+							<button
+								type="button"
+								class="map-btn"
+								onclick={closeSearch}
+								aria-label="Close address search">×</button
+							>
+						</form>
+						{#if searchError}
+							<p class="map-note" id="map-search-error" role="alert">{searchError}</p>
+						{/if}
+					{:else if place}
+						<!-- The label is a button: tapping it goes back to the place after
+						     panning away from it. -->
+						<div class="place-chip">
+							<button
+								bind:this={placeButton}
+								type="button"
+								class="map-btn place-label"
+								aria-label="Back to {place.label}"
+								onclick={() => place && showPlace(place)}
+							>
+								<span aria-hidden="true">📍</span>
+								{place.label}
+							</button>
+							<button
+								type="button"
+								class="map-btn"
+								onclick={openSearch}
+								aria-label="Search another address"
+							>
+								<span aria-hidden="true">⌕</span>
+							</button>
+							<button type="button" class="map-btn" onclick={clearPlace} aria-label="Remove the pin"
+								>×</button
+							>
+						</div>
+					{:else}
+						<button bind:this={searchToggle} type="button" class="map-btn" onclick={openSearch}>
+							<span aria-hidden="true">⌕</span> Find address
+						</button>
+					{/if}
+				{/if}
+
+				<!-- Under the search rather than across the middle of the map, so it
+				     can never cover the search — which is what a volunteer reaches
+				     for when the street names are gone. -->
+				{#if tilesBroken}
+					<p class="map-note tile-error" role="status">
+						Street map unavailable — turf shapes and positions are still accurate.
+					</p>
+				{/if}
+			</div>
+
+			<div class="map-controls">
+				<button
+					type="button"
+					class="map-btn square"
+					onclick={() => stepZoom(1)}
+					aria-label="Zoom in">+</button
+				>
+				<button
+					type="button"
+					class="map-btn square"
+					onclick={() => stepZoom(-1)}
+					aria-label="Zoom out">−</button
+				>
+				{#if moved}
+					<button type="button" class="map-btn" onclick={resetView}>Near me</button>
+				{/if}
+				{#if hasOffscreenTurfs}
+					<button type="button" class="map-btn" onclick={() => frameTo(allBounds)}>Show all</button>
+				{/if}
+			</div>
+		</div>
+
+		<p class="visually-hidden" role="status">{searchAnnouncement}</p>
+
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 		<!-- Svelte's a11y heuristics don't model a map widget: it treats <svg> as
@@ -568,6 +1139,7 @@
 			onpointercancel={onPointerCancel}
 			onwheel={onWheel}
 			onkeydown={onKeyDown}
+			bind:this={svg}
 		>
 			<defs>
 				<!-- Behind the tiles, so a provider outage degrades to a grid with a
@@ -578,6 +1150,25 @@
 						fill="none"
 						stroke="var(--color-border-subtle)"
 						stroke-width="1"
+					/>
+				</pattern>
+				<!-- Over turf knocked recently (`contactHistory`). Pixel-sized, so the
+				     stripes keep their spacing at every zoom, and shifted with the
+				     map (stripeShift) so they stay on the ground as it pans. The
+				     diagonal is drawn into the tile rather than rotating the tile,
+				     which keeps the repeat square and the shift a plain modulo. The
+				     two corner stubs close the gaps where tiles meet. -->
+				<pattern
+					id="knocked-stripes"
+					width={STRIPE_PERIOD_PX}
+					height={STRIPE_PERIOD_PX}
+					patternUnits="userSpaceOnUse"
+					patternTransform="translate({stripeShift.x} {stripeShift.y})"
+				>
+					<path
+						class="knocked-stripe"
+						d="M-1 1 L1 -1 M0 {STRIPE_PERIOD_PX} L{STRIPE_PERIOD_PX} 0 M{STRIPE_PERIOD_PX -
+							1} {STRIPE_PERIOD_PX + 1} L{STRIPE_PERIOD_PX + 1} {STRIPE_PERIOD_PX - 1}"
 					/>
 				</pattern>
 				<clipPath id="map-clip">
@@ -591,33 +1182,63 @@
 				<g class="basemap">
 					{#each view.tiles as tile (tile.key)}
 						<image
-							href={tileUrl(tile, tiles.urlTemplate)}
+							href={tileUrl(tile, layers?.base ?? tiles.urlTemplate)}
 							x={tile.left}
 							y={tile.top}
-							width={TILE_SIZE}
-							height={TILE_SIZE}
+							width={tile.size}
+							height={tile.size}
 							onerror={() => (failedTiles[tile.key] = true)}
 						/>
 					{/each}
 				</g>
 
-				{#each rendered as item (item.turf.mapRouteId)}
+				{#each rendered as item (item.turf.turfId)}
 					<g
 						class={statusClass(item.turf)}
-						data-turf-id={item.turf.mapRouteId}
+						style={rampStyle(item.turf.doorsRemaining)}
+						data-turf-id={item.turf.turfId}
 						role="button"
 						aria-label={ariaLabelFor(item.turf)}
-						aria-pressed={item.turf.mapRouteId === selectedId}
+						aria-pressed={item.turf.turfId === selectedId}
 						tabindex={item.points ? 0 : -1}
 						onkeydown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
 								e.preventDefault();
-								onselect(item.turf.mapRouteId);
+								onselect(item.turf.turfId);
 							}
 						}}
 					>
 						{#if item.points}
-							<polygon points={item.points} />
+							<!-- Luminance mask: white along the inside of the edge, stepping
+							     down to BAND_CENTRE in the middle. Paths rather than
+							     polygons so none of the .turf polygon rules reach them. -->
+							<mask
+								id="turf-band-{item.turf.turfId}"
+								class="band-mask"
+								maskUnits="userSpaceOnUse"
+								color-interpolation="sRGB"
+								x={-mapWidth}
+								y={-mapHeight}
+								width={mapWidth * 3}
+								height={mapHeight * 3}
+							>
+								<path d="M{item.points}Z" fill={BAND_CENTRE_GREY} />
+								{#each BAND_STEPS as step (step.width)}
+									<path
+										class="band-step"
+										d="M{item.points}Z"
+										stroke={step.grey}
+										stroke-width={step.width}
+									/>
+								{/each}
+							</mask>
+							<polygon points={item.points} mask="url(#turf-band-{item.turf.turfId})" />
+							{#if item.turf.contactHistory}
+								<!-- Across the whole interior, not the band: a re-cut lists
+								     these doors as untouched, and the stripes are what says
+								     otherwise. A path, so no .turf polygon rule reaches it. -->
+								<path class="knocked-fill" d="M{item.points}Z" fill="url(#knocked-stripes)" />
+							{/if}
 						{:else}
 							<!-- Too small to read as a shape, or a degenerate hull
 							     (collinear doors, or too few). Either way: a pin, never a
@@ -627,13 +1248,111 @@
 							     path anyway. -->
 							<circle cx={item.x} cy={item.y} r="7" />
 						{/if}
+					</g>
+				{/each}
+
+				<!-- The selected turf's outline, redrawn above every turf so a
+				     neighbour's band can't cover it. -->
+				{#if selectedItem}
+					<g class="selected-outline" aria-hidden="true">
+						{#each ['halo', 'core'] as part (part)}
+							{#if selectedItem.points}
+								<polygon class={part} points={selectedItem.points} />
+							{:else}
+								<circle class={part} cx={selectedItem.x} cy={selectedItem.y} r="7" />
+							{/if}
+						{/each}
+					</g>
+				{/if}
+
+				{#if layers}
+					<!-- Street names above every turf fill, so no stack of hulls can
+					     bury them. Not counted toward tilesBroken: losing the names
+					     still leaves a usable map. -->
+					<g class="basemap street-labels" aria-hidden="true">
+						{#each view.tiles as tile (tile.key)}
+							{#if !failedLabelTiles[tile.key]}
+								<image
+									href={tileUrl(tile, layers.labels)}
+									x={tile.left}
+									y={tile.top}
+									width={tile.size}
+									height={tile.size}
+									onerror={() => (failedLabelTiles[tile.key] = true)}
+								/>
+							{/if}
+						{/each}
+					</g>
+				{/if}
+
+				<!-- Turf numbers sit above the street names: they are the one thing
+				     on the map a volunteer taps by. -->
+				<g class="turf-labels" aria-hidden="true">
+					{#each rendered as item (item.turf.turfId)}
 						{#if item.label}
 							<text x={item.x} y={item.y} text-anchor="middle" dominant-baseline="central">
 								{item.label}
 							</text>
 						{/if}
+					{/each}
+				</g>
+
+				<!-- Mentor walks: round badges, above the turf and its numbers so
+				     they can always be tapped, under the "you" dot. -->
+				{#each walkMarkers as { walk, at } (walk.id)}
+					<g
+						class={[
+							'walk-marker',
+							walk.joined && 'is-joined',
+							walk.id === selectedWalkId && 'is-selected',
+						]}
+						data-walk-id={walk.id}
+						role="button"
+						aria-label={walk.label}
+						aria-pressed={walk.id === selectedWalkId}
+						tabindex="0"
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								selectMarker('walk', walk.id);
+							}
+						}}
+					>
+						<circle cx={at.x} cy={at.y} r="17" />
+						<text x={at.x} y={at.y} text-anchor="middle" dominant-baseline="central">👟</text>
 					</g>
 				{/each}
+
+				<!-- Canvass events: rounded squares, a shape apart from the round
+				     walks for anyone who can't tell the colours apart. -->
+				{#each eventMarkers as { event, at } (event.id)}
+					<g
+						class={['event-marker', event.id === selectedEventId && 'is-selected']}
+						data-event-id={event.id}
+						role="button"
+						aria-label={event.label}
+						aria-pressed={event.id === selectedEventId}
+						tabindex="0"
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								selectMarker('event', event.id);
+							}
+						}}
+					>
+						<rect x={at.x - 16} y={at.y - 16} width="32" height="32" rx="7" />
+						<text x={at.x} y={at.y} text-anchor="middle" dominant-baseline="central">📣</text>
+					</g>
+				{/each}
+
+				<!-- The searched-for place: a drop pin, a shape nothing else on the
+				     map uses. Spoken by the chip that names it, not here. -->
+				{#if placeAt}
+					<g class="place-pin" aria-hidden="true" transform="translate({placeAt.x} {placeAt.y})">
+						<path d="M0 0 C-3 -10 -12 -14 -12 -24 A12 12 0 1 1 12 -24 C12 -14 3 -10 0 0 Z" />
+						<circle cx="0" cy="-24" r="4.5" />
+					</g>
+				{/if}
 
 				<g class="me" aria-hidden="true">
 					{#if me}
@@ -657,31 +1376,29 @@
 			</g>
 		</svg>
 
-		<div class="map-controls">
-			<button type="button" onclick={() => changeZoom(1)} aria-label="Zoom in">+</button>
-			<button type="button" onclick={() => changeZoom(-1)} aria-label="Zoom out">−</button>
-			{#if moved}
-				<button type="button" class="wide" onclick={resetView}>Near me</button>
-			{/if}
-			{#if hasOffscreenTurfs}
-				<button type="button" class="wide" onclick={() => frameTo(allBounds)}>Show all</button>
-			{/if}
-		</div>
+		{#if gestureHint}
+			<!-- aria-hidden: this is a visual answer to a gesture that just did
+			     nothing, and the figcaption already carries the same instruction
+			     in a form a screen reader can reach at any time. Announcing it
+			     would interrupt with news of something that did not happen. -->
+			<p class="gesture-hint" aria-hidden="true">{gestureHint}</p>
+		{/if}
 
 		<p class="attribution">{tiles.attribution}</p>
-
-		{#if tilesBroken}
-			<p class="tile-error" role="status">
-				Street map unavailable — turf shapes and positions are still accurate.
-			</p>
-		{/if}
 	</div>
 
+	<!-- How to work the map, and nothing else. What the shapes mean is said
+	     once, under the legend beside it, and a volunteer who swipes and gets
+	     a page scroll is answered on the map itself. The keyboard line is for
+	     the phone-less: on a touch screen it is instructions for hardware that
+	     is not there. -->
 	<figcaption>
-		Drag to pan, pinch or scroll to zoom. With the map focused, arrow keys pan and
-		<kbd>+</kbd>/<kbd>−</kbd> zoom. Turfs too small to draw at this zoom show as dots. Shapes are convex
-		hulls over each turf's doors, so they claim a little more ground than the turf really covers — MiniVAN
-		is the authority on which doors are on your list.
+		{#if narrow}
+			Two fingers move the map. Pinch to zoom.
+		{:else}
+			Drag to move the map, scroll to zoom. With it focused, arrow keys pan and
+			<kbd>+</kbd>/<kbd>−</kbd> zoom.
+		{/if}
 	</figcaption>
 </figure>
 
@@ -710,9 +1427,9 @@
 		touch-action: none;
 	}
 
-	/* Phone layout: the map is the first thing on the page and runs the full
-	   width of the screen. `50% - 50vw` is measured against the page column, so
-	   the frame escapes whatever padding <main> has without knowing its value.
+	/* Phone layout: the map runs the full width of the screen, as the band under
+	   the chapter bar. `50% - 50vw` is measured against the page column, so the
+	   frame escapes whatever padding <main> has without knowing its value.
 
 	   dvh, not vh: on mobile Safari and Chrome vh is the *largest* viewport, so
 	   a vh-sized map hides its own bottom edge behind the address bar. */
@@ -724,6 +1441,50 @@
 			margin-inline: calc(50% - 50vw);
 			border-width: 0 0 1px;
 			border-radius: 0;
+		}
+
+		.turf-map {
+			/* A map this size is the page here, so the browser keeps the
+			   one-finger vertical scroll through it, and the map declines its
+			   own single-pointer pan in pageOwnsSwipe. Two fingers are the
+			   map's, taken back in onTouchStart. pan-y alone rather than
+			   `pan-x pan-y`: this layout has nothing to scroll sideways to. */
+			touch-action: pan-y;
+		}
+	}
+
+	/* Out of the way, bottom right: it answers a gesture that did nothing, and
+	   the map is what the volunteer is trying to look at. Above the attribution
+	   rather than over it, clear of the +/− controls in the top corner and of
+	   the scale bar at bottom left. Pointer-transparent — it appears
+	   mid-gesture and must not become the thing the next finger lands on. */
+	.gesture-hint {
+		position: absolute;
+		right: 8px;
+		bottom: 24px;
+		max-width: calc(100% - 16px);
+		margin: 0;
+		padding: 7px 14px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--color-near-black) 85%, transparent);
+		color: var(--color-header-text);
+		font-size: var(--font-size-sm);
+		line-height: 1.3;
+		text-align: center;
+		text-wrap: balance;
+		pointer-events: none;
+		animation: hint-in 120ms ease-out;
+	}
+
+	@keyframes hint-in {
+		from {
+			opacity: 0;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.gesture-hint {
+			animation: none;
 		}
 	}
 
@@ -763,45 +1524,155 @@
 
 	figcaption {
 		margin-top: 8px;
-		font-size: var(--font-size-xs);
-		color: var(--color-text-faint);
+		font-size: var(--font-size-md);
+		color: var(--color-text-muted);
 		line-height: 1.5;
 	}
 
-	.map-controls {
+	/* Clear of the edges by the same 10px all round. The row itself takes no
+	   pointer: it spans the top of the map, and only the controls in it may
+	   come between a finger and the map. */
+	.map-overlay {
 		position: absolute;
 		top: 10px;
+		left: 10px;
 		right: 10px;
 		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 8px;
+		pointer-events: none;
+	}
+
+	/* Shrinks before the camera buttons do, so a long address truncates
+	   rather than pushing them off the map. */
+	.overlay-start {
+		flex: 0 1 auto;
+		min-width: 0;
+		display: flex;
 		flex-direction: column;
+		align-items: flex-start;
 		gap: 4px;
 	}
 
-	.map-controls button {
-		width: 32px;
+	.overlay-start > *,
+	.map-controls {
+		pointer-events: auto;
+	}
+
+	.map-controls {
+		flex: none;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 4px;
+	}
+
+	/* Every button over the map: the search's and the camera's. */
+	.map-btn {
 		height: 32px;
+		min-width: 32px;
+		padding: 0 8px;
 		display: grid;
 		place-items: center;
 		background: var(--color-surface);
 		color: var(--color-text);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-sm);
-		font-size: 1.1rem;
-		font-weight: 700;
+		font-size: var(--font-size-xs);
+		font-weight: 600;
 		line-height: 1;
+		white-space: nowrap;
 		cursor: pointer;
 	}
 
-	.map-controls button:hover {
+	.map-btn:hover:not(:disabled) {
 		background: var(--color-cream-light);
 		border-color: var(--color-action);
 	}
 
-	.map-controls .wide {
-		width: auto;
-		padding: 0 8px;
+	.map-btn:disabled {
+		cursor: progress;
+		opacity: 0.7;
+	}
+
+	/* + and −: a glyph, not a word. */
+	.map-btn.square {
+		width: 32px;
+		padding: 0;
+		font-size: 1.1rem;
+		font-weight: 700;
+	}
+
+	.search-form,
+	.place-chip {
+		display: flex;
+		gap: 4px;
+		max-width: 100%;
+	}
+
+	/* The look is app.css's, for every field; this only fits it to the row of
+	   32px buttons beside it. 16px because the overlay's own text is smaller,
+	   and under 16px iOS zooms the page in on a tap into the field. */
+	.search-form input {
+		width: 16rem;
+		flex: 1 1 auto;
+		height: 32px;
+		padding-block: 0;
+		font-size: 16px;
+	}
+
+	/* The matched address can be long; it truncates rather than covering the
+	   map, and the full text is in the button's label. */
+	.place-label {
+		display: block;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		font-weight: 500;
+	}
+
+	.map-note {
+		margin: 0;
+		padding: 6px 10px;
+		max-width: 20rem;
+		background: var(--color-surface);
+		border: 1px solid var(--color-warning);
+		border-radius: var(--radius-sm);
+		color: var(--color-text);
 		font-size: var(--font-size-xs);
-		font-weight: 600;
+		line-height: 1.4;
+	}
+
+	/* A message, not a control: taps go through it to the map. */
+	.overlay-start > .tile-error {
+		pointer-events: none;
+	}
+
+	/* Scenery for the pointer: a drag that starts on it pans, and a tap
+	   reaches the turf underneath. Ink on paper, for the reason the turf
+	   labels give: it sits on Positron in both themes, over every status
+	   colour. */
+	.place-pin {
+		pointer-events: none;
+	}
+
+	.place-pin path {
+		fill: var(--color-near-black);
+		stroke: var(--color-header-text);
+		stroke-width: 2;
+	}
+
+	.place-pin circle {
+		fill: var(--color-header-text);
+	}
+
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
 		white-space: nowrap;
 	}
 
@@ -815,20 +1686,6 @@
 		border-top-left-radius: var(--radius-sm);
 		font-size: 10px;
 		color: var(--color-warm-dark);
-	}
-
-	.tile-error {
-		position: absolute;
-		left: 50%;
-		top: 12px;
-		transform: translateX(-50%);
-		margin: 0;
-		padding: 6px 12px;
-		background: var(--color-surface);
-		border: 1px solid var(--color-warning);
-		border-radius: var(--radius-md);
-		font-size: var(--font-size-xs);
-		color: var(--color-text);
 	}
 
 	.turf {
@@ -851,7 +1708,7 @@
 	   so the label became dark navy behind a dark scrim on light tiles. Neither
 	   token can be used here: both change meaning with the theme, and the map
 	   underneath does not. */
-	.turf text {
+	.turf-labels text {
 		font-size: 13px;
 		font-weight: 700;
 		fill: var(--color-header-text);
@@ -884,9 +1741,42 @@
 
 	.turf.is-selected polygon,
 	.turf.is-selected circle {
-		stroke: var(--color-near-black);
-		stroke-width: 4;
 		fill-opacity: calc(var(--turf-fill) + 0.2);
+	}
+
+	/* Two-tone, because no single colour stands out on every turf: black
+	   vanished on deep purple, white would on the pale end of the ramp and
+	   the basemap. A paper halo under a near-black core contrasts with
+	   whatever is beneath it. Fixed rather than themed for the same reason
+	   as the labels: the map underneath does not change with the theme. */
+	.selected-outline {
+		pointer-events: none;
+	}
+
+	.selected-outline .halo,
+	.selected-outline .core {
+		fill: none;
+		stroke-linejoin: round;
+	}
+
+	.selected-outline .halo {
+		stroke: var(--color-header-text);
+		stroke-width: 8;
+	}
+
+	.selected-outline .core {
+		stroke: var(--color-near-black);
+		stroke-width: 3;
+	}
+
+	/* Greys and widths come from the markup (BAND_STEPS); this only keeps the
+	   steps from filling and their inner edges from spiking at corners. The
+	   full-strength step also covers the 2–4px outline, which keeps the
+	   outline whole. sRGB on the mask so every browser reads a grey as the
+	   same strength. */
+	.band-mask .band-step {
+		fill: none;
+		stroke-linejoin: round;
 	}
 
 	/* Hue answers "can I take this?"; fill answers "how much is left in it?".
@@ -908,7 +1798,8 @@
 
 	.turf-available polygon,
 	.turf-available circle {
-		fill: var(--color-blue);
+		/* The shade classes below set the hue along the doors-left ramp. */
+		fill: var(--turf-color, var(--color-blue));
 		stroke: var(--color-navy-mid);
 	}
 
@@ -924,19 +1815,23 @@
 		stroke: var(--color-warm-dark);
 	}
 
-	/* The door ramp. Four steps, far enough apart to be told apart over a
-	   street basemap — closer spacing looked like one colour with noise. */
-	.shade-full {
-		--turf-fill: 0.7;
-	}
-	.shade-high {
-		--turf-fill: 0.56;
-	}
-	.shade-medium {
-		--turf-fill: 0.42;
-	}
+	/* The door ramp. Hue and opacity move together, from a deep purple-blue
+	   that is nearly solid at RAMP_FULL_DOORS to a pale, faint light blue at
+	   one door, so the difference reads from across the map. Continuous:
+	   --turf-t (0–1, doorRamp in turf-shade.ts, set inline per turf) drives
+	   both, so neighbouring door counts get neighbouring colours instead of a
+	   hard step at a band edge. Only available turf uses --turf-color; the
+	   other statuses keep their own hue. */
+	.shade-full,
+	.shade-high,
+	.shade-medium,
 	.shade-low {
-		--turf-fill: 0.28;
+		--turf-fill: calc(0.3 + 0.6 * var(--turf-t, 0.5));
+		--turf-color: color-mix(
+			in srgb,
+			var(--color-turf-deep) calc(var(--turf-t, 0.5) * 100%),
+			var(--color-turf-light)
+		);
 	}
 
 	/* Flat, deliberately: door count is not actionable on turf someone else is
@@ -963,10 +1858,82 @@
 		stroke-dasharray: 5 4;
 	}
 
+	/* Looks available but has no list number, so nobody can take it until an
+	   organizer generates one. An outline rather than a fill: the fill still
+	   says how many doors are waiting, and the red says who to ask first.
+	   Selection and focus keep their own stroke, so the red steps aside while
+	   a turf is picked. */
+	.turf.is-no-list:not(.is-selected):not(:focus-visible) polygon,
+	.turf.is-no-list:not(.is-selected):not(:focus-visible) circle {
+		stroke: var(--color-error);
+		stroke-width: 3;
+	}
+
+	/* Knocked in the last 30 days, a not-home included, before VAN's re-cut
+	   listed every door as untouched and MiniVAN stopped showing the knocks. Dashed and striped rather than recoloured:
+	   the hue still says whether you can take it and the ramp how many doors
+	   it lists, and the pattern reads without colour vision. */
+	.turf.is-knocked polygon,
+	.turf.is-knocked circle {
+		stroke-dasharray: 6 4;
+	}
+
+	.knocked-fill {
+		pointer-events: none;
+	}
+
+	.knocked-stripe {
+		stroke: var(--color-near-black);
+		stroke-opacity: 0.4;
+		stroke-width: 2;
+	}
+
 	.me-dot {
 		fill: var(--color-coral);
 		stroke: var(--color-surface);
 		stroke-width: 2.5;
+	}
+
+	.walk-marker,
+	.event-marker {
+		cursor: pointer;
+	}
+
+	.walk-marker circle,
+	.event-marker rect {
+		stroke: var(--color-surface);
+		stroke-width: 3;
+	}
+
+	.walk-marker circle {
+		fill: var(--color-action);
+	}
+
+	.event-marker rect {
+		fill: var(--color-gold);
+	}
+
+	.walk-marker.is-joined circle {
+		fill: var(--color-success);
+	}
+
+	.walk-marker.is-selected circle,
+	.walk-marker:focus-visible circle,
+	.event-marker.is-selected rect,
+	.event-marker:focus-visible rect {
+		stroke: var(--color-border-focus);
+		stroke-width: 4;
+	}
+
+	.walk-marker:focus,
+	.event-marker:focus {
+		outline: none;
+	}
+
+	.walk-marker text,
+	.event-marker text {
+		font-size: 16px;
+		pointer-events: none;
 	}
 
 	.me-halo {

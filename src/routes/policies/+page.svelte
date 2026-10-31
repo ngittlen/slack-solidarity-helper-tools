@@ -17,15 +17,13 @@
 
 	<div class="docs">
 		<p class="lede">
-			What this app records about volunteers, how long it keeps it, and how to report a security
-			problem. Both documents are rendered from
-			<code>PRIVACY.md</code> and <code>SECURITY.md</code> in the source repository, so what you read
-			here is what a reviewer diffs.
+			The terms you agree to by signing in, what this app records about volunteers and how long it
+			keeps it, and how to report a security problem.
 		</p>
 
 		{#each data.docs as doc (doc.slug)}
 			<!-- Trusted by construction: `doc.html` is rendered at build time from
-			     two markdown files committed to this repository, inlined into the
+			     three markdown files committed to this repository, inlined into the
 			     bundle by Vite's `?raw`. No request data, no database value and no
 			     user input reaches it. If this page ever renders markdown from
 			     app_config or from a member, it needs a sanitiser first — and the

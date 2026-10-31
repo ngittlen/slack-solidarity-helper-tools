@@ -28,12 +28,14 @@ export type ActivityKind =
  *  it is the holder's credential, and an admin is not the holder. */
 export interface ActivityRow {
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	/** Turf name from van_turfs. */
 	name: string;
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	slackUserId: string;
 	slackUserName: string;
@@ -44,6 +46,10 @@ export interface ActivityRow {
 	/** Doors that left the turf between claim and the post-completion refresh.
 	 *  Null until Story 5.6 fills it in; rendered only when present. */
 	confirmedDoorDelta: number | null;
+	/** What MiniVAN showed as done, 0-100, when the volunteer marked the turf
+	 *  walked. Null on claims that have not completed and on rows from before
+	 *  it was asked. */
+	reportedPercent: number | null;
 }
 
 export interface ActivityEvent {
@@ -53,26 +59,29 @@ export interface ActivityEvent {
 	kind: ActivityKind;
 	at: string;
 	checkoutId: number;
-	mapRouteId: number;
+	turfId: number;
 	turfName: string;
 	regionName: string;
 	chapterId: number;
 	chapterName: string;
+	/** The turf's VAN campaign — for its badge, and the campaign filter. */
+	campaignId: number;
 	doorCount: number;
 	slackUserId: string;
 	slackUserName: string;
 	confirmedDoorDelta: number | null;
+	reportedPercent: number | null;
 }
 
 /**
- * Events per page load.
+ * Events per page of the history.
  *
- * A history is for reading, not for exporting: past a few hundred rows nobody
- * scrolls, and the honest move is to say how many were left out and let the
- * period filter do the narrowing. Also bounds the payload — the same concern
- * measured for the turf map in plan.md 6.2b, at a much smaller scale.
+ * A page size, not a ceiling: the page loads this many, then fetches the next
+ * batch as the organizer scrolls toward the end. Small enough that the first
+ * render and each fetch are quick; large enough that an ordinary scroll does
+ * not outrun the next batch.
  */
-export const EVENT_CAP = 500;
+export const EVENTS_PER_PAGE = 100;
 
 export type Period = '1' | '7' | '30' | 'all';
 
@@ -160,15 +169,17 @@ export function activityEvents(
 	for (const row of rows) {
 		const base = {
 			checkoutId: row.checkoutId,
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			turfName: row.name,
 			regionName: row.regionName,
 			chapterId: row.chapterId,
 			chapterName: row.chapterName,
+			campaignId: row.campaignId,
 			doorCount: row.doorCount,
 			slackUserId: row.slackUserId,
 			slackUserName: row.slackUserName,
 			confirmedDoorDelta: row.confirmedDoorDelta,
+			reportedPercent: row.reportedPercent,
 		};
 
 		if (inRange(row.claimedAt, range)) {
@@ -188,11 +199,33 @@ export function activityEvents(
 		}
 	}
 
-	// Newest first, with the checkout id as a tiebreak so two events stamped in
-	// the same millisecond render in a stable order rather than shuffling
-	// between loads.
-	events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : b.checkoutId - a.checkoutId));
+	events.sort(compareEvents);
 	return events;
+}
+
+/** Where a page of the history ends: the oldest event on it. */
+export type ActivityCursor = Pick<ActivityEvent, 'at' | 'checkoutId' | 'id'>;
+
+/**
+ * The history's order: newest first, then by checkout id and event id, so two
+ * events stamped in the same millisecond render in a stable order rather than
+ * shuffling between loads. Total, which paging relies on: an event is either
+ * before a cursor or after it, never level with one it is not.
+ */
+export function compareEvents(a: ActivityCursor, b: ActivityCursor): number {
+	if (a.at !== b.at) return a.at < b.at ? 1 : -1;
+	if (a.checkoutId !== b.checkoutId) return b.checkoutId - a.checkoutId;
+	return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** `checkoutId:kind`, as activityEvents builds it, back into a cursor. Null for
+ *  anything else — the value round-trips through the browser. */
+export function parseCursor(at: string | null, id: string | null): ActivityCursor | null {
+	if (!at || !id) return null;
+	const match = /^(\d+):([a-z-]+)$/.exec(id);
+	const time = Date.parse(at);
+	if (!match || Number.isNaN(time)) return null;
+	return { at: new Date(time).toISOString(), checkoutId: Number(match[1]), id };
 }
 
 /** Human label for an event. One place decides this, so the list, the summary
@@ -254,7 +287,7 @@ export function totalEvents(counts: ActivityCounts): number {
  * Group events into calendar days for rendering.
  *
  * The day key is supplied per event by the caller rather than derived here,
- * because "which day" is a campaign-local question (America/Detroit) and this
+ * because "which day" is a campaign-local question and this
  * module has no timezone of its own — deriving it from the ISO string would
  * silently bucket a 9pm knock into tomorrow.
  */

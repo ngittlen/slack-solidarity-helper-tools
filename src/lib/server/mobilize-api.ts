@@ -10,7 +10,12 @@
 // one place $env values become the MobilizeApiConfig those modules consume.
 
 import type { MobilizeApiConfig } from '../../../mobilize-migrator/lib/mobilize.js';
-import { MOBILIZE_API_KEY, MOBILIZE_ORG_ID } from './env.js';
+import {
+	MOBILIZE_API_KEY,
+	MOBILIZE_IMPORT_API_KEY,
+	MOBILIZE_IMPORT_ORG_ID,
+	MOBILIZE_ORG_ID,
+} from './env.js';
 
 export function loadMobilizeApi(purpose: string): MobilizeApiConfig {
 	if (!MOBILIZE_API_KEY) {
@@ -22,4 +27,14 @@ export function loadMobilizeApi(purpose: string): MobilizeApiConfig {
 		throw new Error(`MOBILIZE_ORG_ID is not a positive integer — ${purpose} cannot run`);
 	}
 	return { apiKey: MOBILIZE_API_KEY, orgId: MOBILIZE_ORG_ID };
+}
+
+/**
+ * Credentials for the PARTNER org the import reads from — never ours. Null when
+ * either is unset, which means the import is not configured rather than broken.
+ */
+export function loadMobilizeImportApi(): MobilizeApiConfig | null {
+	if (!MOBILIZE_IMPORT_API_KEY) return null;
+	if (!Number.isFinite(MOBILIZE_IMPORT_ORG_ID) || MOBILIZE_IMPORT_ORG_ID <= 0) return null;
+	return { apiKey: MOBILIZE_IMPORT_API_KEY, orgId: MOBILIZE_IMPORT_ORG_ID };
 }

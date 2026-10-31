@@ -7,6 +7,7 @@ import {
 	dropOutliers,
 	formatDistance,
 	haversineMeters,
+	hullAreaSquareMeters,
 	padBounds,
 	unionBounds,
 	type LatLng,
@@ -216,13 +217,43 @@ describe('boundsForNearest', () => {
 });
 
 describe('formatDistance', () => {
-	it('rounds short distances to 50 m', () => {
-		expect(formatDistance(120)).toBe('100 m');
-		expect(formatDistance(139)).toBe('150 m');
+	it('rounds short distances to 50 ft', () => {
+		// 120 m ≈ 394 ft, 139 m ≈ 456 ft.
+		expect(formatDistance(120)).toBe('400 ft');
+		expect(formatDistance(139)).toBe('450 ft');
 	});
 
-	it('switches to kilometres', () => {
-		expect(formatDistance(1240)).toBe('1.2 km');
-		expect(formatDistance(15_000)).toBe('15.0 km');
+	it('switches to miles at 1000 ft', () => {
+		// 304 m ≈ 997 ft, still feet; 305 m ≈ 1001 ft, now miles.
+		expect(formatDistance(304)).toBe('1000 ft');
+		expect(formatDistance(305)).toBe('0.2 mi');
+	});
+
+	it('reports longer distances in miles', () => {
+		expect(formatDistance(1609.344)).toBe('1.0 mi');
+		expect(formatDistance(15_000)).toBe('9.3 mi');
+	});
+
+	it('handles zero without inventing a distance', () => {
+		expect(formatDistance(0)).toBe('0 ft');
+	});
+});
+
+describe('hullAreaSquareMeters', () => {
+	it('is zero for a degenerate hull', () => {
+		expect(hullAreaSquareMeters([])).toBe(0);
+		expect(hullAreaSquareMeters([at(42, -71), at(42.01, -71)])).toBe(0);
+	});
+
+	it('measures a 0.01° square at 42°N as ~1.11 km by ~0.83 km', () => {
+		const square = [at(42, -71), at(42, -70.99), at(42.01, -70.99), at(42.01, -71)];
+		const area = hullAreaSquareMeters(square);
+		expect(area).toBeGreaterThan(915_000);
+		expect(area).toBeLessThan(925_000);
+	});
+
+	it('does not depend on winding order', () => {
+		const ccw = [at(42, -71), at(42, -70.99), at(42.01, -70.99)];
+		expect(hullAreaSquareMeters([...ccw].reverse())).toBeCloseTo(hullAreaSquareMeters(ccw));
 	});
 });

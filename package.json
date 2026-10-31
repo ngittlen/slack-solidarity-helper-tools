@@ -18,8 +18,19 @@
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
 		"db:seed": "node bin/seed-dev-db.js",
+		"db:replica": "tsx --env-file-if-exists=.env.local scripts/db-replica.ts",
 		"van:check": "tsx --env-file=.env.local scripts/van-check.ts",
-		"van:sync": "tsx --env-file=.env.local scripts/van-sync-once.ts"
+		"van:regions": "tsx --env-file=.env.local scripts/van-regions.ts",
+		"van:sync": "tsx --env-file=.env.local scripts/van-sync-once.ts",
+		"van:e2e": "tsx --env-file=.env.local scripts/van-e2e.ts",
+		"van:geometry": "tsx --env-file=.env.local scripts/van-geometry-status.ts",
+		"van:drain": "tsx --env-file=.env.local scripts/van-geometry-drain.ts",
+		"van:turf": "tsx --env-file=.env.local scripts/van-turf-history.ts",
+		"van:list": "tsx --env-file=.env.local scripts/van-list.ts",
+		"van:latency": "tsx --env-file=.env.local scripts/van-contact-latency.ts",
+		"sheets:check": "tsx --env-file=.env.local scripts/sheets-check.ts",
+		"slack:copy-members": "tsx --env-file=.env.local scripts/copy-channel-members.ts",
+		"slack:member-joins": "tsx --env-file=.env.local scripts/channel-member-join-dates.ts"
 	},
 	"license": "MIT",
 	"dependencies": {
@@ -29,7 +40,8 @@
 		"drizzle-orm": "^0.45.2",
 		"layerchart": "^2.0.0",
 		"libphonenumber-js": "^1.12.41",
-		"marked": "^18.0.11"
+		"marked": "^18.0.11",
+		"web-push": "^3.6.7"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -37,11 +49,13 @@
 		"@sveltejs/kit": "^2.56.1",
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
 		"@types/node": "^20.0.0",
+		"@types/web-push": "^3.6.4",
 		"drizzle-kit": "^0.31.10",
 		"eslint": "^10.2.1",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.17.1",
 		"globals": "^17.5.0",
+		"jsdom": "^30.1.3",
 		"prettier": "3.9.6",
 		"prettier-plugin-svelte": "^4.1.1",
 		"svelte": "^5.55.1",

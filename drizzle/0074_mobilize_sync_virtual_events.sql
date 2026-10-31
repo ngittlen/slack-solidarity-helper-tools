@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `mobilize_sync_virtual_events` integer;

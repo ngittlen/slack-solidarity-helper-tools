@@ -86,6 +86,8 @@ console.log(`  would waitlist:       ${report.rsvpsWaitlisted}`);
 console.log(`  no email or phone:    ${report.skippedNoContact}`);
 console.log(`  phone rejected:       ${report.skippedInvalidPhone}`);
 console.log(`  created sans phone:   ${report.profilesCreatedWithoutPhone}`);
+console.log(`  email rejected:       ${report.skippedInvalidEmail}`);
+console.log(`  created sans email:   ${report.profilesCreatedWithoutEmail}`);
 console.log(`  unknown status:       ${report.skippedUnknownStatus}`);
 console.log(`  events gone:          ${report.eventsGone}`);
 console.log(`  failed:               ${report.failed}`);

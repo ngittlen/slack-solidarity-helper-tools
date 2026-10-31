@@ -25,7 +25,42 @@ import {
 export type LedgerDb = LibSQLDatabase<Record<string, unknown>>;
 
 export class TursoLedger implements Ledger {
+	/** The geocoded zips and copied images, read once on first use. A run asks
+	 *  for one per event — a hundred single-row reads, one after another —
+	 *  and both tables are a few hundred rows. Kept current by recordZip and
+	 *  recordImage, and the ledger lives for one run. A read that fails is
+	 *  forgotten, so the next lookup tries again rather than failing too. */
+	private zips: Promise<Map<string, string>> | null = null;
+	private images: Promise<Map<string, string>> | null = null;
+
 	constructor(private readonly db: LedgerDb) {}
+
+	private zipCache(): Promise<Map<string, string>> {
+		this.zips ??= this.db
+			.select({ point: mobilizeGeocodedZips.point, postalCode: mobilizeGeocodedZips.postalCode })
+			.from(mobilizeGeocodedZips)
+			.then((rows) => new Map(rows.map((r) => [r.point, r.postalCode])))
+			.catch((err: unknown) => {
+				this.zips = null;
+				throw err;
+			});
+		return this.zips;
+	}
+
+	private imageCache(): Promise<Map<string, string>> {
+		this.images ??= this.db
+			.select({
+				sourceUrl: mobilizeSyncedImages.sourceUrl,
+				mobilizeUrl: mobilizeSyncedImages.mobilizeUrl,
+			})
+			.from(mobilizeSyncedImages)
+			.then((rows) => new Map(rows.map((r) => [r.sourceUrl, r.mobilizeUrl])))
+			.catch((err: unknown) => {
+				this.images = null;
+				throw err;
+			});
+		return this.images;
+	}
 
 	async all(): Promise<LedgerRecord[]> {
 		return this.db
@@ -49,11 +84,7 @@ export class TursoLedger implements Ledger {
 	}
 
 	async imageFor(sourceUrl: string): Promise<string | null> {
-		const rows = await this.db
-			.select({ mobilizeUrl: mobilizeSyncedImages.mobilizeUrl })
-			.from(mobilizeSyncedImages)
-			.where(eq(mobilizeSyncedImages.sourceUrl, sourceUrl));
-		return rows[0]?.mobilizeUrl ?? null;
+		return (await this.imageCache()).get(sourceUrl) ?? null;
 	}
 
 	/** Upserts rather than ignoring a conflict: a re-upload happens precisely
@@ -68,16 +99,15 @@ export class TursoLedger implements Ledger {
 				target: mobilizeSyncedImages.sourceUrl,
 				set: { mobilizeUrl, uploadedAt: now },
 			});
+		// Only a cache already read: loading one here could fail a write that
+		// has already landed.
+		(await this.images?.catch(() => null))?.set(sourceUrl, mobilizeUrl);
 	}
 
 	/** Geocoded once per venue: Mobilize requires a postal code, and Solidarity
 	 *  frequently has none. */
 	async zipFor(point: string): Promise<string | null> {
-		const rows = await this.db
-			.select({ postalCode: mobilizeGeocodedZips.postalCode })
-			.from(mobilizeGeocodedZips)
-			.where(eq(mobilizeGeocodedZips.point, point));
-		return rows[0]?.postalCode ?? null;
+		return (await this.zipCache()).get(point) ?? null;
 	}
 
 	async recordZip(point: string, postalCode: string): Promise<void> {
@@ -85,6 +115,10 @@ export class TursoLedger implements Ledger {
 			.insert(mobilizeGeocodedZips)
 			.values({ point, postalCode, lookedUpAt: new Date().toISOString() })
 			.onConflictDoNothing();
+		// The first lookup wins, as the insert does. Only a cache already read,
+		// as in recordImage.
+		const zips = await this.zips?.catch(() => null);
+		if (zips && !zips.has(point)) zips.set(point, postalCode);
 	}
 
 	/**
@@ -108,30 +142,41 @@ export class TursoLedger implements Ledger {
 	/** Written only after the create or update that carried these actually landed. */
 	async recordPushedCaps(entries: PushedCap[]): Promise<void> {
 		if (entries.length === 0) return;
-		for (const entry of entries) {
-			await this.db
-				.update(mobilizeSyncedTimeslots)
-				.set({ pushedMaxAttendees: entry.maxAttendees })
-				.where(eq(mobilizeSyncedTimeslots.mobilizeTimeslotId, entry.mobilizeTimeslotId));
-		}
+		// One batch: one round trip, and one turn of the write lock.
+		await this.batch(
+			entries.map((entry) =>
+				this.db
+					.update(mobilizeSyncedTimeslots)
+					.set({ pushedMaxAttendees: entry.maxAttendees })
+					.where(eq(mobilizeSyncedTimeslots.mobilizeTimeslotId, entry.mobilizeTimeslotId)),
+			),
+		);
 	}
 
 	/** Consumed by the attendee sync to file a signup against the right session. */
 	async recordTimeslots(pairings: TimeslotPairing[]): Promise<void> {
 		if (pairings.length === 0) return;
 		const now = new Date().toISOString();
-		for (const pairing of pairings) {
-			await this.db
-				.insert(mobilizeSyncedTimeslots)
-				.values({ ...pairing, updatedAt: now })
-				.onConflictDoUpdate({
-					target: mobilizeSyncedTimeslots.mobilizeTimeslotId,
-					set: {
-						solidarityEventId: pairing.solidarityEventId,
-						solidaritySessionId: pairing.solidaritySessionId,
-						updatedAt: now,
-					},
-				});
-		}
+		// One batch, as above: every event the run passes rewrites its pairings.
+		await this.batch(
+			pairings.map((pairing) =>
+				this.db
+					.insert(mobilizeSyncedTimeslots)
+					.values({ ...pairing, updatedAt: now })
+					.onConflictDoUpdate({
+						target: mobilizeSyncedTimeslots.mobilizeTimeslotId,
+						set: {
+							solidarityEventId: pairing.solidarityEventId,
+							solidaritySessionId: pairing.solidaritySessionId,
+							updatedAt: now,
+						},
+					}),
+			),
+		);
+	}
+
+	/** drizzle types a batch as a non-empty tuple; callers check for empty. */
+	private async batch(statements: unknown[]): Promise<void> {
+		await this.db.batch(statements as unknown as Parameters<LedgerDb['batch']>[0]);
 	}
 }

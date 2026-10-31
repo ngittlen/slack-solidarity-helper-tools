@@ -28,38 +28,13 @@ main {
 	letter-spacing: 0.05em;
 }
 
-.filter select {
-	padding: var(--space-2) var(--space-3);
-	font: inherit;
-	font-size: var(--font-size-base);
-	color: var(--color-text);
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-md);
+.filter .ui-select-trigger {
 	min-width: 180px;
 }
 
-.filter select:focus-visible {
-	outline: 2px solid var(--color-border-focus);
-	outline-offset: 1px;
-}
-
-/* The submit button is what makes the form work with JavaScript off, so it is
-   always rendered rather than hidden once the onchange handler is attached. */
-.filter-go {
-	padding: var(--space-2) var(--space-4);
-	font: inherit;
-	font-size: var(--font-size-base);
-	font-weight: 600;
-	color: var(--color-action-text);
-	background: var(--color-action);
-	border: none;
-	border-radius: var(--radius-md);
-	cursor: pointer;
-}
-
-.filter-go:hover {
-	background: var(--color-action-hover);
+.filter-search {
+	flex: 1 1 240px;
+	max-width: 360px;
 }
 
 /* --- Summary counts ------------------------------------------------------- */
@@ -166,7 +141,7 @@ tr:hover td {
 .time-ago {
 	display: block;
 	font-size: var(--font-size-xs);
-	color: var(--color-text-faint);
+	color: var(--color-text-muted);
 }
 
 .turf-name {
@@ -208,6 +183,17 @@ tr:hover td {
 	color: var(--color-success);
 }
 
+/* Under the badge rather than beside it: .col-what is shrink-to-fit, so a
+   sibling on the same line would widen the column for every row. */
+.reported-percent {
+	display: block;
+	margin-top: 4px;
+	font-size: var(--font-size-xs);
+	color: var(--color-text-muted);
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
+
 .badge-given-back {
 	background: color-mix(in srgb, var(--color-warning) 22%, transparent);
 	color: var(--color-warning);
@@ -235,6 +221,16 @@ tr:hover td {
 	font-size: var(--font-size-sm);
 }
 
+.retry {
+	padding: 0;
+	font: inherit;
+	color: var(--color-action);
+	background: none;
+	border: none;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
 @media (max-width: 700px) {
 	main {
 		margin: 20px auto;
@@ -246,7 +242,7 @@ tr:hover td {
 	}
 
 	.filter,
-	.filter select {
+	.filter .ui-select-trigger {
 		min-width: 0;
 		flex: 1 1 140px;
 	}

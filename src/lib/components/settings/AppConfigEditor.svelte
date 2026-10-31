@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
+	import Slider from '$lib/components/ui/Slider.svelte';
 	import { errMessage } from '$lib/err-message.js';
 	import { reRank, DEFAULT_RANKING_ALPHA } from '$lib/growth-ranking.js';
 	import type { LeaderboardPair, LeaderboardResult } from '$lib/server/weekly-growth-report';
@@ -45,9 +47,15 @@
 		/** Contact published on events the sync creates in Mobilize ('' when
 		 *  neither /settings nor the MOBILIZE_CONTACT_* env vars set it). */
 		siteName: string;
+		/** "Join our chat" link on the signed-out /turfs page ('' = hidden). */
+		publicJoinUrl: string;
 		mobilizeContactName: string;
 		mobilizeContactEmail: string;
 		mobilizeContactPhone: string;
+		/** Tag selecting partner Mobilize events to import ('' = import off). */
+		mobilizeImportTag: string;
+		/** Whether the event sync publishes virtual events to Mobilize too. */
+		mobilizeSyncVirtualEvents: boolean;
 		rankingAlpha: number | undefined;
 		/** Header countdown config ('' when unset). */
 		countdownLabel: string;
@@ -74,9 +82,12 @@
 		turfChannelId,
 		memberNoteChannelId,
 		siteName,
+		publicJoinUrl,
 		mobilizeContactName,
 		mobilizeContactEmail,
 		mobilizeContactPhone,
+		mobilizeImportTag,
+		mobilizeSyncVirtualEvents,
 		rankingAlpha,
 		countdownLabel,
 		countdownEndAt,
@@ -187,6 +198,12 @@
 		save: (value) => postAppConfig({ siteName: value }),
 	});
 
+	// The signed-out /turfs page's sign-up button. Blank hides the button.
+	const publicJoinUrlSave = createFieldAutosave<string>({
+		initial: publicJoinUrl,
+		save: (value) => postAppConfig({ publicJoinUrl: value }),
+	});
+
 	const contactNameSave = createFieldAutosave<string>({
 		initial: mobilizeContactName,
 		save: (value) => postAppConfig({ mobilizeContactName: value }),
@@ -199,6 +216,27 @@
 		initial: mobilizeContactPhone,
 		save: (value) => postAppConfig({ mobilizeContactPhone: value }),
 	});
+
+	// Partner-org import. Blank turns the import off, so clearing the field is
+	// the off switch.
+	const importTagSave = createFieldAutosave<string>({
+		initial: mobilizeImportTag,
+		save: (value) => postAppConfig({ mobilizeImportTag: value }),
+	});
+
+	// Virtual events on Mobilize — a checkbox on the same autosave as the VAN
+	// campaign switches.
+	const virtualEventsSave = createFieldAutosave<boolean>({
+		initial: mobilizeSyncVirtualEvents,
+		parse: (raw) => raw === 'true',
+		save: (value) => postAppConfig({ mobilizeSyncVirtualEvents: value }),
+	});
+
+	/** The autosave helper reads `event.target.value`, which on a checkbox is
+	 *  the constant "on" — so hand it the checked state as the string it parses. */
+	function onVirtualEventsToggle(checked: boolean): void {
+		virtualEventsSave.setRaw(String(checked));
+	}
 
 	const contactSaves = $derived([contactNameSave, contactEmailSave, contactPhoneSave]);
 	const contactStatus = $derived(contactSaves.find((f) => f.status !== 'idle')?.status ?? 'idle');
@@ -281,6 +319,9 @@
 
 	$effect(() => () => {
 		siteNameSave.destroy();
+		publicJoinUrlSave.destroy();
+		importTagSave.destroy();
+		virtualEventsSave.destroy();
 		alphaSave.destroy();
 		tickerSpeedSave.destroy();
 		countdownLabelSave.destroy();
@@ -425,6 +466,27 @@
 	</SettingsRow>
 
 	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.publicJoinUrl}
+		label="Public “Join our chat” link"
+		status={publicJoinUrlSave.status}
+		error={publicJoinUrlSave.error}
+		onRetry={publicJoinUrlSave.status === 'error' ? publicJoinUrlSave.retry : undefined}
+	>
+		<input
+			class="site-name-input"
+			type="url"
+			inputmode="url"
+			placeholder="https://"
+			value={publicJoinUrlSave.value}
+			oninput={publicJoinUrlSave.oninput}
+		/>
+		<p class="site-name-note">
+			Where the "Want to get involved? Join our chat" button goes on the turf page people see before
+			signing in, usually the Solidarity sign-up page. Leave blank to hide the button.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
 		id={APP_CONFIG_ROW_IDS.trackingChannel}
 		label="Volunteer-help tracking channel"
 		status={tracking.status}
@@ -559,6 +621,50 @@
 			>
 			(or in <code>MOBILIZE_CONTACT_EMAIL</code>). Clearing a field falls back to its
 			<code>MOBILIZE_CONTACT_*</code> environment variable.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.mobilizeSyncVirtualEvents}
+		label="Virtual events on Mobilize"
+		status={virtualEventsSave.status}
+		error={virtualEventsSave.error}
+		onRetry={virtualEventsSave.status === 'error' ? virtualEventsSave.retry : undefined}
+	>
+		<label class="toggle">
+			<Checkbox checked={virtualEventsSave.value} onCheckedChange={onVirtualEventsToggle} />
+			<span>Sync virtual events to Mobilize as well as in-person ones</span>
+		</label>
+		<p class="app-config-note">
+			Each session's join link (its Zoom or Meet link in Solidarity) goes on its Mobilize shift as
+			private instructions, which Mobilize only sends to people after they sign up. A virtual event
+			with an upcoming session that has no link is skipped until one is added, and named in the
+			Mobilize sync channel each night. Turning this off stops new virtual events and updates to
+			existing ones; it doesn't take down events already on Mobilize.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.mobilizeImportTag}
+		label="Partner Mobilize import tag"
+		status={importTagSave.status}
+		error={importTagSave.error}
+		onRetry={importTagSave.status === 'error' ? importTagSave.retry : undefined}
+	>
+		<input
+			class="site-name-input"
+			type="text"
+			maxlength="100"
+			placeholder="Import off"
+			value={importTagSave.value}
+			oninput={importTagSave.oninput}
+		/>
+		<p class="site-name-note">
+			Public events in the partner campaign's Mobilize org that carry this tag are copied into
+			Solidarity every hour, with their description and image, under the chapter their zip belongs
+			to. Each is copied once; later changes in Mobilize are not. Leave blank to turn the import
+			off. The partner org is set by <code>MOBILIZE_IMPORT_ORG_ID</code> and
+			<code>MOBILIZE_IMPORT_API_KEY</code>.
 		</p>
 	</SettingsRow>
 
@@ -735,13 +841,12 @@
 	>
 		<div class="alpha-control">
 			<span class="alpha-end">Biggest gain</span>
-			<input
-				type="range"
-				min="0"
-				max="1"
-				step="0.05"
+			<Slider
+				min={0}
+				max={1}
+				step={0.05}
 				value={alphaSave.value}
-				oninput={alphaSave.oninput}
+				onValueChange={(v) => alphaSave.setRaw(String(v))}
 				aria-label="Growth report ranking alpha"
 			/>
 			<span class="alpha-end">Fastest growth</span>
@@ -766,13 +871,12 @@
 	>
 		<div class="alpha-control">
 			<span class="alpha-end">Slower</span>
-			<input
-				type="range"
+			<Slider
 				min={MIN_TICKER_COLUMNS_PER_SECOND}
 				max={MAX_TICKER_COLUMNS_PER_SECOND}
-				step="1"
+				step={1}
 				value={tickerSpeedSave.value}
-				oninput={tickerSpeedSave.oninput}
+				onValueChange={(v) => tickerSpeedSave.setRaw(String(v))}
 				aria-label="Doors ticker speed in LED columns per second"
 			/>
 			<span class="alpha-end">Faster</span>
@@ -821,6 +925,12 @@
 		gap: 8px;
 	}
 
+	.toggle {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
 	.app-config-note {
 		color: var(--color-text-muted);
 		font-size: 0.9em;
@@ -857,15 +967,6 @@
 		color: var(--color-text-muted);
 	}
 
-	.countdown-field input {
-		padding: 6px 8px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		font: inherit;
-		color: var(--color-text);
-		background: var(--color-surface);
-	}
-
 	.countdown-field input[type='text'] {
 		min-width: 220px;
 	}
@@ -877,9 +978,8 @@
 		max-width: 480px;
 	}
 
-	.alpha-control input[type='range'] {
+	.alpha-control :global(.ui-slider) {
 		flex: 1;
-		accent-color: var(--color-gold);
 	}
 
 	.alpha-end {
@@ -895,14 +995,6 @@
 	.welcome-dm-input {
 		width: 100%;
 		max-width: 560px;
-		padding: 8px 10px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		font: inherit;
-		line-height: 1.5;
-		color: var(--color-text);
-		background: var(--color-surface);
-		resize: vertical;
 	}
 
 	.welcome-dm-warning {
@@ -975,13 +1067,6 @@
 	.site-name-input {
 		width: 100%;
 		max-width: 340px;
-		padding: 6px 8px;
-		font-family: inherit;
-		font-size: var(--font-size-md);
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
 	}
 
 	.site-name-note {

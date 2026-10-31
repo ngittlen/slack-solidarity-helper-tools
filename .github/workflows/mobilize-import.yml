@@ -1,0 +1,40 @@
+name: Partner Mobilize import
+
+# Hourly. Copies a partner campaign's tagged Mobilize events into Solidarity —
+# see src/routes/api/internal/mobilize-import/+server.ts. A no-op until
+# MOBILIZE_IMPORT_API_KEY, MOBILIZE_IMPORT_ORG_ID and the /settings tag are set.
+#
+# BACKUP ONLY: the app runs this on its own schedule (src/lib/server/scheduler.ts),
+# because GitHub drops most scheduled runs. Kept because a run that is not needed
+# is a harmless no-op, and it still covers the app's scheduler being down or
+# turned off (IN_APP_SCHEDULER=off). Change the times there as well as here.
+on:
+  schedule:
+    - cron: '15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call mobilize-import endpoint
+        env:
+          APP_URL: https://slack.tools4abdul.com
+          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+        run: |
+          # One request stops at its time budget and answers incomplete=true;
+          # keep calling until it doesn't, as the scheduler does.
+          # No --retry, as in mobilize-sync.yml: a POST that timed out may still be
+          # running, and the next scheduled run picks up anything it left.
+          for chunk in 1 2 3 4 5 6; do
+            if ! RESPONSE=$(curl --fail-with-body -sS -X POST \
+              --max-time 300 \
+              "${APP_URL}/api/internal/mobilize-import?key=${INTERNAL_CRON_SECRET}"); then
+              echo "${RESPONSE}"
+              exit 1
+            fi
+            echo "${RESPONSE}" | jq .
+            if [ "$(echo "${RESPONSE}" | jq -r '.incomplete')" != "true" ]; then exit 0; fi
+          done
+          echo "::error::still incomplete after 6 requests"
+          exit 1

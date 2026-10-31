@@ -1,4 +1,4 @@
-// Signed OAuth `state` for the Slack login round trip.
+// Signed OAuth `state` for the login round trips — Slack's, Google's and Apple's.
 //
 // The state used to be a bare UUID whose only job was to match a cookie. That
 // works right up until the browser that *finishes* a login is not the browser
@@ -18,8 +18,18 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { SLACK_CLIENT_SECRET } from './env.js';
 
-/** How long a login attempt may sit on Slack's approval screen. */
-export const STATE_TTL_MS = 10 * 60 * 1000;
+/**
+ * How long a login attempt may sit on Slack's approval screen.
+ *
+ * An hour, not the customary ten minutes: someone who is not yet signed in to
+ * Slack spends this window on Slack's own sign-in — an emailed code, SSO, 2FA —
+ * and ten minutes was short enough that real logins expired there, which reads
+ * to them as an Allow button that needs clicking twice. The TTL is not what
+ * stops a forged callback; the nonce matching the cookie is, so a longer window
+ * costs nothing there. The cookies in ../../routes/auth/slack/+server.ts live
+ * exactly this long too.
+ */
+export const STATE_TTL_MS = 60 * 60 * 1000;
 
 /**
  * Destination cap for the *signed* copy specifically, well under the 512 the
@@ -30,6 +40,21 @@ export const STATE_TTL_MS = 10 * 60 * 1000;
  */
 const MAX_STATE_DESTINATION = 256;
 
+/**
+ * Which authorization this state belongs to. The two Slack ones come back
+ * through the same callback (one registered redirect URI), so the state is what
+ * tells them apart — and, being signed, nobody can turn a login into the other
+ * or back. Google and Apple each have a callback of their own, and each
+ * callback refuses a state minted for another provider.
+ *
+ *   login        — Sign in with Slack; creates the session
+ *   post-as-you  — an already signed-in admin or moderator granting chat:write
+ *                  so the info commands can post as them
+ *   google-login — Sign in with Google; a turf-checkout-only session
+ *   apple-login  — Sign in with Apple; the same
+ */
+export type OAuthPurpose = 'login' | 'post-as-you' | 'google-login' | 'apple-login';
+
 export interface OAuthState {
 	/** Random per-attempt value, mirrored into the `oauth_state` cookie. */
 	nonce: string;
@@ -39,11 +64,15 @@ export interface OAuthState {
 	issuedAt: number;
 	/** True when this attempt *is* the one automatic retry — see the callback. */
 	isRetry: boolean;
+	purpose: OAuthPurpose;
 }
 
 export type StateVerdict =
 	| { ok: true; state: OAuthState }
-	| { ok: false; reason: 'malformed' | 'bad-signature' | 'expired' };
+	// An expired state still passed its signature check, so the destination it
+	// carries is one we minted — enough to resume the journey on the restart.
+	| { ok: false; reason: 'expired'; destination: string | null; purpose: OAuthPurpose }
+	| { ok: false; reason: 'malformed' | 'bad-signature' };
 
 /**
  * Keyed off the OAuth client secret rather than a new environment variable: it
@@ -61,7 +90,12 @@ function sign(encodedPayload: string): string {
 }
 
 /** Mint a state for a fresh authorization attempt, plus the nonce to cookie. */
-export function signState(opts: { destination: string | null; isRetry: boolean }): {
+export function signState(opts: {
+	destination: string | null;
+	isRetry: boolean;
+	/** Defaults to `login`. */
+	purpose?: OAuthPurpose;
+}): {
 	state: string;
 	nonce: string;
 } {
@@ -72,7 +106,13 @@ export function signState(opts: { destination: string | null; isRetry: boolean }
 			: null;
 
 	const encoded = Buffer.from(
-		JSON.stringify({ n: nonce, d: destination, t: Date.now(), r: opts.isRetry }),
+		JSON.stringify({
+			n: nonce,
+			d: destination,
+			t: Date.now(),
+			r: opts.isRetry,
+			p: opts.purpose ?? 'login',
+		}),
 		'utf8',
 	).toString('base64url');
 
@@ -111,19 +151,27 @@ export function verifyState(raw: string): StateVerdict {
 	}
 	if (typeof parsed !== 'object' || parsed === null) return { ok: false, reason: 'malformed' };
 
-	const { n, d, t, r } = parsed as Record<string, unknown>;
+	const { n, d, t, r, p } = parsed as Record<string, unknown>;
 	if (typeof n !== 'string' || n === '' || typeof t !== 'number' || !Number.isFinite(t)) {
 		return { ok: false, reason: 'malformed' };
 	}
-	if (Date.now() - t > STATE_TTL_MS) return { ok: false, reason: 'expired' };
+	const destination = typeof d === 'string' ? d : null;
+	// Anything unrecognised reads as a Slack login, which covers states minted
+	// before the field existed.
+	const purpose: OAuthPurpose =
+		p === 'post-as-you' || p === 'google-login' || p === 'apple-login' ? p : 'login';
+	if (Date.now() - t > STATE_TTL_MS) {
+		return { ok: false, reason: 'expired', destination, purpose };
+	}
 
 	return {
 		ok: true,
 		state: {
 			nonce: n,
-			destination: typeof d === 'string' ? d : null,
+			destination,
 			issuedAt: t,
 			isRetry: r === true,
+			purpose,
 		},
 	};
 }

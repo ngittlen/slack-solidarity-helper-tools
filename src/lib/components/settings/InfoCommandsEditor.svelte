@@ -274,18 +274,10 @@
 
 	input,
 	textarea {
-		font: inherit;
-		padding: 6px 8px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		background: var(--color-surface);
-		color: var(--color-text);
 		width: 100%;
-		box-sizing: border-box;
 	}
 
 	textarea {
-		resize: vertical;
 		min-height: 4.5em;
 	}
 

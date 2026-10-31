@@ -5,8 +5,18 @@ const KEY = randomBytes(32).toString('base64');
 
 vi.mock('./env.js', () => ({ TOKEN_ENCRYPTION_KEY: KEY }));
 
-const { loadUserToken, saveUserToken, deleteUserToken, hasScope, POST_AS_USER_SCOPE } =
-	await import('./user-tokens.js');
+const mockRevoke = vi.hoisted(() => vi.fn());
+const mockWebClient = vi.hoisted(() => vi.fn());
+vi.mock('@slack/web-api', () => ({ WebClient: mockWebClient }));
+
+const {
+	loadUserToken,
+	saveUserToken,
+	deleteUserToken,
+	revokeUserToken,
+	hasScope,
+	POST_AS_USER_SCOPE,
+} = await import('./user-tokens.js');
 const { encryptToken } = await import('./token-crypto.js');
 
 /** Minimal drizzle stand-in: `select().from().where()` resolves to `rows`. */
@@ -146,5 +156,60 @@ describe('deleteUserToken', () => {
 		await deleteUserToken(db, 'U1');
 		expect(spies.del).toHaveBeenCalledTimes(1);
 		expect(spies.deleteWhere).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('revokeUserToken', () => {
+	beforeEach(() => {
+		mockWebClient.mockImplementation(function () {
+			return { auth: { revoke: mockRevoke } };
+		});
+	});
+
+	it('revokes with the token it was given, and reports success', async () => {
+		mockRevoke.mockResolvedValue({ ok: true, revoked: true });
+
+		expect(await revokeUserToken('xoxp-real', 'U1')).toBe(true);
+		expect(mockWebClient).toHaveBeenCalledWith('xoxp-real', expect.anything());
+	});
+
+	// The client's default is ten retries over ~30 minutes with no timeout,
+	// which would hang the request someone is waiting on.
+	it('makes one bounded attempt rather than the client default', async () => {
+		mockRevoke.mockResolvedValue({ ok: true });
+
+		await revokeUserToken('xoxp-real', 'U1');
+		expect(mockWebClient).toHaveBeenCalledWith(
+			'xoxp-real',
+			expect.objectContaining({
+				retryConfig: { retries: 0 },
+				timeout: expect.any(Number),
+				rejectRateLimitedCalls: true,
+			}),
+		);
+	});
+
+	it.each(['token_revoked', 'invalid_auth', 'account_inactive'])(
+		'counts a token Slack says is already dead (%s) as revoked',
+		async (code) => {
+			mockRevoke.mockRejectedValue(new Error(`An API error occurred: ${code}`));
+
+			expect(await revokeUserToken('xoxp-dead', 'U1')).toBe(true);
+		},
+	);
+
+	it('reports failure rather than throwing', async () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockRevoke.mockRejectedValue(new Error('An API error occurred: ratelimited'));
+
+		expect(await revokeUserToken('xoxp-live', 'U1')).toBe(false);
+	});
+
+	it('never logs the token', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockRevoke.mockRejectedValue(new Error('nope'));
+
+		await revokeUserToken('xoxp-supersecret', 'U1');
+		expect(JSON.stringify(warn.mock.calls)).not.toContain('xoxp-supersecret');
 	});
 });

@@ -11,7 +11,7 @@ import {
 
 function row(over: Partial<ClearedRow> = {}): ClearedRow {
 	return {
-		mapRouteId: 100,
+		turfId: 100,
 		chapterId: 71,
 		chapterName: 'Washtenaw County',
 		slackUserId: 'U1',

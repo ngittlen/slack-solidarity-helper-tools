@@ -58,9 +58,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// Validate against the cached roster rather than a fresh GET /v1/users/{id}:
 	// the id came from that roster in the first place, so this costs no API
 	// calls and still rejects a hand-crafted request.
+	//
+	// Stale-while-revalidate, same as the search: a blocking read joins any
+	// in-flight roster walk, so a link made while one runs would hang for the
+	// minutes that walk takes. The previous roster is the one the admin picked
+	// from, so it's the right one to check against.
 	let roster;
+	let refreshing;
 	try {
-		({ items: roster } = await getSolidarityMembers(SOLIDARITY_API_TOKEN));
+		({ items: roster, refreshing } = await getSolidarityMembers(SOLIDARITY_API_TOKEN, {
+			staleWhileRevalidate: true,
+		}));
 	} catch (err) {
 		console.error('[member-page] roster unavailable while linking:', errMessage(err));
 		return json(
@@ -71,6 +79,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	const target = roster.find((m) => m.id === solidarityUserId);
 	if (!target) {
+		// Not found in a list that's still being built (e.g. the server restarted
+		// and the cache is cold) says nothing about whether the account exists.
+		if (refreshing === true) {
+			return json(
+				{
+					error:
+						'The Solidarity member list is still being fetched. Try again in a couple of minutes.',
+				},
+				{ status: 503 },
+			);
+		}
 		return json({ error: 'That Solidarity account no longer exists.' }, { status: 400 });
 	}
 

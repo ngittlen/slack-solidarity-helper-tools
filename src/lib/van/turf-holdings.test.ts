@@ -20,11 +20,12 @@ const iso = (ms: number) => new Date(ms).toISOString();
 function row(over: Partial<HoldingRow> = {}): HoldingRow {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		turfName: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,
 		chapterName: 'Washtenaw County',
+		campaignId: 1,
 		doorCount: 250,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',
@@ -74,9 +75,9 @@ describe('currentHoldings', () => {
 	it('orders soonest to lapse first', () => {
 		const holdings = currentHoldings(
 			[
-				row({ checkoutId: 1, mapRouteId: 1, expiresAt: iso(NOW.getTime() + 30 * HOUR) }),
-				row({ checkoutId: 2, mapRouteId: 2, expiresAt: iso(NOW.getTime() + 2 * HOUR) }),
-				row({ checkoutId: 3, mapRouteId: 3, expiresAt: iso(NOW.getTime() + 12 * HOUR) }),
+				row({ checkoutId: 1, turfId: 1, expiresAt: iso(NOW.getTime() + 30 * HOUR) }),
+				row({ checkoutId: 2, turfId: 2, expiresAt: iso(NOW.getTime() + 2 * HOUR) }),
+				row({ checkoutId: 3, turfId: 3, expiresAt: iso(NOW.getTime() + 12 * HOUR) }),
 			],
 			NOW,
 		);
@@ -87,8 +88,8 @@ describe('currentHoldings', () => {
 		const at = iso(NOW.getTime() + 5 * HOUR);
 		const holdings = currentHoldings(
 			[
-				row({ checkoutId: 9, mapRouteId: 9, expiresAt: at }),
-				row({ checkoutId: 2, mapRouteId: 2, expiresAt: at }),
+				row({ checkoutId: 9, turfId: 9, expiresAt: at }),
+				row({ checkoutId: 2, turfId: 2, expiresAt: at }),
 			],
 			NOW,
 		);
@@ -132,18 +133,18 @@ describe('summarise', () => {
 	const holdings = () =>
 		currentHoldings(
 			[
-				row({ checkoutId: 1, mapRouteId: 1, slackUserId: 'U_A', doorCount: 100 }),
-				row({ checkoutId: 2, mapRouteId: 2, slackUserId: 'U_A', doorCount: 200 }),
+				row({ checkoutId: 1, turfId: 1, slackUserId: 'U_A', doorCount: 100 }),
+				row({ checkoutId: 2, turfId: 2, slackUserId: 'U_A', doorCount: 200 }),
 				row({
 					checkoutId: 3,
-					mapRouteId: 3,
+					turfId: 3,
 					slackUserId: 'U_B',
 					doorCount: 50,
 					expiresAt: iso(NOW.getTime() + 2 * HOUR),
 				}),
 				row({
 					checkoutId: 4,
-					mapRouteId: 4,
+					turfId: 4,
 					slackUserId: 'U_C',
 					doorCount: 10,
 					expiresAt: iso(NOW.getTime() + 3 * HOUR),
@@ -187,9 +188,9 @@ describe('distinctHolders', () => {
 	it('counts each volunteer once', () => {
 		const holdings = currentHoldings(
 			[
-				row({ checkoutId: 1, mapRouteId: 1, slackUserId: 'U_A' }),
-				row({ checkoutId: 2, mapRouteId: 2, slackUserId: 'U_A' }),
-				row({ checkoutId: 3, mapRouteId: 3, slackUserId: 'U_B' }),
+				row({ checkoutId: 1, turfId: 1, slackUserId: 'U_A' }),
+				row({ checkoutId: 2, turfId: 2, slackUserId: 'U_A' }),
+				row({ checkoutId: 3, turfId: 3, slackUserId: 'U_B' }),
 			],
 			NOW,
 		);
@@ -201,11 +202,12 @@ describe('suspectCompletions', () => {
 	function completion(over: Partial<CompletionRow> = {}): CompletionRow {
 		return {
 			checkoutId: 1,
-			mapRouteId: 100,
+			turfId: 100,
 			turfName: 'Turf 01',
 			regionName: 'Ann Arbor',
 			chapterId: 71,
 			chapterName: 'Washtenaw County',
+			campaignId: 1,
 			slackUserId: 'U_VOL',
 			slackUserName: 'Dana',
 			completedAt: '2026-09-01T18:00:00.000Z',

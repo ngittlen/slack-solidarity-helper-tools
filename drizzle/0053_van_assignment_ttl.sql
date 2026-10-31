@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `van_assignment_ttl_hours` integer;

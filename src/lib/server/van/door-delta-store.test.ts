@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, vi, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -37,9 +37,9 @@ beforeEach(async () => {
 async function turf(over: { doorCount?: number; lastRefreshedAt?: string | null } = {}) {
 	await client.execute({
 		sql: `INSERT INTO van_turfs
-		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
 		         name, door_count, last_refreshed_at, first_seen_at, last_seen_at)
-		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', ?, ?, ?, ?)`,
+		      VALUES (100, 100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', ?, ?, ?, ?)`,
 		args: [
 			over.doorCount ?? 190,
 			over.lastRefreshedAt === undefined ? '2026-09-12T14:00:00.000Z' : over.lastRefreshedAt,
@@ -54,14 +54,16 @@ async function completion(
 		completedAt?: string;
 		claimDoorCount?: number | null;
 		confirmedDoorDelta?: number | null;
+		holder?: string;
 	} = {},
 ) {
 	await client.execute({
 		sql: `INSERT INTO van_turf_checkouts
-		        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         completed_at, claim_door_count, confirmed_door_delta)
-		      VALUES (100, 'U1', 'Dana', '2026-09-11T12:00:00.000Z', '2026-09-13T12:00:00.000Z', ?, ?, ?)`,
+		      VALUES (100, ?, 'Dana', '2026-09-11T12:00:00.000Z', '2026-09-13T12:00:00.000Z', ?, ?, ?)`,
 		args: [
+			over.holder ?? 'U1',
 			over.completedAt ?? '2026-09-12T12:00:00.000Z',
 			over.claimDoorCount === undefined ? 250 : over.claimDoorCount,
 			over.confirmedDoorDelta ?? null,
@@ -76,7 +78,91 @@ async function deltas() {
 	return res.rows.map((r) => r.confirmed_door_delta);
 }
 
+// Each test opens its own in-memory client and replaces console. Both leak for
+// the life of the worker otherwise — `clearAllMocks` resets a spy's recorded
+// calls but leaves it installed. Neither is visible while this file is run on
+// its own, which is the shape of a test that fails once in a full suite and
+// passes every time you go looking for it.
+afterEach(() => {
+	client.close();
+	vi.restoreAllMocks();
+});
+
+/** Any other route row, for the re-cut case: the walked route retired, and the
+ *  route VAN returned in its place. */
+async function route(r: {
+	turfId: number;
+	name?: string;
+	doorCount: number;
+	lastRefreshedAt?: string | null;
+	firstSeenAt: string;
+	retiredAt?: string | null;
+}) {
+	await client.execute({
+		sql: `INSERT INTO van_turfs
+		        (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		         name, door_count, last_refreshed_at, first_seen_at, last_seen_at, retired_at)
+		      VALUES (?1, ?1, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, ?, ?, ?, ?)`,
+		args: [
+			r.turfId,
+			r.name ?? 'Turf 01',
+			r.doorCount,
+			r.lastRefreshedAt ?? null,
+			r.firstSeenAt,
+			NOW.toISOString(),
+			r.retiredAt ?? null,
+		],
+	});
+}
+
 describe('stampDoorDeltas', () => {
+	// The shape a real re-cut leaves behind (schema.ts, verified live): the
+	// walked route retired with its pre-cut figures frozen, and a new route id
+	// carrying the current count.
+	it('measures a re-cut turf against the route that replaced it', async () => {
+		await route({
+			turfId: 100,
+			doorCount: 250,
+			lastRefreshedAt: '2026-09-10T00:00:00.000Z',
+			firstSeenAt: '2026-09-01T00:00:00.000Z',
+			retiredAt: '2026-09-12T14:30:00.000Z',
+		});
+		await route({
+			turfId: 200,
+			doorCount: 190,
+			lastRefreshedAt: '2026-09-12T14:00:00.000Z',
+			firstSeenAt: '2026-09-12T14:30:00.000Z',
+		});
+		await completion({ claimDoorCount: 250 });
+
+		const result = await stampDoorDeltas(db, { now: NOW, appUrl: 'https://app.example' });
+
+		expect(result).toMatchObject({ measured: 1, unsynced: 0, doorsCleared: 60 });
+		expect(await deltas()).toEqual([60]);
+	});
+
+	it('leaves a re-cut turf unmeasured when nothing replaced it', async () => {
+		await route({
+			turfId: 100,
+			doorCount: 250,
+			firstSeenAt: '2026-09-01T00:00:00.000Z',
+			retiredAt: '2026-09-12T14:30:00.000Z',
+		});
+		await route({
+			turfId: 200,
+			name: 'Turf 02',
+			doorCount: 10,
+			firstSeenAt: NOW.toISOString(),
+		});
+		await completion({ claimDoorCount: 250 });
+
+		const result = await stampDoorDeltas(db, { now: NOW, appUrl: 'https://app.example' });
+
+		expect(result.measured).toBe(0);
+		expect(await deltas()).toEqual([null]);
+		expect(mockSendDm).not.toHaveBeenCalled();
+	});
+
 	it('stamps the doors that left and says nothing', async () => {
 		await turf({ doorCount: 190 });
 		await completion({ claimDoorCount: 250 });
@@ -99,6 +185,35 @@ describe('stampDoorDeltas', () => {
 		expect(mockSendDm).toHaveBeenCalledOnce();
 		expect(mockSendDm.mock.calls[0][0]).toBe('U1');
 		expect(mockSendDm.mock.calls[0][1]).toContain('Sync');
+	});
+
+	// A Google holder has no Slack: the nudge is kept for /turfs instead.
+	it('keeps the nudge for a Google holder rather than DMing', async () => {
+		await turf({ doorCount: 250 });
+		await completion({ claimDoorCount: 250, holder: 'google:7' });
+
+		const result = await stampDoorDeltas(db, { now: NOW, appUrl: 'https://app.example' });
+
+		expect(result).toMatchObject({ measured: 1, unsynced: 1, dmFailed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+		const notices = await client.execute('SELECT user_id, kind, text FROM turf_notices');
+		expect(notices.rows).toHaveLength(1);
+		expect(notices.rows[0]).toMatchObject({ user_id: 'google:7', kind: 'unsynced' });
+		expect(notices.rows[0]!.text).toContain('Sync');
+	});
+
+	it('keeps the nudge for an Apple holder rather than DMing', async () => {
+		await turf({ doorCount: 250 });
+		await completion({ claimDoorCount: 250, holder: 'apple:001.abc' });
+
+		const result = await stampDoorDeltas(db, { now: NOW, appUrl: 'https://app.example' });
+
+		expect(result).toMatchObject({ measured: 1, unsynced: 1, dmFailed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+		const notices = await client.execute('SELECT user_id, kind FROM turf_notices');
+		expect(notices.rows).toEqual([
+			expect.objectContaining({ user_id: 'apple:001.abc', kind: 'unsynced' }),
+		]);
 	});
 
 	it('keeps the stamp even when the nudge cannot be delivered', async () => {
@@ -161,7 +276,7 @@ describe('stampDoorDeltas', () => {
 		await turf();
 		await client.execute(
 			`INSERT INTO van_turf_checkouts
-			   (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, claim_door_count)
+			   (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, claim_door_count)
 			 VALUES (100, 'U2', 'Sam', '2026-09-12T09:00:00.000Z', '2026-09-14T09:00:00.000Z', 250)`,
 		);
 

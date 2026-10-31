@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -12,7 +12,7 @@ vi.mock('./env.js', () => ({
 }));
 vi.mock('./mobilize-api.js', () => ({ loadMobilizeApi: () => ({}) }));
 
-const { refreshZipChapterMap } = await import('./attendee-sync.js');
+const { refreshZipChapterMap, zipMapIsStale } = await import('./attendee-sync.js');
 
 // A real in-memory libsql, not a chained fake. What is under test is a DELETE
 // whose scope is decided by a timestamp written moments earlier in the same
@@ -51,6 +51,16 @@ beforeEach(async () => {
 	client = createClient({ url: ':memory:' });
 	db = drizzle(client);
 	await migrate(db, { migrationsFolder: 'drizzle' });
+});
+
+// Each test opens its own in-memory client and replaces console. Both leak for
+// the life of the worker otherwise — `clearAllMocks` resets a spy's recorded
+// calls but leaves it installed. Neither is visible while this file is run on
+// its own, which is the shape of a test that fails once in a full suite and
+// passes every time you go looking for it.
+afterEach(() => {
+	client.close();
+	vi.restoreAllMocks();
 });
 
 describe('refreshZipChapterMap', () => {
@@ -258,5 +268,27 @@ describe('refreshZipChapterMap', () => {
 
 		expect(await refreshZipChapterMap(db)).toEqual({ mapped: 200, pruned: 50 });
 		expect(await stored()).toHaveLength(200);
+	});
+});
+
+describe('zipMapIsStale', () => {
+	const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+
+	it('is due for every run when there is no map', async () => {
+		expect(await zipMapIsStale(db, true)).toBe(true);
+		expect(await zipMapIsStale(db, false)).toBe(true);
+	});
+
+	// The walk of every Solidarity user belongs to the nightly run; a windowed
+	// run's budget cannot stop it.
+	it('is due for the nightly run at a day old, and not for a windowed one', async () => {
+		await seed([['48104', 1330, hoursAgo(23.9)]]);
+		expect(await zipMapIsStale(db, false)).toBe(true);
+		expect(await zipMapIsStale(db, true)).toBe(false);
+	});
+
+	it('is due for a windowed run once nightly runs have been missed', async () => {
+		await seed([['48104', 1330, hoursAgo(49)]]);
+		expect(await zipMapIsStale(db, true)).toBe(true);
 	});
 });

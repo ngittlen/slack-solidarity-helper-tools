@@ -1,8 +1,8 @@
-import { redirect } from '@sveltejs/kit';
-import type { PageServerLoad } from './$types';
+import { fail, redirect } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
-import { chaptersFromChannelMap } from '$lib/chapter-list.js';
+import { chaptersFromChannelMap, turfChapters } from '$lib/chapter-list.js';
 import {
 	COMPLETION_LOOKBACK,
 	loadCurrentHoldings,
@@ -21,9 +21,42 @@ import {
 	loadDriftTurfs,
 	loadDriftVisibility,
 } from '$lib/server/van/drift-store.js';
+import { loadGeometryProgress } from '$lib/server/van/geometry-progress-store.js';
+import { geometryProgressLabel } from '$lib/van/geometry-progress.js';
 import { driftReport } from '$lib/van/turf-drift.js';
 import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
+import { campaignFilter, campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
+import { loadHolderAccounts } from '$lib/server/outside-volunteers.js';
+import { claimDoorProgress, type ClaimDoorProgress } from '$lib/server/van/live-contacts.js';
+import type { HolderAccount } from '$lib/holder-account.js';
+import { INTERNAL_CRON_SECRET, PORT } from '$lib/server/env.js';
+import { localCaller } from '$lib/server/scheduler.js';
+import {
+	loadHiddenTurfs,
+	setTurfHidden,
+	type HiddenTurfRow,
+} from '$lib/server/van/turf-hide-store.js';
+import {
+	explainLiveCut,
+	loadTurfHistory,
+	type TurfHistory,
+} from '$lib/server/van/turf-history-store.js';
+import {
+	lastVanSyncs,
+	startManualVanSync,
+	type CampaignLastSync,
+} from '$lib/server/van/manual-sync.js';
+import { drainGeometryForPress } from '$lib/server/van/manual-geometry.js';
+import {
+	loadRequestedTurf,
+	placeRequestedTurf,
+	requestedTurfCaveats,
+	requestedTurfLabel,
+	setOrganizerPlacement,
+	type PlacementChapter,
+} from '$lib/server/van/turf-placement.js';
+import { manualSyncView } from './manual-sync-view.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -43,6 +76,9 @@ import { relativeSince } from '$lib/components/settings/format-relative.js';
 // selects it.
 
 export interface HoldingView extends Holding {
+	/** The Slack, Google or Apple mark beside the holder, and an outside holder's email
+	 *  so an organizer can reach someone who is not in the Slack. */
+	account: HolderAccount | null;
 	/** Campaign-local "until" stamp, formatted server-side so two organizers
 	 *  comparing notes see the same time — and so SSR and hydration agree. */
 	expiresLabel: string;
@@ -50,80 +86,408 @@ export interface HoldingView extends Holding {
 	 *  `expiresLabel` is: the component used to compute this from `Date.now()`
 	 *  while rendering, which disagreed with SSR on every row. */
 	claimedAgoLabel: string;
+	/** How much of the turf VAN shows walked since this claim: the same count
+	 *  as the holder's "I synced MiniVAN" check, kept current by the live
+	 *  poll. Null when the turf has no roster to count against. */
+	walked: { doors: number; knocked: number; percent: number } | null;
 }
 
 export interface SuspectView extends SuspectCompletion {
+	/** See HoldingView.account. */
+	account: HolderAccount | null;
 	completedLabel: string;
 	/** "2 days ago", against this load's `now`. See HoldingView.claimedAgoLabel. */
 	completedAgoLabel: string;
 }
 
+export interface HiddenTurfView extends HiddenTurfRow {
+	/** "2 days ago", against this load's `now`. See HoldingView.claimedAgoLabel. */
+	hiddenAgoLabel: string;
+}
+
+/** Turf names one history search shows. See loadTurfHistory's `limit`. */
+const TURF_HISTORY_LIMIT = 10;
+
+export interface TurfHistoryView extends TurfHistory {
+	/** explainLiveCut's sentence, or null — less the re-cut one, which the
+	 *  by-day table shows. Computed here because it lives in $lib/server. */
+	why: string | null;
+	/** The doors in the live cut, and the day each was last knocked — under
+	 *  this cut or an earlier one. Null with no live cut, or no door list for
+	 *  it (`why` says which). */
+	doorsNow: { doors: number; knocked: number; byDay: Array<{ day: string; doors: number }> } | null;
+}
+
+/** See TurfHistoryView.doorsNow. */
+function doorsNow(history: TurfHistory): TurfHistoryView['doorsNow'] {
+	const live = history.cuts.filter((c) => c.retiredAt === null).at(-1);
+	if (!live || live.rosterDoors === null) return null;
+	return {
+		doors: live.rosterDoors,
+		knocked: live.knockedSinceCut + live.knockedBeforeCut,
+		byDay: live.knockedByDay,
+	};
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
 	// Checked here, not just in +layout.server.ts — layout and page loads run
 	// concurrently, so an unauthenticated request still reaches this function.
-	// One check covers both cases: a missing session and a signed-in non-admin
+	// One check covers both cases: a missing session and a signed-in volunteer
 	// both get the same bare 302, per the constitution's Principle I.
-	if (!locals.session?.isAdmin) redirect(302, '/');
+	// Moderators may read the board; the actions below stay admin-only.
+	const session = locals.session;
+	if (!session?.isAdmin && !session?.isModerator) redirect(302, '/');
 
 	const settings = await loadSettings(db);
 	// Deduplicated, not just sorted — the channel map lists a chapter once per
 	// channel. Mapping the rows directly put a duplicate key in the picker's
 	// `{#each}` and took the whole page's hydration down with it. See
 	// chaptersFromChannelMap.
-	const chapters = chaptersFromChannelMap(settings.chapterChannelMap);
+	const chapters = chaptersFromChannelMap(settings.chapterChannelMap, settings.turfCustomChapters);
 
 	// Validated against the chapter list rather than trusted from the query
 	// string, as the activity page does it: an unknown id falls back to "every
 	// chapter" instead of erroring, because a mistyped URL should show a page.
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
-	const query = { chapterId: chapter?.chapterId ?? null };
+	// The same for the campaign: every one unless a known one is picked.
+	const campaigns = await campaignFilter(db, url.searchParams.get('campaign'));
+	const query = {
+		chapterId: chapter?.chapterId ?? null,
+		campaignId: campaigns.campaign?.id ?? null,
+	};
 
 	// One `now` for both halves, so the board and the summary above it describe
 	// the same instant even if a claim lands between the queries.
 	const now = new Date();
 
-	const [holdingRows, completionRows, driftTurfs, driftClaims, driftVisibility] = await Promise.all(
-		[
-			loadCurrentHoldings(db, query),
-			loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
-			loadDriftTurfs(db, query),
-			loadDriftClaims(db, query),
-			loadDriftVisibility(db),
-		],
-	);
-
-	const holdings: HoldingView[] = currentHoldings(holdingRows, now).map((h) => ({
-		...h,
-		expiresLabel: `${campaignDayLabel(h.expiresAt)} at ${campaignTimeLabel(h.expiresAt)}`,
-		claimedAgoLabel: relativeSince(h.claimedAt, now),
-	}));
-
-	const suspects: SuspectView[] = suspectCompletions(completionRows).map((c) => ({
-		...c,
-		completedLabel: `${campaignDayLabel(c.completedAt)} at ${campaignTimeLabel(c.completedAt)}`,
-		completedAgoLabel: relativeSince(c.completedAt, now),
-	}));
+	const [
+		holdingRows,
+		completionRows,
+		driftTurfs,
+		driftClaims,
+		driftVisibility,
+		geometry,
+		lastSyncs,
+		hiddenRows,
+		requestedRows,
+		manualSync,
+	] = await Promise.all([
+		loadCurrentHoldings(db, query),
+		loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
+		loadDriftTurfs(db, query),
+		loadDriftClaims(db, query),
+		loadDriftVisibility(db, query.campaignId),
+		// Campaign-wide rather than per chapter: the queue is drained in one
+		// pass for everyone, so scoping it to the selected chapter would
+		// report a different denominator than the work actually left.
+		loadGeometryProgress(db),
+		lastVanSyncs(db),
+		loadHiddenTurfs(db, query),
+		// Every campaign's, whatever the filters: a request placed in the wrong
+		// chapter is exactly what the chapter filter would hide.
+		loadRequestedTurf(db),
+		// Only an admin's page shows the sync controls.
+		session.isAdmin ? readManualSync(now) : null,
+	]);
 
 	// Story 8.2. Both sides of the comparison are our own columns — the sync
 	// lands VAN's half — so this costs two reads and no VAN call.
 	const drift = driftReport(driftTurfs, driftClaims, now, driftVisibility);
 
+	const current = currentHoldings(holdingRows, now);
+	const suspected = suspectCompletions(completionRows);
+	// Every holder this page names, in one read; and how far each claim has
+	// got, in another. Accounts carry outside volunteers' emails, which are
+	// for admins alone: a moderator's board names holders without them.
+	const [accounts, progress] = await Promise.all([
+		session.isAdmin
+			? loadHolderAccounts(db, [
+					...current.map((h) => h.slackUserId),
+					...suspected.map((c) => c.slackUserId),
+					...drift.items.map((i) => i.heldByUserId),
+				])
+			: new Map<string, HolderAccount>(),
+		claimDoorProgress(
+			db,
+			current.map((h) => h.checkoutId),
+		),
+	]);
+
+	const holdings: HoldingView[] = current.map((h) => ({
+		...h,
+		account: accounts.get(h.slackUserId) ?? null,
+		expiresLabel: `${campaignDayLabel(h.expiresAt)} at ${campaignTimeLabel(h.expiresAt)}`,
+		claimedAgoLabel: relativeSince(h.claimedAt, now),
+		walked: walkedSoFar(progress.get(h.checkoutId)),
+	}));
+
+	const suspects: SuspectView[] = suspected.map((c) => ({
+		...c,
+		account: accounts.get(c.slackUserId) ?? null,
+		completedLabel: `${campaignDayLabel(c.completedAt)} at ${campaignTimeLabel(c.completedAt)}`,
+		completedAgoLabel: relativeSince(c.completedAt, now),
+	}));
+
+	const hidden: HiddenTurfView[] = hiddenRows.map((t) => ({
+		...t,
+		hiddenAgoLabel: relativeSince(t.hiddenAt, now),
+	}));
+
 	return {
 		pageTitle: 'Turf right now',
-		drift,
+		// Whether to show the controls: sync, place, unhide, history. False for
+		// moderators, whose view is read-only; the actions refuse them regardless.
+		canManage: session.isAdmin,
+		drift: {
+			...drift,
+			items: drift.items.map((item) => ({
+				...item,
+				account: accounts.get(item.heldByUserId) ?? null,
+			})),
+		},
 		chapters,
 		chapter,
+		campaigns: campaigns.campaigns,
+		campaign: campaigns.campaign,
+		// Badge text per campaign id, for rows whose campaign shows one.
+		campaignBadges: campaigns.badges,
 		holdings,
 		summary: summarise(holdings),
 		suspects,
+		// Turf an admin hid from volunteers on its /turfs card, to show again.
+		hidden,
+		// Requested turf and the chapter each was placed in, to correct.
+		requestedTurf: requestedRows.turfs.map((t) => ({
+			...t,
+			placedLabel: requestedTurfLabel(t),
+			caveats: requestedTurfCaveats(t),
+			firstSeenAgoLabel: relativeSince(t.firstSeenAt, now),
+		})),
+		requestedTotal: requestedRows.total,
+		// The chapters it may go to: the ones the /turfs pickers offer.
+		placementChoices: turfChapters(
+			settings.chapterChannelMap,
+			settings.turfHiddenChapterIds,
+			settings.turfCustomChapters,
+		),
+		// Why the map is part shapes and part pins after a big sync — the line is
+		// only shown while there is something to explain (see the page).
+		geometry: {
+			...geometry,
+			label: geometryProgressLabel(geometry),
+		},
 		// Distinguishes "every completion checked out fine" from "no completion
 		// has been checked yet" — opposite messages that must not share an empty
-		// state. It stays false until a post-completion refresh actually lands
-		// (see door-delta-store.ts), which on a key without refresh access is
-		// forever — so the empty state has to keep saying "not checked" rather
-		// than "all clear".
+		// state. It stays false until a re-cut lands after a completion (see
+		// door-delta-store.ts) — so the empty state has to keep saying "not
+		// checked" rather than "all clear".
 		deltaChecked: anyDeltaMeasured(completionRows),
+		// What sets that re-cut off, so the empty state can say what it is
+		// waiting on: the sync asking VAN, or an organizer doing it by hand. Each
+		// campaign has its own switch, so the page names which is which.
+		regionRefresh: await campaignRefreshSwitches(db),
 		completionsExamined: completionRows.length,
+		// Beside the "Sync VAN now" button: how stale the catalog is, so an
+		// organizer can tell whether the turf they just cut has landed yet.
+		lastVanSync: lastSyncSummary(lastSyncs, now),
+		// The latest press while it runs and for a while after: where it has
+		// got to, what kept turf back, and what it picked up. The page polls
+		// sync-status for the same while it runs.
+		manualSync,
 	};
+};
+
+/** The press's view, or none when it cannot be read: the board stays up. */
+async function readManualSync(now: Date): Promise<Awaited<ReturnType<typeof manualSyncView>>> {
+	try {
+		return await manualSyncView(now);
+	} catch (err) {
+		console.error('[van] could not read the manual sync record:', err);
+		return null;
+	}
+}
+
+/** A claim's door progress as the board shows it. A turf part-walked is
+ *  never shown as 0% or 100%: rounding only within 1–99 keeps "started" and
+ *  "nearly done" from reading as "untouched" or "finished". */
+function walkedSoFar(p: ClaimDoorProgress | undefined): HoldingView['walked'] {
+	if (!p) return null;
+	const exact = (p.knocked / p.doors) * 100;
+	const percent =
+		p.knocked === 0
+			? 0
+			: p.knocked === p.doors
+				? 100
+				: Math.min(99, Math.max(1, Math.round(exact)));
+	return { ...p, percent };
+}
+
+/**
+ * One label while every enabled campaign reads the same ("3m ago"), or one
+ * per campaign once they differ or any last sync failed — a campaign whose
+ * syncs keep failing must not hide behind another's "just now", and an
+ * organizer told their turf is on its way should see when it is not coming.
+ * Compared as shown, not as timestamps, so two syncs seconds apart still read
+ * as one line. Null labels mean "not synced yet".
+ */
+function lastSyncSummary(
+	syncs: CampaignLastSync[],
+	now: Date,
+): {
+	label: string | null;
+	perCampaign: { id: number; name: string; label: string | null; failed: boolean }[] | null;
+} {
+	const labelled = syncs.map((s) => ({
+		id: s.id,
+		name: s.name,
+		label: s.lastSyncAt ? relativeSince(s.lastSyncAt, now) : null,
+		failed: s.failed,
+	}));
+	const labels = new Set(labelled.map((s) => s.label));
+	if (labels.size <= 1 && !labelled.some((s) => s.failed))
+		return { label: labelled[0]?.label ?? null, perCampaign: null };
+	return { label: null, perCampaign: labelled };
+}
+
+export const actions: Actions = {
+	/**
+	 * Put a requested turf in a chapter, or hand it back to the automatic
+	 * placement (`chapterId` empty). See van/turf-placement.ts.
+	 */
+	placeTurf: async ({ locals, request }) => {
+		const session = locals.session;
+		if (!session?.isAdmin) return fail(403, { placeError: 'Organizers only.' });
+		const form = await request.formData();
+		const turfId = Number(form.get('turfId'));
+		const rawChapter = String(form.get('chapterId') ?? '');
+		if (!Number.isInteger(turfId)) return fail(400, { placeError: 'Unknown turf.' });
+
+		const settings = await loadSettings(db);
+		const choices = turfChapters(
+			settings.chapterChannelMap,
+			settings.turfHiddenChapterIds,
+			settings.turfCustomChapters,
+		);
+		let chapter: PlacementChapter | null = null;
+		if (rawChapter !== '') {
+			const found = choices.find((c) => c.chapterId === Number(rawChapter));
+			if (!found) return fail(400, { placeError: 'That chapter is not offered for turf.' });
+			chapter = { chapterId: found.chapterId, name: found.name };
+		}
+
+		try {
+			const campaign = await setOrganizerPlacement(
+				db,
+				turfId,
+				chapter,
+				session.slackUserName ?? session.slackUserId,
+			);
+			if (!campaign) return fail(404, { placeError: 'That turf is no longer requested turf.' });
+			if (chapter === null) {
+				// Placed again straight away rather than at the next sync, so the
+				// row says where it went.
+				await placeRequestedTurf(db, campaign, {
+					chapters: choices,
+					turfIds: [turfId],
+					timeBudgetMs: 10_000,
+				});
+			}
+		} catch (err) {
+			console.error('[van] could not place turf:', err);
+			return fail(500, { placeError: 'Could not move that turf. Please try again.' });
+		}
+		return { placed: turfId };
+	},
+
+	/**
+	 * Show hidden turf to volunteers again — the organizer-page side of the
+	 * "Hide from volunteers" box on a /turfs card.
+	 */
+	unhide: async ({ locals, request }) => {
+		const session = locals.session;
+		if (!session?.isAdmin) return fail(403, { unhideError: 'Organizers only.' });
+		const turfId = Number((await request.formData()).get('turfId'));
+		if (!Number.isInteger(turfId)) return fail(400, { unhideError: 'Unknown turf.' });
+		try {
+			const found = await setTurfHidden(
+				db,
+				turfId,
+				false,
+				{ id: session.slackUserId, name: session.slackUserName },
+				new Date(),
+			);
+			// Gone since the page loaded — the board reloads without it.
+			if (!found) return fail(404, { unhideError: 'That turf no longer exists.' });
+		} catch (err) {
+			console.error('[van] could not unhide turf:', err);
+			return fail(500, { unhideError: 'Could not show that turf again. Please try again.' });
+		}
+		return { unhidden: turfId };
+	},
+
+	/**
+	 * A turf's history across VAN's cuts — `npm run van:turf` for organizers
+	 * who don't run scripts. Read-only and no VAN call; see
+	 * van/turf-history-store.ts. An action rather than part of `load` so a
+	 * search doesn't re-run the board's queries, and so the board's loads don't
+	 * re-run it.
+	 */
+	turfHistory: async ({ locals, request }) => {
+		if (!locals.session?.isAdmin) return fail(403, { historyError: 'Organizers only.' });
+		const historyQuery = String((await request.formData()).get('query') ?? '').trim();
+		if (!historyQuery) {
+			return fail(400, {
+				historyQuery,
+				historyError: 'Enter a turf name, region, or turf id.',
+			});
+		}
+		let found: TurfHistory[];
+		try {
+			found = await loadTurfHistory(db, historyQuery, { limit: TURF_HISTORY_LIMIT + 1 });
+		} catch (err) {
+			console.error('[van] turf history failed:', err);
+			return fail(500, {
+				historyQuery,
+				historyError: 'Could not load that turf’s history. Please try again.',
+			});
+		}
+		const histories: TurfHistoryView[] = found
+			.slice(0, TURF_HISTORY_LIMIT)
+			.map((h) => ({ ...h, why: explainLiveCut(h, { omitRecut: true }), doorsNow: doorsNow(h) }));
+		return { historyQuery, histories, historyTruncated: found.length > TURF_HISTORY_LIMIT };
+	},
+
+	/**
+	 * Run the VAN sync now rather than at the next slot — for turf an organizer
+	 * has just cut to answer a request. Started, not awaited: a pass takes
+	 * minutes. See van/manual-sync.ts.
+	 */
+	syncVan: async ({ locals }) => {
+		const session = locals.session;
+		if (!session?.isAdmin) return fail(403, { syncError: 'Organizers only.' });
+		if (!INTERNAL_CRON_SECRET) {
+			console.error('[van] manual sync: INTERNAL_CRON_SECRET is not set');
+			return fail(500, { syncError: 'The sync is not configured on this server.' });
+		}
+		let result: Awaited<ReturnType<typeof startManualVanSync>>;
+		try {
+			// Then map shapes for as much of the queue as it can reach, so the
+			// turf the organizer cut shows on the map and not only in the list.
+			result = await startManualVanSync(db, localCaller(PORT, INTERNAL_CRON_SECRET), {
+				startedByName: session.slackUserName ?? null,
+				afterPass: ({ deadline, shouldStop }) =>
+					drainGeometryForPress(db, { deadline, shouldStop }),
+			});
+		} catch (err) {
+			// A failure here is the lock's database read, before anything ran.
+			// Answered on the form, so the board stays up around it.
+			console.error('[van] manual sync: could not start:', err);
+			return fail(500, { syncError: 'Could not start the sync. Please try again.' });
+		}
+		// Folded into the press already running, which reads VAN again at its
+		// next chance — so turf cut since that press started is picked up.
+		if (result.status === 'joined') return { syncJoined: true };
+		return result.status === 'queued' ? { syncQueued: true } : { syncStarted: true };
+	},
 };

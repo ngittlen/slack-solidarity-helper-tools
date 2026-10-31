@@ -5,7 +5,7 @@ import {
 	ACTIVITY_KINDS,
 	DEFAULT_PERIOD,
 	emptyCounts,
-	EVENT_CAP,
+	EVENTS_PER_PAGE,
 	groupByDay,
 	parsePeriod,
 	PERIOD_OPTIONS,
@@ -19,11 +19,12 @@ const NOW = new Date('2026-08-24T18:00:00.000Z');
 function row(over: Partial<ActivityRow> = {}): ActivityRow {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,
 		chapterName: 'Washtenaw County',
+		campaignId: 1,
 		doorCount: 250,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',
@@ -32,6 +33,7 @@ function row(over: Partial<ActivityRow> = {}): ActivityRow {
 		completedAt: null,
 		releaseReason: null,
 		confirmedDoorDelta: null,
+		reportedPercent: null,
 		...over,
 	};
 }
@@ -192,6 +194,14 @@ describe('activityEvents', () => {
 		});
 	});
 
+	it('carries the percentage the volunteer reported on completion', () => {
+		const events = activityEvents(
+			[row({ completedAt: '2026-08-24T15:30:00.000Z', reportedPercent: 80 })],
+			WEEK,
+		);
+		expect(events.find((e) => e.kind === 'completed')?.reportedPercent).toBe(80);
+	});
+
 	// The credential rule, asserted rather than trusted: the list number is
 	// issued to the holder alone, and an admin is not the holder.
 	it('carries no MiniVAN list number and nothing address-like', () => {
@@ -279,9 +289,9 @@ describe('groupByDay', () => {
 	});
 });
 
-describe('EVENT_CAP', () => {
-	it('is a sane page budget', () => {
-		expect(EVENT_CAP).toBeGreaterThan(0);
-		expect(Number.isSafeInteger(EVENT_CAP)).toBe(true);
+describe('EVENTS_PER_PAGE', () => {
+	it('is a sane page size', () => {
+		expect(EVENTS_PER_PAGE).toBeGreaterThan(0);
+		expect(Number.isSafeInteger(EVENTS_PER_PAGE)).toBe(true);
 	});
 });

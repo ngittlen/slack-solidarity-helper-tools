@@ -709,7 +709,7 @@ describe('POST /api/slack/interactivity — turf buttons', () => {
 		});
 
 	const VALUE = encodeTurfAction({
-		mapRouteId: 100,
+		turfId: 100,
 		chapterId: 71,
 		offset: 0,
 		location: { lat: 42.28, lng: -83.74 },
@@ -737,7 +737,7 @@ describe('POST /api/slack/interactivity — turf buttons', () => {
 			expect.anything(),
 			expect.objectContaining({
 				slackUserId: 'U_VOL',
-				mapRouteId: 100,
+				turfId: 100,
 				chapterId: 71,
 				location: { lat: 42.28, lng: -83.74 },
 			}),
@@ -749,12 +749,34 @@ describe('POST /api/slack/interactivity — turf buttons', () => {
 		);
 	});
 
+	it('passes the knocked-before agreement only from a button that carried the confirm', async () => {
+		await call(buttonPress(TURF_CLAIM_ACTION_ID, VALUE));
+		await flush();
+		expect(mockClaimFromSlack).toHaveBeenLastCalledWith(
+			expect.anything(),
+			expect.objectContaining({ acknowledgedKnocked: false }),
+		);
+
+		const agreed = encodeTurfAction({
+			turfId: 100,
+			chapterId: 71,
+			offset: 0,
+			acknowledgedKnocked: true,
+		});
+		await call(buttonPress(TURF_CLAIM_ACTION_ID, agreed));
+		await flush();
+		expect(mockClaimFromSlack).toHaveBeenLastCalledWith(
+			expect.anything(),
+			expect.objectContaining({ acknowledgedKnocked: true }),
+		);
+	});
+
 	it('releases the turf named in the button value', async () => {
 		await call(buttonPress(TURF_RELEASE_ACTION_ID, VALUE));
 		await flush();
 		expect(mockReleaseFromSlack).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ mapRouteId: 100 }),
+			expect.objectContaining({ turfId: 100 }),
 		);
 	});
 

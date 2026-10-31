@@ -72,6 +72,23 @@ describe('renderBlockNotice', () => {
 	});
 });
 
+describe('renderBlockNotice for someone with no Slack account', () => {
+	it('names them by the label given, and does not claim a DM went', () => {
+		const text = renderBlockNotice({
+			targetSlackUserId: 'google:7',
+			targetLabel: '*Ana Ruiz* (signed in with Google)',
+			actorSlackUserId: 'U_ADMIN',
+			releasedTurfNames: ['Turf 01'],
+			sessionsRevoked: 0,
+			reachableByDm: false,
+		});
+		expect(text).toContain('*Ana Ruiz* (signed in with Google) was blocked');
+		expect(text).not.toContain('<@google:7>');
+		expect(text).toContain('now claimable by anyone.');
+		expect(text).not.toContain('DMed');
+	});
+});
+
 describe('renderUnblockNotice', () => {
 	it('names both people', () => {
 		const text = renderUnblockNotice('U_VOL', 'U_ADMIN');
@@ -117,5 +134,13 @@ describe('renderBlockedHolderDm', () => {
 	// Silence beats an unprompted "you have been blocked" with no recourse in it.
 	it('returns null when nothing was released', () => {
 		expect(renderBlockedHolderDm([])).toBeNull();
+	});
+});
+
+describe('renderUnblockNotice for someone with no Slack account', () => {
+	it('names them by the label given', () => {
+		expect(renderUnblockNotice('google:7', 'U_ADMIN', 'A Google volunteer')).toMatch(
+			/^:white_check_mark: A Google volunteer was unblocked/,
+		);
 	});
 });

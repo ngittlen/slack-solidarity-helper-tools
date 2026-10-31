@@ -65,6 +65,50 @@ describe('edge challenge pages', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
+	it('says each retry in the log, with the path and the wait', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		stubSequence(
+			{ status: 530, text: CHALLENGE_PAGE },
+			{ status: 200, text: JSON.stringify({ data: [], next: null }) },
+		);
+		vi.useFakeTimers();
+
+		const pending = listEventAttendances(API, 1025563);
+		await vi.runAllTimersAsync();
+		await pending;
+
+		expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+			expect.stringMatching(
+				/^\[mobilize\] 530 on \/.*1025563.* — retrying in 2s \(attempt 2\/6\)$/,
+			),
+		]);
+		warn.mockRestore();
+	});
+
+	it('lets go of the response it is retrying before the wait', async () => {
+		const cancel = vi.fn(async () => {});
+		const fetchMock = vi.fn(async () =>
+			fetchMock.mock.calls.length === 1
+				? { ok: false, status: 429, body: { cancel }, headers: new Headers() }
+				: {
+						ok: true,
+						status: 200,
+						text: async () => JSON.stringify({ data: [], next: null }),
+						headers: new Headers(),
+					},
+		);
+		vi.stubGlobal('fetch', fetchMock);
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.useFakeTimers();
+
+		const pending = listEventAttendances(API, 1025563);
+		await vi.runAllTimersAsync();
+		await pending;
+
+		expect(cancel).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+
 	// A 530 never reached Mobilize, but a 5xx on a write can mean the origin
 	// processed it and only the reply was lost — replaying that creates a
 	// second event, so writes stay on 429-only.
@@ -81,6 +125,37 @@ describe('edge challenge pages', () => {
 			text: JSON.stringify({ error: { description: 'This field may not be blank.' } }),
 		});
 		await expect(createEvent(API, {})).rejects.toThrow(/may not be blank/);
+	});
+});
+
+describe('pagination is bounded', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('fails rather than looping when `next` points at a page already read', async () => {
+		const self = `https://api.mobilize.us/v1/organizations/44679/events/7/attendances?per_page=100`;
+		vi.stubGlobal('fetch', async () => ({
+			ok: true,
+			status: 200,
+			text: async () => JSON.stringify({ data: [{ id: 1 }], next: self }),
+			headers: new Headers(),
+		}));
+
+		await expect(listEventAttendances(API, 7)).rejects.toThrow(/cycled back/);
+	});
+
+	it('fails rather than truncating when a walk runs past the page cap', async () => {
+		let page = 0;
+		vi.stubGlobal('fetch', async () => ({
+			ok: true,
+			status: 200,
+			text: async () =>
+				JSON.stringify({ data: [{ id: ++page }], next: `https://api.mobilize.us/v1/p/${page}` }),
+			headers: new Headers(),
+		}));
+
+		// A short list and a complete one look the same to the sync, which would
+		// read the missing attendances as people who never signed up.
+		await expect(listEventAttendances(API, 7)).rejects.toThrow(/paginated past 200 pages/);
 	});
 });
 

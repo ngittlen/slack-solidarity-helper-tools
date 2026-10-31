@@ -6,7 +6,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // were called with into capturable arrays.
 vi.mock('./env.js', () => ({
 	SOLIDARITY_CHAPTER_CHANNEL_MAP: [{ chapterId: 1, channelId: 'C_ENV_CHAP', name: 'Env Chapter' }],
-	SLACK_ALLOWED_USER_IDS: new Set(['U_ENV_ALICE']),
 	REPORT_EXCLUDED_CHAPTER_IDS: new Set([99]),
 	SLACK_TRACKING_CHANNEL_ID: 'C_ENV_TRACK',
 	SLACK_GROWTH_REPORT_CHANNEL_ID: 'C_ENV_GROWTH',
@@ -22,7 +21,6 @@ import {
 	saveChapterChannelEntries,
 	deleteChapterChannelEntries,
 	ensureChapterChannelMapSeeded,
-	ensureAllowedUsersSeeded,
 	ensureExcludedChaptersSeeded,
 	setChannelWelcomeFlag,
 	channelWelcomeFlags,
@@ -57,15 +55,18 @@ interface CapturedDelete {
 
 interface MockDb {
 	select: ReturnType<typeof vi.fn>;
+	batch: ReturnType<typeof vi.fn>;
 	insert: ReturnType<typeof vi.fn>;
 	delete: ReturnType<typeof vi.fn>;
 	_pushSelect: (rows: unknown[]) => void;
+	_pushDeleteReturning: (rows: unknown[]) => void;
 	_capturedInserts: () => CapturedInsert[];
 	_capturedDeletes: () => CapturedDelete[];
 }
 
 function makeDb(): MockDb {
 	const selectQueue: unknown[][] = [];
+	const deleteReturnQueue: unknown[][] = [];
 	const inserts: CapturedInsert[] = [];
 	const deletes: CapturedDelete[] = [];
 
@@ -74,6 +75,9 @@ function makeDb(): MockDb {
 		const limit = vi.fn().mockResolvedValue(rows);
 		const from = vi.fn(() => ({
 			limit,
+			where: vi.fn(() => ({
+				then: (r: (v: unknown) => unknown) => Promise.resolve(rows).then(r),
+			})),
 			then: (r: (v: unknown) => unknown) => Promise.resolve(rows).then(r),
 		}));
 		return { from };
@@ -91,26 +95,40 @@ function makeDb(): MockDb {
 		}),
 	}));
 
+	// `where` is both awaitable (most callers just await the delete) and
+	// chainable into `.returning()` (deleteAllowedUser reads back what it
+	// removed to tell a refused last-admin removal from a missing row).
 	const del = vi.fn((table: unknown) => ({
-		where: async (where: unknown) => {
+		where: (where: unknown) => {
 			deletes.push({ table, where });
+			return {
+				returning: async () => deleteReturnQueue.shift() ?? [],
+				then: (r: (v: unknown) => unknown) => Promise.resolve(undefined).then(r),
+			};
 		},
 	}));
 
+	// The queries are built, and so take their rows, in the order loadSettings
+	// lists them; the batch resolves them in that order.
+	const batch = vi.fn((queries: unknown[]) => Promise.all(queries));
+
 	return {
 		select,
+		batch,
 		insert,
 		delete: del,
 		_pushSelect: (rows) => selectQueue.push(rows),
+		_pushDeleteReturning: (rows) => deleteReturnQueue.push(rows),
 		_capturedInserts: () => inserts,
 		_capturedDeletes: () => deletes,
 	};
 }
 
-// `loadSettings` always issues nine reads, in this exact order: chapter,
+// `loadSettings` always issues eleven reads, in this exact order: chapter,
 // coalition, allowed users, excluded chapters, zip-excluded chapters, welcome
-// flags, app_config, info commands, moderators.
-const LOAD_SETTINGS_READS = 9;
+// flags, app_config, info commands, moderators, turf-hidden chapters, turf
+// custom chapters.
+const LOAD_SETTINGS_READS = 11;
 function pushAllEmpty(db: MockDb) {
 	for (let i = 0; i < LOAD_SETTINGS_READS; i++) db._pushSelect([]);
 }
@@ -137,7 +155,8 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 		// The coalition map is DB-only — no env fallback, so an empty table
 		// means "nothing mapped" (a delete must stay deleted).
 		expect(result.coalitionChannelMap).toEqual([]);
-		expect(result.allowedSlackUserIds).toEqual(new Set(['U_ENV_ALICE']));
+		// DB-only, like the coalition map: there is no admin env list to inherit.
+		expect(result.allowedSlackUserIds).toEqual(new Set());
 		expect(result.reportExcludedChapterIds).toEqual(new Set([99]));
 		expect(result.slackTrackingChannelId).toBe('C_ENV_TRACK');
 		expect(result.slackGrowthReportChannelId).toBe('C_ENV_GROWTH');
@@ -148,7 +167,6 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 		// Re-mock env.js with the empty-state shapes for just this test.
 		vi.doMock('./env.js', () => ({
 			SOLIDARITY_CHAPTER_CHANNEL_MAP: [],
-			SLACK_ALLOWED_USER_IDS: new Set<string>(),
 			REPORT_EXCLUDED_CHAPTER_IDS: new Set<number>(),
 			SLACK_TRACKING_CHANNEL_ID: '',
 			SLACK_GROWTH_REPORT_CHANNEL_ID: '',
@@ -173,6 +191,8 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			moderatorSlackUserIds: new Set(),
 			reportExcludedChapterIds: new Set(),
 			zipExcludedChapterIds: new Set(),
+			turfHiddenChapterIds: new Set(),
+			turfCustomChapters: [],
 			welcomeDisabledChannelIds: new Set(),
 			slackTrackingChannelId: '',
 			slackGrowthReportChannelId: '',
@@ -184,6 +204,8 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			mobilizeContactName: '',
 			mobilizeContactEmail: '',
 			mobilizeContactPhone: '',
+			mobilizeImportTag: '',
+			mobilizeSyncVirtualEvents: false,
 			slackGrowthReportRankingAlpha: undefined,
 			siteName: '',
 			countdownLabel: '',
@@ -199,6 +221,15 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			// Built-in defaults from $lib/van/checkout.ts when app_config is empty.
 			vanTurfClaimTtlHours: 48,
 			vanTurfMaxConcurrentClaims: 2,
+			vanAssignmentTtlHours: 48,
+			// Off with no row: a re-cut can leave turf unclaimable.
+			// DB-only; no row means no "Join our chat" button.
+			publicJoinUrl: '',
+			// Mentor walks ship dark, and without guidelines nobody can sign up.
+			mentorWalksVisibility: 'off',
+			volunteerGuidelinesUrl: '',
+			// No tag, no canvass events on /turfs.
+			canvassEventTag: '',
 		});
 
 		// Restore the module-level mock for subsequent tests.
@@ -218,8 +249,9 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 		pushAllEmpty(db2);
 		const result2 = await loadSettings(db2 as never);
 
+		// allowedSlackUserIds is deliberately absent: it is built from the table
+		// on every call, so it has no env constant to share a reference with.
 		expect(result1.chapterChannelMap).toBe(result2.chapterChannelMap);
-		expect(result1.allowedSlackUserIds).toBe(result2.allowedSlackUserIds);
 		expect(result1.reportExcludedChapterIds).toBe(result2.reportExcludedChapterIds);
 	});
 });
@@ -275,7 +307,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		]);
 	});
 
-	it('DB rows override env for allowedSlackUserIds', async () => {
+	it('reads allowedSlackUserIds from the table', async () => {
 		const db = makeDb();
 		db._pushSelect([]);
 		db._pushSelect([]);
@@ -477,6 +509,8 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'coalitionChannelMap',
 				'reportExcludedChapterIds',
 				'zipExcludedChapterIds',
+				'turfHiddenChapterIds',
+				'turfCustomChapters',
 				'welcomeDisabledChannelIds',
 				'slackGrowthReportChannelId',
 				'slackGrowthReportRankingAlpha',
@@ -487,6 +521,8 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'mobilizeContactName',
 				'mobilizeContactEmail',
 				'mobilizeContactPhone',
+				'mobilizeImportTag',
+				'mobilizeSyncVirtualEvents',
 				'siteName',
 				'countdownLabel',
 				'countdownEndAt',
@@ -496,6 +532,11 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'doorTickerColumnsPerSecond',
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
+				'vanAssignmentTtlHours',
+				'publicJoinUrl',
+				'mentorWalksVisibility',
+				'volunteerGuidelinesUrl',
+				'canvassEventTag',
 			].sort(),
 		);
 	});
@@ -751,13 +792,43 @@ describe('settings setters — Story 3', () => {
 
 	it('loadSettings reads moderators into their own set, never into the admin set', async () => {
 		const db = makeDb();
-		pushEmpty(db, LOAD_SETTINGS_READS - 1);
+		// Moderators are the third-to-last read; turf-hidden and turf custom
+		// chapters follow.
+		pushEmpty(db, LOAD_SETTINGS_READS - 3);
 		db._pushSelect([{ slackUserId: 'U_MO' }]);
+		pushEmpty(db, 2);
 
 		const result = await loadSettings(db as never);
 
 		expect(result.moderatorSlackUserIds).toEqual(new Set(['U_MO']));
 		expect(result.allowedSlackUserIds.has('U_MO')).toBe(false);
+	});
+
+	it('loadSettings reads the chapters hidden from /turfs into their own set', async () => {
+		const db = makeDb();
+		pushEmpty(db, LOAD_SETTINGS_READS - 2);
+		db._pushSelect([{ chapterId: 71 }, { chapterId: 72 }]);
+		db._pushSelect([]);
+
+		const result = await loadSettings(db as never);
+
+		expect(result.turfHiddenChapterIds).toEqual(new Set([71, 72]));
+	});
+
+	it('loadSettings reads turf-only chapters with negative ids, sorted by name', async () => {
+		const db = makeDb();
+		pushEmpty(db, LOAD_SETTINGS_READS - 1);
+		db._pushSelect([
+			{ id: 1, name: 'Zeta team' },
+			{ id: 2, name: 'Alpha team' },
+		]);
+
+		const result = await loadSettings(db as never);
+
+		expect(result.turfCustomChapters).toEqual([
+			{ chapterId: -2, name: 'Alpha team' },
+			{ chapterId: -1, name: 'Zeta team' },
+		]);
 	});
 
 	it('saveExcludedChapter writes payload (with explicit null reason when omitted)', async () => {
@@ -792,6 +863,9 @@ describe('settings setters — Story 3', () => {
 	it('delete setters call db.delete(table).where(eq(<pk>, key)) and log success', async () => {
 		const db = makeDb();
 		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		// deleteAllowedUser is the one delete that reads back what it removed.
+		db._pushDeleteReturning([{ slackUserId: 'U_BOB' }]);
 
 		await deleteChapterChannelEntries(db as never, [7], 'C_X', editor);
 		await deleteCoalitionEntry(db as never, 'labor', editor);
@@ -831,6 +905,34 @@ describe('settings setters — Story 3', () => {
 		for (const line of lines) {
 			expect(line).toMatch(/^\[settings\] deleted .*U_ALICE.*Alice/);
 		}
+	});
+
+	it('deleteAllowedUser removes an admin when others remain', async () => {
+		const db = makeDb();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		db._pushDeleteReturning([{ slackUserId: 'U_BOB' }]);
+
+		expect(await deleteAllowedUser(db as never, 'U_BOB', editor)).toBe('deleted');
+	});
+
+	it('deleteAllowedUser refuses to remove the last admin', async () => {
+		const db = makeDb();
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		// The guarded DELETE matched nothing, and the row is still there: the
+		// count check held rather than the row being absent.
+		db._pushDeleteReturning([]);
+		db._pushSelect([{ slackUserId: 'U_BOB' }]);
+
+		expect(await deleteAllowedUser(db as never, 'U_BOB', editor)).toBe('last-admin');
+		expect(String(warn.mock.calls[0]?.[0])).toMatch(/refused to remove the last admin/);
+	});
+
+	it('deleteAllowedUser reports a row that was already gone as not-found', async () => {
+		const db = makeDb();
+		db._pushDeleteReturning([]);
+		db._pushSelect([]);
+
+		expect(await deleteAllowedUser(db as never, 'U_GONE', editor)).toBe('not-found');
 	});
 
 	it('setChannelWelcomeFlag upserts the flag row with audit columns and logs', async () => {
@@ -1004,49 +1106,6 @@ describe('ensureChapterChannelMapSeeded', () => {
 		db._pushSelect([{ chapterId: 7 }]);
 
 		await ensureChapterChannelMapSeeded(db as never);
-
-		expect(db._capturedInserts()).toHaveLength(0);
-	});
-});
-
-describe('ensureAllowedUsersSeeded', () => {
-	it('copies every env id into the table when it is empty, resolving display names from the provided map', async () => {
-		const db = makeDb();
-		vi.spyOn(console, 'log').mockImplementation(() => {});
-		db._pushSelect([]);
-
-		await ensureAllowedUsersSeeded(db as never, new Map([['U_ENV_ALICE', 'Alice']]));
-
-		const [captured] = db._capturedInserts();
-		expect(captured!.table).toBe(allowedSlackUsers);
-		expect(captured!.onConflict).toBe('do-nothing');
-		const rows = captured!.values as Record<string, unknown>[];
-		expect(rows).toHaveLength(1);
-		expect(rows[0]).toMatchObject({
-			slackUserId: 'U_ENV_ALICE',
-			displayName: 'Alice',
-			lastEditedBy: SYSTEM_EDITOR.id,
-			lastEditedByName: SYSTEM_EDITOR.name,
-		});
-	});
-
-	it('falls back to the raw id as displayName when no name is known', async () => {
-		const db = makeDb();
-		vi.spyOn(console, 'log').mockImplementation(() => {});
-		db._pushSelect([]);
-
-		await ensureAllowedUsersSeeded(db as never);
-
-		const [captured] = db._capturedInserts();
-		const rows = captured!.values as Record<string, unknown>[];
-		expect(rows[0]).toMatchObject({ slackUserId: 'U_ENV_ALICE', displayName: 'U_ENV_ALICE' });
-	});
-
-	it('is a no-op when the table already has rows', async () => {
-		const db = makeDb();
-		db._pushSelect([{ slackUserId: 'U_DB' }]);
-
-		await ensureAllowedUsersSeeded(db as never);
 
 		expect(db._capturedInserts()).toHaveLength(0);
 	});

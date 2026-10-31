@@ -3,7 +3,10 @@
 //
 // Intentionally has no `$env/*` or `$lib/*` imports so the standalone
 // scripts/solidarity-snapshot.ts (which runs outside the Vite bundle via tsx)
-// can resolve it by relative path. Only `fetch`, `console`, and `setTimeout`.
+// can resolve it by relative path. Only `fetch`, `console`, `setTimeout`, and
+// request-timing.ts, which has no `$` imports either.
+
+import { timedFetch } from './request-timing.js';
 
 const PAGE_LIMIT = 100;
 // Generous safety cap; callers early-terminate via a short final page.
@@ -20,10 +23,25 @@ const MAX_RETRIES = 5;
 const MAX_RETRY_AFTER_SECONDS = 60;
 const DEFAULT_RETRY_AFTER_SECONDS = 30;
 
-function parseRetryAfter(raw: string | null): number {
-	const parsed = parseInt(raw ?? '', 10);
-	if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_RETRY_AFTER_SECONDS;
-	return Math.min(parsed, MAX_RETRY_AFTER_SECONDS);
+/**
+ * How long to wait before retrying a 429, in seconds.
+ *
+ * A server that names a delay is authoritative — it knows when its own window
+ * reopens — so `Retry-After` is honored as sent, capped only against an upstream
+ * returning something absurd. Escalation applies to the delay we *invent* when
+ * no header is sent: a second blind retry at the same interval is a guess that
+ * has already been shown wrong, so each one waits double the last.
+ *
+ * The ceiling keeps an exhausted budget inside a few minutes, which matters
+ * because this helper also backs the settings-page autocomplete, where an admin
+ * is holding a request open.
+ *
+ * `attempt` is 1 for the first retry.
+ */
+function backoffSeconds(header: string | null, attempt: number): number {
+	const named = parseInt(header ?? '', 10);
+	if (Number.isFinite(named) && named >= 0) return Math.min(named, MAX_RETRY_AFTER_SECONDS);
+	return Math.min(DEFAULT_RETRY_AFTER_SECONDS * 2 ** (attempt - 1), MAX_RETRY_AFTER_SECONDS);
 }
 
 /** Tracks retries used against a MAX_RETRIES budget. Pass the same object
@@ -46,17 +64,23 @@ export async function fetchWithRetry(
 	budget: RetryBudget,
 ): Promise<Response> {
 	for (;;) {
-		const res = await fetch(url, init);
+		// Timed against the request it serves; see request-timing.ts.
+		const res = await timedFetch('solidarity')(url, init);
 		if (res.status !== 429) return res;
+		// An unread body holds its connection open through the wait.
+		await res.body?.cancel();
 		if (budget.retriesUsed >= MAX_RETRIES) {
 			throw new Error(
 				`Solidarity ${label} rate-limit retry budget exhausted (${MAX_RETRIES} retries)`,
 			);
 		}
 		budget.retriesUsed++;
-		const retryAfter = parseRetryAfter(res.headers.get('Retry-After'));
-		console.warn(`[${logTag}] solidarity rate limited — waiting ${retryAfter}s`);
-		await new Promise((r) => setTimeout(r, retryAfter * 1000));
+		const wait = backoffSeconds(res.headers.get('Retry-After'), budget.retriesUsed);
+		console.warn(
+			`[${logTag}] solidarity rate limited — waiting ${wait}s ` +
+				`(retry ${budget.retriesUsed}/${MAX_RETRIES})`,
+		);
+		await new Promise((r) => setTimeout(r, wait * 1000));
 	}
 }
 
@@ -132,6 +156,17 @@ export async function fetchPaginated<T>(
 			onProgress(all.length, total);
 		}
 		if (items.length < PAGE_LIMIT) break;
+		if (page === MAX_PAGES - 1) {
+			// Stopping here would return a short array indistinguishable from a
+			// complete one, and callers commit what they read as fact: the
+			// snapshot job upserts per-chapter counts, so a truncated backfill
+			// walk OVERWRITES correct history with lower numbers and logs
+			// nothing. Same reasoning as the VAN and Mobilize paginators.
+			throw new Error(
+				`Solidarity ${resourceLabel} paginated past ${MAX_PAGES} pages — ` +
+					'refusing to return a partial walk',
+			);
+		}
 	}
 	return all;
 }

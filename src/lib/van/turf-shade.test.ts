@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { turfShade, shadeLabel, DOOR_BANDS, type TurfShade } from './turf-shade.js';
+import {
+	doorRamp,
+	rampStyle,
+	turfShade,
+	shadeLabel,
+	spokenShade,
+	stripeOffset,
+	STRIPE_PERIOD_PX,
+	DOOR_BANDS,
+	RAMP_FULL_DOORS,
+	type TurfShade,
+} from './turf-shade.js';
 
 describe('turfShade', () => {
 	describe('status wins over door count', () => {
@@ -90,5 +101,70 @@ describe('shadeLabel', () => {
 		// The ramp is invisible to a screen reader, so this is the only place
 		// the distinction survives for that user.
 		expect(shadeLabel('cleared')).not.toBe(shadeLabel('low'));
+	});
+});
+
+describe('doorRamp', () => {
+	it('runs from 0 at one door to 1 at RAMP_FULL_DOORS', () => {
+		expect(doorRamp(1)).toBe(0);
+		expect(doorRamp(RAMP_FULL_DOORS)).toBe(1);
+		expect(doorRamp(RAMP_FULL_DOORS + 40)).toBe(1);
+	});
+
+	// The point of it: no hard step at an old band edge.
+	it('moves smoothly across what used to be the 49/50 band edge', () => {
+		expect(doorRamp(50) - doorRamp(49)).toBeCloseTo(1 / (RAMP_FULL_DOORS - 1), 6);
+		expect(doorRamp(50)).toBeGreaterThan(doorRamp(49));
+	});
+
+	it('is 0 for zero, negative or broken counts rather than NaN', () => {
+		for (const n of [0, -3, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(doorRamp(n)).toBe(0);
+		}
+	});
+
+	it('carries the value to CSS as --turf-t', () => {
+		expect(rampStyle(RAMP_FULL_DOORS)).toBe('--turf-t: 1.000');
+		expect(rampStyle(1)).toBe('--turf-t: 0.000');
+	});
+});
+
+describe('spokenShade', () => {
+	it('is the band label for turf nobody has knocked', () => {
+		expect(spokenShade('full', false)).toBe('untouched');
+		expect(spokenShade('low', false)).toBe('nearly finished');
+	});
+
+	// A re-cut lists a walked turf as full again; "untouched" would be false.
+	it('does not call knocked turf untouched', () => {
+		expect(spokenShade('full', true)).toBe('listed as untouched');
+		expect(spokenShade('medium', true)).toBe('part walked');
+	});
+});
+
+describe('stripeOffset', () => {
+	it('wraps into one repeat of the tile', () => {
+		expect(stripeOffset({ x: 25, y: 3 })).toEqual({ x: 25 % STRIPE_PERIOD_PX, y: 3 });
+	});
+
+	it('wraps negative positions forwards, not into negatives', () => {
+		const { x, y } = stripeOffset({ x: -1, y: -STRIPE_PERIOD_PX * 3 - 2 });
+		expect(x).toBe(STRIPE_PERIOD_PX - 1);
+		expect(y).toBe(STRIPE_PERIOD_PX - 2);
+	});
+
+	// The point of it: pan by any amount and the tile moves by the same.
+	it('moves with the map, a whole repeat being no move at all', () => {
+		const a = stripeOffset({ x: 1000.5, y: -40.25 });
+		const b = stripeOffset({ x: 1000.5 + 3 + STRIPE_PERIOD_PX * 7, y: -40.25 });
+		expect(b.x).toBeCloseTo((a.x + 3) % STRIPE_PERIOD_PX);
+		expect(b.y).toBe(a.y);
+	});
+
+	it('stays small and finite at deep zoom', () => {
+		const { x, y } = stripeOffset({ x: 2 ** 30 + 0.123, y: 2 ** 29 });
+		expect(x).toBeGreaterThanOrEqual(0);
+		expect(x).toBeLessThan(STRIPE_PERIOD_PX);
+		expect(Number.isFinite(y)).toBe(true);
 	});
 });

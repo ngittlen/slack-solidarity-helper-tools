@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -22,48 +22,66 @@ beforeEach(async () => {
 	db = drizzle(client);
 	await migrate(db, { migrationsFolder: 'drizzle' });
 
-	for (const [id, chapter, chapterName] of [
-		[100, 71, 'Washtenaw County'],
-		[200, 71, 'Washtenaw County'],
-		[300, 72, 'Wayne County'],
+	for (const [id, folder, chapter, chapterName] of [
+		[100, 1, 71, 'Washtenaw County'],
+		[200, 1, 71, 'Washtenaw County'],
+		[300, 2, 72, 'Wayne County'],
 	] as const) {
 		await client.execute(
-			`INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, printed_list_number, first_seen_at, last_seen_at)
-			 VALUES (${id}, 1, 1, ${chapter}, '${chapterName}', 'Ann Arbor', 'Turf ${id}', 100, '35536745-${id}', '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
+			`INSERT INTO van_turfs (turf_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, printed_list_number, first_seen_at, last_seen_at)
+			 VALUES (${id}, ${id}, 1, ${folder}, ${chapter}, '${chapterName}', 'Ann Arbor', 'Turf ${id}', 100, '35536745-${id}', '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
 		);
 	}
+
+	// Chapter 71 sees folder 1, chapter 72 sees folder 2 — visibility comes from
+	// this mapping now, not from van_turfs.chapter_id (chapter-visibility.ts).
+	await client.execute(
+		`INSERT INTO van_chapter_folders (chapter_id, folder_id, chapter_name, last_edited_by, last_edited_by_name, last_edited_at)
+		 VALUES (71, 1, 'Washtenaw County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z'),
+		        (72, 2, 'Wayne County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z')`,
+	);
 });
 
+// Claimed three hours ago: past the 2-hour grace before an unloaded claim is
+// drift (DRIFT_LOAD_GRACE_HOURS in turf-drift.ts).
 const claimOn = (route: number, name = 'Dana') =>
 	client.execute(
-		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at)
-		 VALUES (${route}, 'U_VOL', '${name}', '${iso(NOW.getTime() - HOUR)}', '${iso(NOW.getTime() + 40 * HOUR)}')`,
+		`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+		 VALUES (${route}, 'U_VOL', '${name}', '${iso(NOW.getTime() - 3 * HOUR)}', '${iso(NOW.getTime() + 40 * HOUR)}')`,
 	);
 
 const distribute = (route: number, who: string) =>
-	client.execute(
-		`UPDATE van_turfs SET van_distributed_to = '${who}' WHERE map_route_id = ${route}`,
-	);
+	client.execute(`UPDATE van_turfs SET van_distributed_to = '${who}' WHERE turf_id = ${route}`);
 
 const syncState = (ok: boolean | null) =>
 	client.execute(
-		`INSERT INTO van_sync_state (id, last_sync_at, minivan_exports_ok) VALUES (1, '${iso(NOW.getTime())}', ${ok === null ? 'NULL' : ok ? 1 : 0})`,
+		`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (1, '${iso(NOW.getTime())}', ${ok === null ? 'NULL' : ok ? 1 : 0})`,
 	);
 
 const all = { chapterId: null };
 
+// Each test opens its own in-memory client. Closing it keeps one per test from
+// leaking for the life of the worker — which never shows up while this file is
+// run on its own.
+afterEach(() => {
+	client.close();
+});
+
 describe('loadDriftTurfs', () => {
+	// Turf is only compared for a campaign whose exports the last sync read.
+	beforeEach(() => syncState(true));
+
 	// Half the drift is turf VAN says is out and our ledger says is free — that
 	// row has no checkout to find it by, so an unclaimed turf must come back.
 	it('returns turf whether or not anyone claimed it', async () => {
 		await claimOn(100);
 		const rows = await loadDriftTurfs(db, all);
-		expect(rows.map((r) => r.mapRouteId).sort()).toEqual([100, 200, 300]);
+		expect(rows.map((r) => r.turfId).sort()).toEqual([100, 200, 300]);
 	});
 
 	it('filters to one chapter', async () => {
 		const rows = await loadDriftTurfs(db, { chapterId: 72 });
-		expect(rows.map((r) => r.mapRouteId)).toEqual([300]);
+		expect(rows.map((r) => r.turfId)).toEqual([300]);
 	});
 
 	it('carries the columns the comparison needs', async () => {
@@ -77,14 +95,16 @@ describe('loadDriftTurfs', () => {
 });
 
 describe('loadDriftClaims', () => {
+	beforeEach(() => syncState(true));
+
 	it('returns only claims the ledger has not closed', async () => {
 		await claimOn(100);
 		await client.execute(
-			`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, release_reason)
+			`INSERT INTO van_turf_checkouts (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, released_at, release_reason)
 			 VALUES (200, 'U2', 'Sam', '${iso(NOW.getTime() - 5 * HOUR)}', '${iso(NOW.getTime() + HOUR)}', '${iso(NOW.getTime() - HOUR)}', 'volunteer')`,
 		);
 		const claims = await loadDriftClaims(db, all);
-		expect(claims.map((c) => c.mapRouteId)).toEqual([100]);
+		expect(claims.map((c) => c.turfId)).toEqual([100]);
 	});
 
 	it('scopes by chapter through the join', async () => {
@@ -118,12 +138,100 @@ describe('loadDriftVisibility', () => {
 	});
 });
 
+// Each campaign reads its own exports with its own key. One that could not
+// must not have its turf compared — for it, "not in MiniVAN" means "we could
+// not ask" — while a campaign that could is reported as normal.
+describe('per campaign', () => {
+	beforeEach(async () => {
+		await syncState(true);
+		await client.execute(
+			"INSERT INTO van_campaigns (id, credential_key, enabled, last_edited_by, last_edited_by_name, last_edited_at) VALUES (2, 'other', 1, 's', 's', 'x')",
+		);
+		await client.execute(
+			`INSERT INTO van_turfs (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
+			 VALUES (900, 2, 100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Other turf', 100, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
+		);
+		await claimOn(900);
+	});
+
+	it('leaves out a campaign whose exports could not be read', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (2, '${iso(NOW.getTime())}', 0)`,
+		);
+		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).not.toContain(900);
+		expect((await loadDriftClaims(db, all)).map((c) => c.turfId)).not.toContain(900);
+		// Campaign 1 still can, so the report as a whole is still on.
+		expect(await loadDriftVisibility(db)).toBe('visible');
+	});
+
+	it('includes it once its own sync reads them', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (2, '${iso(NOW.getTime())}', 1)`,
+		);
+		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).toContain(900);
+		expect((await loadDriftClaims(db, all)).map((c) => c.turfId)).toContain(900);
+	});
+
+	// A disabled campaign is no longer synced, so its last "exports ok" is
+	// stale: a list loaded since would never show, and its claims would all read
+	// as not loaded in MiniVAN.
+	it('leaves out a disabled campaign, whatever its last sync read', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (2, '${iso(NOW.getTime())}', 1)`,
+		);
+		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 2');
+		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).not.toContain(900);
+		expect((await loadDriftClaims(db, all)).map((c) => c.turfId)).not.toContain(900);
+	});
+
+	// The organizer page's campaign picker.
+	it('scopes turf and claims to one campaign when asked', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (2, '${iso(NOW.getTime())}', 1)`,
+		);
+		const turfs = await loadDriftTurfs(db, { chapterId: null, campaignId: 2 });
+		expect(turfs.map((t) => [t.turfId, t.campaignId])).toEqual([[900, 2]]);
+		const claims = await loadDriftClaims(db, { chapterId: null, campaignId: 2 });
+		expect(claims.map((c) => c.turfId)).toEqual([900]);
+	});
+
+	// The organizer page's picker: one campaign's check is about that campaign.
+	it('judges visibility for the picked campaign alone', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok) VALUES (2, '${iso(NOW.getTime())}', 0)`,
+		);
+		expect(await loadDriftVisibility(db)).toBe('visible');
+		expect(await loadDriftVisibility(db, 1)).toBe('visible');
+		expect(await loadDriftVisibility(db, 2)).toBe('van-side-unavailable');
+	});
+
+	// Its van_distributed_to is whatever the last good sync left.
+	it('leaves out a campaign whose last sync failed, until one succeeds', async () => {
+		await client.execute(
+			`INSERT INTO van_sync_state (campaign_id, last_sync_at, minivan_exports_ok, last_error)
+			 VALUES (2, '${iso(NOW.getTime())}', 1, 'VAN_CAMPAIGN_OTHER is not valid JSON')`,
+		);
+		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).not.toContain(900);
+		expect(await loadDriftVisibility(db, 2)).toBe('van-side-unavailable');
+		await client.execute('UPDATE van_sync_state SET last_error = NULL WHERE campaign_id = 2');
+		expect((await loadDriftTurfs(db, all)).map((t) => t.turfId)).toContain(900);
+	});
+
+	it('is unavailable when the only campaign that could read exports is disabled', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 1');
+		expect(await loadDriftVisibility(db)).toBe('van-side-unavailable');
+	});
+});
+
 describe('the three reads together', () => {
-	it('finds both directions of drift', async () => {
+	it('finds turf claimed here but not in MiniVAN', async () => {
 		await claimOn(100); // claimed here, not in MiniVAN
-		await distribute(200, 'Sam Rivera'); // in MiniVAN, not claimed here
-		await distribute(300, 'Alex Kim');
-		await claimOn(300); // both sides agree — not drift
+		await distribute(200, 'Sam Rivera'); // in MiniVAN, not claimed here — not drift
+		await claimOn(300);
+		// Claimed and loaded — agreement, not drift.
+		await client.execute(
+			`UPDATE van_turf_checkouts SET loaded_in_minivan_at = '${iso(NOW.getTime())}' WHERE turf_id = 300`,
+		);
 		await syncState(true);
 
 		const report = driftReport(
@@ -133,8 +241,7 @@ describe('the three reads together', () => {
 			await loadDriftVisibility(db),
 		);
 		expect(report.claimedNotInMinivan).toBe(1);
-		expect(report.inMinivanNotClaimed).toBe(1);
-		expect(report.items.map((i) => i.mapRouteId)).toEqual([200, 100]);
+		expect(report.items.map((i) => i.turfId)).toEqual([100]);
 	});
 
 	// Same rows, unreadable VAN side: the report must go quiet rather than

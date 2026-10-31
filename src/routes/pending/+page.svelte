@@ -1,4 +1,9 @@
 <script lang="ts">
+	import Select from '$lib/components/ui/Select.svelte';
+	import LoadMore from '$lib/components/ui/LoadMore.svelte';
+	import TableFilter from '$lib/components/ui/TableFilter.svelte';
+	import { RowWindow } from '$lib/row-window.svelte.js';
+	import { matchesText } from '$lib/row-filter.js';
 	import { onMount } from 'svelte';
 	import './pending.css';
 	import { parsePhoneNumberWithError } from 'libphonenumber-js';
@@ -56,15 +61,33 @@
 			: 0,
 	);
 
+	// Sorted by each row's status as it was loaded, not as it is now. The table
+	// renders a page at a time, so a row re-sorted on edit — marked In Slack,
+	// say — would drop past the rendered rows and vanish under the reader's
+	// cursor. The next load sorts it into place.
 	let sortedEntries = $derived(
 		data
 			? [...data.pending].sort((a, b) => {
-					const aOrder = STATUS_ORDER[statusState[a.id] ?? a.status] ?? 0;
-					const bOrder = STATUS_ORDER[statusState[b.id] ?? b.status] ?? 0;
+					const aOrder = STATUS_ORDER[a.status] ?? 0;
+					const bOrder = STATUS_ORDER[b.status] ?? 0;
 					if (aOrder !== bOrder) return aOrder - bOrder;
 					return (a.email ?? '').localeCompare(b.email ?? '');
 				})
 			: [],
+	);
+	/** The filter box above the table. Runs over every entry, including the
+	 *  ones past the rendered page, which find-in-page cannot reach. */
+	let entryQuery = $state('');
+	const matchingEntries = $derived(
+		sortedEntries.filter((e) =>
+			matchesText(entryQuery, [e.name, e.email, e.phone, comments[e.id] ?? e.comment]),
+		),
+	);
+	// A page of rows, growing as the reader scrolls toward the end. The page has
+	// no URL filters, so nothing resets it.
+	const pendingRows = new RowWindow(
+		() => matchingEntries,
+		() => '',
 	);
 
 	async function fetchPending() {
@@ -251,6 +274,13 @@
 		{#if data.pending.length === 0}
 			<p class="empty">No pending invites.</p>
 		{:else}
+			<TableFilter
+				bind:value={entryQuery}
+				label="Filter pending invites"
+				placeholder="Name, email, phone or comment"
+				matched={matchingEntries.length}
+				total={data.pending.length}
+			/>
 			<div class="table-wrap">
 				<table>
 					<thead>
@@ -264,25 +294,23 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each sortedEntries as entry (entry.id)}
+						{#each pendingRows.visible as entry (entry.id)}
 							{@const currentStatus = statusState[entry.id] ?? entry.status}
 							<tr
 								class:helped={currentStatus === 'verified_in_slack'}
 								class:contacted={currentStatus === 'contacted'}
 							>
 								<td class="col-helped">
-									<select
+									<Select
+										items={STATUS_OPTIONS}
 										value={currentStatus}
-										onchange={(e) => setStatus(entry.id, (e.target as HTMLSelectElement).value)}
+										onValueChange={(v) => setStatus(entry.id, v)}
 										aria-label="Status for {entry.name ??
 											entry.email ??
 											entry.phone ??
 											'volunteer'}"
-									>
-										{#each STATUS_OPTIONS as opt (opt.value)}
-											<option value={opt.value}>{opt.label}</option>
-										{/each}
-									</select>
+										size="sm"
+									/>
 									{#if statusErrors[entry.id]}
 										<span class="comment-status error" role="alert">Not saved</span>
 									{/if}
@@ -336,6 +364,7 @@
 					</tbody>
 				</table>
 			</div>
+			<LoadMore onnear={() => pendingRows.more()} disabled={!pendingRows.hasMore} />
 		{/if}
 	{/if}
 </main>

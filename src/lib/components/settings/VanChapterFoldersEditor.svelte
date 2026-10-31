@@ -32,12 +32,15 @@
 	}
 
 	interface Props {
+		/** The campaign being edited. Folder ids and sheet rules are each
+		 *  campaign's own. */
+		campaignId: number;
 		chapters: ChapterOption[];
 		/** Existing mappings from loadVanChapterFolders. */
 		mappings: MappingEntry[];
 	}
 
-	let { chapters, mappings }: Props = $props();
+	let { campaignId, chapters, mappings }: Props = $props();
 
 	let rows = $state<MappingEntry[]>(mappings.map((m) => ({ ...m, folderIds: [...m.folderIds] })));
 	/** Raw text per chapter, so a half-typed "1152, " isn't reformatted mid-edit. */
@@ -70,7 +73,8 @@
 			const res = await fetch('/api/settings/van-chapter-folders', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body),
+				// Every save is for one campaign: its folders, or its spreadsheet rules.
+				body: JSON.stringify({ ...(body as object), campaignId }),
 			});
 			if (!res.ok) {
 				const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -199,18 +203,7 @@
 
 	.folder-input {
 		width: 100%;
-		padding: 6px 8px;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: var(--font-size-md);
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-	}
-
-	.folder-input:focus-visible {
-		outline: 2px solid var(--color-border-focus);
-		outline-offset: 1px;
 	}
 
 	.add-chapter {

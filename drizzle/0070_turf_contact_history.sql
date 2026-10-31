@@ -1,0 +1,1 @@
+ALTER TABLE `van_turfs` ADD `contacted_doors` integer;

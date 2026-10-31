@@ -1,0 +1,237 @@
+/* Shared look for the mentor-walks components (specs/015-mentor-walks).
+ *
+ * Everything is prefixed `mw-` because this file is global: the components sit
+ * in /turfs beside turf-page.css, and neither should be able to restyle the
+ * other. Colours and spacing come from the theme tokens only, so
+ * dark mode and admin theme overrides apply without anything here. */
+
+.mw-panel {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	padding: var(--space-4);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-bg-surface);
+	color: var(--color-text);
+}
+
+/* A question the app is asking, like the name prompt on /turfs. */
+.mw-prompt {
+	box-shadow: 0 2px 8px color-mix(in srgb, var(--color-action) 25%, transparent);
+}
+
+.mw-panel h2,
+.mw-panel h3 {
+	margin: 0;
+	font-size: var(--font-size-md);
+	line-height: 1.3;
+}
+
+.mw-panel p {
+	margin: 0;
+	line-height: 1.5;
+}
+
+.mw-muted {
+	color: var(--color-text-muted);
+	font-size: var(--font-size-sm);
+}
+
+.mw-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+}
+
+.mw-btn {
+	padding: var(--space-2) var(--space-4);
+	border-radius: var(--radius-md);
+	font: inherit;
+	font-weight: 700;
+	cursor: pointer;
+	border: 1px solid transparent;
+	min-height: 44px;
+}
+
+.mw-btn-primary {
+	background: var(--color-action);
+	color: var(--color-action-text);
+}
+
+.mw-btn-primary:hover {
+	background: var(--color-action-hover);
+}
+
+.mw-btn-ghost {
+	background: transparent;
+	color: var(--color-text);
+	border-color: var(--color-border);
+	font-weight: 600;
+}
+
+.mw-btn-ghost:hover {
+	border-color: var(--color-text-muted);
+}
+
+.mw-btn-link {
+	background: none;
+	border: none;
+	padding: 0;
+	min-height: 0;
+	color: var(--color-text-muted);
+	font-weight: 600;
+	text-decoration: underline;
+}
+
+.mw-btn-danger {
+	background: transparent;
+	color: var(--color-error);
+	border-color: var(--color-error);
+	font-weight: 600;
+}
+
+.mw-btn:disabled,
+.mw-btn:disabled:hover {
+	background: var(--color-surface-alt);
+	color: var(--color-text-faint);
+	border: 1px dashed var(--color-border);
+	cursor: not-allowed;
+}
+
+.mw-btn:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: 2px;
+}
+
+.mw-field {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-1);
+	min-width: 0;
+}
+
+.mw-field label,
+.mw-field legend {
+	font-weight: 600;
+	font-size: var(--font-size-sm);
+}
+
+.mw-field-row {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+	gap: var(--space-3);
+}
+
+.mw-error {
+	color: var(--color-error);
+	font-size: var(--font-size-sm);
+}
+
+/* The two reminders every mentor and joiner sees: public place, wear merch. */
+.mw-callout {
+	padding: var(--space-2) var(--space-3);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface-alt);
+	font-size: var(--font-size-sm);
+	line-height: 1.5;
+}
+
+.mw-callout ul {
+	margin: 0;
+	padding-left: 1.2em;
+}
+
+.mw-chip {
+	display: inline-block;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	background: var(--color-surface-alt);
+	color: var(--color-text-muted);
+	white-space: nowrap;
+}
+
+.mw-chip-success {
+	background: var(--color-success);
+	color: var(--color-action-text);
+}
+
+.mw-chip-warning {
+	background: var(--color-warning);
+	color: var(--color-near-black);
+}
+
+.mw-chip-error {
+	background: var(--color-error);
+	color: var(--color-action-text);
+}
+
+.mw-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-2);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+/* Walk and canvass event cards side by side where there's room. */
+.mw-card-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+	gap: var(--space-2);
+}
+
+/* A walk or a canvass event as a card above the turf list. */
+.mw-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-1);
+	padding: var(--space-3);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-bg-surface);
+	scroll-margin-top: var(--space-6);
+}
+
+.mw-card-joined {
+	border-color: var(--color-success);
+	border-width: 2px;
+}
+
+.mw-card-selectable {
+	cursor: pointer;
+}
+
+/* An outline, so it shows alongside a joined card's green border. */
+.mw-card-selected {
+	outline: 3px solid var(--color-border-focus);
+	outline-offset: 2px;
+}
+
+.mw-card p {
+	margin: 0;
+	line-height: 1.45;
+}
+
+.mw-card-top {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2);
+}
+
+.mw-card h3 {
+	margin: 0;
+	font-size: var(--font-size-md);
+}
+
+.mw-look-for {
+	font-size: var(--font-size-sm);
+}
+
+.mw-card .mw-actions {
+	margin-top: var(--space-2);
+}

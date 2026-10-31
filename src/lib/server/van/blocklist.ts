@@ -19,6 +19,10 @@ import type { drizzle } from 'drizzle-orm/libsql';
 
 import { sessions, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { saveVanBlockedUser, deleteVanBlockedUser, type Editor } from '../settings.js';
+import { loadMentor, loadWalk, revokeMentor } from '../mentor-walks/store.js';
+import { releaseSeatsOf } from '../mentor-walks/seats.js';
+import { queueLeft } from '../mentor-walks/walk-events.js';
+import { dispatchSoon } from '../mentor-walks/dispatch.js';
 
 type Database = ReturnType<typeof drizzle>;
 
@@ -28,7 +32,7 @@ export interface BlockResult {
 	 *  caller looking them up afterwards: this function is the only thing that
 	 *  knows which rows it released, and by the time it returns they are no
 	 *  longer distinguishable as "the ones this block freed". */
-	released: { mapRouteId: number; name: string }[];
+	released: { turfId: number; name: string }[];
 	/** Sessions invalidated, so the block lands on their next request. */
 	sessionsRevoked: number;
 }
@@ -84,14 +88,14 @@ export async function blockFromTurfCheckout(
 	const active = await db
 		.select({
 			id: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			name: vanTurfs.name,
 		})
 		.from(vanTurfCheckouts)
 		// Inner join: a checkout whose turf row has vanished cannot be named in a
 		// DM, and a message listing a blank is worse than one turf fewer. It is
 		// still released by the update below — the loop runs over `active`.
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(
 				eq(vanTurfCheckouts.slackUserId, target.slackUserId),
@@ -107,6 +111,22 @@ export async function blockFromTurfCheckout(
 			.where(eq(vanTurfCheckouts.id, row.id));
 	}
 
+	// Blocking an active mentor revokes them, cancelling their upcoming walks
+	// (specs/015-mentor-walks, edge cases). Unblocking doesn't undo it: only an
+	// organizer reinstates a mentor.
+	// Their seats on upcoming walks are freed too, and each mentor is told
+	// the seat came back, as for anyone who can no longer make it.
+	const blockedAt = new Date(releasedAt);
+	const mentor = await loadMentor(db, target.slackUserId);
+	if (mentor?.status === 'active') {
+		await revokeMentor(db, target.slackUserId, editor, blockedAt);
+	}
+	for (const seat of await releaseSeatsOf(db, target.slackUserId, blockedAt)) {
+		const walk = await loadWalk(db, seat.walkId);
+		if (walk) await queueLeft(db, walk, seat, blockedAt);
+	}
+	dispatchSoon(db);
+
 	const sessionsRevoked = await revokeSessions(db, target.slackUserId);
 
 	console.log(
@@ -114,7 +134,7 @@ export async function blockFromTurfCheckout(
 	);
 
 	return {
-		released: active.map((r) => ({ mapRouteId: r.mapRouteId, name: r.name })),
+		released: active.map((r) => ({ turfId: r.turfId, name: r.name })),
 		sessionsRevoked,
 	};
 }

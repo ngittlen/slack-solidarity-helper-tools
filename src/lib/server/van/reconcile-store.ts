@@ -23,11 +23,12 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
-import { sendDm } from '../slack-dm.js';
+import { notifyHolder } from './holder-notices.js';
 import { expiryFor, DEFAULT_CLAIM_TTL_HOURS } from '../../van/checkout.js';
 import {
 	planReconciliation,
 	renderRecutGone,
+	turfNameKey,
 	type ReconcileClaim,
 	type RecutClaim,
 	type ReplacementTurf,
@@ -78,6 +79,16 @@ export interface ReconcileOptions {
 	 *  value a fresh claim gets, because that is what it is: the volunteer has
 	 *  new turf, new doors and the whole window to walk it. */
 	ttlHours?: number;
+	/** The Packet Tracker, read live: who it says has a turf, null for nobody,
+	 *  undefined when it could not be read. The same check a claim makes
+	 *  (packetTrackerCheck). The sync reads the tracker only after this runs,
+	 *  so a route the re-cut just created has no `sheetAssignedTo` yet — and
+	 *  its list number is exactly what an organizer writes down first. */
+	sheetCheck?: (turf: {
+		turfId: number;
+		regionName: string;
+		printedListNumber: string | null;
+	}) => Promise<string | null | undefined>;
 }
 
 /** Live claims, with the turf they point at. */
@@ -85,7 +96,7 @@ async function loadLiveClaims(db: Db): Promise<ReconcileClaim[]> {
 	const rows = await db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			issuedListNumber: vanTurfCheckouts.issuedListNumber,
@@ -98,17 +109,17 @@ async function loadLiveClaims(db: Db): Promise<ReconcileClaim[]> {
 			retiredAt: vanTurfs.retiredAt,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(and(isNull(vanTurfCheckouts.releasedAt), isNull(vanTurfCheckouts.completedAt)));
 
 	return rows.map((row) => ({
 		checkoutId: row.checkoutId,
-		mapRouteId: row.mapRouteId,
+		turfId: row.turfId,
 		slackUserId: row.slackUserId,
 		slackUserName: row.slackUserName,
 		issuedListNumber: row.issuedListNumber,
 		turf: {
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			mapRegionId: row.mapRegionId,
 			chapterId: row.chapterId,
 			name: row.name,
@@ -131,17 +142,18 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 	const rows = await db
 		.select({
 			checkoutId: vanTurfCheckouts.id,
-			mapRouteId: vanTurfCheckouts.mapRouteId,
+			turfId: vanTurfCheckouts.turfId,
 			slackUserId: vanTurfCheckouts.slackUserId,
 			slackUserName: vanTurfCheckouts.slackUserName,
 			releasedAt: vanTurfCheckouts.releasedAt,
+			campaignId: vanTurfs.campaignId,
 			mapRegionId: vanTurfs.mapRegionId,
 			chapterId: vanTurfs.chapterId,
 			name: vanTurfs.name,
 			regionName: vanTurfs.regionName,
 		})
 		.from(vanTurfCheckouts)
-		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.turfId, vanTurfs.turfId))
 		.where(
 			and(eq(vanTurfCheckouts.releaseReason, 'retired'), isNull(vanTurfCheckouts.recutNotifiedAt)),
 		);
@@ -150,11 +162,12 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 		.filter((row): row is typeof row & { releasedAt: string } => row.releasedAt !== null)
 		.map((row) => ({
 			checkoutId: row.checkoutId,
-			mapRouteId: row.mapRouteId,
+			turfId: row.turfId,
 			slackUserId: row.slackUserId,
 			slackUserName: row.slackUserName,
 			releasedAt: row.releasedAt,
 			turf: {
+				campaignId: row.campaignId,
 				mapRegionId: row.mapRegionId,
 				chapterId: row.chapterId,
 				name: row.name,
@@ -164,7 +177,12 @@ async function loadRecutClaims(db: Db): Promise<RecutClaim[]> {
 }
 
 /** Candidate replacements, scoped to the regions that actually lost a claim. */
-async function loadReplacements(db: Db, mapRegionIds: number[]): Promise<ReplacementTurf[]> {
+async function loadReplacements(
+	db: Db,
+	recut: readonly RecutClaim[],
+	sheetCheck: ReconcileOptions['sheetCheck'],
+): Promise<ReplacementTurf[]> {
+	const mapRegionIds = [...new Set(recut.map((c) => c.turf.mapRegionId))];
 	if (mapRegionIds.length === 0) return [];
 
 	const rows = await db
@@ -174,28 +192,46 @@ async function loadReplacements(db: Db, mapRegionIds: number[]): Promise<Replace
 	if (rows.length === 0) return [];
 
 	const claimed = await db
-		.select({ mapRouteId: vanTurfCheckouts.mapRouteId })
+		.select({ turfId: vanTurfCheckouts.turfId })
 		.from(vanTurfCheckouts)
 		.where(
 			and(
 				inArray(
-					vanTurfCheckouts.mapRouteId,
-					rows.map((r) => r.mapRouteId),
+					vanTurfCheckouts.turfId,
+					rows.map((r) => r.turfId),
 				),
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
 			),
 		);
-	const claimedIds = new Set(claimed.map((c) => c.mapRouteId));
+	// A turf the Packet Tracker has out is somebody's, the same as one held
+	// here: handing it over would put two canvassers on it.
+	const claimedIds = new Set([
+		...claimed.map((c) => c.turfId),
+		...rows.filter((r) => r.sheetAssignedTo).map((r) => r.turfId),
+	]);
+
+	// Live, and only for routes a re-cut claim could actually be handed: same
+	// region and name, nobody holding it. The tracker read is cached per
+	// spreadsheet, so a region's worth costs one round trip to Google.
+	if (sheetCheck) {
+		const wanted = new Set(recut.map((c) => `${c.turf.mapRegionId}|${turfNameKey(c.turf.name)}`));
+		for (const row of rows) {
+			if (claimedIds.has(row.turfId)) continue;
+			if (!wanted.has(`${row.mapRegionId}|${turfNameKey(row.name)}`)) continue;
+			if (await sheetCheck(row)) claimedIds.add(row.turfId);
+		}
+	}
 
 	return rows.map((row) => ({
-		mapRouteId: row.mapRouteId,
+		turfId: row.turfId,
+		campaignId: row.campaignId,
 		mapRegionId: row.mapRegionId,
 		name: row.name,
 		printedListNumber: row.printedListNumber,
 		doorCount: row.doorCount,
 		retiredAt: row.retiredAt,
-		claimed: claimedIds.has(row.mapRouteId),
+		claimed: claimedIds.has(row.turfId),
 	}));
 }
 
@@ -229,7 +265,7 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 		// Inside the guard with the other two: this function is documented as
 		// never throwing, and the sync that calls it has already written its
 		// catalog rows.
-		replacements = await loadReplacements(db, [...new Set(recut.map((c) => c.turf.mapRegionId))]);
+		replacements = await loadReplacements(db, recut, options.sheetCheck);
 	} catch (err) {
 		console.error(`${LOG} could not read claims to reconcile:`, errMessage(err));
 		return result;
@@ -257,7 +293,7 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 					// DM first: the stamp is what stops the message repeating, so
 					// stamping before a failed send would swallow the one thing the
 					// volunteer needs to know.
-					if (!(await sendDm(action.slackUserId, action.text, LOG))) {
+					if (!(await notifyHolder(db, action.slackUserId, 'list-number', action.text, LOG))) {
 						result.dmFailed += 1;
 						break;
 					}
@@ -266,9 +302,10 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 						.set({ issuedListNumber: action.listNumber })
 						.where(eq(vanTurfCheckouts.id, action.checkoutId));
 					result.listNumbersChanged += 1;
-					console.log(
-						`${LOG} list number changed: checkout=${action.checkoutId} number=${action.listNumber}`,
-					);
+					// The checkout id identifies the row; the list number itself is
+					// the credential that pulls doors down in MiniVAN and never
+					// belongs in a retained log.
+					console.log(`${LOG} list number changed: checkout=${action.checkoutId}`);
 					break;
 				}
 
@@ -282,7 +319,9 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 						.set({ releasedAt: nowIso, releaseReason: 'walked-out' })
 						.where(eq(vanTurfCheckouts.id, action.checkoutId));
 					result.walkedOut += 1;
-					if (!(await sendDm(action.slackUserId, action.text, LOG))) result.dmFailed += 1;
+					if (!(await notifyHolder(db, action.slackUserId, 'walked-out', action.text, LOG))) {
+						result.dmFailed += 1;
+					}
 					console.log(`${LOG} walked out: checkout=${action.checkoutId}`);
 					break;
 				}
@@ -312,7 +351,7 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 					const inserted = await db
 						.insert(vanTurfCheckouts)
 						.values({
-							mapRouteId: action.replacement.mapRouteId,
+							turfId: action.replacement.turfId,
 							slackUserId: action.slackUserId,
 							slackUserName: action.slackUserName,
 							claimedAt: nowIso,
@@ -332,15 +371,19 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 					if (inserted.length === 0) {
 						const claim = recut.find((c) => c.checkoutId === action.checkoutId);
 						const text = claim ? renderRecutGone({ turf: claim.turf, appUrl }) : action.text;
-						if (!(await sendDm(action.slackUserId, text, LOG))) result.dmFailed += 1;
+						if (!(await notifyHolder(db, action.slackUserId, 'recut', text, LOG))) {
+							result.dmFailed += 1;
+						}
 						result.recutGone += 1;
 						break;
 					}
 
 					result.recutReplaced += 1;
-					if (!(await sendDm(action.slackUserId, action.text, LOG))) result.dmFailed += 1;
+					if (!(await notifyHolder(db, action.slackUserId, 'recut', action.text, LOG))) {
+						result.dmFailed += 1;
+					}
 					console.log(
-						`${LOG} re-cut: checkout=${action.checkoutId} moved to route=${action.replacement.mapRouteId}`,
+						`${LOG} re-cut: checkout=${action.checkoutId} moved to route=${action.replacement.turfId}`,
 					);
 					break;
 				}
@@ -348,7 +391,9 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 				case 'recut-gone': {
 					await markRecutNotified(db, action.checkoutId, nowIso);
 					result.recutGone += 1;
-					if (!(await sendDm(action.slackUserId, action.text, LOG))) result.dmFailed += 1;
+					if (!(await notifyHolder(db, action.slackUserId, 'recut', action.text, LOG))) {
+						result.dmFailed += 1;
+					}
 					break;
 				}
 

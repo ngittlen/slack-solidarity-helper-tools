@@ -4,6 +4,7 @@ import { db } from '$lib/server/db.js';
 import { slackJoins } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
+import { chapterIdsOf } from '$lib/server/solidarity-chapter-ids.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { verifySlackSignature } from '$lib/server/slack-signature.js';
 import { channelNameToId } from '$lib/server/slack-channel-names.js';
@@ -68,10 +69,11 @@ interface SlackEventPayload {
 	event?: { type: string; user: SlackUser; file_id?: string };
 }
 
-// Slack only delivers team_join once (we ack with a 200 before this handler
-// runs), so a transient DB blip must not permanently cost a joiner their
-// channel invites. Retry with increasing waits before giving up; the handler
-// runs detached from the HTTP response, so waiting here blocks nothing.
+// A redelivery is not a second chance at this work: recordSlackJoin claims the
+// joiner, so whichever delivery inserted the row is the only one that will ever
+// invite them. That makes a transient DB blip here permanently costly to the
+// joiner, so retry with increasing waits before giving up; the handler runs
+// detached from the HTTP response, so waiting blocks nothing.
 const LOAD_SETTINGS_RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000];
 
 async function loadSettingsWithRetry(): Promise<Awaited<ReturnType<typeof loadSettings>>> {
@@ -107,8 +109,14 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		return;
 	}
 
-	const chapterIds = resolveChapterIds(solidarityUser);
-	await recordSlackJoin(user.id, email, chapterIds);
+	const chapterIds = chapterIdsOf(solidarityUser);
+	if (!(await recordSlackJoin(user.id, email, chapterIds))) {
+		console.log(
+			`[slack-events] team_join for ${user.id} (${email}) is already recorded — ` +
+				'another delivery of this event owns the invites',
+		);
+		return;
+	}
 
 	// The mapping is admin-editable on /settings (DB-backed) and many-to-many:
 	// every channel mapped to any of the joiner's chapters, deduped since
@@ -151,22 +159,28 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 	}
 }
 
-function resolveChapterIds(solidarityUser: {
-	chapter_id?: number | null;
-	chapter_ids?: number[];
-}): number[] {
-	if (solidarityUser.chapter_ids?.length) return solidarityUser.chapter_ids;
-	if (solidarityUser.chapter_id != null) return [solidarityUser.chapter_id];
-	return [];
-}
-
+/**
+ * Record the join, and report whether THIS call is the one that recorded it.
+ *
+ * Slack redelivers an event when it does not see a 200 within three seconds — a
+ * cold start is enough on its own — and this handler runs detached from that
+ * ack, so the redelivery arrives while the first pass is still working. Both
+ * would invite, both would post "everybody welcome" into every mapped channel,
+ * and both would DM the new member. The unique index on slack_user_id settles
+ * it: exactly one insert comes back with a row, and that delivery owns the rest
+ * of the work.
+ *
+ * A failed insert reports true rather than false. The row is dashboard data as
+ * well as the claim, so a database blip must not cost a joiner their channel
+ * invites — a duplicate greeting is much the cheaper error.
+ */
 async function recordSlackJoin(
 	slackUserId: string,
 	email: string,
 	chapterIds: number[],
-): Promise<void> {
+): Promise<boolean> {
 	try {
-		await db
+		const claimed = await db
 			.insert(slackJoins)
 			.values({
 				slackUserId,
@@ -174,12 +188,15 @@ async function recordSlackJoin(
 				joinedAt: new Date().toISOString(),
 				chapterIds: JSON.stringify(chapterIds),
 			})
-			.onConflictDoNothing({ target: slackJoins.slackUserId });
+			.onConflictDoNothing({ target: slackJoins.slackUserId })
+			.returning({ slackUserId: slackJoins.slackUserId });
+		return claimed.length > 0;
 	} catch (err) {
 		console.error(
 			`[slack-events] failed to record slack_join for ${slackUserId}:`,
 			err instanceof Error ? err.message : err,
 		);
+		return true;
 	}
 }
 

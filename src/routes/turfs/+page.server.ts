@@ -1,31 +1,98 @@
-import { redirect } from '@sveltejs/kit';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
-import type { PageServerLoad } from './$types';
+import { fail } from '@sveltejs/kit';
+import { dev } from '$app/environment';
+import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import {
+	APP_URL,
+	FLY_APP_NAME,
 	MAP_TILE_API_KEY,
 	MAP_TILE_ATTRIBUTION,
 	MAP_TILE_URL_TEMPLATE,
 	SLACK_SUPERUSER_ID,
 } from '$lib/server/env.js';
-import { vanTurfCheckouts, vanTurfs } from '$lib/server/schema.js';
-import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
-import { chaptersFromChannelMap } from '$lib/chapter-list.js';
-import { lookupZipCentroid } from '$lib/server/van/zip-centroid.js';
-import { turfAccess } from '$lib/van/access.js';
+import { loadSettings, loadVanBlockedIds, type Settings } from '$lib/server/settings.js';
+import { liveNoShowDeps } from '$lib/server/mentor-walks/dispatch.js';
+import { loadCanvassCountNear, loadCanvassEvents } from '$lib/server/canvass-events.js';
+import { countWalksNear } from '$lib/server/mentor-walks/seats.js';
+import type { CanvassEventCard } from '$lib/canvass-events/types.js';
+import { chaptersFromChannelMap, turfChapters } from '$lib/chapter-list.js';
+import {
+	lookupAddress,
+	findZip,
+	lookupZipCentroid,
+	normalizeZip,
+	resolveLocation,
+} from '$lib/server/van/zip-centroid.js';
+import {
+	loadNearbySummary,
+	loadTurfCentre,
+	type NearbySummary,
+} from '$lib/server/van/nearby-summary.js';
+import {
+	cappedCount,
+	NEARBY_RADIUS_MILES,
+	parseCoordinates,
+	type NearbyPlace,
+} from '$lib/van/nearby-summary.js';
+import type { FoundPlace } from '$lib/van/map-focus.js';
+import { claimOptionsFor } from '$lib/van/checkout.js';
+import {
+	loginRedirectPath,
+	sanitizeRedirectTarget,
+	withRedirectTo,
+} from '$lib/server/post-login-redirect.js';
+import { visitorAddress } from '$lib/server/visitor-address.js';
+import { isTurfStaff, turfAccess } from '$lib/van/access.js';
 import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js';
-import { chapterVisits, pruneRateLimitStores } from '$lib/server/van/rate-limit-store.js';
-import { selectNearest, TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
-import { toTurfView, type TurfView } from '$lib/van/turf-view.js';
-import { DEFAULT_CLAIM_TTL_HOURS } from '$lib/van/checkout.js';
-import { demoTurfs, DEMO_CHAPTERS, DEMO_LOCATIONS } from '$lib/van/demo-turfs.js';
+import { PUBLIC_LOOKUPS_PER_MINUTE, recordRequest } from '$lib/van/request-budget.js';
+import {
+	chapterVisits,
+	publicLookups,
+	pruneRateLimitStores,
+	turfRequests,
+} from '$lib/server/van/rate-limit-store.js';
+import { loadChapterTurfs } from '$lib/server/van/turf-query.js';
+import { dismissHolderNotice, loadHolderNotices } from '$lib/server/van/holder-notices.js';
+import { noticeLines, type NoticeLine } from '$lib/van/notice-text.js';
+import { errMessage } from '$lib/err-message.js';
+import { tidyDisplayName } from '$lib/server/display-name.js';
+import { setDisplayNameOnce } from '$lib/server/outside-volunteers.js';
+import { updateSession } from '$lib/server/session.js';
+import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
+import type { CampaignBadges, CampaignTotals, TurfView } from '$lib/van/turf-view.js';
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
-import type { ClaimSnapshot } from '$lib/van/checkout.js';
 import type { LatLng } from '$lib/van/geometry.js';
+import { parseTurfSort, type TurfSort } from '$lib/van/turf-paging.js';
+import {
+	agree,
+	answerInvitation,
+	cancelOwnWalk,
+	loadMentorDebug,
+	loadMentorPanel,
+	loadWalkFinder,
+	locatePlace,
+	saveWalk,
+	answerFinderPrompt,
+	answerWalkAction,
+	joinWalkAction,
+	leaveWalkAction,
+	saveAttendanceAction,
+	type MentorDebugView,
+} from '$lib/server/mentor-walks/panel.js';
+import { forgetMentor } from '$lib/server/mentor-walks/store.js';
+import type { MentorPanelView, WalkFinderView } from '$lib/mentor-walks/types.js';
+import { WALK_MESSAGE_TITLES } from '$lib/mentor-walks/messages.js';
 
 // The volunteer turf page.
 //
-// Four gates, in order, all server-side:
+// Signed out, it is a teaser for people who might canvass: a blurred map and
+// three coarse numbers about the turf near a point they give us (the `nearby`
+// action below), plus links to join the Slack or sign in. That branch returns
+// before any of the gates that follow and reads nothing but the join link and
+// the tile source — no chapter, no turf rows, no claims. /turfs is public by
+// exact path for this reason only; see server/public-paths.ts.
+//
+// Signed in, four gates, in order, all server-side:
 //
 //   1. Session. Checked here rather than leaning on +layout.server.ts, because
 //      layout and page loads run CONCURRENTLY — an unauthenticated request
@@ -37,71 +104,100 @@ import type { LatLng } from '$lib/van/geometry.js';
 //   3. Chapter. Turf is served one chapter at a time and the FILTER RUNS HERE,
 //      before serialising. Shipping every chapter and filtering in the browser
 //      would make the compartment purely cosmetic; the payload is the boundary.
-//   4. Rate limit on switching between chapters, so paging through every county
-//      is slow and noisy rather than a loop.
+//   4. Rate limits: the per-request budget, and the limit on switching between
+//      chapters, so paging through every county is slow and noisy rather than
+//      a loop.
 //
 // No chapter picked means no turf data at all, rather than a default chapter's
 // worth. The picker is a gate, not a pre-filter.
+//
+// The turf itself comes from loadChapterTurfs, the same query /api/turfs and
+// the /turfs Slack command use, so the three cannot disagree about a turf.
 
-export const load: PageServerLoad = async ({ locals, url }) => {
-	const session = locals.session;
-	if (!session) redirect(302, '/');
+/** Which limit stopped the load, so the page can say the right thing: the
+ *  chapter limiter clears for chapters already seen, the budget does not. */
+export type RateLimitReason = 'chapters' | 'requests';
 
-	const tiles = {
+/** Longest address we will pass to the geocoder. */
+const MAX_QUERY_LENGTH = 200;
+const QUERY_TOO_LONG = 'That address is too long. Try just the street and ZIP code.';
+const LOOKUP_DOWN = "The address lookup isn't working right now. Try again in a few minutes.";
+
+export type PublicNearby = NearbySummary & {
+	place: NearbyPlace;
+	/** Mentor walks a visitor could join this week within NEARBY_RADIUS_MILES,
+	 *  capped (cappedCount). Null when walks aren't open to everyone, so the
+	 *  teaser doesn't advertise what signing in wouldn't show. */
+	mentorWalks: number | null;
+	/** Canvass sessions this week within NEARBY_RADIUS_MILES, capped. Null
+	 *  when no canvass tag is set. */
+	canvasses: number | null;
+};
+
+function tileSource() {
+	return {
 		urlTemplate: withTileApiKey(MAP_TILE_URL_TEMPLATE || TILE_URL_TEMPLATE, MAP_TILE_API_KEY),
 		attribution: MAP_TILE_ATTRIBUTION || TILE_ATTRIBUTION,
 	};
+}
 
-	// The organizer walkthrough, and the FIRST thing this function does — it
-	// returns before any database access, so demo mode cannot read real turf
-	// even if a later gate were wrong. That ordering is the safety property;
-	// everything below it is unreachable in demo mode by construction rather
-	// than by a flag being checked correctly in several places.
-	//
-	// Admin-only, as the standalone demo page was. A non-admin passing ?demo
-	// falls through to the real page rather than getting an error: the
-	// parameter is a preview affordance, not a mode anyone can be locked out
-	// of, and a confusing refusal would just generate a support thread.
-	if (url.searchParams.has('demo') && session.isAdmin) {
-		const requestedDemo = Number(url.searchParams.get('chapter'));
-		const demoChapter = DEMO_CHAPTERS.find((c) => c.chapterId === requestedDemo) ?? null;
-		// Everyone here is an admin, so the walkthrough needs an explicit switch
-		// to show what a volunteer sees — otherwise organizers would review the
-		// page while looking at strictly more than any volunteer ever will. It
-		// feeds visibleTurfState, so the PAYLOAD differs, not just the display.
-		const asAdmin = url.searchParams.get('view') === 'admin';
-		const demoAll = demoChapter ? demoTurfs(demoChapter.chapterId, { isAdmin: asAdmin }) : [];
-		const demoLocation = demoChapter ? (DEMO_LOCATIONS[demoChapter.chapterId] ?? null) : null;
-		const demoRows = selectNearest(demoAll, {
-			location: demoLocation,
-			limit: TURFS_PER_PAYLOAD,
-		});
+/** The chapters /turfs offers, by id — for the signed-out teaser, which spans
+ *  chapters but must count only turf one of them can claim. */
+function offeredChapterIds(settings: {
+	chapterChannelMap: Array<{ chapterId: number; name: string }>;
+	turfHiddenChapterIds: ReadonlySet<number>;
+	turfCustomChapters: Array<{ chapterId: number; name: string }>;
+}): number[] {
+	return turfChapters(
+		settings.chapterChannelMap,
+		settings.turfHiddenChapterIds,
+		settings.turfCustomChapters,
+	).map((c) => c.chapterId);
+}
+
+/** The chapter this browser last opened turf in, so the picker can put it
+ *  first. A cookie rather than a column: it is a convenience for the next
+ *  visit on this device, and an id the picker already lists to everyone. */
+const LAST_CHAPTER_COOKIE = 'turf_chapter';
+const LAST_CHAPTER_MAX_AGE = 365 * 24 * 60 * 60;
+
+/** `chapters` with `lastId` moved to the front, the rest in their order. */
+function lastChapterFirst<T extends { chapterId: number }>(chapters: T[], lastId: number): T[] {
+	const last = chapters.find((c) => c.chapterId === lastId);
+	return last ? [last, ...chapters.filter((c) => c !== last)] : chapters;
+}
+
+export const load: PageServerLoad = async ({ locals, url, cookies }) => {
+	const session = locals.session;
+	const tiles = tileSource();
+
+	if (!session) {
+		const visitorSettings = await loadSettings(db);
+		const { publicJoinUrl } = visitorSettings;
+		// Centred on turf a chapter /turfs offers can see, like the summary.
+		const turfCentre = await loadTurfCentre(db, offeredChapterIds(visitorSettings));
 		return {
-			pageTitle: 'Turf checkout (demo)',
-			demo: true,
-			blocked: null,
-			rateLimited: 0,
-			chapters: DEMO_CHAPTERS.map((c) => ({ chapterId: c.chapterId, name: c.name })),
-			chapter: demoChapter,
-			asAdmin,
-			// Paged exactly like the real page. The walkthrough is the only place
-			// anyone will see a chapter big enough to need it before launch, so a
-			// demo that shipped all thousand rows would be previewing a page we
-			// do not serve — and would hide the one behaviour (pan to load more)
-			// that organizers most need to recognise when volunteers ask about it.
-			turfs: demoRows.selected,
-			total: demoAll.length,
-			location: demoLocation,
-			zip: null as string | null,
+			mode: 'public' as const,
+			pageTitle: 'Canvass near you',
 			tiles,
-			// The built-in default, not the configured one: this branch returns
-			// before any database access on purpose (see above), and the walkthrough
-			// runs on fabricated turf nobody can actually claim.
-			claimTtlHours: DEFAULT_CLAIM_TTL_HOURS,
+			turfCentre,
+			joinUrl: publicJoinUrl || null,
+			// Carries /turfs through OAuth, so signing in lands on the real map.
+			signInHref: loginRedirectPath(url),
 		};
 	}
 
 	const [blockedIds, settings] = await Promise.all([loadVanBlockedIds(db), loadSettings(db)]);
+
+	// Set by the turf-only gate (server/turf-only-access.ts) when it turned a
+	// Google or Apple sign-in away from a Slack-only page: the page explains, and offers
+	// Slack sign-in straight back to where they were going. Shipped on every
+	// member branch below so the notice shows whatever else this page says.
+	const needsSlack = url.searchParams.get('needsSlack');
+	const needsSlackHref =
+		session.authProvider !== undefined && needsSlack !== null
+			? withRedirectTo('/auth/slack', sanitizeRedirectTarget(needsSlack))
+			: null;
 
 	// The admin-tunable TTL and per-volunteer cap (Story 7.4), already resolved
 	// and clamped by loadSettings. Computed here rather than beside the claim
@@ -109,10 +205,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// volunteer "48 hours" on one code path and 72 on another would be lying on
 	// one of them, and which branch renders the claim copy is a fact about the
 	// markup that can change without anyone thinking about this file.
-	const options = {
-		ttlHours: settings.vanTurfClaimTtlHours,
-		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
-	};
+	// An outside volunteer with no name yet (see SessionData.needsName): the page
+	// asks for one, and the claim route refuses until they give it. Like
+	// needsSlackHref, shipped on every member branch below.
+	const needsName = session.needsName === true;
+
+	const options = claimOptionsFor(settings, session);
 
 	const access = turfAccess(
 		{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
@@ -124,19 +222,35 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// than thrown so the page can render it calmly — and with no turf data
 		// alongside it.
 		return {
+			mode: 'member' as const,
 			pageTitle: 'Turf checkout',
-			demo: false,
 			blocked: access.message,
+			needsSlackHref,
+			// Not asked: setName refuses a blocked volunteer, so the prompt
+			// would only lead to a refusal after they had typed and confirmed.
+			needsName: false,
+			// Nothing about turf for a blocked user, these included.
+			notices: [] as TurfNoticeView[],
 			rateLimited: 0,
-			asAdmin: false,
+			rateLimitReason: null as RateLimitReason | null,
 			chapters: [],
+			lastChapterId: null as number | null,
 			chapter: null,
 			turfs: [] as TurfView[],
 			total: 0,
+			campaignBadges: null as CampaignBadges | null,
+			campaignTotals: null as CampaignTotals | null,
 			location: null as LatLng | null,
 			zip: null as string | null,
+			sort: 'nearest' as TurfSort,
 			tiles,
 			claimTtlHours: options.ttlHours,
+			// Blocked people see no trace of mentor walks (specs/015-mentor-walks,
+			// FR-039).
+			mentor: null as MentorPanelView | null,
+			mentorDebug: null as MentorDebugView | null,
+			walkFinder: null as WalkFinderView | null,
+			canvassEvents: [] as CanvassEventCard[],
 		};
 	}
 
@@ -146,43 +260,128 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// is running, which is exactly what the compartment exists to prevent.
 	// Deduplicated by chapterId — see chaptersFromChannelMap, which this page's
 	// inline version became. Leaving it inline is what let /turfs/organizer and
-	// /turfs/activity reintroduce the bug in a form that broke hydration.
-	const chapters = chaptersFromChannelMap(settings.chapterChannelMap);
+	// /turfs/activity reintroduce the bug in a form that broke hydration. Less
+	// the chapters an admin has hidden from turf, which then read as unknown
+	// below — a `?chapter=` link to one opens the picker, not the chapter.
+	const chapters = turfChapters(
+		settings.chapterChannelMap,
+		settings.turfHiddenChapterIds,
+		settings.turfCustomChapters,
+	);
 
+	// What the turf sweeps would have DMed a Google or Apple holder, who has no
+	// Slack (User Story 5 of specs/013-google-sso-login). Slack holders got theirs as
+	// DMs, so there is nothing to read for them. Like needsSlackHref, shipped on
+	// every branch below.
+	//
+	// And mentor walks (specs/015-mentor-walks): the mentor area, which
+	// doesn't depend on the chapter on screen (a mentor's walks can be in any),
+	// and the walk cards, which do. Admins also get a debug panel for trying
+	// it out on themselves.
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;
+	// Remembered whenever one opens, so the picker the next time round leads
+	// with it. Only an id the picker lists: an unknown or hidden one is never
+	// written, and a stale one read back matches nothing and is ignored.
+	if (chapter) {
+		cookies.set(LAST_CHAPTER_COOKIE, String(chapter.chapterId), {
+			path: '/turfs',
+			httpOnly: true,
+			secure: !dev,
+			sameSite: 'lax',
+			maxAge: LAST_CHAPTER_MAX_AGE,
+		});
+	}
+	const lastChapterId = chapter
+		? chapter.chapterId
+		: Number(cookies.get(LAST_CHAPTER_COOKIE) ?? Number.NaN);
+	const mentorCtx = { viewer: session, settings, blocked: false, now: new Date() };
+	const [notices, mentor, mentorDebug, walkFinder] = await Promise.all([
+		session.authProvider !== undefined ? turfNoticesFor(session.slackUserId) : [],
+		loadMentorPanel(db, { ...mentorCtx, chapters, chapterNames: chapterNamesOf(settings) }),
+		loadMentorDebug(db, { viewer: session, settings, blocked: false }),
+		loadWalkFinder(db, {
+			...mentorCtx,
+			chapterId: chapter?.chapterId ?? null,
+			linkedWalkId: url.searchParams.get('walk'),
+		}),
+	]);
 
 	const empty = {
+		mode: 'member' as const,
 		pageTitle: 'Turf checkout',
-		demo: false,
 		blocked: null,
+		needsSlackHref,
+		needsName,
+		notices,
 		rateLimited: 0,
-		asAdmin: false,
-		chapters,
+		rateLimitReason: null as RateLimitReason | null,
+		chapters: lastChapterFirst(chapters, lastChapterId),
+		/** Leads the picker; null when this browser has none, or one no longer listed. */
+		lastChapterId: chapters.some((c) => c.chapterId === lastChapterId)
+			? lastChapterId
+			: (null as number | null),
 		chapter: null,
 		turfs: [] as TurfView[],
 		total: 0,
+		campaignBadges: null as CampaignBadges | null,
+		campaignTotals: null as CampaignTotals | null,
 		location: null as LatLng | null,
 		zip: null as string | null,
+		sort: 'nearest' as TurfSort,
 		tiles,
 		claimTtlHours: options.ttlHours,
+		mentor,
+		mentorDebug,
+		walkFinder,
+		// Only once a chapter has passed the rate limits below: like the walk
+		// cards, they say where the chapter is canvassing.
+		canvassEvents: [] as CanvassEventCard[],
 	};
 
 	if (!chapter) return empty;
 
 	const now = Date.now();
 	pruneRateLimitStores(now);
-	// Shared with /api/turfs, so the budget follows the user rather than the
-	// URL — see rate-limit-store.ts for why that matters.
-	const limit = recordChapterView(chapterVisits, session.slackUserId, chapter.chapterId, now, {
+
+	// Both limiters are shared with /api/turfs, so the budget follows the user
+	// rather than the URL — see rate-limit-store.ts for why that matters.
+	//
+	// The per-request budget is spent HERE as well as on the API. This load
+	// returns the nearest TURFS_PER_PAYLOAD turfs to whatever `zip` is passed,
+	// and a different ZIP is a different set, so a loop over
+	// `?chapter=N&zip=XXXXX` walks a whole chapter through the page alone. Each uncached ZIP also costs an
+	// unthrottled third-party geocode. The API route's header promises every
+	// gate it applies is applied here too; leaving this one off the page made
+	// the promise true in only one direction.
+	const budget = recordRequest(turfRequests, session.slackUserId, now, {
 		exempt: session.isAdmin,
+	});
+	if (!budget.allowed) {
+		console.warn(`[van] turf request budget exhausted (page): user=${session.slackUserId}`);
+		return {
+			...empty,
+			walkFinder: withoutCards(walkFinder),
+			rateLimited: budget.retryAfterSeconds,
+			rateLimitReason: 'requests' as RateLimitReason,
+		};
+	}
+
+	const limit = recordChapterView(chapterVisits, session.slackUserId, chapter.chapterId, now, {
+		exempt: isTurfStaff(session),
+		folderIds: await foldersForChapter(db, chapter.chapterId),
 	});
 	if (!limit.allowed) {
 		console.warn(
 			`[van] chapter switch rate-limited: user=${session.slackUserId} ` +
 				`chapter=${chapter.chapterId} seen=${chaptersSeen(chapterVisits, session.slackUserId, now).join(',')}`,
 		);
-		return { ...empty, rateLimited: limit.retryAfterSeconds };
+		return {
+			...empty,
+			walkFinder: withoutCards(walkFinder),
+			rateLimited: limit.retryAfterSeconds,
+			rateLimitReason: 'chapters' as RateLimitReason,
+		};
 	}
 
 	// Logged only once someone has opened an unusual NUMBER of chapters, not on
@@ -192,7 +391,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	if (limit.shouldLog) {
 		console.warn(
 			`[van] wide chapter browsing: user=${session.slackUserId} ` +
-				`chapters=${limit.distinctChapters} seen=${chaptersSeen(chapterVisits, session.slackUserId, now).join(',')}`,
+				`chapters=${limit.chargedChapters} seen=${chaptersSeen(chapterVisits, session.slackUserId, now).join(',')}`,
 		);
 	}
 
@@ -201,101 +400,574 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// sorting, not the page.
 	const zip = url.searchParams.get('zip');
 	const location = zip ? await lookupZipCentroid(db, zip) : null;
+	// Applied before the payload cut, not just in the browser: a chapter of
+	// 2,000 turfs sends 600, and the densest might be in neither the nearest
+	// 600 nor the first 600 by name.
+	const sort = parseTurfSort(url.searchParams.get('sort'));
 
-	// The viewer's own live claims, fetched first because they widen the turf
-	// query below. Not chapter-scoped: the claim is what matters, and a turf
-	// they hold is a turf they need to see.
-	const myClaims = await db
-		.select({ mapRouteId: vanTurfCheckouts.mapRouteId })
-		.from(vanTurfCheckouts)
-		.where(
-			and(
-				eq(vanTurfCheckouts.slackUserId, session.slackUserId),
-				isNull(vanTurfCheckouts.releasedAt),
-				isNull(vanTurfCheckouts.completedAt),
-			),
-		);
-	const myRouteIds = myClaims.map((c) => c.mapRouteId);
-
-	// Retired turf is excluded — EXCEPT when the viewer is still holding it.
-	// schema.ts keeps those rows precisely so a live checkout still renders;
-	// dropping them would take a volunteer's turf and its MiniVAN list number
-	// off their own page while they are out walking it. The catalog sync
-	// releases such claims, but not before the next sync runs.
-	const rows = await db
-		.select()
-		.from(vanTurfs)
-		.where(
-			and(
-				eq(vanTurfs.chapterId, chapter.chapterId),
-				myRouteIds.length > 0
-					? or(isNull(vanTurfs.retiredAt), inArray(vanTurfs.mapRouteId, myRouteIds))
-					: isNull(vanTurfs.retiredAt),
-			),
-		);
-
-	// Cut rows BEFORE building views: a turf left out of the payload should
-	// never be serialised at all, not serialised and then filtered.
-	const { selected } = selectNearest(rows, { location, limit: TURFS_PER_PAYLOAD });
-
-	// Claims are fetched for exactly the turf being served. Scoping by
-	// mapRouteId rather than pulling the whole ledger keeps a chapter's page
-	// from carrying evidence of activity in other chapters.
-	const routeIds = selected.map((r) => r.mapRouteId);
-	const claimRows =
-		routeIds.length === 0
-			? []
-			: await db
-					.select()
-					.from(vanTurfCheckouts)
-					.where(
-						and(
-							inArray(vanTurfCheckouts.mapRouteId, routeIds),
-							isNull(vanTurfCheckouts.releasedAt),
-							isNull(vanTurfCheckouts.completedAt),
-						),
-					);
-
-	const claims: ClaimSnapshot[] = claimRows.map((c) => ({
-		mapRouteId: c.mapRouteId,
-		slackUserId: c.slackUserId,
-		slackUserName: c.slackUserName,
-		claimedAt: c.claimedAt,
-		expiresAt: c.expiresAt,
-		releasedAt: c.releasedAt,
-		completedAt: c.completedAt,
-	}));
-
-	const asOf = new Date();
-	const viewer = { slackUserId: session.slackUserId, isAdmin: session.isAdmin };
-	// Passed to toTurfView so `claimable` and the at-the-limit message reflect
-	// what the claim route will actually enforce — the map and the button must
-	// not disagree with the thing they lead to.
+	// Retired turf is excluded except when the viewer still holds it, and the
+	// viewer's own turf is pinned to the payload whatever the distance sort
+	// says: it carries their MiniVAN list number, and a volunteer who claimed
+	// turf on the far side of the chapter would otherwise open the page to no
+	// card at all. Both are loadChapterTurfs' `includeHeldByViewer`.
+	const [{ turfs, total, campaignBadges, campaignTotals }, canvassEvents] = await Promise.all([
+		loadChapterTurfs(db, {
+			chapterId: chapter.chapterId,
+			viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+			location,
+			sort,
+			includeHeldByViewer: true,
+			// So `claimable` and the at-the-limit message reflect what the claim
+			// route will actually enforce — the map and the button must not
+			// disagree with the thing they lead to.
+			claimOptions: options,
+			now: new Date(now),
+		}),
+		loadCanvassEvents({
+			tag: settings.canvassEventTag,
+			chapterId: chapter.chapterId,
+			now: new Date(now),
+		}),
+	]);
 
 	return {
+		mode: 'member' as const,
 		pageTitle: `Turf checkout — ${chapter.name}`,
-		demo: false,
 		blocked: null,
+		needsSlackHref,
+		needsName,
+		notices,
 		rateLimited: 0,
-		asAdmin: false,
+		rateLimitReason: null as RateLimitReason | null,
 		chapters,
+		lastChapterId: chapter.chapterId as number | null,
 		chapter,
-		// toTurfView is the single gate on what reaches the browser; see its
-		// header. Nothing below it should ever be spread from a raw row.
-		turfs: selected.map((row) => toTurfView(row, claims, viewer, asOf, options)),
+		turfs,
 		// The chapter's total, not this payload's remainder. Reporting the
 		// remainder made the page's own message drift as soon as someone
 		// panned: the count of loaded turf grew while the "N more" figure kept
 		// describing whichever viewport answered last, so the two numbers
 		// stopped referring to the same set. A total never moves.
-		total: rows.length,
+		total,
+		// Badge text per campaign, for TurfView.campaignId — null while only one
+		// campaign is enabled. Signed-in only: the teaser branch never has it.
+		campaignBadges,
+		// `total` per campaign, for the campaign filter. Sent with the badges.
+		campaignTotals,
 		location,
 		zip: location ? zip : null,
+		sort,
 		tiles,
 		// What the page tells a volunteer they are getting. Sourced from the same
 		// setting the claim route enforces, so the promise on the button and the
-		// expiry actually written to the ledger cannot drift apart. The branches
-		// above never reach a claim, so they keep the built-in default.
+		// expiry actually written to the ledger cannot drift apart. Every branch
+		// above ships the same value, for the reason given where `options` is
+		// built.
 		claimTtlHours: options.ttlHours,
+		mentor,
+		mentorDebug,
+		walkFinder,
+		canvassEvents,
 	};
+};
+
+/** A holder notice as the page renders it — see $lib/van/notice-text.ts. */
+export interface TurfNoticeView {
+	id: number;
+	lines: NoticeLine[];
+	/** A mentor walk's news, shown in the walks drawer rather than above the turfs. */
+	walk: boolean;
+}
+
+/**
+ * A Google or Apple holder's notices, rendered. Never throws: a failed read costs the
+ * notices for this visit, not the turf map, and the rows are still there for
+ * the next one.
+ */
+async function turfNoticesFor(holderId: string): Promise<TurfNoticeView[]> {
+	try {
+		const rows = await loadHolderNotices(db, holderId);
+		return rows.map((n) => ({
+			id: n.id,
+			lines: noticeLines(n.text, APP_URL),
+			walk: Object.hasOwn(WALK_MESSAGE_TITLES, n.kind),
+		}));
+	} catch (err) {
+		console.error('[van] could not read holder notices:', errMessage(err));
+		return [];
+	}
+}
+
+/**
+ * What every mentor action needs: the viewer, the two settings, and whether
+ * they're blocked. Or, without a `viewer`, a failure to return as is: when
+ * signed out, or before an Apple or Google volunteer has chosen a name (the
+ * panel isn't shown then, and a walk would carry the placeholder name).
+ */
+async function mentorContext(session: App.Locals['session']) {
+	if (!session) return fail(401, { mentorError: 'Not signed in' });
+	if (session.needsName) return fail(403, { mentorError: 'Choose your name first.' });
+	const [settings, blockedIds] = await Promise.all([loadSettings(db), loadVanBlockedIds(db)]);
+	const access = turfAccess(
+		{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+		blockedIds,
+		SLACK_SUPERUSER_ID,
+	);
+	const chapters = turfChapters(
+		settings.chapterChannelMap,
+		settings.turfHiddenChapterIds,
+		settings.turfCustomChapters,
+	);
+	return {
+		viewer: session,
+		settings,
+		blocked: !access.allowed,
+		now: new Date(),
+		chapterIds: chapters.map((c) => c.chapterId),
+	};
+}
+
+/** A chapter's walk cards say where mentors are meeting in it, so a
+ *  rate-limited request gets the rest of the walk finder but not those. */
+function withoutCards(finder: WalkFinderView | null): WalkFinderView | null {
+	return finder && { ...finder, cards: [] };
+}
+
+/** Every chapter's name, hidden ones too, for walks posted before their
+ *  chapter was hidden. */
+function chapterNamesOf(settings: Settings): Map<number, string> {
+	return new Map(
+		chaptersFromChannelMap(settings.chapterChannelMap, settings.turfCustomChapters).map((c) => [
+			c.chapterId,
+			c.name,
+		]),
+	);
+}
+
+/** Spend one request from the viewer's turf request budget, shared with the
+ *  page load and /api/turfs. Admins are exempt. */
+function spendTurfBudget(viewer: { slackUserId: string; isAdmin: boolean }) {
+	const now = Date.now();
+	pruneRateLimitStores(now);
+	return recordRequest(turfRequests, viewer.slackUserId, now, { exempt: viewer.isAdmin });
+}
+
+/**
+ * The turf request budget, for taking or giving up a seat: each one messages
+ * the mentor, and a joined card shows the mentor's number, so they spend the
+ * same per-user budget as the page and the turf API. Walk ids are random
+ * (store.ts newPublicId), so there's no counting through them to find walks
+ * in other chapters. A failure to return, or null.
+ */
+function seatLimit(viewer: { slackUserId: string; isAdmin: boolean }) {
+	if (!spendTurfBudget(viewer).allowed) {
+		return fail(429, { mentorError: 'Too many requests. Slow down and try again shortly.' });
+	}
+	return null;
+}
+
+const formText = (form: FormData, key: string) => {
+	const value = form.get(key);
+	return typeof value === 'string' ? value : '';
+};
+
+export const actions: Actions = {
+	/**
+	 * Dismiss one of your own notices. Only a Google or Apple sign-in has any; anyone
+	 * else gets a quiet no-op, and the delete is scoped to the holder, so a
+	 * guessed id dismisses nothing of anyone else's.
+	 */
+	dismissNotice: async ({ request, locals }) => {
+		const session = locals.session;
+		// `dismissError`, not `error`: the teaser's `nearby` action owns `error`,
+		// and this page tells the two apart by key.
+		if (!session) return fail(401, { dismissError: 'Not signed in' });
+		const id = Number((await request.formData()).get('id'));
+		if (!Number.isInteger(id)) return fail(400, { dismissError: 'Unknown notice' });
+		if (session.authProvider === undefined) return { dismissed: id };
+		try {
+			await dismissHolderNotice(db, session.slackUserId, id);
+		} catch (err) {
+			console.error('[van] could not dismiss a holder notice:', errMessage(err));
+			return fail(500, { dismissError: 'Could not dismiss that. Please try again.' });
+		}
+		return { dismissed: id };
+	},
+
+	/**
+	 * Give the name /turfs asked for — an outside volunteer whose provider sent
+	 * none (specs/014-apple-sso-login, FR-011). Two steps, because the name can
+	 * never be changed afterwards (FR-011b): the first submit tidies it and
+	 * shows it back, and only a second, with `confirm=1`, saves it.
+	 *
+	 * Saved once: if a name was already set (another tab, a replayed form), that
+	 * one stands and the session catches up to it. If there is no record to
+	 * save it on — cleared, or the sign-in could not write it — it still names
+	 * this session, and they are asked again on their next sign-in.
+	 *
+	 * Results use `name*` keys: `error` belongs to the teaser's `nearby` action.
+	 */
+	setName: async ({ request, locals, cookies }) => {
+		const session = locals.session;
+		if (!session) return fail(401, { nameError: 'Not signed in' });
+		// Slack members and anyone already named: nothing to do.
+		if (!session.needsName) return { nameSaved: session.slackUserName };
+
+		const form = await request.formData();
+		const raw = form.get('name');
+		const name = typeof raw === 'string' ? tidyDisplayName(raw) : '';
+		if (name === '') {
+			return fail(400, { nameError: 'Enter the name organizers should know you by.' });
+		}
+		if (form.get('confirm') !== '1') return { confirmName: name };
+
+		// Someone blocked from turf checkout has nothing to name themselves
+		// for, and a name set now would change how they appear to the admin
+		// who blocked them.
+		const access = turfAccess(
+			{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+			await loadVanBlockedIds(db),
+			SLACK_SUPERUSER_ID,
+		);
+		if (!access.allowed) return fail(403, { nameError: access.message });
+
+		// Everything but the placeholder and its flag.
+		const rest = { ...session };
+		delete rest.needsName;
+		const named = (displayName: string) => ({ ...rest, slackUserName: displayName });
+
+		// The session first: if it has ended — signed out, revoked by a block —
+		// nothing is stored for it. The record second, which may say a name was
+		// already saved (another tab), in which case the session follows that.
+		if (!(await updateSession(cookies, named(name)))) {
+			return fail(401, { nameError: 'Your sign-in has expired. Please sign in again.' });
+		}
+		let finalName = name;
+		try {
+			const result = await setDisplayNameOnce(db, session.slackUserId, name);
+			if (result.status === 'taken') {
+				finalName = result.displayName;
+				await updateSession(cookies, named(finalName));
+			}
+			if (result.status === 'no-record') {
+				console.warn(`[auth] no record to name for ${session.slackUserId}; session only`);
+			}
+		} catch (err) {
+			console.error('[auth] could not save a typed name:', errMessage(err));
+			// Back to asking: a session named by a name that was never stored
+			// would be asked again at the next sign-in, under a different name.
+			await updateSession(cookies, session).catch(() => {});
+			return fail(500, { nameError: 'Could not save your name. Please try again.' });
+		}
+
+		// And for the rest of this request: without JavaScript the page's load
+		// runs straight after this action, on the same `locals`, and would
+		// otherwise ask for the name it was just given.
+		locals.session = named(finalName);
+		console.log(`[auth] named: ${finalName} (${session.slackUserId})`);
+		return finalName === name ? { nameSaved: finalName } : { nameTaken: finalName };
+	},
+
+	/**
+	 * The signed-out teaser's lookup: an address or ZIP (`q`), or device
+	 * coordinates (`lat`, `lng`), in; coarse aggregates out.
+	 *
+	 * A POST rather than query parameters so a typed street address never lands
+	 * in a URL, and with it in browser history, a shared link or an access log.
+	 * Open to signed-in users too; nothing here is more than the teaser shows.
+	 */
+	nearby: async ({ request, getClientAddress }) => {
+		const form = await request.formData();
+		const rawQuery = form.get('q');
+		const query = typeof rawQuery === 'string' ? rawQuery.trim() : '';
+		const coords = parseCoordinates(form.get('lat'), form.get('lng'));
+
+		if (!coords && query === '') {
+			return fail(400, { error: 'Enter an address or ZIP code, or use your location.' });
+		}
+		if (!coords && query.length > MAX_QUERY_LENGTH) {
+			return fail(400, { error: QUERY_TOO_LONG });
+		}
+
+		const now = Date.now();
+		pruneRateLimitStores(now);
+		const budget = recordRequest(
+			publicLookups,
+			visitorAddress(request, getClientAddress, FLY_APP_NAME !== ''),
+			now,
+			{ max: PUBLIC_LOOKUPS_PER_MINUTE },
+		);
+		if (!budget.allowed) {
+			return fail(429, {
+				error: `That's a lot of lookups. Try again in ${budget.retryAfterSeconds} seconds.`,
+			});
+		}
+
+		let point: LatLng;
+		let place: NearbyPlace;
+		if (coords) {
+			point = coords;
+			place = { kind: 'here' };
+		} else {
+			// Never throws, never logs or stores the address — see zip-centroid.ts.
+			const resolved = await resolveLocation(db, query);
+			if (!resolved) {
+				return fail(422, {
+					error: "We couldn't find that place. Try a five-digit ZIP code or a full street address.",
+				});
+			}
+			point = resolved.point;
+			const zip = normalizeZip(query);
+			place = zip ? { kind: 'zip', zip } : { kind: 'address' };
+		}
+
+		// The admin's hand-out TTL and the chapters /turfs offers, so the summary
+		// counts the same turf as claimable that a signed-in volunteer's map
+		// would — not turf only a chapter hidden from /turfs can see.
+		const settings = await loadSettings(db);
+		const chapterIds = offeredChapterIds(settings);
+		const at = new Date(now);
+		const [summary, mentorWalks, canvasses] = await Promise.all([
+			loadNearbySummary(db, point, at, settings.vanAssignmentTtlHours, chapterIds),
+			settings.mentorWalksVisibility === 'everyone'
+				? countWalksNear(db, point, NEARBY_RADIUS_MILES, chapterIds, at).then(
+						cappedCount,
+						(err) => {
+							console.error('[mentor-walks] could not count nearby walks:', errMessage(err));
+							return null;
+						},
+					)
+				: null,
+			settings.canvassEventTag
+				? loadCanvassCountNear({
+						tag: settings.canvassEventTag,
+						chapterIds,
+						point,
+						radiusMiles: NEARBY_RADIUS_MILES,
+						now: at,
+					}).then(cappedCount)
+				: null,
+		]);
+		return { nearby: { ...summary, place, mentorWalks, canvasses } satisfies PublicNearby };
+	},
+
+	/**
+	 * The map's address search: a street address or ZIP (`q`) in, a point to
+	 * centre on out. Only the point comes back — no turf — so it shows the
+	 * volunteer nothing their own chapter's map doesn't already.
+	 *
+	 * Behind the same gate as the map itself (turfAccess): a volunteer blocked
+	 * from turf gets no map to search. A POST for the same reason as `nearby`:
+	 * a typed street address stays out of URLs, history and access logs.
+	 * Charged to the turf request budget, since a lookup can cost a
+	 * third-party geocode. Results use `find*` keys.
+	 */
+	findAddress: async ({ request, locals }) => {
+		const session = locals.session;
+		if (!session) return fail(401, { findError: 'Sign in to search the map.' });
+		const access = turfAccess(
+			{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+			await loadVanBlockedIds(db),
+			SLACK_SUPERUSER_ID,
+		);
+		if (!access.allowed) return fail(403, { findError: access.message });
+
+		const rawQuery = (await request.formData()).get('q');
+		const query = typeof rawQuery === 'string' ? rawQuery.trim() : '';
+		if (query === '') return fail(400, { findError: 'Enter an address or ZIP code.' });
+		if (query.length > MAX_QUERY_LENGTH) return fail(400, { findError: QUERY_TOO_LONG });
+
+		const budget = spendTurfBudget(session);
+		if (!budget.allowed) {
+			return fail(429, {
+				findError: `That's a lot of lookups. Try again in ${budget.retryAfterSeconds} seconds.`,
+			});
+		}
+
+		// A ZIP centres on the ZIP, from the cache when it can; anything else
+		// goes to the address geocoder. Neither throws, and neither logs or
+		// stores the address — see zip-centroid.ts.
+		const zip = normalizeZip(query);
+		if (zip) {
+			const found = await findZip(db, zip);
+			if (found.kind === 'unavailable') return fail(503, { findError: LOOKUP_DOWN });
+			if (found.kind === 'not-found') {
+				return fail(422, { findError: `We couldn't find ZIP ${zip}. Check it and try again.` });
+			}
+			return {
+				found: { point: found.point, label: `ZIP ${zip}`, kind: 'zip' } satisfies FoundPlace,
+			};
+		}
+		const found = await lookupAddress(query);
+		if (found.kind === 'unavailable') return fail(503, { findError: LOOKUP_DOWN });
+		if (found.kind === 'not-found') {
+			return fail(422, {
+				findError:
+					"We couldn't find that address. Try a street address with the town, or a ZIP code.",
+			});
+		}
+		return {
+			found: {
+				point: found.point,
+				label: found.matchedAddress ?? query,
+				kind: 'address',
+			} satisfies FoundPlace,
+		};
+	},
+
+	// The mentor area (specs/015-mentor-walks, User Stories 1 and 2). Results
+	// use `mentor*` keys, apart from the page's other actions. Each one checks
+	// again that the screen it belongs to would be showing — see panel.ts.
+
+	/** "Not now" or "No thanks" on the mentor invitation. */
+	mentorInvite: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const result = await answerInvitation(db, ctx, formText(await request.formData(), 'answer'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorAnswered: result.value };
+	},
+
+	/** Agree to the volunteer guidelines, which makes the viewer a mentor. */
+	mentorAgree: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const form = await request.formData();
+		const ticked = formText(form, 'agree') === 'on';
+		// The link the page showed them, which is what they agreed to.
+		const result = await agree(db, ctx, ticked, formText(form, 'url'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorAgreed: true };
+	},
+
+	/** Find the meeting place on the map, for the mentor to check before
+	 *  posting. */
+	mentorLocate: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const result = await locatePlace(db, ctx, formText(await request.formData(), 'place'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorLocated: result.value };
+	},
+
+	/** Post a walk, or change one when `walkId` is given. */
+	mentorSaveWalk: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const form = await request.formData();
+		const result = await saveWalk(db, ctx, {
+			walkId: formText(form, 'walkId') || null,
+			chapterId: formText(form, 'chapterId'),
+			date: formText(form, 'date'),
+			time: formText(form, 'time'),
+			place: formText(form, 'place'),
+			lat: formText(form, 'lat'),
+			lng: formText(form, 'lng'),
+			note: formText(form, 'note'),
+			lookFor: formText(form, 'lookFor'),
+			seats: formText(form, 'seats'),
+			phone: formText(form, 'phone'),
+		});
+		if (result.ok) return { mentorSavedWalk: result.value };
+		if ('problems' in result) return fail(400, { mentorProblems: result.problems });
+		return fail(result.status, { mentorError: result.message });
+	},
+
+	/** The mentor cancels one of their walks. */
+	mentorCancelWalk: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const result = await cancelOwnWalk(db, ctx, formText(await request.formData(), 'walkId'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorCancelledWalk: result.value };
+	},
+
+	/** The new-person prompt: yes, snooze, decline, or reopen after No thanks. */
+	mentorPrompt: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const result = await answerFinderPrompt(db, ctx, formText(await request.formData(), 'answer'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorPrompted: result.value };
+	},
+
+	/** Take a seat on a walk. */
+	mentorJoin: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const limited = seatLimit(ctx.viewer);
+		if (limited) return limited;
+		const result = await joinWalkAction(db, ctx, formText(await request.formData(), 'walkId'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorJoined: result.value };
+	},
+
+	/** Give a seat up. */
+	mentorLeave: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const limited = seatLimit(ctx.viewer);
+		if (limited) return limited;
+		const result = await leaveWalkAction(db, ctx, formText(await request.formData(), 'walkId'));
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorLeft: result.value };
+	},
+
+	/** After a walk: I went, Mentor didn't show, or I couldn't make it. */
+	mentorAnswer: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const form = await request.formData();
+		const result = await answerWalkAction(
+			db,
+			ctx,
+			formText(form, 'walkId'),
+			formText(form, 'answer'),
+			liveNoShowDeps(ctx.settings.slackTurfChannelId, chapterNamesOf(ctx.settings)),
+		);
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorWalkAnswer: result.value };
+	},
+
+	/** The mentor's "Who showed up?". */
+	mentorAttendance: async ({ request, locals }) => {
+		const ctx = await mentorContext(locals.session);
+		if (!('viewer' in ctx)) return ctx;
+		const form = await request.formData();
+		const seatIds = form.getAll('seatId').filter((v): v is string => typeof v === 'string');
+		const result = await saveAttendanceAction(db, ctx, formText(form, 'walkId'), seatIds);
+		if (!result.ok) return fail(result.status, { mentorError: result.message });
+		return { mentorAttendance: result.value };
+	},
+
+	/**
+	 * Admins only: start the mentor flow over on yourself. Forgets your mentor
+	 * status, calls off your upcoming walks, and marks this session as
+	 * simulating, which counts you as eligible and shows you the feature
+	 * whatever the Mentor walks setting says. Nobody else is affected.
+	 */
+	mentorDebugStart: async ({ locals, cookies }) => {
+		const session = locals.session;
+		if (!session?.isAdmin) return fail(403, { mentorError: 'Admins only.' });
+		await forgetMentor(db, { id: session.slackUserId, name: session.slackUserName }, new Date());
+		const next = { ...session, mentorSimulation: true as const };
+		if (!(await updateSession(cookies, next))) {
+			return fail(401, { mentorError: 'Your sign-in has expired. Please sign in again.' });
+		}
+		locals.session = next;
+		return { mentorDebug: 'started' };
+	},
+
+	/** Admins only: stop simulating. Whatever mentor status you reached stays. */
+	mentorDebugStop: async ({ locals, cookies }) => {
+		const session = locals.session;
+		if (!session?.isAdmin) return fail(403, { mentorError: 'Admins only.' });
+		const next = { ...session };
+		delete next.mentorSimulation;
+		if (!(await updateSession(cookies, next))) {
+			return fail(401, { mentorError: 'Your sign-in has expired. Please sign in again.' });
+		}
+		locals.session = next;
+		return { mentorDebug: 'stopped' };
+	},
 };

@@ -20,9 +20,10 @@
 // The street address is the most sensitive string this feature handles, so two
 // rules apply to it and are enforced below rather than left to callers:
 //
-//   1. It is NEVER persisted. Only the ZIP the geocoder reports back is written
-//      to van_zip_centroids — a ZIP centroid is not personal data, and caching
-//      it means an address lookup warms the same cache a ZIP lookup reads.
+//   1. It is NEVER persisted, and neither is where it resolved to. An address
+//      lookup writes nothing at all: van_zip_centroids holds only the Census
+//      point for each ZIP, filled by ZIP lookups. Storing the address's point
+//      under its ZIP would make that ZIP answer with one person's street.
 //   2. It is NEVER logged. The ZIP path logs the ZIP it failed on, which is fine;
 //      the address path logs a redacted marker instead, because a warn line
 //      carrying someone's home address outlives the request by however long the
@@ -68,11 +69,13 @@ export interface LatLng {
 	lng: number;
 }
 
-/** Five digits, or null. Rejects ZIP+4, letters, and the empty string rather
- *  than passing them to the geocoder to be rejected more slowly. */
+/** Five digits, or null. A ZIP+4 gives its five-digit half however the four
+ *  are joined on — a hyphen, a space, or nothing, as people type it. Rejects
+ *  letters and the empty string rather than passing them to the geocoder to
+ *  be rejected more slowly. */
 export function normalizeZip(raw: string | null | undefined): string | null {
 	const trimmed = (raw ?? '').trim();
-	const match = /^(\d{5})(?:-\d{4})?$/.exec(trimmed);
+	const match = /^(\d{5})(?:[-\s]?\d{4})?$/.exec(trimmed);
 	return match ? match[1]! : null;
 }
 
@@ -92,12 +95,25 @@ export async function geocodeZip(
 	rawZip: string,
 	fetchFn: typeof fetch = fetch,
 ): Promise<LatLng | null> {
+	const found = await fetchZip(rawZip, fetchFn);
+	return found.kind === 'found' ? found.point : null;
+}
+
+/** What a ZIP lookup came to. `unavailable` is TIGERweb failing (an error
+ *  status, an error envelope, a timeout), as opposed to `not-found`, an
+ *  answer with no usable point — so a caller can tell "check the ZIP" from
+ *  "try again later". */
+export type ZipLookup =
+	{ kind: 'found'; point: LatLng } | { kind: 'not-found' } | { kind: 'unavailable' };
+
+/** geocodeZip's answer, with an outage told apart from no such ZIP. */
+async function fetchZip(rawZip: string, fetchFn: typeof fetch): Promise<ZipLookup> {
 	// Re-normalized rather than trusted, even though every caller in this module
 	// already did it: the ZIP is interpolated into a `where` clause below, and a
 	// function that guarantees five digits at its own boundary cannot be made to
 	// carry a quote into one by a future caller.
 	const zip = normalizeZip(rawZip);
-	if (!zip) return null;
+	if (!zip) return { kind: 'not-found' };
 
 	const url = new URL(ZCTA_ENDPOINT);
 	url.searchParams.set('where', `ZCTA5='${zip}'`);
@@ -111,7 +127,7 @@ export async function geocodeZip(
 		});
 		if (!res.ok) {
 			console.warn(`[van] zip lookup for ${zip} returned ${res.status}`);
-			return null;
+			return { kind: 'unavailable' };
 		}
 		const body = (await res.json()) as {
 			error?: { message?: unknown };
@@ -122,21 +138,70 @@ export async function geocodeZip(
 		// nothing while looking like a clean miss.
 		if (body?.error) {
 			console.warn(`[van] zip lookup for ${zip} was rejected by TIGERweb`);
-			return null;
+			return { kind: 'unavailable' };
 		}
-		const attrs = body?.features?.[0]?.attributes;
+		// A 200 without the list isn't an answer about the ZIP.
+		if (!Array.isArray(body?.features)) return { kind: 'unavailable' };
+		const attrs = body.features[0]?.attributes;
 		// Signed and zero-padded in the source ("+42.2620394", "-083.7166908").
 		// Number() handles both, which is why these are not parsed by hand.
 		const lat = Number(attrs?.INTPTLAT);
 		const lng = Number(attrs?.INTPTLON);
-		if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+		if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { kind: 'not-found' };
 		// Null island means the answer carried no usable point.
-		if (lat === 0 && lng === 0) return null;
-		return { lat, lng };
+		if (lat === 0 && lng === 0) return { kind: 'not-found' };
+		return { kind: 'found', point: { lat, lng } };
 	} catch (err) {
 		// Includes the timeout. Deliberately swallowed: see the header.
 		console.warn(`[van] zip lookup for ${zip} failed:`, err instanceof Error ? err.message : err);
-		return null;
+		return { kind: 'unavailable' };
+	}
+}
+
+/**
+ * The ZIP a point falls in, for placing requested turf (turf-placement.ts).
+ * Never throws: `{ ok: false }` when the Census could not be asked or would
+ * not answer, so a caller can tell an outage — try again later — from a point
+ * in no ZIP at all (`{ ok: true, zip: null }`: water, a park, the border).
+ *
+ * The same TIGERweb ZCTA layer as geocodeZip, asked the other way round: a
+ * point-in-polygon query. The point is a turf's centroid — the middle of a
+ * route of houses, not anyone's address — so nothing here is personal.
+ */
+export async function zipForPoint(
+	point: LatLng,
+	fetchFn: typeof fetch = fetch,
+): Promise<{ ok: true; zip: string | null } | { ok: false }> {
+	if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return { ok: false };
+	const url = new URL(ZCTA_ENDPOINT);
+	url.searchParams.set('geometry', `${point.lng},${point.lat}`);
+	url.searchParams.set('geometryType', 'esriGeometryPoint');
+	url.searchParams.set('inSR', '4326');
+	url.searchParams.set('spatialRel', 'esriSpatialRelIntersects');
+	url.searchParams.set('outFields', 'ZCTA5');
+	url.searchParams.set('returnGeometry', 'false');
+	url.searchParams.set('f', 'json');
+
+	try {
+		const res = await fetchFn(url.toString(), { signal: AbortSignal.timeout(TIMEOUT_MS) });
+		if (!res.ok) {
+			console.warn(`[van] point-to-zip lookup returned ${res.status}`);
+			return { ok: false };
+		}
+		const body = (await res.json()) as {
+			error?: unknown;
+			features?: Array<{ attributes?: { ZCTA5?: unknown } }>;
+		};
+		// ArcGIS reports its errors with HTTP 200; see geocodeZip.
+		if (body?.error || !Array.isArray(body?.features)) {
+			console.warn('[van] point-to-zip lookup was rejected by TIGERweb');
+			return { ok: false };
+		}
+		const zip = normalizeZip(String(body.features[0]?.attributes?.ZCTA5 ?? ''));
+		return { ok: true, zip };
+	} catch (err) {
+		console.warn('[van] point-to-zip lookup failed:', err instanceof Error ? err.message : err);
+		return { ok: false };
 	}
 }
 
@@ -152,94 +217,138 @@ export async function lookupZipCentroid(
 	rawZip: string | null | undefined,
 	fetchFn: typeof fetch = fetch,
 ): Promise<LatLng | null> {
+	const found = await findZip(db, rawZip, fetchFn);
+	return found.kind === 'found' ? found.point : null;
+}
+
+/** lookupZipCentroid's answer, with an outage told apart from no such ZIP —
+ *  for a caller that says which one happened. Never throws. */
+export async function findZip(
+	db: Db,
+	rawZip: string | null | undefined,
+	fetchFn: typeof fetch = fetch,
+): Promise<ZipLookup> {
 	const zip = normalizeZip(rawZip);
-	if (!zip) return null;
+	if (!zip) return { kind: 'not-found' };
 
 	try {
 		const [cached] = await db.select().from(vanZipCentroids).where(eq(vanZipCentroids.zip, zip));
-		if (cached) return { lat: cached.lat, lng: cached.lng };
+		if (cached) return { kind: 'found', point: { lat: cached.lat, lng: cached.lng } };
 	} catch (err) {
 		// A cache read failure must not stop the lookup either.
 		console.warn('[van] zip cache read failed:', err instanceof Error ? err.message : err);
 	}
 
-	const point = await geocodeZip(zip, fetchFn);
-	if (!point) return null;
-
-	await cacheCentroid(db, zip, point);
-	return point;
+	const found = await fetchZip(zip, fetchFn);
+	if (found.kind === 'found') await cacheCentroid(db, zip, found.point);
+	return found;
 }
 
-/** Write a ZIP's centroid to the cache. Shared by the ZIP and address paths so
- *  there is one place that decides what gets stored — which is what keeps a
- *  street address from ever reaching a column. Never throws: having the answer
- *  and failing to store it is strictly better than failing the lookup. */
+/** Write a ZIP's Census point to the cache. Never throws: having the answer
+ *  and failing to store it is strictly better than failing the lookup.
+ *
+ *  Fill only, never overwrite: once a ZIP has a point it keeps it, so two
+ *  lookups racing on the same ZIP cannot leave it moving between answers. */
 async function cacheCentroid(db: Db, zip: string, point: LatLng): Promise<void> {
 	const fetchedAt = new Date().toISOString();
 	try {
 		await db
 			.insert(vanZipCentroids)
 			.values({ zip, lat: point.lat, lng: point.lng, fetchedAt })
-			.onConflictDoUpdate({
-				target: vanZipCentroids.zip,
-				set: { lat: point.lat, lng: point.lng, fetchedAt },
-			});
+			.onConflictDoNothing({ target: vanZipCentroids.zip });
 	} catch (err) {
 		console.warn('[van] zip cache write failed:', err instanceof Error ? err.message : err);
 	}
 }
 
+/** What an address lookup came to. `unavailable` is the geocoder failing
+ *  (an error status, a timeout, a garbled answer), as opposed to `not-found`,
+ *  an answer with no usable match — so a caller can tell "try another
+ *  address" from "try again later". */
+export type AddressLookup =
+	| { kind: 'found'; point: LatLng; zip: string | null; matchedAddress: string | null }
+	| { kind: 'not-found' }
+	| { kind: 'unavailable' };
+
 /**
- * Where a free-text address is, plus the ZIP the geocoder matched it to.
- *
- * The ZIP is the interesting half for everything except distance sorting: it is
- * what gets cached, and it is what resolves the volunteer's chapter. It can
- * legitimately come back null — the geocoder matches some addresses without a
- * usable ZIP component — and the caller has to cope rather than treat it as a
- * failure, because the coordinates are still good.
+ * Where a free-text address is, the ZIP the geocoder matched it to, and the
+ * address it took the query to mean ("229 W MICHIGAN AVE, YPSILANTI, MI,
+ * 48197"), which is worth showing back: the geocoder confidently matches a
+ * half-understood query to the wrong town.
  *
  * Never throws, per the module header.
  */
-export async function geocodeAddress(
+export async function lookupAddress(
 	query: string,
 	fetchFn: typeof fetch = fetch,
-): Promise<{ point: LatLng; zip: string | null } | null> {
+): Promise<AddressLookup> {
 	const address = query.trim();
-	if (address === '') return null;
+	if (address === '') return { kind: 'not-found' };
 
 	const url = new URL(ENDPOINT);
 	url.searchParams.set('address', address);
 	url.searchParams.set('benchmark', 'Public_AR_Current');
 	url.searchParams.set('format', 'json');
 
+	let body: {
+		result?: {
+			addressMatches?: Array<{
+				matchedAddress?: unknown;
+				coordinates?: { x?: unknown; y?: unknown };
+				addressComponents?: { zip?: unknown };
+			}>;
+		};
+	};
 	try {
 		const res = await fetchFn(url.toString(), { signal: AbortSignal.timeout(TIMEOUT_MS) });
 		if (!res.ok) {
 			// No address in the message — see rule 2 in the header.
 			console.warn(`[van] address geocode returned ${res.status}`);
-			return null;
+			return { kind: 'unavailable' };
 		}
-		const body = (await res.json()) as {
-			result?: {
-				addressMatches?: Array<{
-					coordinates?: { x?: unknown; y?: unknown };
-					addressComponents?: { zip?: unknown };
-				}>;
-			};
-		};
-		const match = body?.result?.addressMatches?.[0];
-		const lng = Number(match?.coordinates?.x);
-		const lat = Number(match?.coordinates?.y);
-		if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-		// Null island means the geocoder answered with nothing useful.
-		if (lat === 0 && lng === 0) return null;
-		return { point: { lat, lng }, zip: normalizeZip(String(match?.addressComponents?.zip ?? '')) };
+		body = await res.json();
 	} catch (err) {
 		// The timeout lands here. Swallowed, and the error is not logged with it:
 		// an AbortError carries no address, but a URL-bearing fetch error would.
 		console.warn('[van] address geocode failed:', err instanceof Error ? err.name : 'unknown');
-		return null;
+		return { kind: 'unavailable' };
 	}
+	const matches = body?.result?.addressMatches;
+	// A 200 without the list isn't an answer about the address.
+	if (!Array.isArray(matches)) return { kind: 'unavailable' };
+	const match = matches[0];
+	const lng = Number(match?.coordinates?.x);
+	const lat = Number(match?.coordinates?.y);
+	if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { kind: 'not-found' };
+	// Null island means the geocoder answered with nothing useful.
+	if (lat === 0 && lng === 0) return { kind: 'not-found' };
+	return {
+		kind: 'found',
+		point: { lat, lng },
+		zip: normalizeZip(String(match?.addressComponents?.zip ?? '')),
+		matchedAddress: typeof match?.matchedAddress === 'string' ? match.matchedAddress : null,
+	};
+}
+
+/**
+ * Where a free-text address is, plus the ZIP the geocoder matched it to.
+ *
+ * The ZIP is the interesting half for everything except distance sorting: it is
+ * what resolves the volunteer's chapter. It is not cached — see rule 1 in the
+ * header. It can
+ * legitimately come back null — the geocoder matches some addresses without a
+ * usable ZIP component — and the caller has to cope rather than treat it as a
+ * failure, because the coordinates are still good.
+ *
+ * Null for no match and for an outage alike; lookupAddress tells them apart.
+ * Never throws, per the module header.
+ */
+export async function geocodeAddress(
+	query: string,
+	fetchFn: typeof fetch = fetch,
+): Promise<{ point: LatLng; zip: string | null } | null> {
+	const found = await lookupAddress(query, fetchFn);
+	return found.kind === 'found' ? { point: found.point, zip: found.zip } : null;
 }
 
 /**
@@ -267,11 +376,6 @@ export async function resolveLocation(
 		return point ? { point, zip } : null;
 	}
 
-	const match = await geocodeAddress(trimmed, fetchFn);
-	if (!match) return null;
-
-	// Cache under the matched ZIP, so the street address leaves no trace but the
-	// next person who types that ZIP gets a free answer.
-	if (match.zip) await cacheCentroid(db, match.zip, match.point);
-	return match;
+	// Nothing is cached from an address — see rule 1 in the header.
+	return geocodeAddress(trimmed, fetchFn);
 }

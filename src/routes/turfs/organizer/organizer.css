@@ -28,25 +28,21 @@ main {
 	letter-spacing: 0.05em;
 }
 
-.filter select {
-	padding: var(--space-2) var(--space-3);
-	font: inherit;
-	font-size: var(--font-size-base);
-	color: var(--color-text);
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-md);
+.filter .ui-select-trigger {
 	min-width: 180px;
 }
 
-.filter select:focus-visible {
-	outline: 2px solid var(--color-border-focus);
-	outline-offset: 1px;
+/* --- Sync VAN now -------------------------------------------------------- */
+
+.van-sync {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-3);
+	margin-bottom: var(--space-5);
 }
 
-/* The submit button is what makes the form work with JavaScript off, so it is
-   always rendered rather than hidden once the onchange handler is attached. */
-.filter-go {
+.van-sync-button {
 	padding: var(--space-2) var(--space-4);
 	font: inherit;
 	font-size: var(--font-size-base);
@@ -58,8 +54,89 @@ main {
 	cursor: pointer;
 }
 
-.filter-go:hover {
+.van-sync-button:hover:not(:disabled) {
 	background: var(--color-action-hover);
+}
+
+.van-sync-button:disabled {
+	opacity: 0.6;
+	cursor: progress;
+}
+
+.van-sync-status {
+	margin: 0;
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+}
+
+.van-sync-failed {
+	font-weight: 600;
+	color: var(--color-error);
+}
+
+.van-sync-status.is-error {
+	color: var(--color-error);
+}
+
+/* What the latest press found, under the button. */
+.van-sync-report {
+	margin: calc(-1 * var(--space-3)) 0 var(--space-5);
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+}
+
+.van-sync-notes,
+.van-sync-new {
+	margin: 0 0 var(--space-3);
+	padding-left: var(--space-5);
+}
+
+.van-sync-notes li + li,
+.van-sync-new li + li {
+	margin-top: var(--space-1);
+}
+
+.van-sync-notes li.is-error {
+	color: var(--color-error);
+}
+
+.van-sync-notes a {
+	margin-left: var(--space-1);
+	font-weight: 600;
+}
+
+.van-sync-new-heading {
+	margin: 0 0 var(--space-2);
+	font-weight: 600;
+	color: var(--color-text);
+}
+
+.van-sync-new {
+	list-style: none;
+	padding-left: 0;
+}
+
+.van-sync-new li {
+	padding-left: var(--space-3);
+	border-left: 3px solid var(--color-border);
+}
+
+.van-sync-new li.is-ready {
+	border-left-color: var(--color-gold);
+}
+
+.van-sync-new .turf-name {
+	color: var(--color-text);
+}
+
+.van-sync-new-status,
+.van-sync-new-caveat {
+	display: block;
+}
+
+.van-sync-new-caveat,
+.turf-sub.is-caveat {
+	color: var(--color-error);
 }
 
 /* --- Summary counts ------------------------------------------------------- */
@@ -131,6 +208,24 @@ main {
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-lg);
 	overflow-x: auto;
+}
+
+/* A long table scrolls inside its own box, no taller than most of the screen,
+   so one busy table does not push the rest of the board out of reach. The
+   header stays put while its rows scroll under it. */
+.table-wrap.scrolls {
+	max-height: 75vh;
+	max-height: 75dvh;
+	overflow-y: auto;
+}
+
+.table-wrap.scrolls thead th {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	background: var(--color-bg);
+	/* The thead's own border does not travel with a sticky cell. */
+	box-shadow: inset 0 -1px 0 var(--color-border);
 }
 
 table {
@@ -253,16 +348,11 @@ tr:hover td {
 
 /* --- Notices -------------------------------------------------------------- */
 
-.empty,
-.cap-note {
+.empty {
 	margin: var(--space-5) 0;
 	font-size: var(--font-size-base);
 	color: var(--color-text-muted);
 	line-height: 1.5;
-}
-
-.cap-note {
-	font-size: var(--font-size-sm);
 }
 
 @media (max-width: 700px) {
@@ -276,7 +366,7 @@ tr:hover td {
 	}
 
 	.filter,
-	.filter select {
+	.filter .ui-select-trigger {
 		min-width: 0;
 		flex: 1 1 140px;
 	}
@@ -287,22 +377,12 @@ tr:hover td {
 }
 
 /* --- Drift ---------------------------------------------------------------
-   Two problems, ranked by consequence rather than by symmetry: turf out in
-   MiniVAN but free here can be claimed twice, which is the failure the whole
-   feature exists to prevent; turf claimed here but never exported costs one
-   volunteer a wasted morning. Red and amber accordingly. */
-
-.drift-in-minivan-not-claimed td:first-child {
-	box-shadow: inset 3px 0 0 var(--color-red);
-}
+   Turf claimed here but not yet loaded in MiniVAN is worth a nudge:
+   amber, not red. (The red "in MiniVAN, not claimed here" row is gone — see
+   turf-drift.ts.) */
 
 .drift-claimed-not-in-minivan td:first-child {
 	box-shadow: inset 3px 0 0 var(--color-warning);
-}
-
-.badge-in-minivan-not-claimed {
-	background: color-mix(in srgb, var(--color-red) 18%, transparent);
-	color: var(--color-red);
 }
 
 .badge-claimed-not-in-minivan {
@@ -315,4 +395,57 @@ tr:hover td {
 	color: var(--color-text-muted);
 	line-height: 1.4;
 	max-width: 34ch;
+}
+
+/* --- Hidden from volunteers ---------------------------------------------- */
+
+.section-note.is-error {
+	color: var(--color-error);
+}
+
+/* --- Turf history -------------------------------------------------------- */
+
+.history-search {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-3);
+	margin-bottom: var(--space-4);
+}
+
+.history-input {
+	flex: 1 1 320px;
+}
+
+.history-turf {
+	margin-bottom: var(--space-5);
+}
+
+.history-name {
+	margin: 0 0 var(--space-2);
+	font-size: var(--font-size-base);
+	font-weight: 700;
+	overflow-wrap: anywhere;
+}
+
+.history-turf .callout {
+	margin-bottom: var(--space-3);
+}
+
+.history-name .turf-sub {
+	display: inline;
+}
+
+.history-claims {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.history-claims li + li {
+	margin-top: var(--space-2);
+}
+
+.history-days {
+	max-width: 360px;
+	margin-bottom: var(--space-3);
 }

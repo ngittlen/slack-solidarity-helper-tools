@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+	coarseNear,
 	parseBounds,
+	parseNear,
+	parseTurfSort,
 	selectNearest,
 	withinBounds,
 	TURFS_PER_PAYLOAD,
@@ -8,7 +11,7 @@ import {
 } from './turf-paging.js';
 
 function turf(id: number, name: string, lat: number | null, lng: number | null): Locatable {
-	return { mapRouteId: id, name, centroidLat: lat, centroidLng: lng };
+	return { turfId: id, name, centroidLat: lat, centroidLng: lng };
 }
 
 // Ann Arbor, roughly.
@@ -40,6 +43,66 @@ describe('selectNearest', () => {
 		expect(selected).toHaveLength(2);
 	});
 
+	describe('density', () => {
+		const density = new Map<number, number | null>([
+			[1, 50],
+			[2, 900],
+			[3, null],
+			[4, 900],
+		]);
+		const byDensity = (row: Locatable) => density.get(row.turfId) ?? null;
+
+		it('puts the densest first, and turf with no density last', () => {
+			const rows = [
+				turf(1, 'Sparse', 42.281, -83.741),
+				turf(2, 'Dense', 42.6, -83.2),
+				turf(3, 'No hull', 42.281, -83.741),
+			];
+			const { selected } = selectNearest(rows, { density: byDensity });
+			expect(selected.map((t) => t.name)).toEqual(['Dense', 'Sparse', 'No hull']);
+		});
+
+		it('breaks a tie by distance', () => {
+			const rows = [turf(2, 'Dense far', 42.6, -83.2), turf(4, 'Dense near', 42.281, -83.741)];
+			const { selected } = selectNearest(rows, { location: HERE, density: byDensity });
+			expect(selected.map((t) => t.name)).toEqual(['Dense near', 'Dense far']);
+		});
+
+		it('ranks before the cut, not after it', () => {
+			const rows = [turf(1, 'Alpha', 1, 1), turf(3, 'Bravo', 2, 2), turf(2, 'Zulu', 3, 3)];
+			const { selected } = selectNearest(rows, { density: byDensity, limit: 1 });
+			expect(selected.map((t) => t.name)).toEqual(['Zulu']);
+		});
+	});
+
+	describe('band', () => {
+		const bands: Record<number, number> = { 1: 0, 2: 1, 3: 2 };
+		const band = (row: Locatable) => bands[row.turfId] ?? 0;
+
+		it('puts lower bands first, however near the higher ones are', () => {
+			const rows = [
+				turf(3, 'Nearest but taken', 42.2805, -83.7405),
+				turf(2, 'Near but knocked', 42.281, -83.741),
+				turf(1, 'Far', 42.6, -83.2),
+			];
+			const { selected } = selectNearest(rows, { location: HERE, band });
+			expect(selected.map((t) => t.name)).toEqual(['Far', 'Near but knocked', 'Nearest but taken']);
+		});
+
+		it('outranks density', () => {
+			const density = (row: Locatable) => (row.turfId === 2 ? 900 : 50);
+			const rows = [turf(1, 'Sparse', 1, 1), turf(2, 'Dense but knocked', 2, 2)];
+			const { selected } = selectNearest(rows, { density, band });
+			expect(selected.map((t) => t.name)).toEqual(['Sparse', 'Dense but knocked']);
+		});
+
+		it('ranks before the cut, not after it', () => {
+			const rows = [turf(3, 'Alpha', 1, 1), turf(2, 'Bravo', 2, 2), turf(1, 'Charlie', 3, 3)];
+			const { selected } = selectNearest(rows, { band, limit: 1 });
+			expect(selected.map((t) => t.name)).toEqual(['Charlie']);
+		});
+	});
+
 	it('caps the payload and reports what it left out', () => {
 		const rows = Array.from({ length: 400 }, (_, i) =>
 			turf(i, `Turf ${String(i).padStart(3, '0')}`, 42 + i / 1000, -83),
@@ -47,6 +110,85 @@ describe('selectNearest', () => {
 		const { selected, omitted } = selectNearest(rows, { limit: 150 });
 		expect(selected).toHaveLength(150);
 		expect(omitted).toBe(250);
+	});
+
+	describe('alwaysInclude', () => {
+		const many = (n: number) =>
+			Array.from({ length: n }, (_, i) => turf(i, `Turf ${String(i).padStart(3, '0')}`, 42, -83));
+
+		it('keeps a pinned row that the cap would have dropped', () => {
+			const rows = [...many(200), turf(999, 'Zzz last by name', 42, -83)];
+			const { selected } = selectNearest(rows, { limit: 150, alwaysInclude: [999] });
+			expect(selected[0]!.turfId).toBe(999);
+			expect(selected).toHaveLength(150);
+		});
+
+		it('does not hand the same row back twice', () => {
+			// The pinned row also sorts into the page on its own merits.
+			const rows = many(5);
+			const { selected } = selectNearest(rows, { limit: 5, alwaysInclude: [2] });
+			expect(selected.filter((t) => t.turfId === 2)).toHaveLength(1);
+			expect(selected).toHaveLength(5);
+		});
+
+		it('does not count a shown row as omitted', () => {
+			const rows = [...many(200), turf(999, 'Zzz last by name', 42, -83)];
+			const { omitted } = selectNearest(rows, { limit: 150, alwaysInclude: [999] });
+			// 200 unpinned rows, 149 of them served.
+			expect(omitted).toBe(51);
+		});
+
+		// Repeating it under every "More" press would hand the volunteer the
+		// same turf on page after page.
+		it('pins only on the first page, so Slack paging does not repeat it', () => {
+			const rows = many(300);
+			const page2 = selectNearest(rows, { limit: 150, offset: 150, alwaysInclude: [0] });
+			expect(page2.selected.some((t) => t.turfId === 0)).toBe(false);
+			// 299 unpinned rows, of which 150 were already past.
+			expect(page2.selected).toHaveLength(149);
+		});
+
+		// The regression: a pinned turf that sorts onto page two used to take a
+		// page-one slot AND still sit in page two's ordering, so one turf was
+		// shown twice and the turf it displaced was never shown at all.
+		it('shows every row exactly once across pages when a later row is pinned', () => {
+			const rows = 'ABCDEFGHIJKL'.split('').map((name, i) => turf(i + 1, name, 42, -83));
+			const H = 8;
+			const seen: string[] = [];
+			let offset = 0;
+			for (let page = 0; page < 5; page++) {
+				const result = selectNearest(rows, { limit: 5, offset, alwaysInclude: [H] });
+				seen.push(...result.selected.map((t) => t.name));
+				if (result.omitted === 0) break;
+				offset = result.nextOffset;
+			}
+			expect(seen).toEqual(['H', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'I', 'J', 'K', 'L']);
+		});
+
+		it('reports where each page starts, counting pinned rows at the front', () => {
+			const rows = 'ABCDEFGHIJKL'.split('').map((name, i) => turf(i + 1, name, 42, -83));
+			const page1 = selectNearest(rows, { limit: 5, alwaysInclude: [8] });
+			expect(page1.start).toBe(0);
+			expect(page1.nextOffset).toBe(4);
+			const page2 = selectNearest(rows, { limit: 5, offset: page1.nextOffset, alwaysInclude: [8] });
+			// Rows 1-5 were page one, so page two is "6–10".
+			expect(page2.start).toBe(5);
+			expect(page2.selected).toHaveLength(5);
+		});
+
+		it('ignores ids that are not in the rows at all', () => {
+			const rows = many(3);
+			const { selected } = selectNearest(rows, { alwaysInclude: [12_345] });
+			expect(selected).toHaveLength(3);
+		});
+
+		it('changes nothing when no ids are pinned', () => {
+			const rows = many(200);
+			const plain = selectNearest(rows, { limit: 150 });
+			const empty = selectNearest(rows, { limit: 150, alwaysInclude: [] });
+			expect(empty.selected.map((t) => t.turfId)).toEqual(plain.selected.map((t) => t.turfId));
+			expect(empty.omitted).toBe(plain.omitted);
+		});
 	});
 
 	it('reports nothing omitted when the chapter fits', () => {
@@ -68,7 +210,7 @@ describe('selectNearest', () => {
 	});
 
 	it('handles an empty chapter', () => {
-		expect(selectNearest([])).toEqual({ selected: [], omitted: 0 });
+		expect(selectNearest([])).toEqual({ selected: [], omitted: 0, start: 0, nextOffset: 0 });
 	});
 });
 
@@ -76,7 +218,7 @@ describe('withinBounds', () => {
 	const box = { minLat: 42, maxLat: 43, minLng: -84, maxLng: -83 };
 
 	it('keeps turf inside the box', () => {
-		expect(withinBounds([turf(1, 'In', 42.5, -83.5)], box).map((t) => t.mapRouteId)).toEqual([1]);
+		expect(withinBounds([turf(1, 'In', 42.5, -83.5)], box).map((t) => t.turfId)).toEqual([1]);
 	});
 
 	it('drops turf outside it', () => {
@@ -150,7 +292,7 @@ describe('selectNearest paging', () => {
 			...selectNearest(rows, { location: HERE, limit: 5, offset: 5 }).selected,
 		];
 		const single = selectNearest(rows, { location: HERE, limit: 10 }).selected;
-		expect(paged.map((t) => t.mapRouteId)).toEqual(single.map((t) => t.mapRouteId));
+		expect(paged.map((t) => t.turfId)).toEqual(single.map((t) => t.turfId));
 	});
 
 	it('counts only what follows the page as omitted', () => {
@@ -175,10 +317,40 @@ describe('selectNearest paging', () => {
 	])('clamps a %s offset', (_label, offset, expectedIndex) => {
 		const { selected } = selectNearest(rows, { location: HERE, limit: 5, offset });
 		const all = selectNearest(rows, { location: HERE, limit: 12 }).selected;
-		expect(selected[0]!.mapRouteId).toBe(all[expectedIndex]!.mapRouteId);
+		expect(selected[0]!.turfId).toBe(all[expectedIndex]!.turfId);
 	});
 
 	it('leaves the default behaviour untouched', () => {
 		expect(selectNearest(rows, { limit: 5 })).toEqual(selectNearest(rows, { limit: 5, offset: 0 }));
+	});
+});
+
+describe('parseTurfSort', () => {
+	it('reads densest, and anything else as nearest', () => {
+		expect(parseTurfSort('densest')).toBe('densest');
+		expect(parseTurfSort('nearest')).toBe('nearest');
+		expect(parseTurfSort(null)).toBe('nearest');
+		expect(parseTurfSort('DROP TABLE')).toBe('nearest');
+	});
+});
+
+describe('parseNear', () => {
+	it('reads lat,lng and rounds it to about a kilometre', () => {
+		expect(parseNear('42.28123,-83.74876')).toEqual({ lat: 42.28, lng: -83.75 });
+	});
+
+	it.each([null, '', 'nope', '42', '42,-83,1', '91,-83', '42,-181', 'NaN,1'])(
+		'is null for %s',
+		(raw) => {
+			expect(parseNear(raw)).toBeNull();
+		},
+	);
+});
+
+describe('coarseNear', () => {
+	it('rounds to the precision parseNear keeps, so the two agree', () => {
+		const point = coarseNear({ lat: 42.281234, lng: -83.745678 });
+		expect(point).toEqual({ lat: 42.28, lng: -83.75 });
+		expect(parseNear(`${point.lat},${point.lng}`)).toEqual(point);
 	});
 });

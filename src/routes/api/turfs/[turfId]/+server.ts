@@ -1,0 +1,199 @@
+import { json } from '@sveltejs/kit';
+import type { RequestHandler } from './$types';
+import { db } from '$lib/server/db.js';
+import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
+import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
+import { turfAccess } from '$lib/van/access.js';
+import { claimOptionsFor } from '$lib/van/checkout.js';
+import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
+import { setTurfHidden } from '$lib/server/van/turf-hide-store.js';
+import { nudgePacketTracker, packetTrackerCheck } from '$lib/server/van/packet-tracker-live.js';
+import { nudgeContactCount } from '$lib/server/van/contact-live.js';
+import { turfSyncCheck } from '$lib/server/van/live-contacts.js';
+import { recordRequest } from '$lib/van/request-budget.js';
+import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-store.js';
+
+// Claim, release, and complete — and, for admins, hide and unhide — as one
+// handler over an `action` body rather than sibling routes. GET is the
+// "I synced MiniVAN" check on turf the caller holds.
+//
+// Rate-limited on the same shared budget as the read endpoints, for a reason
+// that is not obvious: the refusals here are informative. A 404 means no such
+// route id, a 409 carries a specific reason — already held, no list number, no
+// doors left. Walked over a range of ids that is an existence-and-status
+// oracle for the whole database, and it sits outside the chapter compartment
+// entirely, since a route id is all it takes. The budget is what makes walking
+// it slow and loud. They share every line of their guard — session,
+// then the blocklist, then a valid route id — and splitting them would mean
+// three copies of that guard, one of which eventually drifts. `van/access.ts`
+// is consulted on every one, per the plan's Principle I contract:
+// 401 unauthenticated, 403 unauthorized.
+
+type Action = 'claim' | 'release' | 'complete' | 'hide' | 'unhide';
+
+const ACTIONS = new Set<Action>(['claim', 'release', 'complete', 'hide', 'unhide']);
+
+type Guarded =
+	| { ok: true; session: NonNullable<App.Locals['session']>; turfId: number; now: number }
+	| { ok: false; response: Response };
+
+/** Every request's guard, in order: session, request budget, blocklist, a
+ *  valid route id. One copy, shared by GET and POST. */
+async function guard(locals: App.Locals, params: { turfId: string }): Promise<Guarded> {
+	const session = locals.session;
+	if (!session) return { ok: false, response: json({ error: 'Not signed in' }, { status: 401 }) };
+
+	const now = Date.now();
+	pruneRateLimitStores(now);
+
+	const budget = recordRequest(turfRequests, session.slackUserId, now, {
+		exempt: session.isAdmin,
+	});
+	if (!budget.allowed) {
+		console.warn(`[van] turf API request budget exhausted: user=${session.slackUserId}`);
+		return {
+			ok: false,
+			response: json(
+				{ error: 'Too many requests. Slow down and try again shortly.' },
+				{ status: 429, headers: { 'Retry-After': String(budget.retryAfterSeconds) } },
+			),
+		};
+	}
+
+	const access = turfAccess(
+		{ slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+		await loadVanBlockedIds(db),
+		SLACK_SUPERUSER_ID,
+	);
+	if (!access.allowed) {
+		return { ok: false, response: json({ error: access.message }, { status: 403 }) };
+	}
+
+	const turfId = Number(params.turfId);
+	if (!Number.isInteger(turfId)) {
+		return { ok: false, response: json({ error: 'Unknown turf' }, { status: 400 }) };
+	}
+	return { ok: true, session, turfId, now };
+}
+
+/**
+ * Whether VAN has this volunteer's doors: polled by the turf card while
+ * "I synced MiniVAN" is ticked. Reads our own tables only — the live poll
+ * (van/live-contacts.ts) keeps them a minute behind VAN. 404 unless the
+ * caller holds the turf, so it says nothing about anyone else's.
+ */
+export const GET: RequestHandler = async ({ locals, params }) => {
+	const guarded = await guard(locals, params);
+	if (!guarded.ok) return guarded.response;
+	const { session, turfId, now } = guarded;
+	const check = await turfSyncCheck(db, {
+		turfId,
+		slackUserId: session.slackUserId,
+		now: new Date(now),
+	});
+	if (!check) return json({ error: "You don't hold that turf." }, { status: 404 });
+	return json(check);
+};
+
+export const POST: RequestHandler = async ({ locals, params, request }) => {
+	const guarded = await guard(locals, params);
+	if (!guarded.ok) return guarded.response;
+	const { session, turfId, now } = guarded;
+
+	let action: unknown;
+	// "I synced MiniVAN" — required when marking walked, and checked by endClaim
+	// rather than here so the Slack path shares the same rule.
+	let synced: unknown;
+	// "Check out this turf" on turf knocked before its cut, past the page's
+	// KnockedClaimDialog. Checked by claimTurf, so the Slack path shares it.
+	let acknowledgedKnocked: unknown;
+	try {
+		({ action, synced, acknowledgedKnocked } = (await request.json()) as {
+			action?: unknown;
+			synced?: unknown;
+			acknowledgedKnocked?: unknown;
+		});
+	} catch {
+		return json({ error: 'Malformed request' }, { status: 400 });
+	}
+	if (typeof action !== 'string' || !ACTIONS.has(action as Action)) {
+		return json({ error: 'Unknown action' }, { status: 400 });
+	}
+
+	if (action === 'hide' || action === 'unhide') {
+		// The checkbox is only on an admin's card; this is what makes that more
+		// than cosmetic.
+		if (!session.isAdmin) return json({ error: 'Admins only' }, { status: 403 });
+		const found = await setTurfHidden(
+			db,
+			turfId,
+			action === 'hide',
+			{ id: session.slackUserId, name: session.slackUserName },
+			new Date(now),
+		);
+		if (!found) return json({ error: 'That turf no longer exists.' }, { status: 404 });
+		return json({ ok: true });
+	}
+
+	if (action === 'claim') {
+		// An outside volunteer who has not given a name yet would stamp their
+		// claim with a blank one, and from there the turf channel and the
+		// sheets (specs/014-apple-sso-login, FR-011c). The page hides the
+		// button until they do; this is what makes that more than cosmetic.
+		if (session.needsName) {
+			return json(
+				{ error: 'Choose the name organizers will see before claiming turf.' },
+				{ status: 409 },
+			);
+		}
+		// The TTL and the per-volunteer cap come from /settings (Story 7.4). This
+		// is the enforcing side: the page greys out a turf it thinks is
+		// unclaimable, but `canClaim` inside claimTurf is what actually refuses,
+		// so both have to be handed the same numbers.
+		const settings = await loadSettings(db);
+		const result = await claimTurf(db, {
+			turfId,
+			slackUserId: session.slackUserId,
+			slackUserName: session.slackUserName,
+			now: new Date(now),
+			options: claimOptionsFor(settings, session),
+			acknowledgedKnocked: acknowledgedKnocked === true,
+			sheetCheck: packetTrackerCheck(db),
+		});
+		if (!result.ok) {
+			// `needsAcknowledgement` tells the page to ask and resend, for turf
+			// it did not know was striped (rendered before the contact sync).
+			return json(
+				{
+					error: result.message,
+					...(result.needsAcknowledgement ? { needsAcknowledgement: true } : {}),
+				},
+				{ status: result.status },
+			);
+		}
+		nudgePacketTracker(db, turfId);
+		return json({
+			expiresAt: result.expiresAt,
+			// Issued only on a successful claim. This response is the only path
+			// by which a list number reaches a browser.
+			printedListNumber: result.printedListNumber,
+		});
+	}
+
+	const result = await endClaim(db, {
+		turfId,
+		slackUserId: session.slackUserId,
+		now: new Date(now),
+		kind: action === 'complete' ? 'complete' : 'release',
+		syncedMinivan: action === 'complete' && synced === true,
+	});
+	if (!result.ok) return json({ error: result.message }, { status: result.status });
+	nudgePacketTracker(db, turfId);
+	if (action === 'complete') nudgeContactCount(db, turfId);
+	// Story 5.6 hangs off completion, and finishes elsewhere: `endClaim` records
+	// a refresh request for this turf's region, the sweep sends it, and once
+	// VAN's re-cut lands the door-delta check stamps `confirmedDoorDelta` and
+	// nudges the volunteer if nothing moved. Nothing to do here — the whole
+	// point is that the volunteer's request does not wait on VAN.
+	return json({ ok: true });
+};

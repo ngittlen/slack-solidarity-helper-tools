@@ -4,12 +4,25 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { SLACK_BOT_TOKEN, SLACK_GROWTH_REPORT_CHANNEL_ID } from './env.js';
 import { loadSettings } from './settings.js';
 import { errMessage } from '../err-message.js';
+import { timeDependency } from './request-timing.js';
+
+/**
+ * The bot client, its calls timed against the request that makes them (see
+ * request-timing.ts). Every method — `conversations.info`, `paginate` — goes
+ * through `apiCall`, bound in WebClient's constructor, so overriding it here
+ * catches them all, retries included.
+ */
+class TimedWebClient extends WebClient {
+	override apiCall(...args: Parameters<WebClient['apiCall']>): ReturnType<WebClient['apiCall']> {
+		return timeDependency('slack', () => super.apiCall(...args), args[0]);
+	}
+}
 
 let _slack: WebClient | null = null;
 
 export function getSlack(): WebClient {
 	if (!_slack) {
-		_slack = new WebClient(SLACK_BOT_TOKEN);
+		_slack = new TimedWebClient(SLACK_BOT_TOKEN);
 	}
 	return _slack;
 }
@@ -81,6 +94,32 @@ export async function postAlert(channelId: string, text: string, logTag: string)
 	} catch (err) {
 		console.error(`${logTag} Slack post to ${channelId} failed:`, errMessage(err));
 		return false;
+	}
+}
+
+/**
+ * Post to a channel, or as a reply in a thread when `threadTs` is given, and
+ * return the message's `ts` — what a later reply threads under. Null when it
+ * didn't land. Same message shape as postAlert.
+ */
+export async function postToChannel(
+	channelId: string,
+	text: string,
+	logTag: string,
+	threadTs?: string,
+): Promise<string | null> {
+	if (!channelId) return null;
+	try {
+		const res = await slack.chat.postMessage({
+			channel: channelId,
+			text,
+			blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+			...(threadTs ? { thread_ts: threadTs } : {}),
+		});
+		return typeof res.ts === 'string' ? res.ts : null;
+	} catch (err) {
+		console.error(`${logTag} Slack post to ${channelId} failed:`, errMessage(err));
+		return null;
 	}
 }
 

@@ -3,12 +3,38 @@ import { POST } from './+server.js';
 
 const mockSave = vi.hoisted(() => vi.fn());
 const mockDelete = vi.hoisted(() => vi.fn());
+const mockSaveFolder = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/settings', () => ({
 	saveVanChapterFolders: mockSave,
+	saveVanFolderChapters: mockSaveFolder,
 	deleteVanChapterFolders: mockDelete,
+	// The real matcher is tested against the real trigger in
+	// van-folder-chapters.test.ts; here only the route's wiring is.
+	isDeletedTurfCustomChapterError: (err: unknown) =>
+		err instanceof Error && err.message.includes('turf_custom_chapter_deleted'),
 }));
+
+const deletedError = () => new Error('SQLITE_CONSTRAINT: turf_custom_chapter_deleted');
+// Campaign 2 exists; any other positive id does not. The validation itself is
+// campaignFromRequest's, exercised for real.
+vi.mock('$lib/server/van/campaigns.js', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/van/campaigns.js')>();
+	return {
+		campaignFromRequest: (_db: unknown, raw: unknown) =>
+			real.campaignFromRequest(
+				{
+					select: () => ({
+						from: () => ({
+							where: async () => (raw === 2 ? [{ id: 2, credentialKey: 'other' }] : []),
+						}),
+					}),
+				} as never,
+				raw,
+			),
+	};
+});
 
 const authed = {
 	locals: { session: { slackUserId: 'U_ADMIN', slackUserName: 'Alice', isAdmin: true } },
@@ -23,6 +49,7 @@ function makeEvent(session: typeof authed | typeof unauthed | typeof nonAdmin, b
 }
 
 const save = (over: Record<string, unknown> = {}) => ({
+	campaignId: 2,
 	action: 'save',
 	chapterId: 71,
 	chapterName: 'Middlesex County',
@@ -35,6 +62,7 @@ describe('POST /api/settings/van-chapter-folders', () => {
 		vi.clearAllMocks();
 		mockSave.mockResolvedValue(undefined);
 		mockDelete.mockResolvedValue(undefined);
+		mockSaveFolder.mockResolvedValue(undefined);
 	});
 
 	it('returns 401 when not authenticated', async () => {
@@ -54,7 +82,7 @@ describe('POST /api/settings/van-chapter-folders', () => {
 		expect(res.status).toBe(200);
 		expect(mockSave).toHaveBeenCalledWith(
 			{},
-			{ chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 1200] },
+			{ campaignId: 2, chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 1200] },
 			{ id: 'U_ADMIN', name: 'Alice' },
 		);
 	});
@@ -67,12 +95,45 @@ describe('POST /api/settings/van-chapter-folders', () => {
 	});
 
 	it('removes a chapter mapping', async () => {
-		const res = await POST(makeEvent(authed, { action: 'remove', chapterId: 71 }) as never);
+		const res = await POST(
+			makeEvent(authed, { campaignId: 2, action: 'remove', chapterId: 71 }) as never,
+		);
 		expect(res.status).toBe(200);
-		expect(mockDelete).toHaveBeenCalledWith({}, 71, { id: 'U_ADMIN', name: 'Alice' });
+		expect(mockDelete).toHaveBeenCalledWith({}, 2, 71, { id: 'U_ADMIN', name: 'Alice' });
 	});
 
-	it('rejects non-integer and non-positive ids', async () => {
+	// Negative ids are an admin's turf-only chapters (turf_custom_chapters).
+	it('saves and removes a turf-only chapter’s negative id', async () => {
+		const res = await POST(
+			makeEvent(authed, save({ chapterId: -3, chapterName: 'Outreach team' })) as never,
+		);
+		expect(res.status).toBe(200);
+		expect(mockSave.mock.calls[0]![1]).toMatchObject({ chapterId: -3 });
+
+		await POST(makeEvent(authed, { campaignId: 2, action: 'remove', chapterId: -3 }) as never);
+		expect(mockDelete).toHaveBeenCalledWith({}, 2, -3, { id: 'U_ADMIN', name: 'Alice' });
+	});
+
+	// A page left open while another admin deleted the entry must not write
+	// its mapping back. Removing stays open, so stray rows can be cleared.
+	it('refuses to save a deleted custom chapter, but still removes one', async () => {
+		mockSave.mockRejectedValueOnce(deletedError());
+		const res = await POST(
+			makeEvent(authed, save({ chapterId: -4, chapterName: 'Gone team' })) as never,
+		);
+		expect(res.status).toBe(400);
+		expect((await res.json()).error).toMatch(/deleted/);
+
+		await POST(makeEvent(authed, { campaignId: 2, action: 'remove', chapterId: -4 }) as never);
+		expect(mockDelete).toHaveBeenCalledWith({}, 2, -4, { id: 'U_ADMIN', name: 'Alice' });
+	});
+
+	it('still fails loudly on any other write error', async () => {
+		mockSave.mockRejectedValueOnce(new Error('disk I/O error'));
+		await expect(POST(makeEvent(authed, save()) as never)).rejects.toThrow('disk I/O error');
+	});
+
+	it('rejects non-integer and zero chapter ids and non-positive folder ids', async () => {
 		for (const body of [
 			save({ chapterId: 'seventy-one' }),
 			save({ chapterId: 0 }),
@@ -111,5 +172,124 @@ describe('POST /api/settings/van-chapter-folders', () => {
 			} as unknown as Request,
 		};
 		expect((await POST(bad as never)).status).toBe(400);
+	});
+
+	// The folder-first direction, used by /turfs/folder-map.
+	describe('save-folder', () => {
+		const saveFolder = (over: Record<string, unknown> = {}) => ({
+			campaignId: 2,
+			action: 'save-folder',
+			folderId: 68299,
+			chapters: [{ chapterId: 71, chapterName: 'Oakland County' }],
+			...over,
+		});
+
+		it('saves one folder’s chapter list', async () => {
+			const res = await POST(makeEvent(authed, saveFolder()) as never);
+			expect(res.status).toBe(200);
+			expect(mockSaveFolder).toHaveBeenCalledWith(
+				{},
+				{
+					campaignId: 2,
+					folderId: 68299,
+					chapters: [{ chapterId: 71, chapterName: 'Oakland County' }],
+				},
+				{ id: 'U_ADMIN', name: 'Alice' },
+			);
+			// Never the chapter-first writer: that one would wipe the chapter's
+			// other folders.
+			expect(mockSave).not.toHaveBeenCalled();
+		});
+
+		it('accepts an empty list, which unmaps the folder', async () => {
+			const res = await POST(makeEvent(authed, saveFolder({ chapters: [] })) as never);
+			expect(res.status).toBe(200);
+			expect(mockSaveFolder).toHaveBeenCalledWith(
+				{},
+				{ campaignId: 2, folderId: 68299, chapters: [] },
+				{ id: 'U_ADMIN', name: 'Alice' },
+			);
+		});
+
+		it('trims chapter names and rejects empty or over-long ones', async () => {
+			await POST(
+				makeEvent(
+					authed,
+					saveFolder({ chapters: [{ chapterId: 71, chapterName: '  Oakland County  ' }] }),
+				) as never,
+			);
+			expect(mockSaveFolder.mock.calls[0]![1].chapters[0].chapterName).toBe('Oakland County');
+
+			for (const chapterName of ['', '   ', 'x'.repeat(201), 42]) {
+				const res = await POST(
+					makeEvent(authed, saveFolder({ chapters: [{ chapterId: 71, chapterName }] })) as never,
+				);
+				expect(res.status).toBe(400);
+			}
+			expect(mockSaveFolder).toHaveBeenCalledTimes(1);
+		});
+
+		it('accepts a turf-only chapter’s negative id', async () => {
+			const chapters = [{ chapterId: -3, chapterName: 'Outreach team' }];
+			const res = await POST(makeEvent(authed, saveFolder({ chapters })) as never);
+			expect(res.status).toBe(200);
+			expect(mockSaveFolder.mock.calls[0]![1].chapters).toEqual(chapters);
+		});
+
+		it('refuses a folder list naming a deleted custom chapter', async () => {
+			const chapters = [
+				{ chapterId: 71, chapterName: 'Oakland County' },
+				{ chapterId: -4, chapterName: 'Gone team' },
+			];
+			mockSaveFolder.mockRejectedValueOnce(deletedError());
+			const res = await POST(makeEvent(authed, saveFolder({ chapters })) as never);
+			expect(res.status).toBe(400);
+			expect((await res.json()).error).toMatch(/deleted/);
+		});
+
+		it('rejects bad folder ids, chapter ids and a non-array', async () => {
+			for (const folderId of [0, -1, 1.5, '68299', undefined]) {
+				expect((await POST(makeEvent(authed, saveFolder({ folderId })) as never)).status).toBe(400);
+			}
+			for (const chapterId of [0, 1.5, '71', undefined]) {
+				const body = saveFolder({ chapters: [{ chapterId, chapterName: 'Oakland County' }] });
+				expect((await POST(makeEvent(authed, body) as never)).status).toBe(400);
+			}
+			expect(
+				(await POST(makeEvent(authed, saveFolder({ chapters: 'nope' })) as never)).status,
+			).toBe(400);
+			expect(mockSaveFolder).not.toHaveBeenCalled();
+		});
+
+		it('caps how many chapters one folder can map to', async () => {
+			const chapters = Array.from({ length: 51 }, (_, i) => ({
+				chapterId: i + 1,
+				chapterName: `Chapter ${i + 1}`,
+			}));
+			const res = await POST(makeEvent(authed, saveFolder({ chapters })) as never);
+			expect(res.status).toBe(400);
+			expect(mockSaveFolder).not.toHaveBeenCalled();
+		});
+
+		it('still refuses a non-admin', async () => {
+			const res = await POST(makeEvent(nonAdmin, saveFolder()) as never);
+			expect(res.status).toBe(403);
+			expect(mockSaveFolder).not.toHaveBeenCalled();
+		});
+	});
+});
+
+// Folder ids are each campaign's own, so every request names the campaign.
+describe('campaign', () => {
+	it('refuses a request that names no campaign', async () => {
+		const res = await POST(makeEvent(authed, save({ campaignId: undefined })) as never);
+		expect(res.status).toBe(400);
+		expect(mockSave).not.toHaveBeenCalled();
+	});
+
+	it('refuses a campaign that does not exist', async () => {
+		const res = await POST(makeEvent(authed, save({ campaignId: 99 })) as never);
+		expect(res.status).toBe(404);
+		expect(mockSave).not.toHaveBeenCalled();
 	});
 });

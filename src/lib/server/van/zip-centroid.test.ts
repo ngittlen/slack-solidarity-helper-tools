@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
 	geocodeAddress,
+	lookupAddress,
 	geocodeZip,
+	findZip,
 	lookupZipCentroid,
 	normalizeZip,
 	resolveLocation,
+	zipForPoint,
 } from './zip-centroid.js';
 
 function res(status: number, body: unknown): Response {
@@ -40,7 +43,7 @@ function makeDb(
 			}),
 			insert: () => ({
 				values: (row: unknown) => ({
-					onConflictDoUpdate: async () => {
+					onConflictDoNothing: async () => {
 						if (opts.writeThrows) throw new Error('db down');
 						written.push(row);
 					},
@@ -57,16 +60,56 @@ describe('normalizeZip', () => {
 	it('trims whitespace', () => {
 		expect(normalizeZip('  48104 ')).toBe('48104');
 	});
-	it('takes the five-digit half of a ZIP+4', () => {
-		expect(normalizeZip('48104-1234')).toBe('48104');
-	});
+	it.each(['48104-1234', '48104 1234', '481041234'])(
+		'takes the five-digit half of the ZIP+4 %s',
+		(raw) => {
+			expect(normalizeZip(raw)).toBe('48104');
+		},
+	);
 	it.each([
 		['', ''],
 		['too short', '4810'],
+		['a ZIP+4 cut short', '48104123'],
+		['two hyphens', '48104--1234'],
 		['letters', 'ann arbor'],
 		['null', null],
 	])('rejects %s', (_label, raw) => {
 		expect(normalizeZip(raw)).toBeNull();
+	});
+});
+
+describe('zipForPoint', () => {
+	const ANN_ARBOR = { lat: 42.2808, lng: -83.743 };
+	beforeEach(() => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+
+	// The shape verified live against TIGERweb on 2026-10-22.
+	it('answers the ZIP a point falls in', async () => {
+		const fetchFn = vi.fn(async () =>
+			res(200, { features: [{ attributes: { ZCTA5: '48104' } }] }),
+		) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, fetchFn)).toEqual({ ok: true, zip: '48104' });
+		const url = new URL(
+			(fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string,
+		);
+		expect(url.searchParams.get('geometry')).toBe('-83.743,42.2808');
+		expect(url.searchParams.get('inSR')).toBe('4326');
+	});
+
+	it('tells a point in no ZIP from a Census that did not answer', async () => {
+		const none = vi.fn(async () => res(200, { features: [] })) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, none)).toEqual({ ok: true, zip: null });
+		const down = vi.fn(async () => res(503, {})) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, down)).toEqual({ ok: false });
+		const rejected = vi.fn(async () =>
+			res(200, { error: { code: 400 } }),
+		) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, rejected)).toEqual({ ok: false });
+		const thrown = vi.fn(async () => {
+			throw new Error('ECONNRESET');
+		}) as unknown as typeof fetch;
+		expect(await zipForPoint(ANN_ARBOR, thrown)).toEqual({ ok: false });
 	});
 });
 
@@ -213,6 +256,44 @@ describe('lookupZipCentroid', () => {
 	});
 });
 
+describe('findZip', () => {
+	beforeEach(() => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+
+	it('answers from the cache, then from TIGERweb, caching what it finds', async () => {
+		const cached = makeDb([{ zip: '48104', lat: 42.26, lng: -83.71 }]);
+		expect(await findZip(cached.db, '48104', vi.fn() as never)).toEqual({
+			kind: 'found',
+			point: { lat: 42.26, lng: -83.71 },
+		});
+		const fresh = makeDb([]);
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
+		expect(await findZip(fresh.db, '48104', fetchFn as never)).toMatchObject({ kind: 'found' });
+		expect(fresh.written).toHaveLength(1);
+	});
+
+	// So the map search can say "try again later" rather than "no such ZIP".
+	it.each([
+		['a non-200', () => Promise.resolve(res(500, ''))],
+		['an ArcGIS error envelope', () => Promise.resolve(res(200, { error: { code: 400 } }))],
+		['a missing features envelope', () => Promise.resolve(res(200, {}))],
+		['a network failure or timeout', () => Promise.reject(new Error('TimeoutError'))],
+	])('calls %s unavailable, and caches nothing', async (_label, impl) => {
+		const { db, written } = makeDb([]);
+		expect(await findZip(db, '48104', impl as never)).toEqual({ kind: 'unavailable' });
+		expect(written).toHaveLength(0);
+	});
+
+	it('calls a ZIP that is not a ZCTA, or not a ZIP at all, not found', async () => {
+		const { db } = makeDb([]);
+		const fetchFn = vi.fn().mockResolvedValue(res(200, { features: [] }));
+		expect(await findZip(db, '00000', fetchFn as never)).toEqual({ kind: 'not-found' });
+		expect(await findZip(db, 'nope', fetchFn as never)).toEqual({ kind: 'not-found' });
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+});
+
 // The /turfs Slack command lets a volunteer type a street address. Two rules
 // hold everywhere below: the address is never written to a column, and it never
 // appears in a log line.
@@ -336,24 +417,13 @@ describe('resolveLocation', () => {
 	});
 
 	// The whole data-handling posture in one assertion: an address goes in, and
-	// only a ZIP centroid comes out the other side into a column.
-	it('caches the matched ZIP and never the address', async () => {
+	// nothing comes out the other side into a column — not the address, and not
+	// the point it resolved to, which would otherwise become its ZIP's location.
+	it('writes nothing to the cache', async () => {
 		const { db, written } = makeDb();
 		const fetchFn = vi.fn().mockResolvedValue(res(200, ADDRESS_MATCH));
-		await resolveLocation(db, ADDRESS, fetchFn as never);
-		expect(written).toEqual([
-			{ zip: '20500', lat: 38.8977, lng: -77.0365, fetchedAt: expect.any(String) },
-		]);
-		expect(JSON.stringify(written)).not.toContain('Pennsylvania');
-	});
-
-	it('writes nothing when the match carries no ZIP', async () => {
-		const { db, written } = makeDb();
-		const body = {
-			result: { addressMatches: [{ coordinates: { x: -77.03, y: 38.89 }, addressComponents: {} }] },
-		};
-		const fetchFn = vi.fn().mockResolvedValue(res(200, body));
-		await resolveLocation(db, ADDRESS, fetchFn as never);
+		const result = await resolveLocation(db, ADDRESS, fetchFn as never);
+		expect(result).toEqual({ point: { lat: 38.8977, lng: -77.0365 }, zip: '20500' });
 		expect(written).toEqual([]);
 	});
 
@@ -382,6 +452,91 @@ describe('resolveLocation', () => {
 			point: { lat: 38.8977, lng: -77.0365 },
 			zip: '20500',
 		});
+		warn.mockRestore();
+	});
+});
+
+// End to end on real SQLite: a ZIP keeps its Census point however many
+// addresses are looked up inside it.
+describe('the ZIP cache on a real database', () => {
+	it('keeps the Census point for a ZIP rather than an address in it', async () => {
+		const { createClient } = await import('@libsql/client');
+		const { drizzle } = await import('drizzle-orm/libsql');
+		const { migrate } = await import('drizzle-orm/libsql/migrator');
+		const db = drizzle(createClient({ url: ':memory:' }));
+		await migrate(db, { migrationsFolder: 'drizzle' });
+
+		const zcta = vi.fn(async () => new Response(JSON.stringify(ZCTA)));
+		expect(await lookupZipCentroid(db, '48104', zcta)).toEqual({
+			lat: 42.2620394,
+			lng: -83.7166908,
+		});
+
+		// Someone types a street address downtown, in the same ZIP.
+		const geocoder = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						result: {
+							addressMatches: [
+								{ coordinates: { x: -83.749, y: 42.282 }, addressComponents: { zip: '48104' } },
+							],
+						},
+					}),
+				),
+		);
+		await resolveLocation(db, '301 E Liberty St, Ann Arbor, MI', geocoder);
+
+		// The ZIP still answers with its own point, from the cache.
+		const unused = vi.fn();
+		expect(await lookupZipCentroid(db, '48104', unused)).toEqual({
+			lat: 42.2620394,
+			lng: -83.7166908,
+		});
+		expect(unused).not.toHaveBeenCalled();
+	});
+});
+
+describe('lookupAddress', () => {
+	it('returns the matched address with the point', async () => {
+		const body = {
+			result: {
+				addressMatches: [
+					{
+						matchedAddress: '229 W MICHIGAN AVE, YPSILANTI, MI, 48197',
+						coordinates: { x: -83.61, y: 42.24 },
+						addressComponents: { zip: '48197' },
+					},
+				],
+			},
+		};
+		const fetchFn = vi.fn().mockResolvedValue(res(200, body));
+		await expect(lookupAddress(ADDRESS, fetchFn as never)).resolves.toEqual({
+			kind: 'found',
+			point: { lat: 42.24, lng: -83.61 },
+			zip: '48197',
+			matchedAddress: '229 W MICHIGAN AVE, YPSILANTI, MI, 48197',
+		});
+	});
+
+	it('tells no match apart from an outage', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const answer = (body: unknown) => vi.fn().mockResolvedValue(res(200, body)) as never;
+		await expect(
+			lookupAddress(ADDRESS, answer({ result: { addressMatches: [] } })),
+		).resolves.toEqual({ kind: 'not-found' });
+		await expect(lookupAddress(ADDRESS, answer({ errors: ['x'] }))).resolves.toEqual({
+			kind: 'unavailable',
+		});
+		await expect(
+			lookupAddress(ADDRESS, vi.fn().mockResolvedValue(res(503, {})) as never),
+		).resolves.toEqual({ kind: 'unavailable' });
+		await expect(
+			lookupAddress(
+				ADDRESS,
+				vi.fn().mockRejectedValue(Object.assign(new Error('x'), { name: 'TimeoutError' })) as never,
+			),
+		).resolves.toEqual({ kind: 'unavailable' });
 		warn.mockRestore();
 	});
 });

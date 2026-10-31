@@ -5,6 +5,7 @@ import {
 	renderPolicy,
 	PRIVACY_DOC,
 	SECURITY_DOC,
+	TERMS_DOC,
 	POLICY_DOCS,
 } from './policy-docs.js';
 
@@ -25,6 +26,7 @@ describe('rewriteHref', () => {
 	it('turns the cross-document links into in-page anchors', () => {
 		expect(rewriteHref('SECURITY.md', 'privacy')).toBe('#security');
 		expect(rewriteHref('PRIVACY.md', 'security')).toBe('#privacy');
+		expect(rewriteHref('TERMS.md', 'privacy')).toBe('#terms');
 	});
 
 	it('namespaces a link to the document own sections', () => {
@@ -40,8 +42,9 @@ describe('rewriteHref', () => {
 });
 
 describe('the rendered documents', () => {
-	it('renders both, titled from their H1', () => {
-		expect(POLICY_DOCS.map((d) => d.slug)).toEqual(['privacy', 'security']);
+	it('renders all three, titled from their H1, terms first', () => {
+		expect(POLICY_DOCS.map((d) => d.slug)).toEqual(['terms', 'privacy', 'security']);
+		expect(TERMS_DOC.title).toBe('Terms of Use');
 		expect(PRIVACY_DOC.title).toBe('Privacy Policy');
 		expect(SECURITY_DOC.title).toBe('Security Policy');
 	});

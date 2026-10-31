@@ -18,8 +18,9 @@
 	// The four door-knock surfaces — the chart, the county leaderboard, the LED
 	// ticker and the countdown's projection — are all back, reading the VAN
 	// turf checkout ledger rather than Openfield's nightly snapshot (plan.md
-	// Story 9). The metric changed with the source: these are doors CLEARED
-	// (doors that left a turf after it was walked), not doors knocked.
+	// Story 9). Doors are doors KNOCKED from VAN's ContactHistory (in-person
+	// attempts during each claim), or doors cleared where a turf has no roster.
+	// See loadClearedRows in doors-store.ts.
 
 	let { data }: { data: PageData } = $props();
 
@@ -107,7 +108,7 @@
 	{#if showDoors}
 		<div class="doors-row">
 			<ChartCard
-				title="Doors cleared"
+				title="Doors knocked"
 				cardState={doorsState}
 				bind:mode={doorsMode}
 				showMultiChapterNote={false}

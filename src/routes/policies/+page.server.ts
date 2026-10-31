@@ -7,5 +7,5 @@ import { POLICY_DOCS } from '$lib/server/policy-docs.js';
 // have.
 export const load: PageServerLoad = () => ({
 	docs: POLICY_DOCS,
-	pageTitle: 'Privacy & security',
+	pageTitle: 'Terms, privacy & security',
 });

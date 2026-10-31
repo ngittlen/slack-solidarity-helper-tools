@@ -2,7 +2,7 @@
 // own; `now` is always passed in.
 //
 // The storage layer enforces the one rule that must never be violated: a
-// partial unique index on van_turf_checkouts (map_route_id) WHERE released_at
+// partial unique index on van_turf_checkouts (turf_id) WHERE released_at
 // IS NULL AND completed_at IS NULL, so two racing claims cannot both win even
 // if this module's checks are somehow bypassed. Everything here is the
 // *friendly* layer on top of that — deciding what to show, and refusing a
@@ -14,25 +14,56 @@
 // ran, and a volunteer standing in front of that turf would be told it was
 // taken by someone who has long since gone home.
 
+import { isTurfStaff } from './access.js';
 import type { TurfStatus } from './turf-status.js';
 
 /** The turf fields the rules actually depend on. Deliberately narrow so the
  *  DB row shape can change without touching this file. */
 export interface TurfSnapshot {
-	mapRouteId: number;
+	turfId: number;
 	/** The MiniVAN list number. Null means VAN has the route but nobody has
 	 *  generated its printed list — see `canClaim`. */
 	printedListNumber: string | null;
 	retiredAt: string | null;
-	/** Canvassers VAN reports for this turf, when an organizer distributed it
-	 *  outside this app. Non-null = already in someone's hands. */
+	/** An admin has hidden it from volunteers. Optional so snapshots that
+	 *  predate it need not name it. */
+	hidden?: boolean;
+	/** Who has this turf when it was handed out outside this app — canvassers
+	 *  VAN reports, or the campaign's Packet Tracker. Non-null = already in
+	 *  someone's hands. */
 	vanDistributedTo: string | null;
-	/** Doors VAN still shows as uncontacted. */
+	/** Doors left to knock: the uncontacted count when there is one, else
+	 *  VAN's doorCount (see `doorsLeft` in turf-view.ts). */
 	doorCount: number;
+	/** The ContactHistory count behind `doorCount`, or null/absent when the
+	 *  turf has none yet. Decides whether `reportedPercent` still gates. */
+	uncontactedDoors?: number | null;
+	/** % walked on the last completion, 0-100, or null. Derived from the
+	 *  uncontacted count since the "I synced MiniVAN" change; older rows hold
+	 *  what the volunteer typed from MiniVAN. */
+	reportedPercent: number | null;
+	/** Someone has marked this route walked. With `reportedPercent` null that
+	 *  means "walked, how much unknown" — the case of a turf with no count.
+	 *  Optional so snapshots that predate it need not name it. */
+	walked?: boolean;
+	/** That walk is newer than the last scheduled contact sync, so an
+	 *  uncontacted count does not reflect it yet. */
+	walkAwaitingCount?: boolean;
 }
 
+/** At this, a reported turf has nothing left to knock and leaves the pool. */
+export const WALKED_OUT_PERCENT = 100;
+
+/** Asked before checking out turf knocked before its cut (`hasContactHistory`
+ *  in turf-view.ts) — on the page and behind the Slack button alike. A re-cut
+ *  that did not leave out the knocked doors lists them as untouched, so
+ *  MiniVAN sends the volunteer back to them. Their call, not a refusal — but
+ *  one they must have made: `claimTurf` refuses until they have. */
+export const KNOCKED_CLAIM_WARNING =
+	'This turf has been partially or totally knocked using a prior list number, so you may re-contact some people.';
+
 export interface ClaimSnapshot {
-	mapRouteId: number;
+	turfId: number;
 	slackUserId: string;
 	slackUserName: string;
 	claimedAt: string;
@@ -42,6 +73,11 @@ export interface ClaimSnapshot {
 }
 
 export const DEFAULT_CLAIM_TTL_HOURS = 48;
+
+/** How long a turf handed out outside this app stays out of the pool, from
+ *  the last time VAN saw its list exported. See `vanAssignmentBlocks` in
+ *  turf-view.ts. */
+export const DEFAULT_VAN_ASSIGNMENT_TTL_HOURS = 48;
 export const DEFAULT_MAX_CONCURRENT_CLAIMS = 2;
 
 // Bounds for the admin-tunable versions of the two above (Story 7.4). They sit
@@ -57,6 +93,18 @@ export const MIN_CLAIM_TTL_HOURS = 1;
  *  nobody revisits — and the turf sits out of the pool that whole time. */
 export const MAX_CLAIM_TTL_HOURS = 168;
 
+/** The hand-out TTL that means "never": turf handed out in VAN stays out of
+ *  the pool for good, as it did before the TTL existed. It doubles as the
+ *  floor, so anything below it (a hand-edited row) also reads as "never",
+ *  which errs toward nobody re-knocking a canvasser's doors. Otherwise any
+ *  whole number of hours is allowed, down to one. */
+export const VAN_ASSIGNMENT_NEVER_RELEASED = 0;
+export const MIN_VAN_ASSIGNMENT_TTL_HOURS = VAN_ASSIGNMENT_NEVER_RELEASED;
+/** Two weeks. Longer than a claim may last, because an organizer handing a
+ *  packet out directly may mean it for a longer push; past this the turf is
+ *  as good as never coming back, which is what this setting exists to end. */
+export const MAX_VAN_ASSIGNMENT_TTL_HOURS = 336;
+
 /** Zero would mean nobody may claim anything, which is a way to break turf
  *  checkout by typing in a settings box rather than a setting anyone wants. */
 export const MIN_CONCURRENT_CLAIMS = 1;
@@ -68,18 +116,22 @@ export const MAX_CONCURRENT_CLAIMS = 10;
  * Turn the admin-configured values into options `canClaim` can use.
  *
  * Every caller of `canClaim` and `claimTurf` goes through this, so the page,
- * the map's viewport endpoint and the claim route cannot disagree about how
- * long a claim lasts or how many a volunteer may hold. That mattered before it
- * was configurable too — the page passed `{}` while the viewport endpoint
- * passed nothing at all — but with real settings a disagreement becomes
- * visible: turf that shows claimable on the map and refuses on click.
+ * the map's viewport endpoint, the claim route and the `/turfs` Slack command
+ * cannot disagree about how long a claim lasts, how many a volunteer may
+ * hold, or when a turf handed out in VAN comes back. With real settings a disagreement is visible: turf that shows claimable
+ * and refuses on click, or the same person getting different rules depending on
+ * whether they opened the page or typed the command.
  *
  * Clamps rather than rejects. These arrive from a validated settings write, so
  * an out-of-range value means a row predating the bounds or hand-edited SQL,
  * and neither is worth failing a volunteer's page load over.
  */
 export function resolveClaimOptions(
-	config: { ttlHours?: number | null; maxConcurrentClaims?: number | null } = {},
+	config: {
+		ttlHours?: number | null;
+		maxConcurrentClaims?: number | null;
+		vanAssignmentTtlHours?: number | null;
+	} = {},
 ): Required<ClaimOptions> {
 	return {
 		ttlHours: clamp(
@@ -94,7 +146,47 @@ export function resolveClaimOptions(
 			MAX_CONCURRENT_CLAIMS,
 			DEFAULT_MAX_CONCURRENT_CLAIMS,
 		),
+		vanAssignmentTtlHours: clamp(
+			config.vanAssignmentTtlHours,
+			MIN_VAN_ASSIGNMENT_TTL_HOURS,
+			MAX_VAN_ASSIGNMENT_TTL_HOURS,
+			DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
+		),
 	};
+}
+
+/** `options` with the per-volunteer cap lifted. */
+export function withoutClaimCap<T extends ClaimOptions>(options: T): T {
+	return { ...options, maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
+}
+
+/** The claim settings as loadSettings resolves them from /settings. */
+export interface ClaimSettings {
+	vanTurfClaimTtlHours: number;
+	vanTurfMaxConcurrentClaims: number;
+	vanAssignmentTtlHours: number;
+}
+
+/**
+ * The claim options `viewer` is held to. Every caller that claims, or shows
+ * what is claimable, on a viewer's behalf builds its options here, so the
+ * page, the map's viewport endpoint, the claim route and the `/turfs` Slack
+ * command give that viewer the same answer.
+ *
+ * Turf staff (admins and moderators) are uncapped: the cap is there to stop
+ * one volunteer taking a neighbourhood, and organizers hold turf on others'
+ * behalf.
+ */
+export function claimOptionsFor(
+	settings: ClaimSettings,
+	viewer: { isAdmin: boolean; isModerator?: boolean },
+): Required<ClaimOptions> {
+	const options = resolveClaimOptions({
+		ttlHours: settings.vanTurfClaimTtlHours,
+		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+		vanAssignmentTtlHours: settings.vanAssignmentTtlHours,
+	});
+	return isTurfStaff(viewer) ? withoutClaimCap(options) : options;
 }
 
 function clamp(
@@ -117,24 +209,27 @@ function toTime(iso: string): number {
 
 /** True when a claim is still holding the turf at `now`: not released, not
  *  completed, not lapsed. */
-export function isActive(claim: ClaimSnapshot, now: Date): boolean {
+export function isActive<T extends Pick<ClaimSnapshot, 'expiresAt' | 'releasedAt' | 'completedAt'>>(
+	claim: T,
+	now: Date,
+): boolean {
 	if (claim.releasedAt !== null || claim.completedAt !== null) return false;
 	return toTime(claim.expiresAt) > now.getTime();
 }
 
-/** The one claim currently holding `mapRouteId`, if any.
+/** The one claim currently holding `turfId`, if any.
  *
  *  Returns the most recent when several qualify. That should be impossible —
  *  the partial unique index forbids it — but a defensive pick beats returning
  *  an arbitrary row if a migration ever lands the index late. */
 export function activeClaimFor(
-	mapRouteId: number,
+	turfId: number,
 	claims: readonly ClaimSnapshot[],
 	now: Date,
 ): ClaimSnapshot | null {
 	let best: ClaimSnapshot | null = null;
 	for (const claim of claims) {
-		if (claim.mapRouteId !== mapRouteId) continue;
+		if (claim.turfId !== turfId) continue;
 		if (!isActive(claim, now)) continue;
 		if (best === null || toTime(claim.claimedAt) > toTime(best.claimedAt)) best = claim;
 	}
@@ -164,7 +259,7 @@ export function turfStatus(
 	viewerSlackUserId: string,
 	now: Date,
 ): TurfStatus {
-	const active = activeClaimFor(turf.mapRouteId, claims, now);
+	const active = activeClaimFor(turf.turfId, claims, now);
 	if (active) {
 		return active.slackUserId === viewerSlackUserId ? 'held-by-you' : 'held-by-other';
 	}
@@ -176,6 +271,7 @@ export function turfStatus(
 
 export type ClaimRefusalReason =
 	| 'retired'
+	| 'hidden'
 	| 'no-list-number'
 	| 'no-doors-left'
 	| 'already-held'
@@ -188,6 +284,10 @@ export type ClaimDecision =
 export interface ClaimOptions {
 	ttlHours?: number;
 	maxConcurrentClaims?: number;
+	/** How long a hand-out outside this app keeps a turf out of the pool.
+	 *  Applied by `turfSnapshot`, not by `canClaim`, which only sees the
+	 *  result; carried here so every caller hands both the same settings. */
+	vanAssignmentTtlHours?: number;
 }
 
 /** When a claim made at `now` should lapse. */
@@ -229,7 +329,20 @@ export function canClaim(
 		return {
 			ok: false,
 			reason: 'no-list-number',
-			message: "This turf doesn't have a MiniVAN list number yet. An organizer needs to export it.",
+			message:
+				"This turf doesn't have a MiniVAN list number yet. Reach out to an organizer to get one for it.",
+		};
+	}
+
+	// Volunteers never see hidden turf, so this is a page left open from
+	// before it was hidden — or an admin, who must un-hide it to hand it out.
+	// After the list number, so a hidden turf without one still reads as
+	// such on the admin's card.
+	if (turf.hidden === true) {
+		return {
+			ok: false,
+			reason: 'hidden',
+			message: "This turf isn't being handed out right now. Pick another turf nearby.",
 		};
 	}
 
@@ -241,7 +354,43 @@ export function canClaim(
 		};
 	}
 
-	const active = activeClaimFor(turf.mapRouteId, claims, now);
+	// VAN's door count only drops on a re-cut, so without this a turf walked
+	// to the end comes straight back into the pool. Only for a turf with no
+	// uncontacted count, though: where there is one, `doorCount` above already
+	// IS what is left, and a turf with any door still uncontacted goes back in
+	// the pool however its last volunteer described it.
+	//
+	// Without a count, a walk with no percentage (every completion since the
+	// "I synced MiniVAN" change, on a turf with no roster) keeps it out too.
+	// Nothing says how much is left, and fresh doors elsewhere beat
+	// re-knocking these; the re-cut that completion requested brings the
+	// region back as new routes with no walk at all.
+	const walkedOut =
+		turf.reportedPercent === null
+			? turf.walked === true
+			: turf.reportedPercent >= WALKED_OUT_PERCENT;
+	if (turf.uncontactedDoors == null && walkedOut) {
+		return {
+			ok: false,
+			reason: 'no-doors-left',
+			message: 'The last volunteer here finished every door on this turf.',
+		};
+	}
+
+	// With a count, a walk the count has not caught up with keeps the turf out
+	// until the next scheduled sync. Seconds after "I walked this turf" the
+	// volunteer's doors are not in ContactHistory yet, so the count still shows
+	// every door open and would send the next person to re-knock them.
+	if (turf.uncontactedDoors != null && turf.walkAwaitingCount === true) {
+		return {
+			ok: false,
+			reason: 'no-doors-left',
+			message:
+				'Someone just walked this turf. It comes back once VAN has their doors, if any are left.',
+		};
+	}
+
+	const active = activeClaimFor(turf.turfId, claims, now);
 	if (active) {
 		return active.slackUserId === slackUserId
 			? { ok: false, reason: 'already-held', message: "You've already got this one." }

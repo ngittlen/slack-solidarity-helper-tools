@@ -1,6 +1,7 @@
 <script lang="ts">
-	// The two numbers that govern turf checkout: how long a claim lasts, and how
-	// many a volunteer may hold at once.
+	// The numbers that govern turf checkout: how long a claim lasts, how many a
+	// volunteer may hold at once, and how long turf handed out in VAN stays out
+	// of the pool.
 	//
 	// They are `app_config` fields like the ranking α and the ticker speed, and
 	// use the same debounced autosave — but they live in their own section
@@ -8,28 +9,50 @@
 	// beside the chapter → folder mapping and the block list instead of between
 	// the warning DM and a slider about LEDs.
 	//
-	// Both are number inputs rather than sliders. A slider is right for the
+	// All are number inputs rather than sliders. A slider is right for the
 	// ranking α, where the value is a feel and the preview re-ranks as you drag;
 	// these are durations an organizer has an exact figure in mind for ("give
 	// them the weekend"), and dragging to land on 48 is worse than typing it.
 
+	import RadioGroup from '$lib/components/ui/RadioGroup.svelte';
 	import SettingsRow from './SettingsRow.svelte';
 	import { createFieldAutosave } from './use-field-autosave.svelte.js';
 	import {
 		DEFAULT_CLAIM_TTL_HOURS,
 		DEFAULT_MAX_CONCURRENT_CLAIMS,
+		DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 		MAX_CLAIM_TTL_HOURS,
 		MAX_CONCURRENT_CLAIMS,
+		MAX_VAN_ASSIGNMENT_TTL_HOURS,
 		MIN_CLAIM_TTL_HOURS,
 		MIN_CONCURRENT_CLAIMS,
+		MIN_VAN_ASSIGNMENT_TTL_HOURS,
+		VAN_ASSIGNMENT_NEVER_RELEASED,
 	} from '$lib/van/checkout.js';
+	import {
+		MENTOR_WALKS_VISIBILITIES,
+		MENTOR_WALKS_VISIBILITY_LABELS,
+		type MentorWalksVisibility,
+	} from '$lib/mentor-walks/rules.js';
 
 	interface Props {
 		ttlHours: number;
 		maxConcurrentClaims: number;
+		vanAssignmentTtlHours: number;
+		/** specs/015-mentor-walks, FR-040 and FR-036. */
+		mentorWalksVisibility: MentorWalksVisibility;
+		volunteerGuidelinesUrl: string;
+		canvassEventTag: string;
 	}
 
-	let { ttlHours, maxConcurrentClaims }: Props = $props();
+	let {
+		ttlHours,
+		maxConcurrentClaims,
+		vanAssignmentTtlHours,
+		mentorWalksVisibility,
+		volunteerGuidelinesUrl,
+		canvassEventTag,
+	}: Props = $props();
 
 	async function postAppConfig(patch: Record<string, unknown>): Promise<void> {
 		const res = await fetch('/api/settings/app-config', {
@@ -53,9 +76,43 @@
 		save: (value) => postAppConfig({ vanTurfMaxConcurrentClaims: value }),
 	});
 
+	const vanTtlSave = createFieldAutosave<number>({
+		initial: vanAssignmentTtlHours,
+		parse: (raw) => parseInt(raw, 10),
+		save: (value) => postAppConfig({ vanAssignmentTtlHours: value }),
+	});
+
+	const visibilitySave = createFieldAutosave<MentorWalksVisibility>({
+		initial: mentorWalksVisibility,
+		parse: (raw) => raw as MentorWalksVisibility,
+		save: (value) => postAppConfig({ mentorWalksVisibility: value }),
+		// A radio is a decision, not typing: save it straight away.
+		debounceMs: 0,
+	});
+
+	// Saved when the field is left, not as it's typed: every save is a new link
+	// all mentors must agree to again, and a mentor agreeing during a pause in
+	// the typing would agree to half a URL.
+	const guidelinesSave = createFieldAutosave<string>({
+		initial: volunteerGuidelinesUrl,
+		save: (value) => postAppConfig({ volunteerGuidelinesUrl: value }),
+		debounceMs: 0,
+	});
+
+	// Blank keeps canvass events off the map, so clearing the field is the off
+	// switch.
+	const canvassTagSave = createFieldAutosave<string>({
+		initial: canvassEventTag,
+		save: (value) => postAppConfig({ canvassEventTag: value }),
+	});
+
 	$effect(() => () => {
 		ttlSave.destroy();
 		capSave.destroy();
+		vanTtlSave.destroy();
+		visibilitySave.destroy();
+		guidelinesSave.destroy();
+		canvassTagSave.destroy();
 	});
 
 	/** Hours read as days once they stop being a number of hours anyone counts.
@@ -119,7 +176,109 @@
 	</p>
 </SettingsRow>
 
+<SettingsRow
+	label="How long turf handed out in VAN is held"
+	status={vanTtlSave.status}
+	error={vanTtlSave.error}
+	onRetry={vanTtlSave.status === 'error' ? vanTtlSave.retry : undefined}
+>
+	<div class="turf-number">
+		<input
+			type="number"
+			min={MIN_VAN_ASSIGNMENT_TTL_HOURS}
+			max={MAX_VAN_ASSIGNMENT_TTL_HOURS}
+			step="1"
+			value={vanTtlSave.value}
+			oninput={vanTtlSave.oninput}
+			aria-label="Hours turf handed out in VAN is held"
+		/>
+		<span class="turf-unit">
+			{vanTtlSave.value === VAN_ASSIGNMENT_NEVER_RELEASED
+				? 'hours (never released)'
+				: `hours${asDays(vanTtlSave.value)}`}
+		</span>
+	</div>
+	<p class="app-config-note">
+		Turf an organizer hands out straight to someone's MiniVAN, rather than through a claim here,
+		shows as checked out. It comes back to the pool this long after the list was last loaded, and
+		only once the door counts can show what the canvasser left, so nobody is sent to re-knock their
+		doors. Loading the list again starts the clock over. Set it to {VAN_ASSIGNMENT_NEVER_RELEASED} to
+		never release it: turf handed out in VAN then stays with whoever has it. Default {DEFAULT_VAN_ASSIGNMENT_TTL_HOURS}
+		hours. Up to {MAX_VAN_ASSIGNMENT_TTL_HOURS} hours.
+	</p>
+</SettingsRow>
+
+<SettingsRow
+	label="Mentor walks"
+	status={visibilitySave.status}
+	error={visibilitySave.error}
+	onRetry={visibilitySave.status === 'error' ? visibilitySave.retry : undefined}
+>
+	<RadioGroup
+		aria-label="Who sees mentor walks"
+		items={MENTOR_WALKS_VISIBILITIES.map((value) => ({
+			value,
+			label: MENTOR_WALKS_VISIBILITY_LABELS[value],
+		}))}
+		value={visibilitySave.value}
+		onValueChange={visibilitySave.setRaw}
+	/>
+	<p class="app-config-note">
+		Experienced canvassers host walks new volunteers can join, from /turfs. "Admins and moderators
+		only" lets you try it out first: everyone else sees /turfs exactly as before. Blocked people
+		never see it. Mentors and walks are managed from the organizer view.
+	</p>
+</SettingsRow>
+
+<SettingsRow
+	label="Volunteer guidelines link"
+	status={guidelinesSave.status}
+	error={guidelinesSave.error}
+	onRetry={guidelinesSave.status === 'error' ? guidelinesSave.retry : undefined}
+>
+	<input
+		class="turf-url"
+		type="url"
+		placeholder="https://"
+		value={guidelinesSave.value}
+		onchange={guidelinesSave.oninput}
+		aria-label="Volunteer guidelines link"
+	/>
+	<p class="app-config-note">
+		Mentors agree to these before hosting a walk, and are asked again if the link changes. While
+		it's empty nobody can become a mentor, though walks already posted carry on.
+	</p>
+</SettingsRow>
+
+<SettingsRow
+	label="Canvass event tag"
+	status={canvassTagSave.status}
+	error={canvassTagSave.error}
+	onRetry={canvassTagSave.status === 'error' ? canvassTagSave.retry : undefined}
+>
+	<input
+		class="turf-url"
+		type="text"
+		maxlength="100"
+		placeholder="No canvass events on the map"
+		value={canvassTagSave.value}
+		oninput={canvassTagSave.oninput}
+		aria-label="Canvass event tag"
+	/>
+	<p class="app-config-note">
+		In-person Solidarity events with this tag show on the turf map of the chapter they belong to,
+		for the week ahead, beside the mentor walks, with a link to RSVP on the event's page. An event
+		is left off if it has no event page, hides its address until RSVP, or has no location on the
+		map. Capitals and spaces at the ends don't matter. Leave blank to show none.
+	</p>
+</SettingsRow>
+
 <style>
+	.turf-url {
+		width: 100%;
+		max-width: 32rem;
+	}
+
 	.turf-number {
 		display: flex;
 		align-items: baseline;
@@ -128,17 +287,6 @@
 
 	.turf-number input {
 		width: 6rem;
-		padding: var(--space-2) var(--space-3);
-		font: inherit;
-		color: var(--color-text);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-	}
-
-	.turf-number input:focus-visible {
-		outline: 2px solid var(--color-border-focus);
-		outline-offset: 1px;
 	}
 
 	.turf-unit {

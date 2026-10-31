@@ -301,7 +301,8 @@ describe('POST /api/slack/commands — info commands', () => {
 
 		expect(mockPostMessage).not.toHaveBeenCalled();
 		const text = (await res.json()).text as string;
-		expect(text).toContain('https://app.example.org/auth/slack');
+		// Straight to the chat:write grant — signing in alone no longer gives it.
+		expect(text).toContain('https://app.example.org/auth/slack/post-as-you');
 	});
 
 	it('explains a pre-chat:write authorization specifically', async () => {
@@ -519,17 +520,13 @@ describe('POST /api/slack/commands — /turfs', () => {
 		);
 	});
 
-	it('passes the channel and the typed location through', async () => {
+	it('passes the typed location through', async () => {
 		await call(turfs({ text: '100 N Main St, Ann Arbor MI' }));
 		await flush();
-		expect(mockTurfListMessage).toHaveBeenCalledWith(
-			expect.anything(),
-			expect.objectContaining({
-				slackUserId: 'U_VOL',
-				channelId: 'C_WASHTENAW',
-				argument: '100 N Main St, Ann Arbor MI',
-			}),
-		);
+		expect(mockTurfListMessage).toHaveBeenCalledWith(expect.anything(), {
+			slackUserId: 'U_VOL',
+			argument: '100 N Main St, Ann Arbor MI',
+		});
 	});
 
 	// This is the only slash command open to non-admins, and the gates that do

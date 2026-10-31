@@ -13,12 +13,18 @@
  *  `isModerator`). Kept in sync with the `locals.session` guards in the
  *  corresponding `+page.server.ts` / `+layout.server.ts` loads — this list only decides where login *sends* people; the routes
  *  still enforce their own access. */
-const ADMIN_ONLY_PREFIXES = ['/pending', '/members', '/channel-chapter-diff', '/settings'];
+const ADMIN_ONLY_PREFIXES = [
+	'/pending',
+	'/members',
+	'/channel-chapter-diff',
+	'/settings',
+	'/post-as-you',
+];
 
 /** The subset of ADMIN_ONLY_PREFIXES a moderator may also see — the page the
- *  Slack "View member record" shortcut links to. Same caveat: the routes
- *  enforce this themselves. */
-const MODERATOR_PREFIXES = ['/members'];
+ *  Slack "View member record" shortcut links to, and the info commands'
+ *  post-as-you switch. Same caveat: the routes enforce this themselves. */
+const MODERATOR_PREFIXES = ['/members', '/post-as-you'];
 
 /** Generous cap: real destinations are short, and a cookie has to hold this. */
 const MAX_TARGET_LENGTH = 512;
@@ -48,9 +54,11 @@ export function sanitizeRedirectTarget(raw: string | null | undefined): string |
 	}
 	if (parsed.origin !== 'http://redirect.invalid') return null;
 
-	// The auth endpoints themselves are never a useful destination — sending a
-	// freshly signed-in user back to /auth/slack just loops them through OAuth.
+	// The auth endpoints and the sign-in page are never a useful destination —
+	// sending a freshly signed-in user back to /auth/slack just loops them
+	// through OAuth.
 	if (parsed.pathname === '/auth' || parsed.pathname.startsWith('/auth/')) return null;
+	if (parsed.pathname === '/signin' || parsed.pathname === '/signin/') return null;
 
 	// Hashes never reach the server, so pathname + search is the whole story.
 	return parsed.pathname + parsed.search;
@@ -68,15 +76,38 @@ export function isAdminOnlyPath(path: string): boolean {
 	return matchesPrefix(path, ADMIN_ONLY_PREFIXES);
 }
 
+/** Where a Google or Apple session goes when it has nowhere it may go in particular. */
+const TURF_CHECKOUT_PATH = '/turfs';
+
+/**
+ * True for the volunteer turf page itself — `/turfs`, with or without a query
+ * string — and not the organizer pages below it. The only page a Google or Apple
+ * sign-in is for.
+ */
+export function isTurfCheckoutPath(path: string): boolean {
+	return (
+		path === TURF_CHECKOUT_PATH ||
+		path === `${TURF_CHECKOUT_PATH}/` ||
+		path.startsWith(`${TURF_CHECKOUT_PATH}?`)
+	);
+}
+
 /**
  * Where to send someone immediately after their session is created: the page
  * they originally asked for when they may see it, `/` otherwise.
+ *
+ * A Google or Apple session is for turf checkout and nothing else, so it goes back to
+ * the page it asked for only when that page is /turfs, and to /turfs whatever
+ * it asked for otherwise.
  */
 export function resolvePostLoginRedirect(
 	raw: string | null | undefined,
-	session: { isAdmin: boolean; isModerator?: boolean },
+	session: { isAdmin: boolean; isModerator?: boolean; authProvider?: 'google' | 'apple' },
 ): string {
 	const target = sanitizeRedirectTarget(raw);
+	if (session.authProvider !== undefined) {
+		return target !== null && isTurfCheckoutPath(target) ? target : TURF_CHECKOUT_PATH;
+	}
 	if (target === null) return '/';
 	if (session.isAdmin || !isAdminOnlyPath(target)) return target;
 	if (session.isModerator && matchesPrefix(target, MODERATOR_PREFIXES)) return target;
@@ -84,12 +115,19 @@ export function resolvePostLoginRedirect(
 }
 
 /**
- * The login URL to bounce an unauthenticated request to, carrying the page it
- * was trying to reach. Pass the request's `url`.
+ * The sign-in page to bounce an unauthenticated request to, carrying the page
+ * it was trying to reach. Pass the request's `url`.
+ *
+ * The page offers Slack, Google and Apple (and goes straight on to Slack when
+ * neither of the others is configured), so this does not name a provider.
  */
 export function loginRedirectPath(url: URL): string {
-	const target = sanitizeRedirectTarget(url.pathname + url.search);
+	return withRedirectTo('/signin', sanitizeRedirectTarget(url.pathname + url.search));
+}
+
+/** `base`, carrying an already-sanitised destination along when there is one. */
+export function withRedirectTo(base: string, target: string | null): string {
 	// `/` is the default destination anyway — no need to decorate the URL.
-	if (target === null || target === '/') return '/auth/slack';
-	return `/auth/slack?redirectTo=${encodeURIComponent(target)}`;
+	if (target === null || target === '/') return base;
+	return `${base}?redirectTo=${encodeURIComponent(target)}`;
 }

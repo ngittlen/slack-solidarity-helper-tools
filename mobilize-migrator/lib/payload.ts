@@ -32,6 +32,9 @@ export interface Timeslot {
 	startDate: number;
 	endDate: number;
 	maxAttendees: number | null;
+	/** Sent privately to the shift's attendees after they sign up. Omitted from
+	 *  the body when undefined, as it always was before virtual events. */
+	instructions?: string | null;
 }
 
 /**
@@ -51,6 +54,13 @@ export interface EventInput {
 	imageUrl?: string;
 	eventType: EventTypeName;
 	timezone: string;
+	/**
+	 * Sent as `is_virtual: true` with no location — the API requires a location
+	 * only when `is_virtual` is false or unset. Mobilize refuses to change
+	 * `is_virtual` after creation; a virtual event's update re-sends the same
+	 * value, and an in-person body never carries the field at all.
+	 */
+	isVirtual?: boolean;
 	locationName: string;
 	addressLine1: string;
 	city: string;
@@ -85,21 +95,26 @@ export function buildEventPayload(input: EventInput): Record<string, unknown> {
 		event_type: input.eventType,
 		visibility: 'PUBLIC',
 		contact: buildContact(input.contact),
-		location: {
-			venue: input.locationName,
-			// Always exactly two lines, per the API docs.
-			address_lines: [input.locationIsPrivate ? '' : input.addressLine1, ''],
-			locality: input.city,
-			region: input.state,
-			postal_code: input.zipcode,
-			country: input.country,
-		},
+		...(input.isVirtual
+			? { is_virtual: true }
+			: {
+					location: {
+						venue: input.locationName,
+						// Always exactly two lines, per the API docs.
+						address_lines: [input.locationIsPrivate ? '' : input.addressLine1, ''],
+						locality: input.city,
+						region: input.state,
+						postal_code: input.zipcode,
+						country: input.country,
+					},
+				}),
 		...(input.imageUrl ? { featured_image_url: input.imageUrl } : {}),
 		timeslots: input.timeslots.map((slot) => ({
 			...(slot.id ? { id: slot.id } : {}),
 			start_date: slot.startDate,
 			end_date: slot.endDate,
 			...(slot.maxAttendees !== null ? { max_attendees: slot.maxAttendees } : {}),
+			...(slot.instructions !== undefined ? { instructions: slot.instructions } : {}),
 		})),
 	};
 }

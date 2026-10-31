@@ -9,7 +9,9 @@
 // `Promise.allSettled` to degrade one section while keeping the others.
 
 import type { WebClient } from '@slack/web-api';
+import type { SolidarityEvent } from '../../../mobilize-migrator/lib/solidarity.js';
 import { fetchPaginated } from './solidarity-paginate.js';
+import { chapterIdsOf } from './solidarity-chapter-ids.js';
 import { startWalk, finishWalk } from './walk-progress.js';
 import { withSolidarityWalkLock } from './solidarity-walk-lock.js';
 
@@ -140,11 +142,40 @@ interface CacheEntry<T, C> {
 	// so a forced caller can't piggy-back on a possibly-failing refetch and
 	// receive a stale-flagged result (FR-009).
 	inFlight: { promise: Promise<AutocompleteResult<T>>; credential: C } | null;
+	/**
+	 * When the fetch whose result currently sits in `data` was STARTED.
+	 *
+	 * Completion order is not start order: a forced refresh and a background one
+	 * can be in flight together (a forced caller deliberately never joins the
+	 * in-flight slot), and whichever finishes last wins. Without this, a slow
+	 * background fetch that began before the admin clicked Refresh lands
+	 * afterwards, overwrites the fresher list with its older one, and stamps it
+	 * fresh for the whole TTL.
+	 */
+	startedAt: number;
+	/** When the last fetch failed, so a stale-while-revalidate caller waits
+	 *  FAILURE_BACKOFF_MS before asking an upstream that is down again. */
+	failedAt: number;
 }
 
 function makeEntry<T, C>(): CacheEntry<T, C> {
-	return { data: null, fetchedAt: 0, credential: null, inFlight: null };
+	return {
+		data: null,
+		fetchedAt: 0,
+		credential: null,
+		inFlight: null,
+		startedAt: 0,
+		failedAt: 0,
+	};
 }
+
+/**
+ * How long a stale-while-revalidate caller goes without a refresh after one
+ * fails. Those callers never wait for the fetch, so nothing else slows them:
+ * without a pause, every request during an outage starts another full walk and
+ * spends the rate limit every other Solidarity reader shares.
+ */
+const FAILURE_BACKOFF_MS = 60 * 1000;
 
 const channelsEntry: CacheEntry<ChannelEntry, WebClient> = makeEntry();
 const usersEntry: CacheEntry<UserEntry, WebClient> = makeEntry();
@@ -167,6 +198,7 @@ export function _resetAutocompleteCachesForTests(): void {
 	Object.assign(membersEntry, makeEntry<SolidarityMemberEntry, string>());
 	Object.assign(pagesEntry, makeEntry<SolidarityChapterEntry, string>());
 	Object.assign(eventsEntry, makeEntry<SolidarityChapterEntry, string>());
+	Object.assign(eventRecordsEntry, makeEntry<SolidarityEvent, string>());
 }
 
 /**
@@ -181,13 +213,22 @@ async function runFetch<T, C>(
 	credential: C,
 	fetcher: () => Promise<T[]>,
 ): Promise<AutocompleteResult<T>> {
+	const startedAt = Date.now();
 	try {
 		const result = await fetcher();
-		entry.data = result;
-		entry.fetchedAt = Date.now();
-		entry.credential = credential;
+		// Only if nothing newer has already landed. The loser still returns its
+		// own rows to its own caller — they are a valid read of the list, just
+		// not the one worth keeping.
+		if (startedAt >= entry.startedAt) {
+			entry.data = result;
+			entry.fetchedAt = Date.now();
+			entry.credential = credential;
+			entry.startedAt = startedAt;
+			return { items: result, stale: false, fetchedAt: entry.fetchedAt, refreshing: false };
+		}
 		return { items: result, stale: false, fetchedAt: entry.fetchedAt, refreshing: false };
 	} catch (err) {
+		entry.failedAt = Date.now();
 		const msg = err instanceof Error ? err.message : String(err);
 		if (entry.data !== null && entry.credential === credential) {
 			console.warn(`[autocomplete] ${listName} refetch failed; serving stale: ${msg}`);
@@ -244,6 +285,10 @@ async function getCached<T, C>(
 		return entry.inFlight.promise;
 	}
 
+	if (opts.staleWhileRevalidate && now - entry.failedAt < FAILURE_BACKOFF_MS) {
+		return servePending(entry, credential, false);
+	}
+
 	const promise = runFetch(entry, listName, credential, fetcher);
 	entry.inFlight = { promise, credential };
 	// `.then(cleanup, cleanup)` rather than `.finally` so the cleanup branch
@@ -268,9 +313,14 @@ async function getCached<T, C>(
  * The immediate answer while a background refresh runs: whatever is cached,
  * flagged `refreshing`. An empty list here means the very first fetch is still
  * walking — the caller is expected to say so rather than render "no results",
- * which would be a lie.
+ * which would be a lie. During FAILURE_BACKOFF_MS no refresh runs, and
+ * `refreshing` is false.
  */
-function servePending<T, C>(entry: CacheEntry<T, C>, credential: C): AutocompleteResult<T> {
+function servePending<T, C>(
+	entry: CacheEntry<T, C>,
+	credential: C,
+	refreshing = true,
+): AutocompleteResult<T> {
 	const usable = entry.data !== null && entry.credential === credential;
 	return {
 		items: usable ? (entry.data as T[]) : [],
@@ -278,7 +328,7 @@ function servePending<T, C>(entry: CacheEntry<T, C>, credential: C): Autocomplet
 		// because a refetch *failed*. This list is simply being superseded.
 		stale: false,
 		fetchedAt: usable ? entry.fetchedAt : 0,
-		refreshing: true,
+		refreshing,
 	};
 }
 
@@ -453,15 +503,6 @@ interface RawSolidarityUser {
 	chapter_ids?: number[] | null;
 }
 
-/** Same `chapter_ids ?? [chapter_id]` fallback the team_join handler,
- *  chapter-reconcile and the nightly snapshot each apply — `chapter_ids` is the
- *  modern field and `chapter_id` the legacy single-chapter one. */
-function rawChapterIds(raw: RawSolidarityUser): number[] {
-	if (raw.chapter_ids?.length) return raw.chapter_ids;
-	if (raw.chapter_id != null) return [raw.chapter_id];
-	return [];
-}
-
 function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
 	const email = (raw.email ?? '').trim().toLowerCase();
 	const full = [raw.first_name, raw.last_name]
@@ -479,7 +520,7 @@ function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
 			.filter((e): e is string => typeof e === 'string')
 			.map((e) => e.trim().toLowerCase())
 			.filter(Boolean),
-		chapterIds: rawChapterIds(raw),
+		chapterIds: chapterIdsOf(raw),
 	};
 }
 
@@ -566,6 +607,25 @@ const NAMED_TTL_MS = 30 * 60 * 1000;
 
 const pagesEntry: CacheEntry<SolidarityChapterEntry, string> = makeEntry();
 const eventsEntry: CacheEntry<SolidarityChapterEntry, string> = makeEntry();
+const eventRecordsEntry: CacheEntry<SolidarityEvent, string> = makeEntry();
+
+/**
+ * Every event in full, in Solidarity's order. The /turfs canvass markers read
+ * this on every page load, and the event picker's names come from it too, so
+ * one walk of /v1/events serves both.
+ */
+export function getSolidarityEventRecords(
+	token: string,
+	opts: AutocompleteOptions = {},
+): Promise<AutocompleteResult<SolidarityEvent>> {
+	return getCached(
+		eventRecordsEntry,
+		'solidarity-event-records',
+		token,
+		() => fetchPaginated<SolidarityEvent>(token, '/v1/events', '/v1/events', '', 'member-page'),
+		opts,
+	);
+}
 
 /** Action pages by id — `/v1/pages` exposes the label as `name`. */
 export function getSolidarityPages(
@@ -603,14 +663,8 @@ export function getSolidarityEvents(
 		'solidarity-events',
 		token,
 		async () => {
-			const raw = await fetchPaginated<{ id: number; title?: string | null }>(
-				token,
-				'/v1/events',
-				'/v1/events',
-				'',
-				'member-page',
-			);
-			return raw
+			const { items } = await getSolidarityEventRecords(token, { force: opts.force });
+			return items
 				.filter((e) => typeof e.id === 'number' && !!e.title)
 				.map((e) => ({ id: e.id, name: e.title! }));
 		},

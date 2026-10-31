@@ -4,6 +4,9 @@
 // Every future session at the same venue becomes one Mobilize event with one
 // timeslot per session. A Solidarity event spanning five cities therefore
 // produces five Mobilize events.
+//
+// A virtual event has no venue to split on, so it always becomes ONE Mobilize
+// event, and each session's join link rides on its own timeslot.
 
 import { parseAddress } from './address.js';
 import { normalizeTitle } from './dedupe.js';
@@ -18,13 +21,17 @@ import {
 } from './solidarity.js';
 
 export interface PlannedEvent {
-	/** Stable key for the ledger: one Solidarity event + one location. */
+	/** Stable key for the ledger: one Solidarity event + one location, or
+	 *  `solidarity:<id>:virtual` for a virtual event. */
 	key: string;
 	solidarityEventId: number;
 	solidaritySessionIds: number[];
 	title: string;
 	description: string;
 	eventType: EventTypeName;
+	/** Published with `is_virtual` and no location. Every address field below is
+	 *  then empty, and each timeslot carries its join link as `instructions`. */
+	isVirtual: boolean;
 	locationName: string;
 	addressLine1: string;
 	city: string;
@@ -37,8 +44,17 @@ export interface PlannedEvent {
 	 *  coordinates, but `postal_code` is required and often missing, and the sync
 	 *  geocodes this to recover it — see lib/geocode.ts. */
 	coordinates: Coordinates | null;
-	/** Unix seconds, which is what the v1 API takes. */
-	timeslots: { startDate: number; endDate: number; maxAttendees: number | null }[];
+	/**
+	 * Unix seconds, which is what the v1 API takes. `instructions` is set only on
+	 * a virtual event's timeslots: Mobilize sends it privately to whoever signs up
+	 * for that shift, which is where the join link belongs.
+	 */
+	timeslots: {
+		startDate: number;
+		endDate: number;
+		maxAttendees: number | null;
+		instructions?: string;
+	}[];
 	/** Absolute instants in ms, kept for duplicate detection and timeslot matching. */
 	startInstants: number[];
 	endInstants: number[];
@@ -299,6 +315,9 @@ export interface PlanResult {
 	/** Held back by the `mobilize-exclude` tag — a deliberate choice, not a
 	 *  failure, so it is counted apart from `skipped`. */
 	excludedByTag: SkippedEvent[];
+	/** Virtual events held back because an upcoming session has no join link.
+	 *  Kept apart from `skipped`, which is about addresses. */
+	noJoinLink: SkippedEvent[];
 	/** Sessions left out of a plan because another session at the same location
 	 *  already covers that exact start and end. See `dedupeSessions`. */
 	duplicateSessions: DuplicateSession[];
@@ -372,19 +391,49 @@ export function buildDescription(
 	return plainTextToMarkdown(event.description ?? '');
 }
 
+/**
+ * Where a virtual session is joined, or null when Solidarity has no link for it.
+ *
+ * A link typed in by hand is stored as the session's `location_address`; a
+ * meeting Solidarity made through its Zoom integration leaves that blank and
+ * keeps the link in `zoom_meeting_data`. Only https links are taken, and only a
+ * field that is a link and nothing else: free text is not guessed at.
+ */
+export function joinLink(session: SolidaritySession): string | null {
+	const isLink = (value: unknown): value is string =>
+		typeof value === 'string' && /^https:\/\/\S+$/i.test(value.trim());
+	const typed = session.location_address?.trim();
+	if (isLink(typed)) return typed;
+	const zoom = session.zoom_meeting_data?.join_url?.trim();
+	return isLink(zoom) ? zoom : null;
+}
+
+/** The timeslot instructions a join link is published as. */
+export function joinInstructions(link: string): string {
+	return `Join link: ${link}`;
+}
+
+export interface PlanOptions {
+	/** Publish virtual events too. Off by default, as it was before the switch
+	 *  on /settings existed. */
+	includeVirtual?: boolean;
+}
+
 export function planMigration(
 	events: SolidarityEvent[],
 	now = Date.now(),
 	pageDescriptions?: Map<number, string>,
+	options: PlanOptions = {},
 ): PlanResult {
 	const planned: PlannedEvent[] = [];
 	const skipped: SkippedEvent[] = [];
 	const excludedByTag: SkippedEvent[] = [];
+	const noJoinLink: SkippedEvent[] = [];
 	const duplicateSessions: DuplicateSession[] = [];
 
 	for (const event of events) {
-		if (event.event_type !== 'in_person') {
-			// Virtual events need a join URL that the list payload doesn't expose.
+		const isVirtual = event.event_type === 'virtual';
+		if (isVirtual ? !options.includeVirtual : event.event_type !== 'in_person') {
 			continue;
 		}
 		if (event.is_co_hosted_mirror) {
@@ -405,6 +454,72 @@ export function planMigration(
 
 		const future = event.event_sessions.filter((s) => Date.parse(s.start_time) > now);
 		if (future.length === 0) continue;
+
+		if (isVirtual) {
+			// All or nothing: a Mobilize volunteer who signs up for a shift with no
+			// link is sent nothing to join with, and has no way to know it.
+			const missing = future.filter((s) => !joinLink(s));
+			if (missing.length > 0) {
+				// An in-person session in a virtual event has no link by nature, so it
+				// is named as such: "add the link" is the wrong fix for it.
+				const inPerson = missing.filter((s) => s.event_type === 'in_person').length;
+				noJoinLink.push({
+					solidarityEventId: event.id,
+					title: event.title.trim(),
+					reason:
+						inPerson > 0
+							? `virtual, but ${inPerson} of ${future.length} upcoming session(s) are ` +
+								'in-person, and Mobilize takes one or the other'
+							: `virtual, but ${missing.length} of ${future.length} upcoming session(s) have ` +
+								'no join link',
+				});
+				continue;
+			}
+			const title = event.title.trim();
+			const sourceDescription = buildDescription(event, pageDescriptions);
+			const description =
+				sourceDescription.trim() || fallbackDescription(title, event.event_page_url);
+			const sorted = [...future].sort(
+				(a, b) => Date.parse(a.start_time) - Date.parse(b.start_time),
+			);
+			const { kept: ordered, dropped } = dedupeSessions(sorted);
+			for (const { session, keptSessionId } of dropped) {
+				duplicateSessions.push({
+					solidarityEventId: event.id,
+					title,
+					sessionId: session.id,
+					keptSessionId,
+				});
+			}
+			planned.push({
+				key: `solidarity:${event.id}:virtual`,
+				solidarityEventId: event.id,
+				solidaritySessionIds: ordered.map((s) => s.id),
+				title,
+				description,
+				eventType: classifyEventType(title, description),
+				isVirtual: true,
+				locationName: '',
+				addressLine1: '',
+				city: '',
+				state: '',
+				zipcode: '',
+				country: '',
+				locationIsPrivate: false,
+				coordinates: null,
+				timeslots: ordered.map((s) => ({
+					startDate: Math.floor(Date.parse(s.start_time) / 1000),
+					endDate: Math.floor(Date.parse(s.end_time) / 1000),
+					maxAttendees: capacity(s),
+					instructions: joinInstructions(joinLink(s)!),
+				})),
+				startInstants: ordered.map((s) => Date.parse(s.start_time)),
+				endInstants: ordered.map((s) => Date.parse(s.end_time)),
+				sourceUrl: event.event_page_url,
+				sourceImageUrl: event.image_url ?? null,
+			});
+			continue;
+		}
 
 		// Grouped on the normalized address, but keyed by a raw one: the ledger key
 		// is built from this, and re-keying every event already in the ledger would
@@ -514,6 +629,7 @@ export function planMigration(
 				title: title.trim(),
 				description,
 				eventType,
+				isVirtual: false,
 				locationName: withAddress.location_name?.trim() || venueExtra || city,
 				addressLine1,
 				city,
@@ -535,5 +651,5 @@ export function planMigration(
 		}
 	}
 
-	return { planned, skipped, excludedByTag, duplicateSessions };
+	return { planned, skipped, excludedByTag, noJoinLink, duplicateSessions };
 }

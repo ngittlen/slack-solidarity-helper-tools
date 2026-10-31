@@ -1,0 +1,1513 @@
+<script lang="ts">
+	// The volunteer turf-checkout page.
+	//
+	// What the server decided, and this file must not second-guess: which
+	// chapter's turf is in `data.turfs` (the payload is the compartment), the
+	// visible status of each turf, and whether a list number was issued. This
+	// component renders what it was given and posts actions back.
+
+	import '$lib/components/turfs/turf-page.css';
+	import { tick, type Snippet } from 'svelte';
+	import { scrollBehavior } from '$lib/motion.js';
+	import { resolve } from '$app/paths';
+	import { goto, invalidateAll } from '$app/navigation';
+	import type { FoundPlace } from '$lib/van/map-focus.js';
+	import { postPageAction } from './post-action.js';
+	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
+	import { coarseNear } from '$lib/van/turf-paging.js';
+	import { statusLabel } from '$lib/van/turf-status.js';
+	import { KNOCKED_LABEL, rampStyle, turfShade } from '$lib/van/turf-shade.js';
+	import { describeAge } from '$lib/van/turf-freshness.js';
+	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
+	import CampaignFilter from '$lib/components/turfs/CampaignFilter.svelte';
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
+	import type { WalkCardView } from '$lib/mentor-walks/types.js';
+	import type { CanvassEventCard } from '$lib/canvass-events/types.js';
+	import HolderName from '$lib/components/turfs/HolderName.svelte';
+	import KnockedClaimDialog from '$lib/components/turfs/KnockedClaimDialog.svelte';
+	import { formatRelative } from '$lib/components/settings/format-relative.js';
+	import {
+		campaignStoppedNote,
+		doorDensity,
+		mappableTurfs,
+		needsKnockedConfirm,
+		shownOnMap,
+		type CampaignBadges,
+		type CampaignTotals,
+		type TurfView,
+	} from '$lib/van/turf-view.js';
+
+	import type { PageData } from './$types';
+
+	// Rendered by +page.svelte for a signed-in viewer; the signed-out teaser is
+	// PublicTurfTeaser. Split so this file's `data` is only ever the member shape.
+	const {
+		data,
+		mentorWalks = null,
+		canvassEvents = null,
+		walksButton,
+		walksList,
+	}: {
+		data: Extract<PageData, { mode: 'member' }>;
+		/** The button that opens the mentor walks drawer: on the chapter bar,
+		 *  or under the chapter list before one is picked. */
+		walksButton?: Snippet;
+		/** Mentor walks and canvass events at the top of the turf list: the
+		 *  cards for this chapter, and what's waiting on the viewer. Given
+		 *  whether the map is drawn, as only then can a card select its marker
+		 *  on it. */
+		walksList?: Snippet<[boolean]>;
+		/** Mentor walks to mark on the map (specs/015-mentor-walks, User
+		 *  Story 8). */
+		mentorWalks?: {
+			cards: WalkCardView[];
+			onjoin: (id: string) => Promise<unknown>;
+			onleave: (id: string) => Promise<unknown>;
+			/** The walk selected on its marker or its card. */
+			selectedId: string | null;
+			onselect: (id: string | null) => void;
+		} | null;
+		/** Canvass events from Solidarity to mark on the map. */
+		canvassEvents?: {
+			cards: CanvassEventCard[];
+			/** The event selected on its marker or its card. */
+			selectedId: string | null;
+			onselect: (id: string | null) => void;
+		} | null;
+	} = $props();
+
+	const selectedWalkId = $derived(mentorWalks?.selectedId ?? null);
+	const selectedEventId = $derived(canvassEvents?.selectedId ?? null);
+
+	let turfMap = $state<TurfMap | null>(null);
+
+	/** Whether the map draws the walk and canvass markers. The legend's two
+	 *  entries switch them, so a busy map can be read for its turf alone. */
+	let showWalks = $state(true);
+	let showEvents = $state(true);
+
+	/** Hiding a kind of marker lets go of the one selected, which is no
+	 *  longer there to be outlined. */
+	function toggleWalks() {
+		showWalks = !showWalks;
+		if (!showWalks && selectedWalkId !== null) mentorWalks?.onselect(null);
+	}
+
+	function toggleEvents() {
+		showEvents = !showEvents;
+		if (!showEvents && selectedEventId !== null) canvassEvents?.onselect(null);
+	}
+
+	/** Centre the map on a walk, for its card. A card asking for its marker
+	 *  brings the walks back if they were hidden; the map only has them to
+	 *  centre on once they're drawn. */
+	export async function centreOnWalk(id: string) {
+		if (!showWalks) {
+			showWalks = true;
+			await tick();
+		}
+		turfMap?.centreOnWalk(id);
+	}
+
+	/** The same for a canvass event. */
+	export async function centreOnEvent(id: string) {
+		if (!showEvents) {
+			showEvents = true;
+			await tick();
+		}
+		turfMap?.centreOnEvent(id);
+	}
+
+	let mapCol = $state<HTMLElement | null>(null);
+
+	/** A tapped marker selects its walk, or unselects it, and puts focus on
+	 *  its card in the list, as for a claimed turf (revealClaimedTurf), so a
+	 *  screen reader announces the walk the marker opened. A copy under the
+	 *  map would repeat the card, and on a short screen run past the bottom
+	 *  of the sticky map column. Beside the map, the list scrolls to the card;
+	 *  with the map above the list, scrolling would carry the map away from
+	 *  under the finger, so the outline on the card is left to show it. */
+	async function selectWalk(id: string) {
+		const selecting = selectedWalkId !== id;
+		mentorWalks?.onselect(selecting ? id : null);
+		if (!selecting) return;
+		await tick();
+		revealCard(`walk-${id}`);
+	}
+
+	/** The same for a canvass event's marker. Selecting a marker opens its
+	 *  collapsed list, so its card is only there after a tick. */
+	async function selectEvent(id: string) {
+		const selecting = selectedEventId !== id;
+		canvassEvents?.onselect(selecting ? id : null);
+		if (!selecting) return;
+		await tick();
+		revealCard(`event-${id}`);
+	}
+
+	function revealCard(cardId: string) {
+		const card = document.getElementById(cardId);
+		if (!card) return;
+		// Side by side, turf-page.css makes the map column sticky.
+		if (mapCol && getComputedStyle(mapCol).position === 'sticky') {
+			card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+		}
+		card.focus({ preventScroll: true });
+	}
+	const mapWalks = $derived(
+		(mentorWalks?.cards ?? []).map((w) => ({
+			id: w.id,
+			point: w.point,
+			label: `Mentor walk with ${w.mentorName}, ${w.dayLabel} at ${w.timeLabel}`,
+			joined: w.joined,
+		})),
+	);
+	/** Spoken: "Canvass: Door knock, Today at 10:00 AM, and 2 more times". */
+	function canvassLabel(e: CanvassEventCard): string {
+		const [next, ...rest] = e.sessions;
+		const more =
+			rest.length === 0 ? '' : `, and ${rest.length} more ${rest.length === 1 ? 'time' : 'times'}`;
+		return `Canvass: ${e.title}, ${next.dayLabel} at ${next.timeLabel}${more}`;
+	}
+	const mapEvents = $derived(
+		(canvassEvents?.cards ?? []).map((e) => ({
+			id: e.id,
+			point: e.point,
+			label: canvassLabel(e),
+		})),
+	);
+
+	let selectedId = $state<number | null>(null);
+	let copied = $state<Record<number, boolean>>({});
+	let busy = $state<Record<number, boolean>>({});
+	/** Turf whose "Hide from volunteers" change is in flight. Apart from
+	 *  `busy`, which the claim button reads as "Checking out…". */
+	let hiding = $state<Record<number, boolean>>({});
+	/** What the "Hide from volunteers" box shows while its change is in
+	 *  flight, ahead of the reload that brings back `turf.hidden`. */
+	let hideShown = $state<Record<number, boolean>>({});
+	let error = $state<string | null>(null);
+	/** Turf knocked before its cut whose checkout waits on the volunteer's
+	 *  say-so (KnockedClaimDialog). */
+	let confirmingKnocked = $state<TurfView | null>(null);
+	/** List numbers handed back by a successful claim this session. The load
+	 *  function only issues one for turf you already held when the page
+	 *  rendered, so a fresh claim needs somewhere to put it until the
+	 *  invalidate lands. */
+	let issued = $state<Record<number, string>>({});
+	/** Turf whose "I synced MiniVAN" box is ticked. "I walked this turf" stays
+	 *  disabled until it is: how much got walked now comes from VAN, so doors
+	 *  still on the phone would read as never knocked. */
+	let synced = $state<Record<number, boolean>>({});
+
+	/** What VAN has for a ticked turf: GET /api/turfs/[turfId], which reads
+	 *  what the server's half-minute poll of VAN stored (van/live-contacts.ts).
+	 *  `checkedAgeMs` is worked out on the server's clock, so "checked 2m ago"
+	 *  never sets the server's stamp against this browser's clock. It is as of
+	 *  the answer, which is refreshed every SYNC_CHECK_MS. */
+	interface SyncCheck {
+		doors: number | null;
+		totalDoors: number | null;
+		checkedAgeMs: number | null;
+	}
+	let syncChecks = $state<Record<number, SyncCheck | 'error'>>({});
+	/** The server's answer moves at most every half minute, so asking more
+	 *  often learns nothing. Each check spends the turf request budget the map
+	 *  and chapter switches share, once per ticked turf. */
+	const SYNC_CHECK_MS = 30_000;
+
+	/** Browser geolocation, requested once and never blocking. A volunteer who
+	 *  declines still gets the map (framed on all the turf) and the full list —
+	 *  see 6.4: the list must be usable with no map and no location at all. */
+	let geoLocation = $state<LatLng | null>(null);
+	let locationState = $state<'idle' | 'asking' | 'granted' | 'denied'>('idle');
+	/** Live geolocation when we have it, otherwise whatever the server resolved
+	 *  from a submitted ZIP. Both are just a point to measure distance from. */
+	const location = $derived<LatLng | null>(geoLocation ?? data.location ?? null);
+
+	/** What orders turf within each band of the list: distance from `location`,
+	 *  or doors per area of hull — the least walking per door. From `?sort=`,
+	 *  because in a chapter larger than one payload the server has to pick the
+	 *  densest turf before it cuts; re-sorting here alone would only rank
+	 *  whichever 600 it happened to send. */
+	const sortMode = $derived(data.sort);
+
+	/** Back to distance order. A navigation, not a re-sort, for the reason
+	 *  above: the payload has to be picked by distance again too. */
+	async function sortNearest() {
+		if (sortMode === 'densest' && data.chapter) {
+			const zip = data.zip ? `&zip=${encodeURIComponent(data.zip)}` : '';
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- the base path IS resolved; the rule can't see through the template literal
+			await goto(`${resolve('/turfs')}?chapter=${data.chapter.chapterId}${zip}`, {
+				keepFocus: true,
+				noScroll: true,
+			});
+		}
+		if (locationState === 'idle') askForLocation();
+	}
+
+	function askForLocation() {
+		if (!navigator.geolocation) {
+			locationState = 'denied';
+			return;
+		}
+		locationState = 'asking';
+		navigator.geolocation.getCurrentPosition(
+			(pos) => {
+				geoLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+				locationState = 'granted';
+			},
+			() => {
+				locationState = 'denied';
+			},
+			{ timeout: 10_000, maximumAge: 300_000 },
+		);
+	}
+
+	/** Turf fetched by panning the map, merged over what the load function
+	 *  gave us. Keyed by turfId so a turf that arrives from both sources
+	 *  appears once, with the fresher copy winning. */
+	let paged = $state<Record<number, TurfView>>({});
+	/** Badge text for campaigns that only paged turf brought in. */
+	let pagedBadges = $state<CampaignBadges>({});
+	let loadingMore = $state(false);
+	/** The chapter's total, refreshed by whichever request answered last. It is
+	 *  a total rather than a remainder precisely so panning cannot make it
+	 *  disagree with the number of rows on screen. */
+	let totalNow = $state<number | null>(null);
+	/** `totalNow` per campaign, from the same request. */
+	let pagedTotals = $state<CampaignTotals>({});
+	/** The last viewport actually fetched.
+	 *
+	 *  This is a loop-breaker, not an optimisation. Before the volunteer pans,
+	 *  the map has no camera of its own and frames itself from the turf it was
+	 *  given — so merging fetched turf changes the frame, which re-fires
+	 *  `onviewport`, which fetches, which changes the frame. Left alone that
+	 *  spins at the debounce interval until the request budget cuts it off,
+	 *  and the map is then stuck on 429s for a minute. Comparing the box
+	 *  itself stops it at the source: the same view never fetches twice. */
+	let lastBbox = '';
+
+	/** Turf that only a viewport fetch brought in, left out of the map's
+	 *  opening frame. `lastBbox` stops the loop above only when the box comes
+	 *  back identical, and it rarely does: a fetch returns turf in the frame's
+	 *  padding, the frame grows to take it in, and the next box is a little
+	 *  larger, until the whole chapter is framed or the request budget runs
+	 *  out. Framing on turf the viewport did not fetch keeps the box still. */
+	let viewportOnly = $state<Record<number, true>>({});
+
+	/** The chapter currently on screen, as a plain value.
+	 *
+	 *  This exists so the effect below can depend on the chapter ID rather than
+	 *  on `data`. Reading `data.chapter?.chapterId` directly inside an effect
+	 *  does NOT narrow the dependency to that number — the effect subscribes to
+	 *  the `data` prop itself and re-runs whenever SvelteKit hands over a new
+	 *  object, which `invalidateAll()` does on every claim. A `$derived` gates
+	 *  on value equality, so an unchanged chapter id notifies nobody. */
+	const shownChapterId = $derived(data.chapter?.chapterId ?? null);
+
+	// Cleared when the CHAPTER changes, and only then. Clearing on every `data`
+	// change would empty the map after each claim — invalidateAll() refreshes
+	// `data.turfs`, but nothing moves the viewport afterwards, so the turf the
+	// volunteer had panned to would vanish until they dragged the map again.
+	$effect(() => {
+		void shownChapterId;
+		paged = {};
+		pagedBadges = {};
+		totalNow = null;
+		pagedTotals = {};
+		lastBbox = '';
+		viewportOnly = {};
+		lastNear = '';
+		campaignFilter = null;
+		foundPlace = null;
+		queuedViewport = null;
+	});
+
+	// A new sort picks different turf for the same viewport, so the box last
+	// fetched under the old one has to be fetchable again.
+	$effect(() => {
+		void sortMode;
+		lastBbox = '';
+	});
+
+	const allTurfs = $derived.by<TurfView[]>(() => {
+		// A plain record rather than a Map: this is a transient dedupe inside a
+		// derived, not reactive state, and `paged` is already keyed the same way.
+		//
+		// Order matters. The load function's rows are written LAST so they win:
+		// they are re-fetched on every claim and release, while a paged row is
+		// only as fresh as the last pan. Letting a stale paged copy override
+		// them would show turf as available seconds after someone took it.
+		const byId: Record<number, TurfView> = {};
+		for (const turf of Object.values(paged)) byId[turf.turfId] = turf;
+		for (const turf of data.turfs ?? []) byId[turf.turfId] = turf;
+		return Object.values(byId);
+	});
+
+	/** Campaign id → badge, from the load and from every pan. The load's win,
+	 *  for the same reason its turf rows do. */
+	const badges = $derived<CampaignBadges>({ ...pagedBadges, ...(data.campaignBadges ?? {}) });
+
+	/** The turf's campaign badge, or null when none is shown — one campaign
+	 *  enabled, and the turf's not disabled. See TurfView.campaignId. */
+	function badgeFor(turf: TurfView): string | null {
+		return turf.campaignId === undefined ? null : (badges[turf.campaignId] ?? null);
+	}
+
+	/** The campaigns the volunteer can narrow the list to. Empty unless two or
+	 *  more are enabled, as only then does turf carry `campaignId`. */
+	const campaignOptions = $derived(
+		Object.entries(badges)
+			.map(([id, badge]) => ({ id: Number(id), badge }))
+			.sort((a, b) => a.badge.localeCompare(b.badge)),
+	);
+	/** The campaign picked in the list header, or null for all of them. */
+	let campaignFilter = $state<number | null>(null);
+	/** `campaignFilter` while it names a campaign still in the options; a
+	 *  campaign that has dropped out of them filters nothing. */
+	const pickedCampaign = $derived(
+		campaignFilter !== null && campaignFilter in badges ? campaignFilter : null,
+	);
+	/** The turf on the map and in the list: every campaign's, or the picked one's. */
+	const turfs = $derived(
+		pickedCampaign === null ? allTurfs : allTurfs.filter((t) => t.campaignId === pickedCampaign),
+	);
+
+	const drawable = $derived(mappableTurfs(turfs));
+	/** Admins and moderators may put turf with no doors left back on the map;
+	 *  everyone else never sees it there (`shownOnMap`). */
+	const canShowCleared = $derived(data.isAdmin || data.isModerator);
+	let showCleared = $state(false);
+	const onMap = $derived(
+		drawable.filter((t) =>
+			shownOnMap(t, { showCleared: canShowCleared && showCleared, selectedId }),
+		),
+	);
+	/** `onMap` less a cleared turf drawn only because it is selected, so the
+	 *  map's opening view does not move as it comes and goes. */
+	const framing = $derived(
+		drawable.filter(
+			(t) =>
+				!(t.turfId in viewportOnly) &&
+				shownOnMap(t, { showCleared: canShowCleared && showCleared }),
+		),
+	);
+	/** What ticking the box adds: turf the map leaves off by default. Turf you
+	 *  hold is on it either way. */
+	const clearedCount = $derived(drawable.filter((t) => !shownOnMap(t)).length);
+	const unmappable = $derived(turfs.length - drawable.length);
+	/** The latest request's, as for `total`. */
+	const campaignTotals = $derived<CampaignTotals>({
+		...(data.campaignTotals ?? {}),
+		...pagedTotals,
+	});
+	/** The chapter's turf, or the picked campaign's: the same set as `shown`. */
+	const total = $derived(
+		pickedCampaign === null
+			? (totalNow ?? data.total ?? 0)
+			: (campaignTotals[pickedCampaign] ?? turfs.length),
+	);
+	const shown = $derived(turfs.length);
+
+	/** Fold an /api/turfs answer into `paged`. `fromViewport` marks what it
+	 *  added as `viewportOnly`. */
+	function mergeFetched(
+		body: {
+			turfs: TurfView[];
+			total: number;
+			campaignBadges: CampaignBadges | null;
+			campaignTotals: CampaignTotals | null;
+		},
+		fromViewport = false,
+	) {
+		// Only reassign when something genuinely new arrived. A fresh object
+		// every time would re-trigger every downstream derived — including
+		// the map's own framing — for no change in content.
+		const added = body.turfs.filter((t) => !(t.turfId in paged));
+		if (added.length > 0) {
+			const next = { ...paged };
+			for (const turf of added) next[turf.turfId] = turf;
+			paged = next;
+			if (fromViewport) {
+				const marked = { ...viewportOnly };
+				for (const turf of added) marked[turf.turfId] = true;
+				viewportOnly = marked;
+			}
+		}
+		const newBadges = Object.entries(body.campaignBadges ?? {}).filter(
+			([id]) => !(id in pagedBadges),
+		);
+		if (newBadges.length > 0) {
+			pagedBadges = { ...pagedBadges, ...Object.fromEntries(newBadges) };
+		}
+		totalNow = body.total;
+		if (body.campaignTotals) pagedTotals = { ...pagedTotals, ...body.campaignTotals };
+	}
+
+	/** The chapter and rounded point last asked for by `loadNearMe`, so a
+	 *  repeat of the same question is not sent again. */
+	let lastNear = '';
+
+	/**
+	 * Fetch the turf nearest the device, once location is granted.
+	 *
+	 * The page load could only pick its 600 by ZIP or by name, because the
+	 * device's position never reaches it — and in a chapter of 2,000 turf, the
+	 * nearest may be in neither set. Sent as an API call rather than a `?lat=`
+	 * in the address bar, so it stays out of history and shared links; rounded
+	 * to about a kilometre (coarseNear), which picks the right 600 while the
+	 * list still sorts by the exact fix. Silent on failure, like loadViewport:
+	 * the list on screen is still valid.
+	 */
+	async function loadNearMe(chapterId: number, point: LatLng) {
+		const coarse = coarseNear(point);
+		const near = `${coarse.lat},${coarse.lng}`;
+		const key = `${chapterId}:${near}`;
+		if (key === lastNear) return;
+		lastNear = key;
+		try {
+			const res = await fetch(`/api/turfs?chapter=${chapterId}&near=${encodeURIComponent(near)}`);
+			if (!res.ok) {
+				lastNear = '';
+				return;
+			}
+			// A chapter switch while this was in flight: these rows are not
+			// the chapter on screen.
+			if (shownChapterId !== chapterId) return;
+			mergeFetched(await res.json());
+		} catch {
+			lastNear = '';
+		}
+	}
+
+	// Only while sorting by distance: under Densest the page load already
+	// picked by density, and nearness is just a tie-break.
+	$effect(() => {
+		if (geoLocation && sortMode === 'nearest' && shownChapterId !== null) {
+			void loadNearMe(shownChapterId, geoLocation);
+		}
+	});
+
+	/** The map's address search, through the page's `findAddress` action: a
+	 *  POST, so the address stays out of the URL. Answers with the place or
+	 *  a message to show under the search box. */
+	async function findPlace(query: string, signal: AbortSignal): Promise<FoundPlace | string> {
+		const result = await postPageAction('findAddress', { q: query }, '', {
+			reload: false,
+			errorKey: 'findError',
+			signal,
+		});
+		if (!result.ok) return result.message;
+		return result.data.found as FoundPlace;
+	}
+
+	/** The place the map's search found, kept here rather than in TurfMap: the
+	 *  map is taken down whenever a filter leaves it nothing to draw, and the
+	 *  pin should still be there when it comes back. */
+	let foundPlace = $state<FoundPlace | null>(null);
+
+	/** A viewport that settled while another was loading, fetched when that
+	 *  one finishes. Dropping it would leave the area unloaded until the next
+	 *  pan, and a jump to a searched address may be the only move there is. */
+	let queuedViewport: Parameters<typeof loadViewport>[0] | null = null;
+
+	/** Fetch turf for the area the map settled on. Failures are silent by
+	 *  design: the rows already on screen are still valid and still claimable,
+	 *  and an error banner for a background top-up would be noise. */
+	async function loadViewport(bounds: {
+		minLat: number;
+		maxLat: number;
+		minLng: number;
+		maxLng: number;
+	}) {
+		if (!data.chapter) return;
+		if (loadingMore) {
+			queuedViewport = bounds;
+			return;
+		}
+		const chapterId = data.chapter.chapterId;
+		const bbox = [bounds.minLat, bounds.minLng, bounds.maxLat, bounds.maxLng]
+			.map((n) => n.toFixed(5))
+			.join(',');
+		if (bbox === lastBbox) return;
+		lastBbox = bbox;
+
+		loadingMore = true;
+		try {
+			// Built as a string rather than URLSearchParams: this is a one-shot
+			// value, not reactive state, and the lint rule that would otherwise
+			// push it to SvelteURLSearchParams exists for the latter.
+			const res = await fetch(
+				`/api/turfs?chapter=${chapterId}&bbox=${encodeURIComponent(bbox)}` +
+					(sortMode === 'densest' ? '&sort=densest' : ''),
+			);
+			// Another chapter's turf, answered after the switch to this one.
+			if (shownChapterId !== chapterId) return;
+			if (!res.ok) {
+				// Let the same viewport be retried once the user moves back to it,
+				// rather than remembering a box we never actually loaded.
+				lastBbox = '';
+				return;
+			}
+			mergeFetched(await res.json(), true);
+		} catch {
+			// Offline or a dropped request. Keep what we have — but forget the
+			// box, for the same reason the !res.ok branch above does: otherwise
+			// panning back to this exact viewport returns early on the
+			// `bbox === lastBbox` check and never retries, leaving the area
+			// permanently empty for the rest of the session.
+			lastBbox = '';
+		} finally {
+			loadingMore = false;
+			const next = queuedViewport;
+			queuedViewport = null;
+			if (next) void loadViewport(next);
+		}
+	}
+
+	const distances = $derived.by(() => {
+		const here = location;
+		const out: Record<number, number> = {};
+		if (!here) return out;
+		for (const turf of turfs) {
+			if (turf.centre) out[turf.turfId] = haversineMeters(here, turf.centre);
+		}
+		return out;
+	});
+
+	/** Doors left per km² of hull, for the order under Densest. Never shown as
+	 *  a figure: a hull drawn tight around a few geocodes can rank a turf far
+	 *  denser than the street is, and a number on the card would state that as
+	 *  fact. */
+	const densities = $derived.by(() => {
+		const out: Record<number, number> = {};
+		if (sortMode !== 'densest') return out;
+		for (const turf of turfs) {
+			const density = doorDensity(turf);
+			if (density !== null) out[turf.turfId] = density;
+		}
+		return out;
+	});
+
+	// Yours first, then available, then turf still waiting on a list number,
+	// then everything else — checked out by someone, or with no doors left to
+	// knock; within a band, turf nobody has knocked recently before turf someone
+	// has (a re-cut makes walked turf look untouched — `contactHistory`), then
+	// nearest first when we know where you are, or densest first when that's
+	// the sort chosen. A volunteer opening this wants the closest fresh turf
+	// they can actually take.
+	const sortedTurfs = $derived(
+		[...turfs].sort((a, b) => {
+			const rank = (t: TurfView) =>
+				t.status === 'held-by-you'
+					? 0
+					: t.status !== 'available' || t.doorsRemaining <= 0
+						? 3
+						: t.noListNumber
+							? 2
+							: 1;
+			return (
+				rank(a) - rank(b) ||
+				Number(a.contactHistory ?? false) - Number(b.contactHistory ?? false) ||
+				(sortMode === 'densest'
+					? (densities[b.turfId] ?? -Infinity) - (densities[a.turfId] ?? -Infinity)
+					: 0) ||
+				(distances[a.turfId] ?? Infinity) - (distances[b.turfId] ?? Infinity) ||
+				a.name.localeCompare(b.name)
+			);
+		}),
+	);
+
+	const myTurfs = $derived(allTurfs.filter((t) => t.status === 'held-by-you'));
+
+	async function checkSync(turfId: number): Promise<void> {
+		try {
+			const res = await fetch(`/api/turfs/${turfId}`);
+			if (!res.ok) {
+				syncChecks[turfId] = 'error';
+				return;
+			}
+			syncChecks[turfId] = (await res.json()) as SyncCheck;
+		} catch {
+			syncChecks[turfId] = 'error';
+		}
+	}
+
+	/** Held turf whose "I synced MiniVAN" box is ticked. */
+	const tickedIds = $derived(myTurfs.filter((t) => synced[t.turfId]).map((t) => t.turfId));
+
+	function checkTicked(): void {
+		if (document.visibilityState !== 'visible') return;
+		for (const id of tickedIds) void checkSync(id);
+	}
+
+	// Keeps the answer current while the box is ticked, so a volunteer who
+	// ticks it before their sync lands watches it arrive. Paused in a hidden
+	// tab; coming back to it (from MiniVAN, usually) checks at once.
+	$effect(() => {
+		if (tickedIds.length === 0) return;
+		checkTicked();
+		const timer = setInterval(checkTicked, SYNC_CHECK_MS);
+		return () => clearInterval(timer);
+	});
+	const availableCount = $derived(turfs.filter((t) => t.status === 'available').length);
+	/** Turf whose region VAN is re-cutting right now. Counted for the note under
+	 *  the list; individual rows carry their own chip. */
+	const updatingCount = $derived(turfs.filter((t) => t.updating).length);
+
+	function select(turfId: number) {
+		selectedId = turfId;
+	}
+	function toggle(turfId: number) {
+		selectedId = selectedId === turfId ? null : turfId;
+	}
+
+	let listEl = $state<HTMLUListElement | null>(null);
+
+	$effect(() => {
+		if (selectedId === null || !listEl) return;
+		listEl.querySelector('.turf-row.is-selected')?.scrollIntoView({
+			block: 'nearest',
+			behavior: scrollBehavior(),
+		});
+	});
+
+	/**
+	 * Bring a just-claimed turf's card into view and put focus on it.
+	 *
+	 * The list number is the whole point of claiming — it is what loads the
+	 * doors in MiniVAN — and it is rendered at the TOP of the page while the
+	 * button that issues it is in a row that may be far down a long list. On a
+	 * phone that leaves someone looking at an unchanged screen wondering whether
+	 * the tap worked.
+	 *
+	 * Focus moves with the scroll rather than the scroll happening alone: a
+	 * screen-reader user gets no benefit from a viewport change, and moving
+	 * focus is what announces the card and puts the copy button next in the tab
+	 * order. `preventScroll` leaves the scrolling to `scrollIntoView`, whose
+	 * behaviour respects the reduced-motion preference.
+	 */
+	async function revealClaimedTurf(turfId: number): Promise<void> {
+		// The card does not exist until the claim has re-rendered the list.
+		await tick();
+		const card = document.getElementById(`my-turf-${turfId}`);
+		if (!card) return;
+		card.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
+		card.focus({ preventScroll: true });
+	}
+
+	async function act(
+		turf: TurfView,
+		action: 'claim' | 'release' | 'complete',
+		{ acknowledgedKnocked = false } = {},
+	) {
+		busy[turf.turfId] = true;
+		error = null;
+		try {
+			const res = await fetch(`/api/turfs/${turf.turfId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(
+					action === 'complete'
+						? { action, synced: synced[turf.turfId] === true }
+						: action === 'claim' && acknowledgedKnocked
+							? { action, acknowledgedKnocked }
+							: { action },
+				),
+			});
+			const body = await res.json().catch(() => ({}));
+			if (action === 'claim' && res.status === 409 && body.needsAcknowledgement === true) {
+				// Striped since this page loaded: ask now, as if it always had been.
+				confirmingKnocked = turf;
+				return;
+			}
+			if (!res.ok) {
+				// The server's refusals are written for volunteers (see canClaim
+				// in checkout.ts), so they are shown verbatim rather than mapped
+				// to a generic failure.
+				error = body.error ?? 'Something went wrong. Try again.';
+				return;
+			}
+			if (action === 'claim' && body.printedListNumber) {
+				issued[turf.turfId] = body.printedListNumber;
+				selectedId = turf.turfId;
+			} else {
+				delete issued[turf.turfId];
+				delete copied[turf.turfId];
+				delete synced[turf.turfId];
+				delete syncChecks[turf.turfId];
+			}
+			// Re-run the load function so every turf's status, claimability and
+			// door count come back from the server rather than being patched
+			// locally into something the server never said.
+			await invalidateAll();
+			// After the reload, so the card scrolled to is the one the server
+			// confirmed rather than an optimistic one that might not survive it.
+			if (action === 'claim') await revealClaimedTurf(turf.turfId);
+		} catch {
+			error = "Couldn't reach the server. Check your signal and try again.";
+		} finally {
+			delete busy[turf.turfId];
+		}
+	}
+
+	/** "Check out this turf": straight through, unless the turf was knocked
+	 *  before its cut, which asks first. */
+	function claim(turf: TurfView) {
+		if (needsKnockedConfirm(turf)) confirmingKnocked = turf;
+		else act(turf, 'claim');
+	}
+
+	/** An admin's "Hide from volunteers" box. Its own request rather than
+	 *  `act`, which would clear the claim state kept for the turf. */
+	async function setHidden(turf: TurfView, hidden: boolean) {
+		hideShown[turf.turfId] = hidden;
+		hiding[turf.turfId] = true;
+		error = null;
+		try {
+			const res = await fetch(`/api/turfs/${turf.turfId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: hidden ? 'hide' : 'unhide' }),
+			});
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok) error = body.error ?? 'Something went wrong. Try again.';
+		} catch {
+			error = "Couldn't reach the server. Check your signal and try again.";
+		} finally {
+			// The box goes back to `turf.hidden` once the reload lands, which
+			// after a refusal is the old value.
+			await invalidateAll().catch(() => {});
+			delete hideShown[turf.turfId];
+			delete hiding[turf.turfId];
+		}
+	}
+
+	function moreHours(hours: number): string {
+		return hours === 1 ? '1 more hour' : `${hours} more hours`;
+	}
+
+	function listNumberFor(turf: TurfView): string | null {
+		return issued[turf.turfId] ?? turf.printedListNumber;
+	}
+
+	async function copyCode(turfId: number, code: string) {
+		try {
+			await navigator.clipboard.writeText(code);
+			copied[turfId] = true;
+			setTimeout(() => delete copied[turfId], 2000);
+		} catch {
+			// Clipboard access is permission-gated and blocked outright in some
+			// browsers. The number is selectable text either way.
+			delete copied[turfId];
+		}
+	}
+
+	/** Five digits. Held in a constant because writing it inline would mean
+	 *  escaping braces inside a Svelte attribute for no gain in clarity. */
+	const ZIP_PATTERN = '[0-9]{5}';
+
+	/** Whether the back-to-top button is showing.
+	 *
+	 *  Threshold rather than "any scroll at all": appearing the instant someone
+	 *  nudges the page puts a control over the map for no reason. Roughly a
+	 *  screen down is where the list has actually taken over the viewport and
+	 *  scrolling back becomes a chore. */
+	let scrolledDown = $state(false);
+
+	function onScroll() {
+		scrolledDown = window.scrollY > 600;
+	}
+
+	function backToTop() {
+		window.scrollTo({ top: 0, behavior: scrollBehavior() });
+	}
+</script>
+
+<svelte:window onscroll={onScroll} />
+<svelte:document onvisibilitychange={checkTicked} />
+
+<svelte:head><title>{data.pageTitle}</title></svelte:head>
+
+<main>
+	{#if data.blocked}
+		<!-- Deliberately plain: not an error, not a 404, and not an accusation.
+		     And no turf data alongside it — the load function returned none. -->
+		<section class="chapter-gate">
+			<h2>Turf checkout</h2>
+			<p class="gate-help">{data.blocked}</p>
+		</section>
+	{:else if data.rateLimited > 0}
+		<!-- Not an accusation and not a dead end. Someone hitting this while
+		     actually canvassing has done something unusual, so it says what
+		     happened and when it clears — and which limit it was, because only
+		     the chapter limit leaves chapters already seen open. -->
+		{@const minutes = Math.ceil(data.rateLimited / 60)}
+		{@const wait = `${minutes} minute${minutes === 1 ? '' : 's'}`}
+		<section class="chapter-gate">
+			<h2>Slow down a moment</h2>
+			<p class="gate-help">
+				{#if data.rateLimitReason === 'chapters'}
+					You've opened a lot of different chapters in the last hour. Turf for a new chapter will
+					load again in about {wait}. Chapters you've already looked at still open normally.
+				{:else}
+					The page has loaded turf a lot of times in a short while. It will load again in about
+					{wait}.
+				{/if}
+			</p>
+			<p class="gate-help"><a href={resolve('/turfs')}>Back to the chapter list</a></p>
+		</section>
+	{:else if !data.chapter}
+		<!-- No chapter, no turf data. The server sends an empty list until one is
+		     picked; this is a gate, not a pre-filter. -->
+		<section class="chapter-gate">
+			<h2>Where are you canvassing today?</h2>
+			<p class="gate-help">
+				Pick the chapter you're heading out with. You'll see the turfs for that chapter only — you
+				don't have to be a member of it.
+			</p>
+			<ul class="chapter-list">
+				{#each data.chapters as chapter (chapter.chapterId)}
+					<li>
+						<a class="chapter-choice" href="{resolve('/turfs')}?chapter={chapter.chapterId}">
+							<span class="chapter-name">{chapter.name}</span>
+							{#if chapter.chapterId === data.lastChapterId}
+								<span class="chapter-last">Last picked</span>
+							{/if}
+							<span class="chapter-go" aria-hidden="true">→</span>
+						</a>
+					</li>
+				{/each}
+			</ul>
+			{@render walksButton?.()}
+		</section>
+	{:else}
+		<div class="chapter-bar">
+			<div>
+				<span class="chapter-label">Canvassing in</span>
+				<span class="chapter-current">{data.chapter.name}</span>
+			</div>
+			<div class="bar-actions">
+				{@render walksButton?.()}
+				<a class="change-chapter" href={resolve('/turfs')}>Change chapter</a>
+			</div>
+		</div>
+
+		{#if error}
+			<p class="sync-warning" role="alert">{error}</p>
+		{/if}
+
+		{#each myTurfs as turf (turf.turfId)}
+			<!-- tabindex -1: not in the tab order, but focusable so a claim can
+			     move focus here and a screen reader announces the list number. -->
+			<section class="my-turfs" id="my-turf-{turf.turfId}" aria-label="Your turf" tabindex="-1">
+				<article class="code-card">
+					<header>
+						<!-- Grouped so the badge stays beside the name: the header spreads
+						     its children to the edges, which would strand it mid-card. -->
+						<div class="code-card-title">
+							<h2>{turf.name}</h2>
+							{#if badgeFor(turf)}
+								<span class="badge badge-campaign">{badgeFor(turf)}</span>
+							{/if}
+						</div>
+						{#if turf.expiresInHours !== null}
+							<span class="expiry">Yours for {moreHours(turf.expiresInHours)}</span>
+						{/if}
+					</header>
+
+					{#if turf.retired}
+						<!-- The turf left VAN while this volunteer was holding it. The
+						     list number below may no longer load in MiniVAN, and they
+						     need to hear that from us rather than from a blank screen
+						     on a doorstep. -->
+						<p class="sync-warning">
+							An organizer has re-cut this area in VAN, so this turf no longer exists there. Your
+							list number may stop working — check with them before you head out.
+						</p>
+					{/if}
+
+					{#if turf.campaignDisabled}
+						<!-- The campaign was switched off while this volunteer held its
+						     turf. Their claim runs to its end; what changed is that
+						     nobody else will be offered it, and they should not be
+						     surprised when it is gone from the map after. -->
+						<p class="sync-warning">{campaignStoppedNote(badgeFor(turf))}</p>
+					{/if}
+
+					{#if listNumberFor(turf)}
+						<p class="code-lede">
+							Open MiniVAN and enter this {badgeFor(turf) ? `${badgeFor(turf)} ` : ''}list number:
+						</p>
+						<div class="code-row">
+							<output class="turf-code">{listNumberFor(turf)}</output>
+							<button
+								type="button"
+								class="copy-btn"
+								onclick={() => copyCode(turf.turfId, listNumberFor(turf)!)}
+							>
+								{copied[turf.turfId] ? 'Copied' : 'Copy'}
+							</button>
+						</div>
+					{/if}
+
+					<ol class="steps">
+						<li>Open <strong>MiniVAN</strong> on your phone and sign in.</li>
+						<!-- MiniVAN's Scan reads the digits off a screen by OCR, so the
+						     number as printed above is all it needs; no barcode. -->
+						<li>
+							Choose <strong>Enter List Number</strong> and type the number above. Or, if this page
+							is on another screen, tap <strong>Scan</strong> and point your phone's camera at the number
+							to fill it in automatically.
+						</li>
+						<li>Knock the doors, then hit <strong>Sync</strong> before you close the app.</li>
+					</ol>
+					<p class="sync-reminder">
+						Your answers only reach VAN when you sync. If you skip it, the turf looks unwalked and
+						someone else gets sent to the same doors.
+					</p>
+
+					<!-- Both buttons hand the turf back. They differ in what the
+					     ledger records, and the volunteer is the only one who knows
+					     which happened, so each says what it credits and what it
+					     costs rather than leaving the choice to a verb. -->
+					<div class="card-actions">
+						<div class="action-choice">
+							<label class="synced-check">
+								<Checkbox bind:checked={synced[turf.turfId]} />
+								I synced MiniVAN
+							</label>
+							{#if synced[turf.turfId]}
+								{@const check = syncChecks[turf.turfId]}
+								<!-- Information, not a gate: VAN can be a minute behind, and
+								     a turf with no roster cannot be counted at all. -->
+								<p
+									class="sync-check"
+									class:is-confirmed={check && check !== 'error' && (check.doors ?? 0) > 0}
+									role="status"
+								>
+									{#if check === undefined}
+										Checking VAN for your doors…
+									{:else if check === 'error'}
+										Couldn't check VAN just now. You can still mark it walked.
+									{:else if check.doors === null}
+										This turf's doors can't be counted yet, so we can't confirm your sync. You can
+										still mark it walked.
+									{:else if check.doors > 0}
+										VAN has {check.doors} of {check.totalDoors}
+										{check.totalDoors === 1 ? 'door' : 'doors'} on this turf knocked since you took it.
+									{:else}
+										VAN doesn't show any doors from this turf yet. A sync can take a few minutes to
+										reach VAN — this updates on its own.
+									{/if}
+									{#if check && check !== 'error' && check.checkedAgeMs !== null}
+										<span class="sync-check-age">
+											Checked with VAN {formatRelative(check.checkedAgeMs)}.
+										</span>
+									{/if}
+								</p>
+							{/if}
+							<button
+								type="button"
+								class="claim-btn"
+								disabled={busy[turf.turfId] || !synced[turf.turfId]}
+								aria-describedby="walked-hint-{turf.turfId}"
+								onclick={() => act(turf, 'complete')}
+							>
+								{busy[turf.turfId] ? 'Saving…' : 'I walked this turf'}
+							</button>
+							<p class="action-hint" id="walked-hint-{turf.turfId}">
+								Credits your doors. Hit <strong>Sync</strong> in MiniVAN first — how much is left comes
+								from VAN, so doors still on your phone count as unknocked.
+							</p>
+						</div>
+						<div class="action-choice">
+							<button
+								type="button"
+								class="ghost-btn"
+								disabled={busy[turf.turfId]}
+								aria-describedby="unwalked-hint-{turf.turfId}"
+								onclick={() => act(turf, 'release')}
+							>
+								Give it back unwalked
+							</button>
+							<p class="action-hint" id="unwalked-hint-{turf.turfId}">
+								Returns the turf to the list for someone else. Nothing is credited to you.
+							</p>
+						</div>
+					</div>
+				</article>
+			</section>
+		{/each}
+
+		<div class="turf-layout">
+			<div class="map-col" bind:this={mapCol}>
+				{#if drawable.length > 0}
+					{#if onMap.length === 0}
+						<!-- TurfMap needs at least one turf to frame. -->
+						<p class="gate-help">Every turf mapped here has no doors left.</p>
+					{:else}
+						<TurfMap
+							bind:this={turfMap}
+							turfs={onMap}
+							{framing}
+							{selectedId}
+							{location}
+							onselect={select}
+							tiles={data.tiles}
+							onviewport={loadViewport}
+							campaignBadges={badges}
+							walks={showWalks ? mapWalks : []}
+							{selectedWalkId}
+							onselectwalk={selectWalk}
+							events={showEvents ? mapEvents : []}
+							{selectedEventId}
+							onselectevent={selectEvent}
+							{findPlace}
+							bind:place={foundPlace}
+						/>
+					{/if}
+					<ul class="legend">
+						<!-- The ramp is only useful if it can be read off, so it is
+						     shown rather than described: one continuous bar, the same
+						     scale the map and the door tiles mix from (doorRamp). -->
+						<li class="legend-ramp">
+							<!-- Ends labelled where they are, so the scale reads left to
+							     right without a colon or an arrow to parse. The item's own
+							     label comes last, matching every other row in the legend. -->
+							<span class="ramp-end">few</span>
+							<span class="swatch swatch-ramp"></span>
+							<span class="ramp-end">many</span>
+							Doors left
+						</li>
+						{#if canShowCleared && showCleared}
+							<li><span class="swatch swatch-cleared"></span> None left</li>
+						{/if}
+						<li><span class="swatch swatch-knocked"></span> Knocked recently</li>
+						<li><span class="swatch swatch-no-list"></span> No list number</li>
+						<li><span class="swatch swatch-mine"></span> Yours</li>
+						<li><span class="swatch swatch-other"></span> Checked out</li>
+						{#if location}<li><span class="swatch swatch-me"></span> You</li>{/if}
+						<!-- Buttons, not swatches: each shows or hides its markers. -->
+						{#if mapWalks.length > 0}
+							<li>
+								<button
+									type="button"
+									class="legend-toggle"
+									aria-pressed={showWalks}
+									title={showWalks
+										? 'Hide mentor walks on the map'
+										: 'Show mentor walks on the map'}
+									onclick={toggleWalks}
+								>
+									<span aria-hidden="true">👟</span> Mentor walk
+								</button>
+							</li>
+						{/if}
+						{#if mapEvents.length > 0}
+							<li>
+								<button
+									type="button"
+									class="legend-toggle"
+									aria-pressed={showEvents}
+									title={showEvents
+										? 'Hide canvass events on the map'
+										: 'Show canvass events on the map'}
+									onclick={toggleEvents}
+								>
+									<span aria-hidden="true">📣</span> Canvass event
+								</button>
+							</li>
+						{/if}
+					</ul>
+					{#if canShowCleared && clearedCount > 0}
+						<!-- Staff only: volunteers have nothing to do on turf with no
+						     doors left, so the map leaves it off for them. -->
+						<label class="hide-check admin-only">
+							<Checkbox bind:checked={showCleared} />
+							Show turf with no doors left ({clearedCount})
+						</label>
+					{/if}
+					<!-- Constraint A, said out loud. A convex hull swallows territory
+					     the turf does not contain, so it is a browsing aid and MiniVAN
+					     is the authority on which doors are in the list. -->
+					<p class="gate-help">
+						Shapes are approximate — they're drawn around the addresses in each list, so they can
+						cover ground the turf doesn't include. Turfs too small to draw at this zoom show as
+						dots. MiniVAN has the exact doors.
+					</p>
+				{:else}
+					<p class="gate-help">
+						No turf in this chapter has map data yet, so there's nothing to draw. The list is
+						complete either way.
+					</p>
+				{/if}
+			</div>
+
+			<div class="list-col">
+				{#if walksList}
+					<div class="walks-list">{@render walksList(turfMap !== null)}</div>
+				{/if}
+				<!-- One row, because the two ways in are alternatives: stacked, they
+				     read as two features, and a volunteer who grants location wonders
+				     what the ZIP field is still for. -->
+				<section class="sort-bar" aria-labelledby="sort-by">
+					<h2 class="sort-title" id="sort-by">Sort by</h2>
+					{#if locationState === 'idle' || (sortMode === 'densest' && location)}
+						<button type="button" class="sort-btn" onclick={sortNearest}>Nearest me</button>
+					{/if}
+					<!-- A plain GET form, like the ZIP one below, so it works without
+					     JavaScript: the server picks the densest turf before the
+					     payload cut. The ZIP rides along to keep distance as the
+					     tie-break. -->
+					{#if sortMode !== 'densest'}
+						<form class="sort-form" method="GET" action={resolve('/turfs')}>
+							<input type="hidden" name="chapter" value={data.chapter.chapterId} />
+							{#if data.zip}
+								<input type="hidden" name="zip" value={data.zip} />
+							{/if}
+							<input type="hidden" name="sort" value="densest" />
+							<button type="submit" class="sort-btn">Densest</button>
+						</form>
+					{/if}
+
+					<!-- The ZIP fallback (6.4). A plain GET form, so it works with the
+					     location permission denied, with the Geolocation API missing,
+					     and with JavaScript off entirely — the server resolves the ZIP
+					     and sorts before serialising. -->
+					{#if locationState !== 'granted'}
+						<form class="zip-form" method="GET" action={resolve('/turfs')}>
+							<input type="hidden" name="chapter" value={data.chapter.chapterId} />
+							<span>|</span>
+							<label for="zip">ZIP</label>
+							<input
+								id="zip"
+								name="zip"
+								inputmode="numeric"
+								pattern={ZIP_PATTERN}
+								maxlength="5"
+								placeholder="48104"
+								value={data.zip ?? ''}
+							/>
+							<button type="submit" class="sort-btn" aria-label="Sort nearest this ZIP first"
+								>Go</button
+							>
+						</form>
+					{/if}
+
+					<!-- Whichever sort is in force, said once. The note wraps to its own
+					     line; the controls above it stay on one. -->
+					{#if sortMode === 'densest'}
+						<p class="sort-note">
+							Most doors per area first — the least walking between doors. Turf smaller than a
+							block, like a single apartment building, isn't ranked and comes last, as does turf
+							without map data.
+						</p>
+					{:else if locationState === 'granted'}
+						<p class="sort-note">Nearest turf first, from where you are now.</p>
+					{:else if data.zip}
+						<p class="sort-note">Nearest turf first, from {data.zip}.</p>
+					{:else if locationState === 'denied'}
+						<p class="sort-note">
+							Location unavailable — a ZIP sorts the list instead. The list works either way.
+						</p>
+					{/if}
+				</section>
+				<div class="list-head">
+					<h2>
+						<span class="available-count">{availableCount}</span>
+						turf{availableCount === 1 ? '' : 's'} available
+					</h2>
+					{#if campaignOptions.length > 1}
+						<CampaignFilter
+							options={campaignOptions}
+							value={campaignFilter}
+							onchange={(next) => (campaignFilter = next)}
+						/>
+					{/if}
+					{#if updatingCount > 0}
+						<span class="freshness">{updatingCount} updating</span>
+					{/if}
+				</div>
+
+				{#if total > shown}
+					<!-- A list that silently stops at 600 of 2,000 reads as "there is
+					     no more turf", which is the most misleading thing this page
+					     could say. Phrased as "N of T" rather than "M more": both
+					     halves then come from the same set, so panning cannot make
+					     them disagree. -->
+					<p class="gate-help">
+						Showing {shown} of {total}
+						{pickedCampaign === null ? '' : `${badges[pickedCampaign]} `}turfs in this chapter — pan
+						or zoom the map to load turf in another area.
+					</p>
+				{/if}
+
+				{#if unmappable > 0 && drawable.length > 0}
+					<p class="gate-help">
+						{unmappable} of these {turfs.length} don't have map data yet and appear only in this list.
+					</p>
+				{/if}
+
+				<ul class="turf-list" bind:this={listEl}>
+					{#each sortedTurfs as turf (turf.turfId)}
+						{@const expanded = turf.turfId === selectedId}
+						<li
+							class="turf-row"
+							class:is-selected={expanded}
+							class:is-mine={turf.status === 'held-by-you'}
+							class:is-unavailable={turf.status === 'checked-out'}
+							class:is-no-list={turf.noListNumber}
+						>
+							<button
+								type="button"
+								class="turf-card"
+								onclick={() => toggle(turf.turfId)}
+								aria-expanded={expanded}
+								aria-controls={expanded ? `turf-detail-${turf.turfId}` : undefined}
+							>
+								<!-- First in the DOM as well as on screen, so what a screen
+								     reader hears matches what the eye lands on, and both lead
+								     with the field the list is scanned for. -->
+								<!-- Striped like the map when doors were knocked before the
+								     list was re-cut, which MiniVAN no longer shows. -->
+								<span
+									class="door-tile shade-{turf.noListNumber
+										? 'no-list'
+										: turfShade(turf.status, turf.doorsRemaining)}"
+									class:is-knocked={turf.contactHistory}
+									style={rampStyle(turf.doorsRemaining)}
+								>
+									<span class="door-count">{turf.doorsRemaining}</span>
+									<span class="door-label">doors left</span>
+									{#if turf.contactHistory}
+										<span class="visually-hidden">, {KNOCKED_LABEL}</span>
+									{/if}
+									{#if expanded}
+										<!-- Story 4.3: never imply live data. A volunteer who walks a
+										     turf on stale counts finds knocked doors and stops
+										     trusting the tool, so the number carries its age. Only
+										     on the open row — on forty closed ones it is noise
+										     against the count, which is what the list is scanned
+										     for. -->
+										<span class="door-age">as of {describeAge(turf.refreshedMinutesAgo)}</span>
+									{/if}
+								</span>
+
+								<span class="card-main">
+									<span class="card-top">
+										<span class="turf-name">{turf.name}</span>
+										<!-- Grouped, so the status chip is hard against the right
+										     edge whether or not UPDATING is beside it, and stacked,
+										     status over campaign, so the chips take one chip's width
+										     and leave the rest of the row to the name. -->
+										<span class="card-badges">
+											<span class="card-status">
+												{#if turf.updating}
+													<!-- VAN is re-cutting this turf's region, so its door
+												     count is about to move. Deliberately a chip and not
+												     a disabled state: Story 4.5 keeps the turf claimable
+												     during a refresh, because blocking would take the
+												     page down on exactly the mornings it is busiest.
+												     Left of the status: it qualifies the count, while
+												     the status decides whether the row is worth opening
+												     at all, and that one keeps the edge. -->
+													<span class="badge badge-updating" title="VAN is recounting this area"
+														>Updating</span
+													>
+												{/if}
+												<!-- Status reads as a badge rather than another line of meta
+											     text: it is the field that decides whether the row is
+											     worth opening, and colour makes that answerable without
+											     reading. The class follows the status verbatim, so a new
+											     status shows up as an unstyled chip rather than silently
+											     borrowing the wrong colour. -->
+												<span class="badge badge-{turf.status}">{statusLabel(turf.status)}</span>
+											</span>
+											{#if turf.hidden}
+												<!-- Admins only: the server sends hidden turf to nobody
+												     else but its holder, and never the flag. -->
+												<span class="badge badge-hidden" title="Volunteers can't see this turf"
+													>Hidden</span
+												>
+											{/if}
+											{#if badgeFor(turf)}
+												<!-- Which campaign's VAN the turf is from, while there is
+												     more than one. Neutral and outlined: it names a source,
+												     not a state, and must not read as another status. -->
+												<span class="badge badge-campaign">{badgeFor(turf)}</span>
+											{/if}
+										</span>
+									</span>
+									{#if expanded}
+										<!-- What the open row says about the turf besides its name,
+										     as a list rather than a run of {#if}s: a turf with no
+										     distance to show still lays out correctly, with nothing
+										     dangling where the missing field was. Total doors comes
+										     first of the counts, to read against the tile's doors
+										     left. The row wraps rather than overflows in the ~190px
+										     the list column leaves beside the tile on a desktop. -->
+										{@const stats = [
+											distances[turf.turfId] !== undefined
+												? { label: 'Distance', value: formatDistance(distances[turf.turfId]) }
+												: null,
+											{ label: 'Total doors', value: String(turf.totalDoors) },
+											{ label: 'People in list', value: String(turf.routeSize) },
+										].filter((stat) => stat !== null)}
+										<!-- Labelled rather than run together with separators: the
+										     values are a distance and a bare number, and side by
+										     side in one muted line they read as one string. Case,
+										     weight and colour each separate label from value, so the
+										     split survives at this size and in both themes. -->
+										<span class="card-stats">
+											<!-- Keyed by position: a fixed short list of plain values,
+											     two of which can read alike — a region named for its
+											     ward, say — which a value key would reject. -->
+											{#each stats as stat, i (i)}
+												<span class="stat">
+													<span class="stat-label">{stat.label}</span>
+													<span class="stat-value">{stat.value}</span>
+												</span>
+											{/each}
+										</span>
+									{:else if distances[turf.turfId] !== undefined}
+										<span class="card-meta">{formatDistance(distances[turf.turfId])} away</span>
+									{/if}
+									{#if turf.heldBy}
+										<!-- Only ever populated for admins; the server nulls it for
+									     everyone else (visibleTurfState), so this cannot leak by
+									     template edit. The expiry distinguishes an app claim,
+									     which lapses, from turf an organizer sent to someone in
+									     VAN, which does not. -->
+										<span class="card-note admin-only">
+											Held by <HolderName
+												name={turf.heldBy}
+												account={turf.heldByAccount}
+											/>{turf.expiresInHours
+												? ` — frees up in ${turf.expiresInHours} h`
+												: ' (assigned in VAN)'}
+										</span>
+									{/if}
+									{#if turf.walkReport}
+										<!-- The only progress figure there is: what the last
+										     volunteer read off MiniVAN when they marked it walked.
+										     Trusted until the turf is next cut. -->
+										<span class="card-note">
+											About {turf.walkReport.percent}% walked · {turf.walkReport.dayLabel}
+										</span>
+									{/if}
+								</span>
+							</button>
+
+							{#if expanded}
+								<div class="row-detail" id="turf-detail-{turf.turfId}">
+									{#if turf.updating}
+										<p class="detail-note">
+											VAN is recounting this area — the doors left may change shortly. You can still
+											check it out.
+										</p>
+									{/if}
+									{#if turf.status === 'available'}
+										<button
+											type="button"
+											class="claim-btn"
+											class:is-no-list={turf.noListNumber}
+											disabled={data.needsName || !turf.claimable || busy[turf.turfId]}
+											onclick={() => claim(turf)}
+										>
+											{busy[turf.turfId] ? 'Checking out…' : 'Check out this turf'}
+										</button>
+										<!-- `claimable` gates the promise, not the absence of a
+										     reason. Written the other way round, a refusal that
+										     arrived without a message would fall through and
+										     promise a list number under a dead button. -->
+										{#if data.needsName}
+											<!-- The claim route refuses until they do (FR-011). -->
+											<p class="claim-note">Choose your name at the top of the page first.</p>
+										{:else if turf.claimable}
+											<!-- Said before the claim, not after: what you get and how
+											     long you keep it are the two things someone wants to
+											     know before committing to walk somewhere. -->
+											<p class="claim-note">
+												You'll get a MiniVAN list number and {data.claimTtlHours} hours to walk it. Nobody
+												else can take it in the meantime.
+											</p>
+										{:else if turf.claimBlockedReason}
+											<p class="claim-note">{turf.claimBlockedReason}</p>
+										{/if}
+									{:else if turf.status === 'held-by-you'}
+										<p class="claim-note">Your list number is at the top of the page.</p>
+									{:else}
+										<!-- Why taken turf is shown at all. Hiding it would leave a
+										     hole in the map that reads as a bug, and a volunteer
+										     would keep looking for turf that is not missing. -->
+										<p class="claim-note">
+											Someone's already walking this turf. Check back later, or pick another turf
+											nearby.
+										</p>
+									{/if}
+									{#if data.isAdmin}
+										<!-- Last, under the volunteer's view of the card, so an admin
+										     reads the turf as a volunteer would before changing who
+										     sees it. The API refuses anyone else. -->
+										<label class="hide-check admin-only">
+											<Checkbox
+												bind:checked={
+													() => hideShown[turf.turfId] ?? turf.hidden === true,
+													(next) => void setHidden(turf, next)
+												}
+												disabled={hiding[turf.turfId]}
+											/>
+											Hide from volunteers
+										</label>
+									{/if}
+								</div>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+
+				{#if allTurfs.length === 0}
+					<p class="gate-help">
+						No turf is published for this chapter yet. An organizer needs to cut it in VAN and
+						generate its printed lists.
+					</p>
+				{/if}
+			</div>
+		</div>
+	{/if}
+</main>
+
+<KnockedClaimDialog
+	turfName={confirmingKnocked?.name ?? null}
+	onconfirm={() => {
+		const turf = confirmingKnocked;
+		confirmingKnocked = null;
+		if (turf) act(turf, 'claim', { acknowledgedKnocked: true });
+	}}
+	oncancel={() => (confirmingKnocked = null)}
+/>
+
+<!-- Always rendered, shown by class. The CSS uses `visibility` rather than
+     opacity alone, so while hidden it is out of the tab order too — a
+     transparent-but-focusable button at the top of the page would be a
+     keyboard trap for no reason. -->
+<button
+	type="button"
+	class="to-top"
+	class:is-visible={scrolledDown}
+	onclick={backToTop}
+	aria-label="Back to top"
+	tabindex={scrolledDown ? undefined : -1}
+>
+	<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+		<path
+			d="M12 19V5M12 5l-6 6M12 5l6 6"
+			stroke="currentColor"
+			stroke-width="2.5"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+		/>
+	</svg>
+</button>

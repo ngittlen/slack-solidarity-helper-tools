@@ -4,7 +4,10 @@
 	import { resolve } from '$app/paths';
 	import UserMenu, { type MenuItem } from '$lib/components/nav/UserMenu.svelte';
 	import ThemeToggle from '$lib/components/nav/ThemeToggle.svelte';
+	import NotificationToggle from '$lib/components/nav/NotificationToggle.svelte';
 	import { documentTitle, resolveSiteName } from '$lib/site-name.js';
+	import { currentPushSubscription, tellServiceWorker } from '$lib/push-client.js';
+	import { tick } from 'svelte';
 
 	let { data, children } = $props();
 
@@ -18,8 +21,13 @@
 	// Not for signed-out readers: /policies is public, and an arrow pointing at
 	// a page that would bounce them to Slack OAuth is a dead end, not a way back.
 	const signedIn = $derived(data.signedIn);
-	const showBackLink = $derived(signedIn && page.url.pathname !== '/');
+	// Nor for a Google or Apple sign-in: the dashboard it points at is Slack-only, and
+	// following it would only bounce them back to /turfs.
+	const showBackLink = $derived(signedIn && !data.turfOnly && page.url.pathname !== '/');
 
+	// Moderators get the same menu, holding just the pages they can open — in
+	// the same order, so the two read as one menu with items missing rather
+	// than two different ones.
 	const menuItems = $derived<MenuItem[]>(
 		data.isAdmin
 			? [
@@ -30,28 +38,60 @@
 					{ href: '/turfs/organizer', label: 'Turf right now' },
 					{ href: '/turfs/activity', label: 'Turf activity' },
 					{ href: '/settings', label: 'Settings' },
+					{ href: '/post-as-you', label: 'Post as you' },
 				]
-			: [],
+			: data.isModerator
+				? [
+						{ href: '/members', label: 'Member lookup' },
+						{ href: '/turfs', label: 'Turf checkout' },
+						{ href: '/turfs/organizer', label: 'Turf right now' },
+						{ href: '/post-as-you', label: 'Post as you' },
+					]
+				: [],
 	);
 
 	// Turf checkout is the one page a non-admin has any reason to open, and
 	// until now nothing in the app linked them to it — the menu is admin-only,
 	// so a volunteer had to arrive via the /turfs Slack command or a pasted URL.
 	//
-	// Shown as a plain link rather than by giving non-admins the dropdown: a
+	// Shown as a plain link rather than by giving volunteers the dropdown: a
 	// menu holding exactly one item hides that item behind a click and reads as
-	// though more is being withheld. Admins keep the dropdown, which already
-	// lists this page, so nobody sees it twice.
+	// though more is being withheld. Admins and moderators have the dropdown,
+	// which already lists this page, so nobody sees it twice.
 	//
 	// Signed-in only, for the reason the back-link has: /policies is public, and
 	// a link that bounces a signed-out reader into Slack OAuth is a dead end.
 	// Blocked users still see it — access.ts redirects them to an explanation,
 	// which is friendlier than a link that silently is not there.
-	const showTurfLink = $derived(signedIn && !data.isAdmin);
+	const showTurfLink = $derived(signedIn && !data.isAdmin && !data.isModerator);
 
-	// Moderators' one page besides turf checkout, as a plain link for the same
-	// reason: two links read better than a two-item menu.
-	const showMemberLink = $derived(signedIn && !data.isAdmin && data.isModerator);
+	/** This browser's push address, when it has one: sent with "Log out" so
+	 *  the server stops sending this person's notices here. */
+	let pushEndpoint = $state<string | null>(null);
+	/** How long Log out waits on the browser before going anyway. */
+	const LOGOUT_WAIT_MS = 1500;
+
+	/** Logging out gives up this browser's notifications: the server stops
+	 *  sending this person's, and the service worker stops showing any still
+	 *  on their way in full. The address is looked up here, at the click.
+	 *  Without JavaScript the form still logs out, just without either. */
+	async function logOut(event: SubmitEvent): Promise<void> {
+		event.preventDefault();
+		const form = event.currentTarget as HTMLFormElement;
+		const giveUp = (async () => {
+			pushEndpoint = (await currentPushSubscription())?.endpoint ?? null;
+			await tellServiceWorker(null);
+			await tick();
+		})();
+		try {
+			// Never let the browser's service worker hold up logging out.
+			await Promise.race([giveUp, new Promise((resolve) => setTimeout(resolve, LOGOUT_WAIT_MS))]);
+		} catch {
+			// Logging out matters more than either.
+		} finally {
+			form.submit();
+		}
+	}
 </script>
 
 <!-- One <title> for the whole app. Individual pages used to set their own and
@@ -85,14 +125,13 @@
 		</div>
 		<div class="user-info">
 			<ThemeToggle mode={data.themeMode} />
+			<!-- Push notifications. Loading it claims this browser for whoever
+			     is signed in, on every page, so a shared device only gets the
+			     notices of whoever used it last (src/lib/server/push.ts). -->
 			{#if signedIn}
-				{#if showMemberLink}
-					<a
-						class="header-link"
-						href={resolve('/members')}
-						aria-current={page.url.pathname === '/members' ? 'page' : undefined}>Member lookup</a
-					>
-				{/if}
+				<NotificationToggle />
+			{/if}
+			{#if signedIn}
 				{#if showTurfLink}
 					<a
 						class="header-link"
@@ -104,11 +143,15 @@
 				<span class="user-greeting">
 					Logged in as <span class="user-name">{data.userName}</span>
 				</span>
-				<form method="POST" action="/auth/logout">
+				<form method="POST" action="/auth/logout" onsubmit={logOut}>
+					{#if pushEndpoint}
+						<input type="hidden" name="push_endpoint" value={pushEndpoint} />
+					{/if}
 					<button type="submit" class="logout-btn">Log out</button>
 				</form>
-			{:else}
-				<a class="logout-btn" href={resolve('/auth/slack')}>Sign in with Slack</a>
+			{:else if data.signInHref && page.url.pathname !== '/signin'}
+				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the sign-in page with its return path -->
+				<a class="logout-btn" href={data.signInHref}>Sign in</a>
 			{/if}
 		</div>
 	</header>
@@ -116,6 +159,8 @@
 	{@render children?.()}
 
 	<footer class="app-footer">
+		<a href="{resolve('/policies')}#terms">Terms</a>
+		<span aria-hidden="true">·</span>
 		<a href="{resolve('/policies')}#privacy">Privacy</a>
 		<span aria-hidden="true">·</span>
 		<a href="{resolve('/policies')}#security">Security</a>
@@ -171,6 +216,13 @@
 		display: inline-flex;
 		align-items: baseline;
 		gap: 4px;
+	}
+	/* On a phone the header's right side has no room for it: the menu, the
+	   two buttons and Log out come first. */
+	@media (max-width: 600px) {
+		.user-greeting {
+			display: none;
+		}
 	}
 	.user-name {
 		color: var(--color-gold);

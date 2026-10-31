@@ -218,10 +218,40 @@ Two dead ends, both checked against the live API rather than assumed:
   but it is **silently ignored on create** — send `PRIVATE`, read back `PUBLIC`.
   It is documented under the response schema only, and it behaves that way.
 
-**Skipped.** Virtual events (they need a join URL the list payload doesn't expose),
-co-hosted mirrors of another org's event, past sessions, anything without a
-usable street address, and private-address events with neither a postal code nor
-coordinates to geocode one from.
+**Virtual events** sync only while "Virtual events on Mobilize" is switched on
+in /settings. Each one becomes a single Mobilize event created with
+`is_virtual: true` and no location. Each session's join link goes on its own
+timeslot as `instructions`, which Mobilize sends privately to that shift's
+attendees after they sign up. Solidarity keeps the link in one of two places:
+a link typed in by hand is the session's `location_address`, and a meeting made
+through Solidarity's Zoom integration keeps it in `zoom_meeting_data.join_url`.
+That object also holds the host's `start_url`, which is never read. If any
+upcoming session has no https link, or is in-person, the whole event is held
+back, named in the response's `skippedNoJoinLink`, and listed in the nightly
+Slack alert.
+
+A link is compared by the URL itself, not the note's exact text, so Mobilize
+storing the note as HTML doesn't make it look changed every run. Updates are
+normally sent with `send_update_notifications=false`, but when Mobilize holds a
+link to a _different meeting_ (another host or path), the update emails that
+event's attendees, since the link they were sent no longer works. A new password
+on the same meeting is pushed without an email, so the email can't repeat if
+Mobilize rewrites a link's query string.
+
+Duplicate detection never matches a virtual event against an in-person one.
+
+`is_virtual` can't be changed after create, so an event that switches between
+virtual and in-person in Solidarity gets a new ledger key and a new Mobilize
+event. The old one is left live, and while it is still upcoming it is named in
+`typeSwitched` and the nightly Slack alert, so someone can take it down.
+
+An in-person shift's own note in Mobilize (one typed there by hand) is re-sent
+unchanged on every update rather than left out of it.
+
+**Skipped.** Virtual events while the switch is off, co-hosted mirrors of
+another org's event, past sessions, anything without a usable street address,
+and private-address events with neither a postal code nor coordinates to geocode
+one from.
 
 ### What the v1 API cannot set
 
@@ -677,6 +707,114 @@ tolerates a skipped run, because the next one still refreshes the event in time.
 Both passes also look **back 48 hours** (`?lookback=`). Check-ins are recorded
 during and after an event, so a forward-only scope would never sync who actually
 showed up.
+
+## Partner-org import (their Mobilize → our Solidarity)
+
+A partner campaign runs its own Mobilize org. Events they tag with an agreed tag
+are copied into our Solidarity as ordinary events with an event page, so our
+volunteers see them where they already look. This is a separate direction from
+both syncs above: it reads **their** org, never ours.
+
+- **Endpoint:** `POST /api/internal/mobilize-import?key=…`. It takes `?dry=1`,
+  `?maxCreates=N` and `?budgetMs=N`, like the event sync.
+- **Schedule:** the in-app scheduler runs it hourly at :15, and
+  `.github/workflows/mobilize-import.yml` is the backup.
+- **Code:** `lib/import-transform.ts` (mapping), `lib/import.ts` (write loop),
+  `lib/solidarity-events.ts` (Solidarity writes), and
+  `src/lib/server/mobilize-import.ts` (server glue).
+- **Alerts:** go to the Mobilize sync channel.
+
+**Configuration.** The import does nothing until all of these are set:
+
+| Where                                       | What                                                                            |
+| ------------------------------------------- | ------------------------------------------------------------------------------- |
+| `MOBILIZE_IMPORT_API_KEY`                   | The partner org's API key. Read access is enough.                               |
+| `MOBILIZE_IMPORT_ORG_ID`                    | The partner org's id.                                                           |
+| `/settings` → _Partner Mobilize import tag_ | The tag name, matched ignoring case. Blank turns the import off.                |
+| `SOLIDARITY_DEFAULT_CHAPTER_ID`             | Where virtual events, and in-person events whose zip has no chapter, are filed. |
+| `MOBILIZE_IMPORT_MAX_CREATES`               | Guardrail, default 10. A run wanting more new events creates none and alerts.   |
+
+**What gets imported:** upcoming events that carry the tag, are **owned** by the
+partner org (`sponsor.id`), and have `visibility: PUBLIC`.
+
+- Owned only, because an org's event list also returns events it merely promotes
+  for other orgs, which could include our own.
+- Private and unlisted events are skipped, because the Solidarity page is public.
+
+| Solidarity | From the partner's Mobilize event                                                                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Event      | Title, the earliest upcoming timeslot, venue, address, coordinates (or the virtual URL)                                                               |
+| Sessions   | One per remaining upcoming timeslot that isn't full                                                                                                   |
+| Page       | Description (plain text becomes paragraphs), then any notes below, then a credit line linking the original; `featured_image_url` if https             |
+| Chapter    | In person: the zip via `zip_chapter_map`; otherwise the default chapter, with a Slack alert naming the event. Virtual: the default chapter, no alert. |
+| Tags       | `mobilize-exclude` and `mobilize-import`                                                                                                              |
+
+**Full shifts are left out.** Mobilize doesn't return its caps, so a full shift
+would arrive as an open session. If every upcoming shift is full, the event is
+skipped (`all-shifts-full`).
+
+**Where the copy has to send people back to Mobilize:**
+
+- **Private address** (`address_visibility: PRIVATE`). We may still receive the
+  full address, since we call with the partner's key. Only city, state and zip are
+  published (the zip still picks the chapter). Venue and coordinates are dropped,
+  and the page says _"This event's address is private. To see it, register for the
+  event on Mobilize."_
+- **Virtual with no link.** Mobilize only sends the join link to people who
+  register there, so the page says where to get it.
+
+Every link is https-only.
+
+**Create-only.** Solidarity's API can't edit or delete an event, only create it.
+So an import is never updated: later edits, cancellations or untagging in
+Mobilize are not copied. The ledger (`mobilize_imported_events` and
+`mobilize_imported_timeslots`) records an event the moment it's created. A run
+that dies before the sessions or page are done finishes them next time instead
+of creating the event again.
+
+Write order is **event, page, then the other sessions**, and the page and each
+session are attempted independently: a refused page doesn't stop the shifts, and
+a refused shift doesn't stop the page. A page refused (422) with an image is
+retried once without it.
+
+- A resume asks for the page again; a 409 means it's already there.
+- A session Solidarity accepts without returning an id still counts as done, so
+  it's never created twice.
+
+Statuses (`ImportStatus` in `lib/import.ts`):
+
+| Status        | Meaning                                                                                                                                                            | Retried?                |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
+| `failing`     | Create refused (4xx) fewer than 3 times; no event exists                                                                                                           | yes                     |
+| `created`     | Event exists; sessions or page still to do                                                                                                                         | yes, finished next run  |
+| `complete`    | Done                                                                                                                                                               | never touched again     |
+| `duplicate`   | Solidarity refused the create as a duplicate (409); alerted once                                                                                                   | no                      |
+| `unconfirmed` | Solidarity said yes but returned no id, so the event probably exists; alerted loudly for a person to finish                                                        | no, that would make two |
+| `rejected`    | Refused 3 times (any 4xx but auth and rate limits; transient failures don't count); alerted once, saying whether the event already exists in Solidarity unfinished | no                      |
+
+A `created` import whose event leaves the plan (untagged, made private, or out of
+open shifts) can't be finished. It's alerted once as stalled. Over-limit runs still
+finish earlier imports; only new creates are held back. RSVPs made on the
+Solidarity page stay in Solidarity.
+
+**No echo into our org.** The outbound sync skips imported events twice:
+
+- by the `mobilize-exclude` tag;
+- by ID, from `mobilize_imported_events` (`importedSolidarityEventIds` in
+  `src/lib/server/mobilize-sync.ts`). This second guard doesn't depend on
+  Solidarity keeping a field sent on create.
+
+An `unconfirmed` import has no ID, so only the tag protects it.
+
+**Live checks still owed:**
+
+- The event-create response shape. The code accepts `{data: {...}}` or a bare
+  object. A 2xx with no readable id becomes `unconfirmed`.
+- The `/v1/event_sessions` path. It uses underscores by analogy with
+  `/v1/event_rsvps`.
+- That `tags` sticks on create.
+
+Confirm all three on the first `maxCreates=1` run.
 
 ## Tests
 

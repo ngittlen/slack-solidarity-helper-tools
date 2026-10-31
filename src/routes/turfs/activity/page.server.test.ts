@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { load } from './+page.server.js';
+import { campaignFilter } from '$lib/server/van/campaigns.js';
 
 const mockSettings = vi.hoisted(() => vi.fn());
 const mockCounts = vi.hoisted(() => vi.fn());
@@ -8,13 +9,17 @@ const mockHasAnyTurf = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
+// One campaign: no picker, no badges.
+vi.mock('$lib/server/van/campaigns.js', () => ({
+	campaignFilter: vi.fn(async () => ({ campaigns: [], campaign: null, badges: {} })),
+}));
 vi.mock('$lib/server/van/activity-store.js', () => ({
 	loadActivityCounts: mockCounts,
 	loadActivityRows: mockRows,
 	hasAnyTurf: mockHasAnyTurf,
 }));
 
-const { emptyCounts } = await import('$lib/van/turf-activity.js');
+const { emptyCounts, EVENTS_PER_PAGE } = await import('$lib/van/turf-activity.js');
 
 // Two rows per chapter, because chapter_channel_map is keyed by CHANNEL and in
 // production every chapter has two. The single-row-per-chapter fixture this
@@ -37,7 +42,7 @@ const event = (session: unknown, query?: string) =>
 function row(over: Record<string, unknown> = {}) {
 	return {
 		checkoutId: 1,
-		mapRouteId: 100,
+		turfId: 100,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
 		chapterId: 71,
@@ -51,6 +56,7 @@ function row(over: Record<string, unknown> = {}) {
 		completedAt: null,
 		releaseReason: null,
 		confirmedDoorDelta: null,
+		reportedPercent: null,
 		...over,
 	};
 }
@@ -112,6 +118,21 @@ describe('/turfs/activity filters', () => {
 		);
 	});
 
+	// An admin's turf-only chapter is listed and scopes like a real one.
+	it('lists and scopes to a turf-only chapter', async () => {
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: CHAPTERS,
+			turfCustomChapters: [{ chapterId: -1, name: 'Ann Arbor outreach' }],
+		});
+		const data = await run(event(ADMIN, 'chapter=-1'));
+		expect(data.chapters[0]).toEqual({ chapterId: -1, name: 'Ann Arbor outreach' });
+		expect(data.chapter).toEqual({ chapterId: -1, name: 'Ann Arbor outreach' });
+		expect(mockRows).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ chapterId: -1 }),
+		);
+	});
+
 	// A mistyped URL should show a page, not a 400 — and must not be passed
 	// through to the query, where it would silently return nothing at all.
 	it.each([
@@ -125,6 +146,30 @@ describe('/turfs/activity filters', () => {
 			expect.anything(),
 			expect.objectContaining({ chapterId: null }),
 		);
+	});
+
+	// specs/012-multi-van-campaigns: the picker's choice reaches every query,
+	// and the page gets the list and the badges to render.
+	it('scopes the queries to a picked campaign', async () => {
+		vi.mocked(campaignFilter).mockResolvedValueOnce({
+			campaigns: [
+				{ id: 1, name: 'One Team Michigan' },
+				{ id: 2, name: 'Partner' },
+			],
+			campaign: { id: 2, name: 'Partner' },
+			badges: { 1: 'OTM', 2: 'Partner' },
+		});
+		const data = await run(event(ADMIN, 'campaign=2'));
+		expect(vi.mocked(campaignFilter)).toHaveBeenCalledWith(expect.anything(), '2');
+		expect(data.campaign).toEqual({ id: 2, name: 'Partner' });
+		expect(data.campaigns).toHaveLength(2);
+		expect(data.campaignBadges).toEqual({ 1: 'OTM', 2: 'Partner' });
+		for (const mock of [mockRows, mockCounts]) {
+			expect(mock).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ campaignId: 2 }),
+			);
+		}
 	});
 
 	it('applies the period to the query range', async () => {
@@ -143,6 +188,19 @@ describe('/turfs/activity filters', () => {
 			expect.anything(),
 			expect.objectContaining({ range: expect.objectContaining({ start: null }) }),
 		);
+	});
+
+	it('passes the search to both queries, trimmed and capped', async () => {
+		const data = await run(event(ADMIN, `q=${encodeURIComponent('  kent  ')}`));
+		expect(data.search).toBe('kent');
+		for (const mock of [mockRows, mockCounts]) {
+			expect(mock).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ search: 'kent' }),
+			);
+		}
+		const long = await run(event(ADMIN, `q=${'a'.repeat(500)}`));
+		expect(long.search).toHaveLength(100);
 	});
 
 	it('falls back to the default period for junk', async () => {
@@ -214,13 +272,38 @@ describe('/turfs/activity payload', () => {
 		expect(data.dayLabels['2026-08-22']).toBe('Saturday, Aug 22');
 	});
 
-	// The total comes from SQL, not from the capped list, so "showing N of M"
-	// stays honest.
-	it('reports the counted total alongside what it is showing', async () => {
+	// The total comes from SQL, not from the loaded page, so "showing N of M"
+	// stays honest while the list pages.
+	it('reports the counted total alongside the first page', async () => {
 		mockCounts.mockResolvedValue({ ...emptyCounts(), claimed: 900, completed: 340 });
 		const data = await run(event(ADMIN));
 		expect(data.total).toBe(1240);
-		expect(data.shown).toBe(1);
+		expect(data.events).toHaveLength(1);
+		expect(data.hasMore).toBe(false);
+	});
+
+	// One row past the page is how the load knows another page exists.
+	it('fetches one row past the page and reports more when it is there', async () => {
+		mockRows.mockResolvedValue(
+			Array.from({ length: EVENTS_PER_PAGE + 1 }, (_, i) =>
+				row({
+					checkoutId: i + 1,
+					claimedAt: new Date(Date.UTC(2026, 7, 24, 12, 0, i)).toISOString(),
+				}),
+			),
+		);
+		const data = await run(event(ADMIN));
+		expect(mockRows).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ limit: EVENTS_PER_PAGE + 1 }),
+		);
+		expect(data.events).toHaveLength(EVENTS_PER_PAGE);
+		expect(data.hasMore).toBe(true);
+	});
+
+	// Later pages measure their period and "ago" labels against this.
+	it('carries the load time for the pages that follow', async () => {
+		expect((await run(event(ADMIN))).now).toBe('2026-08-24T18:00:00.000Z');
 	});
 
 	it('distinguishes an empty catalog from a quiet period', async () => {
@@ -239,7 +322,13 @@ describe('/turfs/activity payload', () => {
 	// still ships in the SSR payload.
 	it('carries no list number and nothing address-like', async () => {
 		const data = await run(event(ADMIN));
-		const serialised = JSON.stringify(data).toLowerCase();
+		// `account` is the holder's own Slack/Google mark, with a Google
+		// volunteer's email for organizers by design (spec 013, FR-015). It is
+		// left out here so this keeps guarding what it is for: nothing about a
+		// voter, and no list number, reaching the payload.
+		const serialised = JSON.stringify(data, (key, value) =>
+			key === 'account' ? undefined : value,
+		).toLowerCase();
 		for (const field of [
 			'printedlist',
 			'35536745',
