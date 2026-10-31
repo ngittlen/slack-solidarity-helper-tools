@@ -115,13 +115,13 @@ export function hasContactHistory(
 
 /**
  * Whether checking this turf out asks first (KNOCKED_CLAIM_WARNING): it was
- * knocked before its cut, by someone other than the viewer. The page's dialog
- * and the Slack button's confirm both go by this; `claimTurf` enforces it.
+ * knocked before its cut. Asked of everyone, the last holder included: a re-cut
+ * issues a new route id, so who held this route says nothing about whose
+ * knocks they were. The page's dialog and the Slack button's confirm both go
+ * by this; `claimTurf` enforces it.
  */
-export function needsKnockedConfirm(
-	turf: Pick<TurfView, 'contactHistory' | 'lastCheckedOutByYou'>,
-): boolean {
-	return turf.contactHistory === true && turf.lastCheckedOutByYou !== true;
+export function needsKnockedConfirm(turf: Pick<TurfView, 'contactHistory'>): boolean {
+	return turf.contactHistory === true;
 }
 
 /**
@@ -314,12 +314,6 @@ export interface TurfView {
 	 */
 	contactHistory?: true;
 	/**
-	 * Alongside `contactHistory` only: the viewer checked this turf out last,
-	 * so the knocks are theirs and checking it out again asks nothing. See
-	 * `needsKnockedConfirm`. Omitted when false, like `updating`.
-	 */
-	lastCheckedOutByYou?: true;
-	/**
 	 * The turf's VAN campaign, for its badge — looked up in the payload's
 	 * `campaignBadges` rather than repeated as text on every row. Present only
 	 * when the badge is shown: while more than one campaign is enabled, and on
@@ -372,9 +366,6 @@ export type TurfViewOptions = ClaimOptions & {
 	 *  an admin viewer; and even if passed for anyone else it is not used,
 	 *  because it rides on `heldBy`, which only admins get. */
 	holderAccounts?: ReadonlyMap<string, HolderAccount>;
-	/** Routes the viewer checked out last, for `TurfView.lastCheckedOutByYou`.
-	 *  Only read for turf with `contactHistory`. */
-	lastCheckedOutByViewer?: ReadonlySet<number>;
 };
 
 /** Campaign id → the badge text volunteers see beside its turf. Sent once per
@@ -628,9 +619,6 @@ export function toTurfView(
 			? { walkReport: { percent: report.percent, dayLabel: campaignDayLabel(report.at) } }
 			: {}),
 		...(hasContactHistory(row) ? { contactHistory: true as const } : {}),
-		...(hasContactHistory(row) && options.lastCheckedOutByViewer?.has(row.turfId)
-			? { lastCheckedOutByYou: true as const }
-			: {}),
 		...(options.showCampaign ? { campaignId: row.campaignId } : {}),
 		...(options.disabledCampaigns?.has(row.campaignId) ? { campaignDisabled: true as const } : {}),
 		...(viewer.isAdmin && row.hiddenAt != null ? { hidden: true as const } : {}),

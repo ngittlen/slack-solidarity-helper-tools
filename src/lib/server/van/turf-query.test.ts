@@ -1,12 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { loadChapterTurfs } from './turf-query.js';
-import { lastCheckedOutBy, latestWalkReports } from './checkout-store.js';
+import { latestWalkReports } from './checkout-store.js';
 
 // Walk reports have their own tests on real SQLite (checkout-store.test.ts);
 // the stubbed db below answers only the select chains this module scripts.
 vi.mock('./checkout-store.js', () => ({
 	latestWalkReports: vi.fn(async () => new Map()),
-	lastCheckedOutBy: vi.fn(async () => []),
 }));
 vi.mock('./contact-sync.js', async (importOriginal) => ({
 	// The real lookup, over no marks: no campaign's pull has run.
@@ -217,25 +216,6 @@ describe('loadChapterTurfs', () => {
 		});
 		expect(turfs.map((t) => t.name)).toEqual(['Far', 'Middle but knocked']);
 		expect(omitted).toBe(3);
-	});
-
-	it('marks knocked turf the viewer checked out last, and asks only about that turf', async () => {
-		const knocked = { knockedBeforeCut: 4, rosterSavedListId: 585052 };
-		vi.mocked(lastCheckedOutBy).mockResolvedValueOnce([1]);
-		const rows = [
-			turfRow({ turfId: 1, name: 'Mine', ...knocked }),
-			turfRow({ turfId: 2, name: 'Theirs', ...knocked }),
-			turfRow({ turfId: 3, name: 'Fresh' }),
-		];
-		const { db } = makeDb([rows, []]);
-		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
-		const byName = Object.fromEntries(turfs.map((t) => [t.name, t]));
-		expect(byName.Mine).toMatchObject({ contactHistory: true, lastCheckedOutByYou: true });
-		expect(byName.Theirs).toMatchObject({ contactHistory: true });
-		expect(byName.Theirs).not.toHaveProperty('lastCheckedOutByYou');
-		expect(byName.Fresh).not.toHaveProperty('lastCheckedOutByYou');
-		// Only striped turf is looked up.
-		expect(vi.mocked(lastCheckedOutBy)).toHaveBeenCalledWith(db, [1, 2], VIEWER.slackUserId);
 	});
 
 	// The reason densest is sorted here and not only in the browser: in a

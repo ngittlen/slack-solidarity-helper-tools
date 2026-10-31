@@ -2,13 +2,7 @@ import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import {
-	claimTurf,
-	endClaim,
-	lastCheckedOutBy,
-	latestWalkReports,
-	sweepExpiredClaims,
-} from './checkout-store.js';
+import { claimTurf, endClaim, latestWalkReports, sweepExpiredClaims } from './checkout-store.js';
 
 // A real in-memory libsql rather than a chained-db fake, for the same reason
 // activity-store.test.ts uses one: the behaviour under test is a collaboration
@@ -214,19 +208,10 @@ describe('claimTurf — turf knocked before its cut', () => {
 		expect(await claim('U_SECOND', true)).toMatchObject({ ok: true });
 	});
 
-	it('does not ask the volunteer who checked it out last', async () => {
+	it('asks the volunteer who checked it out last too', async () => {
 		await insertClaim({ slack_user_id: 'U_FIRST', released_at: CLAIMED });
-		expect(await claim('U_FIRST')).toMatchObject({ ok: true });
-	});
-
-	it('asks the earlier volunteer once someone else has checked it out since', async () => {
-		await insertClaim({ slack_user_id: 'U_FIRST', released_at: CLAIMED });
-		await insertClaim({
-			slack_user_id: 'U_OTHER',
-			claimed_at: '2026-08-21T12:00:00.000Z',
-			released_at: '2026-08-21T13:00:00.000Z',
-		});
 		expect(await claim('U_FIRST')).toMatchObject({ needsAcknowledgement: true });
+		expect(await claim('U_FIRST', true)).toMatchObject({ ok: true });
 	});
 
 	it('gives the refusal for a held turf before asking about knocks', async () => {
@@ -234,16 +219,6 @@ describe('claimTurf — turf knocked before its cut', () => {
 		const result = await claim('U_SECOND');
 		expect(result).toMatchObject({ ok: false, status: 409 });
 		expect(result).not.toHaveProperty('needsAcknowledgement');
-	});
-});
-
-describe('lastCheckedOutBy', () => {
-	it('names only routes whose newest checkout, live or ended, is theirs', async () => {
-		await insertClaim({ slack_user_id: 'U_ME', released_at: CLAIMED });
-		expect(await lastCheckedOutBy(db, [100], 'U_ME')).toEqual([100]);
-		await insertClaim({ slack_user_id: 'U_OTHER', claimed_at: '2026-08-21T12:00:00.000Z' });
-		expect(await lastCheckedOutBy(db, [100], 'U_ME')).toEqual([]);
-		expect(await lastCheckedOutBy(db, [100], 'U_OTHER')).toEqual([100]);
 	});
 });
 
