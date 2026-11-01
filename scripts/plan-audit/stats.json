@@ -1,5 +1,6 @@
 {
 	"pulledAt": "2026-10-31T05:47:30.689Z",
+	"estimated": ["van_turfs_van_held"],
 	"rows": [
 		{
 			"tbl": "__drizzle_migrations",
@@ -420,6 +421,11 @@
 			"tbl": "van_turfs",
 			"idx": "van_turfs_retired_routes",
 			"stat": "67139 33570 1 1"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_van_held",
+			"stat": "600 3"
 		},
 		{
 			"tbl": "van_zip_centroids",

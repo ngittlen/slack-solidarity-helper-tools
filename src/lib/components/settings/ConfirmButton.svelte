@@ -16,6 +16,12 @@
 		/** Drawn in the trigger in place of `label`, which becomes its
 		 *  accessible name. */
 		icon?: Snippet;
+		/** Drawn under `description`, for what one sentence cannot say. */
+		details?: Snippet;
+		/** Called as the dialog opens, to load what `details` shows. */
+		onOpen?: () => void;
+		/** Holds the confirm button, as while `details` loads. */
+		confirmDisabled?: boolean;
 	}
 
 	let {
@@ -26,6 +32,9 @@
 		tone = 'danger',
 		confirmLabel,
 		icon,
+		details,
+		onOpen,
+		confirmDisabled = false,
 	}: Props = $props();
 
 	let open = $state(false);
@@ -48,7 +57,12 @@
 </script>
 
 <div class="delete-confirm">
-	<AlertDialog.Root bind:open>
+	<AlertDialog.Root
+		bind:open
+		onOpenChange={(next) => {
+			if (next) onOpen?.();
+		}}
+	>
 		<AlertDialog.Trigger
 			class={['delete-confirm-trigger', tone === 'neutral' && 'neutral', icon && 'icon']}
 			{disabled}
@@ -67,12 +81,13 @@
 				<AlertDialog.Description class="delete-confirm-description">
 					{description}
 				</AlertDialog.Description>
+				{#if details}{@render details()}{/if}
 				<div class="delete-confirm-actions">
 					<AlertDialog.Cancel class="delete-confirm-cancel">Cancel</AlertDialog.Cancel>
 					<AlertDialog.Action
 						class={['delete-confirm-action', tone === 'neutral' && 'neutral']}
 						onclick={handleConfirm}
-						disabled={pending}
+						disabled={pending || confirmDisabled}
 					>
 						{pending ? 'Working…' : (confirmLabel ?? label)}
 					</AlertDialog.Action>

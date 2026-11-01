@@ -69,7 +69,7 @@ type Db = ReturnType<typeof drizzle>;
 
 export interface TurfQueryInput {
 	chapterId: number;
-	viewer: { slackUserId: string; isAdmin: boolean };
+	viewer: { slackUserId: string; isAdmin: boolean; isModerator?: boolean };
 	/** Where the volunteer is, when we know. Null means name-ordered. */
 	location?: LatLng | null;
 	/** `densest` puts the most doors per area first, ahead of distance — and

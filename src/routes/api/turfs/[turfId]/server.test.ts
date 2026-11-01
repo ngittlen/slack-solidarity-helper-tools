@@ -19,6 +19,12 @@ vi.mock('$lib/server/van/checkout-store.js', () => ({
 	endClaim: mockEndClaim,
 }));
 vi.mock('$lib/server/van/turf-hide-store.js', () => ({ setTurfHidden: mockSetHidden }));
+const mockReleaseVan = vi.hoisted(() => vi.fn());
+const SINCE = '2026-10-01T12:00:00.000Z';
+const SEEN_AT = '2026-10-10T17:30:00.000Z';
+vi.mock('$lib/server/van/turf-van-release-store.js', () => ({
+	releaseVanAssignment: mockReleaseVan,
+}));
 const mockSyncCheck = vi.hoisted(() => vi.fn());
 vi.mock('$lib/server/van/live-contacts.js', () => ({ turfSyncCheck: mockSyncCheck }));
 
@@ -194,6 +200,81 @@ describe('POST /api/turfs/[turfId]', () => {
 		mockSetHidden.mockResolvedValue(false);
 		const admin = { ...VOLUNTEER, slackUserId: 'U_ADMIN', isAdmin: true };
 		expect((await POST(event(admin, { action: 'hide' }))).status).toBe(404);
+	});
+
+	it('refuses a VAN release from a volunteer', async () => {
+		const res = await POST(
+			event(VOLUNTEER, { action: 'release-van', since: SINCE, seenAt: SEEN_AT }),
+		);
+		expect(res.status).toBe(403);
+		expect(mockReleaseVan).not.toHaveBeenCalled();
+	});
+
+	it('lets an admin or a moderator release turf from VAN, under their own name', async () => {
+		mockReleaseVan.mockResolvedValue('released');
+		const admin = { ...VOLUNTEER, slackUserId: 'U_ADMIN', slackUserName: 'Alex', isAdmin: true };
+		const moderator = {
+			...VOLUNTEER,
+			slackUserId: 'U_MOD',
+			slackUserName: 'Mo',
+			isModerator: true,
+		};
+		expect(
+			(await POST(event(admin, { action: 'release-van', since: SINCE, seenAt: SEEN_AT }))).status,
+		).toBe(200);
+		expect(
+			(await POST(event(moderator, { action: 'release-van', since: SINCE, seenAt: SEEN_AT })))
+				.status,
+		).toBe(200);
+		const seen = { since: SINCE, seenAt: new Date(SEEN_AT) };
+		expect(mockReleaseVan.mock.calls.map((c) => [c[1], c[2], c[3]])).toEqual([
+			[100, seen, { id: 'U_ADMIN', name: 'Alex' }],
+			[100, seen, { id: 'U_MOD', name: 'Mo' }],
+		]);
+	});
+
+	it('returns 409 for turf VAN has not handed out, and 404 for turf that is gone', async () => {
+		const admin = { ...VOLUNTEER, slackUserId: 'U_ADMIN', isAdmin: true };
+		mockReleaseVan.mockResolvedValueOnce('not-held').mockResolvedValueOnce('not-found');
+		expect(
+			(await POST(event(admin, { action: 'release-van', since: SINCE, seenAt: SEEN_AT }))).status,
+		).toBe(409);
+		expect(
+			(await POST(event(admin, { action: 'release-van', since: SINCE, seenAt: SEEN_AT }))).status,
+		).toBe(404);
+	});
+
+	it('says why a VAN release was refused', async () => {
+		const admin = { ...VOLUNTEER, slackUserId: 'U_ADMIN', isAdmin: true };
+		const body = { action: 'release-van', since: SINCE, seenAt: SEEN_AT };
+		for (const [result, pattern] of [
+			['changed', /after the page loaded/],
+			['claimed', /claimed this turf here/],
+			['sheet', /Packet Tracker/],
+			['not-held', /doesn't hold this turf/],
+		] as const) {
+			mockReleaseVan.mockResolvedValueOnce(result);
+			const res = await POST(event(admin, body));
+			expect(res.status).toBe(409);
+			expect((await res.json()).error).toMatch(pattern);
+		}
+	});
+
+	it('refuses a VAN release without the times the card saw', async () => {
+		const admin = { ...VOLUNTEER, slackUserId: 'U_ADMIN', isAdmin: true };
+		const release = (over: object) =>
+			POST(event(admin, { action: 'release-van', since: SINCE, seenAt: SEEN_AT, ...over }));
+		expect((await release({ since: undefined })).status).toBe(400);
+		expect((await release({ since: 5 })).status).toBe(400);
+		expect((await release({ seenAt: undefined })).status).toBe(400);
+		expect((await release({ seenAt: 'yesterday' })).status).toBe(400);
+		// A hand-out with no date is sent as null.
+		mockReleaseVan.mockResolvedValueOnce('released');
+		expect((await release({ since: null })).status).toBe(200);
+		expect(mockReleaseVan.mock.calls.at(-1)![2]).toEqual({
+			since: null,
+			seenAt: new Date(SEEN_AT),
+		});
 	});
 
 	it('rejects a non-numeric route id with 400', async () => {

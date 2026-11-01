@@ -461,21 +461,31 @@ function insideClaim(at: number, claims: readonly CatalogClaim[]): boolean {
  * forward is keyed on `vanAssignedAt` rather than on `vanDistributedTo`,
  * because rows written before this rule may carry a name that came from our
  * own volunteer's export.
+ *
+ * An organizer's release (`vanReleasedAt`) ends the hand-out: no export at or
+ * before it counts, and no carried-forward hand-out from before it.
  */
 function outsideAssignment(
 	exports: readonly DatedExport[],
 	claims: readonly CatalogClaim[],
 	prior: VanTurfRow | undefined,
 ): { vanDistributedTo: string | null; vanAssignedAt: string | null } {
-	const latest = exports.filter((e) => !insideClaim(e.at, claims)).at(-1);
+	const releasedAt = prior?.vanReleasedAt ? Date.parse(prior.vanReleasedAt) : null;
+	const latest = exports
+		.filter((e) => !insideClaim(e.at, claims) && (releasedAt === null || e.at > releasedAt))
+		.at(-1);
 	const latestAt = latest ? new Date(latest.at).toISOString() : null;
-	if (latest && latestAt && !(prior?.vanAssignedAt && prior.vanAssignedAt > latestAt)) {
+	const carried =
+		prior?.vanAssignedAt && (releasedAt === null || Date.parse(prior.vanAssignedAt) > releasedAt)
+			? prior.vanAssignedAt
+			: null;
+	if (latest && latestAt && !(carried && carried > latestAt)) {
 		return { vanDistributedTo: latest.names, vanAssignedAt: latestAt };
 	}
-	if (prior?.vanAssignedAt) {
+	if (prior && carried) {
 		return {
 			vanDistributedTo: prior.vanDistributedTo ?? UNKNOWN_CANVASSER,
-			vanAssignedAt: prior.vanAssignedAt,
+			vanAssignedAt: carried,
 		};
 	}
 	return { vanDistributedTo: null, vanAssignedAt: null };

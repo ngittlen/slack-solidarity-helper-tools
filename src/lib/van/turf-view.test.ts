@@ -570,6 +570,45 @@ describe('vanAssignmentBlocks', () => {
 		expect(view.claimable).toBe(false);
 	});
 
+	it('never blocks a hand-out at or before a release', () => {
+		const released = { vanDistributedTo: 'Sam Ito', vanReleasedAt: ago(1) };
+		// No count and a hold of "never": the release still wins.
+		expect(vanAssignmentBlocks(row({ ...released, vanAssignedAt: ago(2) }), NOW, 0)).toBe(false);
+		expect(vanAssignmentBlocks(row({ ...released, vanAssignedAt: ago(1) }), NOW)).toBe(false);
+		expect(vanAssignmentBlocks(row({ ...released, vanAssignedAt: null }), NOW)).toBe(false);
+	});
+
+	it('blocks a hand-out made after a release', () => {
+		const later = row({
+			vanDistributedTo: 'Sam Ito',
+			vanAssignedAt: ago(1),
+			vanReleasedAt: ago(2),
+		});
+		expect(vanAssignmentBlocks(later, NOW)).toBe(true);
+	});
+
+	it('offers staff the release only on turf a VAN hand-out is holding', () => {
+		const MODERATOR = { slackUserId: 'U_MOD', isAdmin: false, isModerator: true };
+		const live = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(2) });
+		const shown = { since: ago(2), seenAt: NOW.toISOString() };
+		expect(toTurfView(live, [], ADMIN, NOW).heldInVan).toEqual(shown);
+		expect(toTurfView(live, [], MODERATOR, NOW).heldInVan).toEqual(shown);
+		expect(toTurfView(live, [], VOLUNTEER, NOW).heldInVan).toBeUndefined();
+
+		const lapsed = row({ ...counted, vanDistributedTo: 'Sam Ito', vanAssignedAt: ago(72) });
+		expect(toTurfView(lapsed, [], ADMIN, NOW).heldInVan).toBeUndefined();
+		// Held by a claim here, or by the campaign's sheet: not VAN's to release.
+		const held = [claim({ slackUserId: 'U_OTHER' })];
+		expect(toTurfView(live, held, ADMIN, NOW).heldInVan).toBeUndefined();
+		expect(
+			toTurfView({ ...live, sheetAssignedTo: 'Ana Ruiz' }, [], ADMIN, NOW).heldInVan,
+		).toBeUndefined();
+		// Retired turf is in no pool to put it back in.
+		expect(
+			toTurfView({ ...live, retiredAt: NOW.toISOString() }, [], ADMIN, NOW).heldInVan,
+		).toBeUndefined();
+	});
+
 	// A lapsed VAN hand-out must not unmask a Packet Tracker row that still
 	// blocks on its own terms.
 	it('falls through to the Packet Tracker when the VAN hold has lapsed', () => {

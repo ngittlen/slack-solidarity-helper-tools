@@ -3,18 +3,22 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
-import { turfAccess } from '$lib/van/access.js';
+import { isTurfStaff, turfAccess } from '$lib/van/access.js';
 import { claimOptionsFor } from '$lib/van/checkout.js';
 import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
 import { setTurfHidden } from '$lib/server/van/turf-hide-store.js';
+import {
+	releaseVanAssignment,
+	type VanReleaseResult,
+} from '$lib/server/van/turf-van-release-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from '$lib/server/van/packet-tracker-live.js';
 import { nudgeContactCount } from '$lib/server/van/contact-live.js';
 import { turfSyncCheck } from '$lib/server/van/live-contacts.js';
 import { recordRequest } from '$lib/van/request-budget.js';
 import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-store.js';
 
-// Claim, release, and complete — and, for admins, hide and unhide — as one
-// handler over an `action` body rather than sibling routes. GET is the
+// Claim, release, and complete — for admins, hide and unhide, and for admins
+// and moderators, release from a VAN hand-out — as one handler over an `action` body rather than sibling routes. GET is the
 // "I synced MiniVAN" check on turf the caller holds.
 //
 // Rate-limited on the same shared budget as the read endpoints, for a reason
@@ -29,9 +33,30 @@ import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-s
 // is consulted on every one, per the plan's Principle I contract:
 // 401 unauthenticated, 403 unauthorized.
 
-type Action = 'claim' | 'release' | 'complete' | 'hide' | 'unhide';
+type Action = 'claim' | 'release' | 'complete' | 'hide' | 'unhide' | 'release-van';
 
-const ACTIONS = new Set<Action>(['claim', 'release', 'complete', 'hide', 'unhide']);
+const ACTIONS = new Set<Action>(['claim', 'release', 'complete', 'hide', 'unhide', 'release-van']);
+
+/** What a refused "Release from VAN" tells the card. */
+const VAN_RELEASE_REFUSALS: Record<
+	Exclude<VanReleaseResult, 'released'>,
+	{ status: number; error: string }
+> = {
+	'not-found': { status: 404, error: 'That turf no longer exists.' },
+	changed: {
+		status: 409,
+		error: 'Someone loaded this list in MiniVAN after the page loaded. It stays held.',
+	},
+	claimed: {
+		status: 409,
+		error: 'A volunteer has claimed this turf here. It is theirs to give back.',
+	},
+	sheet: {
+		status: 409,
+		error: 'The Packet Tracker lists someone on this turf. Clear it there to free the turf.',
+	},
+	'not-held': { status: 409, error: "VAN doesn't hold this turf any more." },
+};
 
 type Guarded =
 	| { ok: true; session: NonNullable<App.Locals['session']>; turfId: number; now: number }
@@ -107,11 +132,17 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	// "Check out this turf" on turf knocked before its cut, past the page's
 	// KnockedClaimDialog. Checked by claimTurf, so the Slack path shares it.
 	let acknowledgedKnocked: unknown;
+	// "Release from VAN": the hand-out time on the card, and when the card was
+	// built (TurfView.heldInVan).
+	let since: unknown;
+	let seenAt: unknown;
 	try {
-		({ action, synced, acknowledgedKnocked } = (await request.json()) as {
+		({ action, synced, acknowledgedKnocked, since, seenAt } = (await request.json()) as {
 			action?: unknown;
 			synced?: unknown;
 			acknowledgedKnocked?: unknown;
+			since?: unknown;
+			seenAt?: unknown;
 		});
 	} catch {
 		return json({ error: 'Malformed request' }, { status: 400 });
@@ -132,6 +163,37 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			new Date(now),
 		);
 		if (!found) return json({ error: 'That turf no longer exists.' }, { status: 404 });
+		return json({ ok: true });
+	}
+
+	if (action === 'release-van') {
+		// The button is only on a staff card; this is what makes that more
+		// than cosmetic.
+		if (!isTurfStaff(session)) {
+			return json({ error: 'Admins and moderators only' }, { status: 403 });
+		}
+		if (
+			(since !== null && typeof since !== 'string') ||
+			typeof seenAt !== 'string' ||
+			Number.isNaN(Date.parse(seenAt))
+		) {
+			return json({ error: 'Malformed request' }, { status: 400 });
+		}
+		// The time limit the card applies, so the server releases exactly the
+		// turf the card offers it on.
+		const { vanAssignmentTtlHours } = claimOptionsFor(await loadSettings(db), session);
+		const result = await releaseVanAssignment(
+			db,
+			turfId,
+			{ since, seenAt: new Date(seenAt) },
+			{ id: session.slackUserId, name: session.slackUserName },
+			new Date(now),
+			vanAssignmentTtlHours,
+		);
+		if (result !== 'released') {
+			const { status, error } = VAN_RELEASE_REFUSALS[result];
+			return json({ error }, { status });
+		}
 		return json({ ok: true });
 	}
 

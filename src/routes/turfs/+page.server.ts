@@ -413,7 +413,11 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 	const [{ turfs, total, campaignBadges, campaignTotals }, canvassEvents] = await Promise.all([
 		loadChapterTurfs(db, {
 			chapterId: chapter.chapterId,
-			viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+			viewer: {
+				slackUserId: session.slackUserId,
+				isAdmin: session.isAdmin,
+				isModerator: session.isModerator,
+			},
 			location,
 			sort,
 			includeHeldByViewer: true,

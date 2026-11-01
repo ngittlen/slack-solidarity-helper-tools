@@ -709,6 +709,47 @@ describe('planCatalogSync', () => {
 			expect(result.upserts[0]).toMatchObject({ vanDistributedTo: null, vanAssignedAt: null });
 		});
 
+		it('reads no export at or before a release as a hand-out', () => {
+			const result = plan({
+				existing: [existingRow({ vanReleasedAt: '2026-09-23T10:00:00.000Z' })],
+			});
+			expect(result.upserts[0]).toMatchObject({ vanDistributedTo: null, vanAssignedAt: null });
+		});
+
+		// A sync that read the row before the release writes the old hand-out
+		// back; the next one must not carry it forward.
+		it('drops a hand-out carried from before a release', () => {
+			const result = plan({
+				minivanExports: [],
+				existing: [
+					existingRow({
+						vanDistributedTo: 'Dana Ruiz',
+						vanAssignedAt: '2026-09-22T15:52:28.150Z',
+						vanReleasedAt: '2026-09-23T10:00:00.000Z',
+					}),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({ vanDistributedTo: null, vanAssignedAt: null });
+		});
+
+		it('holds the turf again for an export after a release', () => {
+			const result = plan({
+				minivanExports: [
+					loaded,
+					exportOf({
+						minivanExportId: 9,
+						dateCreated: '2026-09-26T10:00:00Z',
+						canvassers: [{ firstName: 'Sam', lastName: 'Ito' }],
+					}),
+				],
+				existing: [existingRow({ vanReleasedAt: '2026-09-23T10:00:00.000Z' })],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Sam Ito',
+				vanAssignedAt: '2026-09-26T14:00:00.000Z',
+			});
+		});
+
 		it('ignores an export it cannot date', () => {
 			const result = plan({ minivanExports: [exportOf({ dateCreated: null })] });
 			expect(result.upserts[0]!.vanAssignedAt).toBeNull();
