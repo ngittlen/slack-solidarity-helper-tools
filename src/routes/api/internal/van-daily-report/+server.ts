@@ -5,8 +5,8 @@ import { postAlert } from '$lib/server/slack.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
 import { sheetsClient, sheetsServiceAccountEmail } from '$lib/server/google-env.js';
-import { vanClientFor } from '$lib/server/van-env.js';
 import { loadCampaign } from '$lib/server/van/campaigns.js';
+import { vanFolderNames } from '$lib/server/van/folder-names.js';
 import { runContactStage } from '$lib/server/van/contact-live.js';
 import {
 	dailyReportCampaigns,
@@ -79,12 +79,7 @@ export const POST: RequestHandler = async ({ url }) => {
 	const deps: DailyReportDeps = {
 		db,
 		sheets: sheetsClient(),
-		folderNames: async (campaign) => {
-			const configured = vanClientFor(campaign);
-			if (!configured.ok) throw new Error(configured.error);
-			const folders = await configured.client.folders();
-			return new Map(folders.map((f) => [f.folderId, f.name]));
-		},
+		folderNames: vanFolderNames,
 		refreshContacts: async (campaign) => {
 			const result = await runContactStage(db, campaign, {
 				timeBudgetMs: CONTACT_REFRESH_BUDGET_MS,

@@ -1165,6 +1165,17 @@ export const vanTurfs = sqliteTable(
 		/** The display name of the admin who hid it, for /turfs/organizer. Their
 		 *  id is in the log line setTurfHidden writes. */
 		hiddenBy: text('hidden_by'),
+		/** When an admin or moderator released this turf from an outside VAN
+		 *  hand-out, from its card on /turfs. Exports at or before it are not
+		 *  read as anyone holding the turf, by the catalog sync or by
+		 *  vanAssignmentBlocks; a later export holds it again, because that is
+		 *  someone loading the list after the release. NOT part of the catalog
+		 *  upsert, so a sync never clears it. The time of the hand-out released,
+		 *  not of the click (turf-van-release-store.ts). */
+		vanReleasedAt: text('van_released_at'),
+		/** The display name of whoever released it. Their id is in the log line
+		 *  releaseVanAssignment writes. */
+		vanReleasedBy: text('van_released_by'),
 		/** Stamped, never deleted, so a live checkout pointing at a vanished
 		 *  route still renders. */
 		retiredAt: text('retired_at'),
@@ -1196,6 +1207,11 @@ export const vanTurfs = sqliteTable(
 		index('van_turfs_live_folder')
 			.on(table.campaignId, table.folderId, table.retiredAt)
 			.where(sql`${table.retiredAt} IS NULL`),
+		// Partial: turf handed out in VAN, a small share of live turf, for the
+		// VAN release's count on the organizer page (turf-van-release-store.ts).
+		index('van_turfs_van_held')
+			.on(table.vanDistributedTo)
+			.where(sql`${table.vanDistributedTo} IS NOT NULL`),
 		// Partial: the few hidden turfs, for the organizer page.
 		index('van_turfs_hidden')
 			.on(table.hiddenAt)

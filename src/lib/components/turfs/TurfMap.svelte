@@ -993,7 +993,8 @@
 		const selected = turf.turfId === selectedId ? ' is-selected' : '';
 		const noList = turf.noListNumber ? ' is-no-list' : '';
 		const knocked = turf.contactHistory ? ' is-knocked' : '';
-		return `turf turf-${turf.status} shade-${shade}${noList}${knocked}${selected}`;
+		const inVan = turf.heldInVan ? ' is-held-in-van' : '';
+		return `turf turf-${turf.status} shade-${shade}${noList}${knocked}${inVan}${selected}`;
 	}
 
 	function ariaLabelFor(turf: MappableTurf): string {
@@ -1007,9 +1008,10 @@
 				: '';
 		const noList = turf.noListNumber ? ', no list number yet' : '';
 		const knocked = turf.contactHistory ? `, ${KNOCKED_LABEL}` : '';
+		const inVan = turf.heldInVan ? ', held in VAN' : '';
 		const badge = turf.campaignId === undefined ? undefined : campaignBadges[turf.campaignId];
 		const campaign = badge ? `, ${badge}` : '';
-		return `${turf.name}${campaign}, ${statusLabel(status)}${noList}${doors}${knocked}`;
+		return `${turf.name}${campaign}, ${statusLabel(status)}${inVan}${noList}${doors}${knocked}`;
 	}
 </script>
 
@@ -1819,6 +1821,15 @@
 	.turf-checked-out circle {
 		fill: var(--color-warm-dark);
 		stroke: var(--color-warm-dark);
+	}
+
+	/* Checked out only by a MiniVAN load outside this site, which staff can
+	   release from the card. Admins and moderators only: nobody else is sent
+	   `heldInVan`. Red fill, where the no-list red is an outline on blue. */
+	.turf-checked-out.is-held-in-van polygon,
+	.turf-checked-out.is-held-in-van circle {
+		fill: var(--color-error);
+		stroke: var(--color-error);
 	}
 
 	/* The door ramp. Hue and opacity move together, from a deep purple-blue
