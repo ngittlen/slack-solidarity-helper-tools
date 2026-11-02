@@ -6,6 +6,7 @@ import {
 	type RsvpRecord,
 	type TimeslotLink,
 } from './attendee-sync.js';
+import { normalizeAttendance } from './attendees.js';
 import type { MobilizeApiConfig, MobilizeAttendance } from './mobilize.js';
 
 const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 44679 };
@@ -182,7 +183,7 @@ function run(
 	ledger: AttendeeLedger,
 	apply = false,
 	links: TimeslotLink[] = [LINK],
-	over: { writeDeadline?: number } = {},
+	over: Partial<Parameters<typeof runAttendeeSync>[1]> = {},
 ) {
 	return runAttendeeSync(
 		links,
@@ -1064,5 +1065,327 @@ describe('the run stops on its time budget', () => {
 		const report = await run(ledgerWith());
 
 		expect(report.incomplete).toBe(false);
+	});
+});
+
+describe('runAttendeeSync given the changed signups', () => {
+	const changed = (over: Partial<MobilizeAttendance> = {}) =>
+		normalizeAttendance(attendance(over))!;
+	const mobilizeReads = (spy: ReturnType<typeof mockApis>) =>
+		spy.mock.calls.filter(([url]) => String(url).includes('api.mobilize.us')).length;
+	const rsvpReads = (spy: ReturnType<typeof mockApis>) =>
+		spy.mock.calls.filter(([url]) => String(url).includes('/v1/event_rsvps')).length;
+
+	it('mirrors them and reads no event', async () => {
+		const spy = mockApis({ attendances: [], userFound: true });
+
+		const report = await run(ledgerWith(), false, [LINK], { changed: [changed()] });
+
+		expect(mobilizeReads(spy)).toBe(0);
+		expect(report.events).toBe(0);
+		expect(report.participations).toBe(1);
+		expect(report.rsvpsCreated).toBe(1);
+	});
+
+	it('names the event of a changed signup on a shift whose session went unlisted', async () => {
+		mockApis({ attendances: [], userFound: true });
+
+		const report = await run(ledgerWith(), false, [LINK], {
+			changed: [changed({ timeslot: { id: 1 } })],
+			unlinkedTimeslots: new Map([[1, 4242]]),
+		});
+
+		expect(report.participations).toBe(0);
+		expect(report.retryEvents).toEqual([4242]);
+	});
+
+	it('drops a changed signup on a shift no link names', async () => {
+		mockApis({ attendances: [], userFound: true });
+
+		const report = await run(ledgerWith(), false, [LINK], {
+			changed: [changed({ timeslot: { id: 1 } })],
+		});
+
+		expect(report.participations).toBe(0);
+	});
+
+	// Nothing changed on it, and the ledger may have nothing there — signups
+	// skipped for want of contact details never reach it — but its cap is
+	// still checked.
+	it('checks every capped session inside the horizon', async () => {
+		const spy = mockApis({
+			attendances: [],
+			sessionRsvps: [
+				{ id: 1, user_id: 1, is_attending: 'yes' },
+				{ id: 2, user_id: 2, is_attending: 'yes' },
+			],
+		});
+		const capped = { ...LINK, sessionCapacity: 1, startsAt: Date.now() + 3600_000 };
+		const mirrored: RsvpRecord = {
+			mobilizeAttendanceId: 1,
+			solidarityRsvpId: 500,
+			solidarityUserId: 999,
+			solidaritySessionId: LINK.solidaritySessionId,
+			status: 'REGISTERED',
+			attended: false,
+			modifiedDate: 1785000000,
+		};
+
+		const report = await run(ledgerWith(), false, [capped], {
+			changed: [],
+			windowEnd: Date.now() + 2 * 3600_000,
+		});
+		expect(rsvpReads(spy)).toBe(1);
+		expect(report.overCapacity).toHaveLength(1);
+
+		spy.mockClear();
+		await run(ledgerWith([mirrored]), false, [capped], {
+			changed: [],
+			windowEnd: Date.now() + 1800_000,
+		});
+		expect(rsvpReads(spy)).toBe(0);
+	});
+
+	it('names the events of signups it failed to write, for the next run to read', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string | URL, init?: RequestInit) => {
+				const bad = init?.method === 'POST' && String(url).includes('/v1/users');
+				const body = bad ? { error: 'Failed to save user' } : { data: [] };
+				return {
+					ok: !bad,
+					status: bad ? 422 : 200,
+					json: async () => body,
+					text: async () => JSON.stringify(body),
+					headers: new Headers(),
+				} as unknown as Response;
+			}),
+		);
+
+		const report = await run(ledgerWith(), true, [LINK], {
+			changed: [
+				changed({ id: 1, modified_date: 1785000500 }),
+				changed({ id: 2, modified_date: 1785000100 }),
+			],
+		});
+
+		expect(report.failed).toBe(2);
+		expect(report.retryEvents).toEqual([LINK.mobilizeEventId]);
+		expect(report.shiftsWritten).toBe(0);
+	});
+
+	it('names the event of a signup no chapter could be found for', async () => {
+		mockApis({ attendances: [] });
+		const report = await runAttendeeSync(
+			[{ ...LINK, eventChapterId: null }],
+			{
+				api: API,
+				solidarityToken: 't',
+				apply: true,
+				maxNewProfiles: 1000,
+				pauseMs: 0,
+				changed: [
+					changed({
+						person: {
+							given_name: 'A',
+							family_name: 'B',
+							email_addresses: [{ primary: true, address: 'a@example.com' }],
+							phone_numbers: [],
+							postal_addresses: [],
+						},
+					}),
+				],
+			},
+			ledgerWith(),
+			new Map(),
+			null,
+		);
+		expect(report.failed).toBe(1);
+		expect(report.retryEvents).toEqual([LINK.mobilizeEventId]);
+	});
+
+	// A signup that does not change again is in no later read of changes.
+	it('reads whole the events it is told failed before, once each signup', async () => {
+		const spy = mockApis({ attendances: [attendance({ id: 7 })], userFound: true });
+		const other = { ...LINK, mobilizeTimeslotId: 99, mobilizeEventId: 4242 };
+
+		const report = await run(ledgerWith(), false, [LINK, other], {
+			changed: [changed({ id: 7 })],
+			retryEvents: [LINK.mobilizeEventId, 555],
+		});
+
+		const reads = spy.mock.calls.map(([url]) => String(url)).filter((u) => u.includes('mobilize'));
+		expect(reads).toEqual([expect.stringContaining(`/events/${LINK.mobilizeEventId}/attendances`)]);
+		expect(report.events).toBe(1);
+		expect(report.participations).toBe(1);
+	});
+
+	// Two Mobilize timeslots can mirror one Solidarity session.
+	it('counts the Solidarity sessions it mirrored a signup on', async () => {
+		mockApis({ attendances: [], userFound: true });
+		const twin = { ...LINK, mobilizeTimeslotId: 99, mobilizeEventId: 4242 };
+		const report = await run(ledgerWith(), true, [LINK, twin], {
+			changed: [changed({ id: 1 }), changed({ id: 2, timeslot: { id: 99 } })],
+		});
+		expect(report.shiftsWritten).toBe(1);
+	});
+});
+
+describe('runAttendeeSync given the changed signups: what stays settled', () => {
+	const changed = (over: Partial<MobilizeAttendance> = {}) =>
+		normalizeAttendance(attendance(over))!;
+
+	// The nightly read of every event takes it: a failure weeks out is not
+	// read, failed and alerted on every half hour.
+	it('reads no retry without a shift inside the window, and lets it go', async () => {
+		const spy = mockApis({ attendances: [], userFound: true });
+		const far = { ...LINK, startsAt: Date.now() + 21 * 86_400_000 };
+
+		const report = await run(ledgerWith(), false, [far], {
+			changed: [],
+			retryEvents: [LINK.mobilizeEventId, 4242],
+			windowEnd: Date.now() + 4.5 * 3600_000,
+		});
+
+		expect(spy.mock.calls.filter(([url]) => String(url).includes('mobilize'))).toEqual([]);
+		expect(report.retryEvents).toEqual([]);
+	});
+
+	it('reads a retry with a shift inside the window', async () => {
+		mockApis({ attendances: [], userFound: true });
+		const report = await run(ledgerWith(), false, [LINK], {
+			changed: [],
+			retryEvents: [LINK.mobilizeEventId],
+			windowEnd: Date.now() + 4.5 * 3600_000,
+		});
+		expect(report.events).toBe(1);
+	});
+
+	// The nightly read of every event too: a session missing then does not
+	// lose the signup until the night after.
+	it('names the event of a signup on a shift with no session, reading every event', async () => {
+		mockApis({ attendances: [attendance({ id: 8, timeslot: { id: 1 } })], userFound: true });
+		const report = await run(ledgerWith(), false, [LINK], {
+			unlinkedTimeslots: new Map([[1, LINK.mobilizeEventId]]),
+		});
+		expect(report.retryEvents).toEqual([LINK.mobilizeEventId]);
+	});
+
+	it('reports no shift past the horizon as over capacity', async () => {
+		mockApis({
+			attendances: [],
+			userFound: true,
+			sessionRsvps: [
+				{ id: 1, user_id: 1, is_attending: 'yes' },
+				{ id: 2, user_id: 2, is_attending: 'yes' },
+			],
+		});
+		const far = { ...LINK, sessionCapacity: 1, startsAt: Date.now() + 3 * 86_400_000 };
+		const report = await run(ledgerWith(), false, [far], {
+			changed: [changed()],
+			windowEnd: Date.now() + 4.5 * 3600_000,
+		});
+		expect(report.overCapacity).toEqual([]);
+	});
+
+	// Written blind, a signup on a full shift would be seated, not waitlisted.
+	it('writes nothing on a session whose RSVPs it could not read, and retries its event', async () => {
+		const spy = vi.fn(async (url: string | URL, init?: RequestInit) => {
+			const href = String(url);
+			const bad = href.includes('/v1/event_rsvps') && (init?.method ?? 'GET') === 'GET';
+			const body = bad ? { error: 'boom' } : { data: [{ id: 999 }] };
+			return {
+				ok: !bad,
+				status: bad ? 500 : 200,
+				json: async () => body,
+				text: async () => JSON.stringify(body),
+				headers: new Headers(),
+			} as unknown as Response;
+		});
+		vi.stubGlobal('fetch', spy);
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const report = await run(ledgerWith(), true, [LINK], { changed: [changed()] });
+
+		const writes = spy.mock.calls.filter(([, init]) => init?.method === 'POST');
+		expect(writes).toEqual([]);
+		expect(report.rsvpsCreated).toBe(0);
+		expect(report.retryEvents).toEqual([LINK.mobilizeEventId]);
+		vi.restoreAllMocks();
+	});
+
+	it('reads a retried event again while a shift on it has no session', async () => {
+		mockApis({ attendances: [attendance({ id: 8, timeslot: { id: 1 } })], userFound: true });
+
+		const report = await run(ledgerWith(), false, [LINK], {
+			changed: [],
+			retryEvents: [LINK.mobilizeEventId],
+			unlinkedTimeslots: new Map([[1, LINK.mobilizeEventId]]),
+		});
+
+		expect(report.events).toBe(1);
+		expect(report.retryEvents).toEqual([LINK.mobilizeEventId]);
+	});
+
+	it('counts the shift an RSVP reached, though the ledger write after it failed', async () => {
+		mockApis({ attendances: [], userFound: true });
+		const ledger = ledgerWith();
+		ledger.recordRsvp = async () => {
+			throw new Error('ledger down');
+		};
+
+		const report = await run(ledger, true, [LINK], { changed: [changed()] });
+
+		expect(report.rsvpsCreated).toBe(1);
+		expect(report.failed).toBe(1);
+		expect(report.shiftsWritten).toBe(1);
+	});
+
+	it('counts no shift whose RSVP already said what Mobilize does', async () => {
+		mockApis({
+			attendances: [],
+			userFound: true,
+			sessionRsvps: [{ id: 500, user_id: 999, is_attending: 'yes' }],
+		});
+		const prior: RsvpRecord = {
+			mobilizeAttendanceId: 1,
+			solidarityRsvpId: 500,
+			solidarityUserId: 999,
+			solidaritySessionId: LINK.solidaritySessionId,
+			status: 'REGISTERED',
+			attended: false,
+			modifiedDate: 1785000000,
+		};
+		const report = await run(ledgerWith([prior]), true, [LINK], {
+			changed: [changed({ modified_date: 1785009999 })],
+		});
+		expect(report.rsvpsCreated + report.rsvpsUpdated).toBe(0);
+		expect(report.shiftsWritten).toBe(0);
+	});
+});
+
+describe('runAttendeeSync events it could not read', () => {
+	it('counts them apart from failed signups', async () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => {
+				const body = { error: 'boom' };
+				return {
+					ok: false,
+					status: 500,
+					json: async () => body,
+					text: async () => JSON.stringify(body),
+					headers: new Headers(),
+				} as unknown as Response;
+			}),
+		);
+
+		const report = await run(ledgerWith());
+
+		expect(report.eventsUnread).toBe(1);
+		// Read whole by the next run, like the event of a failed signup.
+		expect(report.retryEvents).toEqual([LINK.mobilizeEventId]);
+		vi.restoreAllMocks();
 	});
 });

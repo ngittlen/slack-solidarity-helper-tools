@@ -202,3 +202,44 @@ export async function loadTurfCentre(
 	}
 	return { lat: Math.round(lat * 10) / 10, lng: Math.round(lng * 10) / 10 };
 }
+
+/** How long a machine reuses a centre it worked out. It is rounded to ~10 km
+ *  and moves only when turf is cut somewhere new, and working it out reads
+ *  every live turf, on every signed-out visit to /turfs. */
+export const TURF_CENTRE_TTL_MS = 10 * 60_000;
+
+const centres = new Map<string, { at: number; centre: Promise<LatLng | null> }>();
+
+/** loadTurfCentre, reused for TURF_CENTRE_TTL_MS per set of chapters. Visits
+ *  arriving together share one read. */
+export function cachedTurfCentre(
+	db: Db,
+	turfChapterIds: readonly number[] | null,
+	now = Date.now(),
+): Promise<LatLng | null> {
+	const key = turfChapterIds === null ? 'all' : [...turfChapterIds].sort((a, b) => a - b).join(',');
+	const cached = centres.get(key);
+	if (cached && now - cached.at < TURF_CENTRE_TTL_MS) return cached.centre;
+	// Expired ones go as a new one comes: the chapters /turfs offers change,
+	// and a key no visit asks for again would otherwise stay for good.
+	for (const [old, entry] of centres) {
+		if (now - entry.at >= TURF_CENTRE_TTL_MS) centres.delete(old);
+	}
+	const centre = loadTurfCentre(db, turfChapterIds);
+	centres.set(key, { at: now, centre });
+	// A failed read is not kept: the next visit tries again.
+	centre.catch(() => {
+		if (centres.get(key)?.centre === centre) centres.delete(key);
+	});
+	return centre;
+}
+
+/** Forget every cached centre. For tests. */
+export function forgetTurfCentres(): void {
+	centres.clear();
+}
+
+/** How many centres are cached. For tests. */
+export function cachedTurfCentreCount(): number {
+	return centres.size;
+}

@@ -98,6 +98,35 @@ export interface AttendeeSyncConfig {
 	writeDeadline?: number;
 	pauseMs?: number;
 	log?: (message: string) => void;
+	/**
+	 * The signups Mobilize changed since the last run that mirrored everything,
+	 * already read. Given, the run considers only these, and reads no event:
+	 * one request in place of one per event. Signups on shifts no link names
+	 * are dropped, as they are from an event's.
+	 */
+	changed?: readonly MobilizeParticipation[];
+	/**
+	 * Mobilize events to read whole as well, on a run given `changed`: those
+	 * an earlier run could not read, or had a signup on it could not write. A
+	 * signup that does not change again is in no later read of changes, so
+	 * its event is read whole until the signup is settled — while the event
+	 * has a shift inside `windowEnd`, as a read of every event in the window
+	 * would. One past it waits for the nightly read of every event.
+	 */
+	retryEvents?: readonly number[];
+	/**
+	 * Timeslots paired with a Solidarity session this run could not find, by
+	 * timeslot id, each to its Mobilize event. A signup on one is dropped with
+	 * no link, as any is; its event goes on `retryEvents`, so a session
+	 * missing for one run does not lose the signup.
+	 */
+	unlinkedTimeslots?: ReadonlyMap<number, number>;
+	/**
+	 * Epoch ms: the end of the caller's window, on a run given `changed`,
+	 * which takes every upcoming shift. The over-capacity check and the retry
+	 * reads stay on shifts starting before it. Omit for every upcoming one.
+	 */
+	windowEnd?: number;
 }
 
 export interface AttendeeSyncReport {
@@ -105,7 +134,12 @@ export interface AttendeeSyncReport {
 	events: number;
 	/** Events Mobilize no longer has: their pairings were dropped, not failed. */
 	eventsGone: number;
+	/** Shifts in scope: the window's, or every upcoming one on a run given
+	 *  `changed`. */
 	timeslots: number;
+	/** Solidarity sessions (shifts) this run created or updated an RSVP on, or
+	 *  recorded an attendance on. */
+	shiftsWritten: number;
 	participations: number;
 	rsvpsCreated: number;
 	rsvpsUpdated: number;
@@ -196,6 +230,12 @@ export interface AttendeeSyncReport {
 	/** Mobilize answered 403 — the API key is rejected or lacks access. */
 	authFailed: boolean;
 	failed: number;
+	/** Events whose signups could not be read. Counted in `failed` too, and
+	 *  on `retryEvents`. */
+	eventsUnread: number;
+	/** Mobilize events this run could not read, or had a signup on it could
+	 *  not write, for a later run to read whole (`retryEvents`). */
+	retryEvents: number[];
 	errors: string[];
 }
 
@@ -204,6 +244,7 @@ function emptyReport(): AttendeeSyncReport {
 		events: 0,
 		eventsGone: 0,
 		timeslots: 0,
+		shiftsWritten: 0,
 		participations: 0,
 		rsvpsCreated: 0,
 		rsvpsUpdated: 0,
@@ -225,6 +266,8 @@ function emptyReport(): AttendeeSyncReport {
 		skippedUnknownStatus: 0,
 		authFailed: false,
 		failed: 0,
+		eventsUnread: 0,
+		retryEvents: [],
 		incomplete: false,
 		pending: 0,
 		errors: [],
@@ -376,20 +419,52 @@ export async function runAttendeeSync(
 	report.timeslots = linksByTimeslot.size;
 
 	// Collect first so the new-profile guardrail can be evaluated before any write.
+	// Once each: a signup both changed and on an event read for a retry is
+	// one signup.
 	const pending: { link: TimeslotLink; participation: MobilizeParticipation }[] = [];
-	for (const eventId of eventIds) {
+	const retryEvents = new Set<number>();
+	const shiftsWritten = new Set<number>();
+	/** The report, with what the sets gathered: on every way out. */
+	const finish = () => {
+		report.retryEvents = [...retryEvents];
+		report.shiftsWritten = shiftsWritten.size;
+		return report;
+	};
+	const collected = new Set<number>();
+	const collect = (participation: MobilizeParticipation) => {
+		const link = linksByTimeslot.get(participation.timeslotId);
+		if (!link) {
+			// On a shift whose session went unlisted: its event is read again,
+			// however the signup came.
+			const unlinkedEvent = config.unlinkedTimeslots?.get(participation.timeslotId);
+			if (unlinkedEvent !== undefined) retryEvents.add(unlinkedEvent);
+			return;
+		}
+		if (collected.has(participation.id)) return;
+		collected.add(participation.id);
+		pending.push({ link, participation });
+	};
+	for (const participation of config.changed ?? []) collect(participation);
+	const retrying = new Set(config.retryEvents ?? []);
+	// Only a retry with a shift inside the window is read; the rest wait for
+	// the nightly read of every event, which takes them all.
+	const inWindow = (startsAt: number) =>
+		config.windowEnd === undefined || startsAt <= config.windowEnd;
+	const reachable = new Set(
+		links.filter((l) => inWindow(l.startsAt)).map((l) => l.mobilizeEventId),
+	);
+	for (const eventId of config.changed
+		? eventIds.filter((id) => retrying.has(id) && reachable.has(id))
+		: eventIds) {
 		try {
 			const participations = await fetchEventParticipations(eventId, config.api);
 			report.events++;
-			for (const participation of participations) {
-				const link = linksByTimeslot.get(participation.timeslotId);
-				if (link) pending.push({ link, participation });
-			}
+			for (const participation of participations) collect(participation);
 		} catch (err) {
 			if (err instanceof MobilizeError && err.status === 403) {
 				report.authFailed = true;
 				report.errors.push('Mobilize rejected the API key (403) — check MOBILIZE_API_KEY');
-				return report;
+				return finish();
 			}
 			// A 404 here is almost always an event deleted in Mobilize while our
 			// pairings for its shifts stayed behind. Left as a failure it recurs on
@@ -408,6 +483,8 @@ export async function runAttendeeSync(
 				}
 			}
 			report.failed++;
+			report.eventsUnread++;
+			retryEvents.add(eventId);
 			report.errors.push(`event ${eventId}: ${err instanceof Error ? err.message : err}`);
 		}
 		await pause();
@@ -476,12 +553,23 @@ export async function runAttendeeSync(
 	// session whose every signup is already mirrored has nothing to compare
 	// against, and each read spends one of Solidarity's 60 requests per 30s —
 	// on a quiet run, every one of them.
+	//
+	// A run given only the changed signups has not seen the rest, so it reads
+	// every capped session it takes: those a read of every event would find
+	// signups on, and the few with none.
+	const capped = (link: TimeslotLink) =>
+		link.sessionCapacity !== null && link.startsAt > runStartedAt && inWindow(link.startsAt);
 	const sessionsToRead = new Set<number>();
+	/** Sessions whose RSVPs could not be read: their seats taken and who
+	 *  already holds one are unknown, so nothing is written there this run. */
+	const unreadSessions = new Set<number>();
 	for (const { link, participation } of pending) {
-		const capped = link.sessionCapacity !== null && link.startsAt > runStartedAt;
-		if (capped || skipReason(participation, known.get(participation.id)) === null) {
+		if (capped(link) || skipReason(participation, known.get(participation.id)) === null) {
 			sessionsToRead.add(link.solidaritySessionId);
 		}
+	}
+	if (config.changed) {
+		for (const link of links.filter(capped)) sessionsToRead.add(link.solidaritySessionId);
 	}
 	for (const sessionId of sessionsToRead) {
 		try {
@@ -499,7 +587,10 @@ export async function runAttendeeSync(
 			// and reporting those meant alerting about a picnic that happened
 			// yesterday — where nobody is signing up any more, and the fix the message
 			// asks for (raise the cap, move people) is not a thing anyone can do.
-			const upcoming = event === undefined || event.startsAt > runStartedAt;
+			// And only the horizon's: a run given only the changes reads a session
+			// past it to write a signup there, not to check its cap.
+			const upcoming =
+				event === undefined || (event.startsAt > runStartedAt && inWindow(event.startsAt));
 			if (capacity !== null && attending > capacity && upcoming) {
 				report.overCapacity.push({
 					solidaritySessionId: sessionId,
@@ -511,11 +602,18 @@ export async function runAttendeeSync(
 			}
 		} catch (err) {
 			report.failed++;
+			unreadSessions.add(sessionId);
 			report.errors.push(`rsvp list ${sessionId}: ${err instanceof Error ? err.message : err}`);
 		}
 	}
 
 	let projectedNewProfiles = 0;
+	/** A signup not written: counted, and its event read again next run. */
+	const failSignup = (link: TimeslotLink, error?: string) => {
+		report.failed++;
+		retryEvents.add(link.mobilizeEventId);
+		if (error !== undefined) report.errors.push(error);
+	};
 
 	for (const [index, { link, participation }] of pending.entries()) {
 		// Between signups, never mid-write: a partial write would leave the
@@ -536,6 +634,15 @@ export async function runAttendeeSync(
 		else if (skip === 'no-contact') report.skippedNoContact++;
 		else if (skip === 'unchanged') report.unchanged++;
 		if (skip !== null) continue;
+		if (unreadSessions.has(link.solidaritySessionId)) {
+			// Written blind, a signup on a full shift is seated, not waitlisted.
+			// Left for the next run, which reads its event again.
+			failSignup(link);
+			continue;
+		}
+		// What this signup writes to Solidarity, to tell a shift written to from
+		// one whose RSVP already said so.
+		const writesBefore = report.rsvpsCreated + report.rsvpsUpdated + report.attendancesRecorded;
 
 		// skipReason has checked both: a status it mirrors, and an email or phone.
 		const attending = attendingFor(participation.status)!;
@@ -574,7 +681,7 @@ export async function runAttendeeSync(
 							'stopping. A spike usually means matching is failing, which fills the CRM with ' +
 							'duplicate people. Review, then re-run with a raised limit if it is genuine.';
 						log(report.abortedReason);
-						return report;
+						return finish();
 					}
 					if (!config.apply) {
 						// Don't skip the rest: a dry run must still project the RSVP
@@ -594,8 +701,7 @@ export async function runAttendeeSync(
 						participation.zipcode,
 					);
 					if (chapterId === null) {
-						report.failed++;
-						report.errors.push(`${refFor(participation)}: no chapter could be resolved`);
+						failSignup(link, `${refFor(participation)}: no chapter could be resolved`);
 						continue;
 					}
 					const person = {
@@ -651,7 +757,7 @@ export async function runAttendeeSync(
 			}
 
 			if (userId === null) {
-				report.failed++;
+				failSignup(link);
 				continue;
 			}
 
@@ -765,13 +871,18 @@ export async function runAttendeeSync(
 			if (err instanceof MobilizeError && err.status === 403) {
 				report.authFailed = true;
 				report.errors.push('Mobilize rejected the API key (403) — check MOBILIZE_API_KEY');
-				return report;
+				return finish();
 			}
-			report.failed++;
-			report.errors.push(`${refFor(participation)}: ${err instanceof Error ? err.message : err}`);
+			failSignup(link, `${refFor(participation)}: ${err instanceof Error ? err.message : err}`);
+		} finally {
+			// Counted by what reached Solidarity, whatever failed after it, so
+			// the shifts agree with the RSVPs counted beside them.
+			if (report.rsvpsCreated + report.rsvpsUpdated + report.attendancesRecorded > writesBefore) {
+				shiftsWritten.add(link.solidaritySessionId);
+			}
 		}
 		await pause();
 	}
 
-	return report;
+	return finish();
 }

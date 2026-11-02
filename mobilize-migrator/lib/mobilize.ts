@@ -499,6 +499,18 @@ export interface MobilizeAttendance {
 	modified_date?: number;
 }
 
+/** Every signup in the organization, on any event, that Mobilize changed at
+ *  or after `since` (unix seconds): new, cancelled, checked in or edited. */
+export async function listAttendancesChangedSince(
+	config: MobilizeApiConfig,
+	since: number,
+): Promise<MobilizeAttendance[]> {
+	return collect<MobilizeAttendance>(
+		config,
+		`${BASE}/organizations/${config.orgId}/attendances?updated_since=${Math.floor(since)}&per_page=100`,
+	);
+}
+
 /** Every signup on one event, across all its timeslots. */
 export async function listEventAttendances(
 	config: MobilizeApiConfig,

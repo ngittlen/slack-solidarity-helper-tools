@@ -1,5 +1,6 @@
 // What the plan audit counts as a problem: a statement whose plan, under
-// production's planner statistics, reads a whole large table. See run.ts.
+// production's planner statistics, reads a whole large table, or builds an
+// automatic index on a table of any size. See run.ts.
 //
 // No `$` imports: the runner and the vitest setup both load this.
 
@@ -83,6 +84,39 @@ export function aliases(sql: string): Map<string, string> {
 	return found;
 }
 
+/** The names a statement gives to what is not a table: those its `WITH`
+ *  clause names, and a subquery's alias (`from (select …) s`). */
+export function withTables(sql: string): Set<string> {
+	const found = new Set<string>();
+	for (const name of subqueryAliases(sql)) found.add(name);
+	const named =
+		/(?:\bwith(?:\s+recursive)?|,)\s*[`"]?(\w+)[`"]?\s*(?:\([^)]*\))?\s+as\s+(?:not\s+)?(?:materialized\s+)?\(/gi;
+	for (const m of sql.matchAll(named)) found.add(m[1]!);
+	return found;
+}
+
+/** The alias after each parenthesised `select`: the name after the `)` that
+ *  closes it, counting the parentheses inside. A function call's alias
+ *  (`count(*) c`) is not one: its parenthesis opens no `select`. */
+function subqueryAliases(sql: string): string[] {
+	const found: string[] = [];
+	for (const open of sql.matchAll(/\(\s*select\b/gi)) {
+		let depth = 0;
+		let close = -1;
+		for (let i = open.index; i < sql.length; i++) {
+			if (sql[i] === '(') depth++;
+			else if (sql[i] === ')' && --depth === 0) {
+				close = i;
+				break;
+			}
+		}
+		if (close < 0) continue;
+		const alias = /^\s+(?:as\s+)?[`"]?(\w+)[`"]?/i.exec(sql.slice(close + 1))?.[1];
+		if (alias && !NOT_ALIASES.has(alias.toLowerCase())) found.push(alias);
+	}
+	return found;
+}
+
 export interface Scan {
 	table: string;
 	rows: number;
@@ -90,9 +124,18 @@ export interface Scan {
 }
 
 /**
- * The plan's reads of a whole large table: a `SCAN` of it, with or without an
- * index (a covering index scanned end to end is still every row), or an
- * automatic index, which SQLite builds by reading every row first.
+ * The plan's reads of a whole table: a `SCAN` of a large one, with or without
+ * an index (a covering index scanned end to end is still every row); or an
+ * automatic index on one of any size. SQLite builds that by reading every row
+ * first, and only for a column a statement filters or joins on that has no
+ * index: a small table today that grows, read in full by every such
+ * statement, which no size threshold would flag until it is big. Not one on
+ * a subquery or a `WITH` table, which no index can be put on.
+ *
+ * Blind to a read of every row by way of an index's range: `SEARCH t USING
+ * INDEX i (a>?)` with a bound that every row passes reads as much as a scan,
+ * and looks the same as one that reads a day's rows. What it reads depends on
+ * the value bound, which the plan does not show.
  */
 export function largeScans(
 	plan: readonly string[],
@@ -101,11 +144,13 @@ export function largeScans(
 	minRows = LARGE_TABLE_ROWS,
 ): Scan[] {
 	const names = aliases(sql);
+	const ctes = withTables(sql);
 	return plan.flatMap((detail) => {
 		const m = /^(?:SCAN (\S+)|SEARCH (\S+) USING AUTOMATIC)/.exec(detail);
 		const name = m?.[1] ?? m?.[2];
 		if (!name) return [];
 		const table = names.get(name) ?? name;
+		const automatic = m?.[2] !== undefined && !table.startsWith('(') && !ctes.has(table);
 		// A scan of an index reads the index: all of a partial one is only the
 		// rows it covers.
 		const index = m?.[1] ? /USING (?:COVERING )?INDEX (\w+)/.exec(detail)?.[1] : undefined;
@@ -113,6 +158,6 @@ export function largeScans(
 		// size: unknown is not small. One it counted as empty is.
 		const rows =
 			(index === undefined ? undefined : sizes.indexes.get(index)) ?? sizes.tables.get(table) ?? 0;
-		return rows >= minRows ? [{ table, rows, detail }] : [];
+		return automatic || rows >= minRows ? [{ table, rows, detail }] : [];
 	});
 }

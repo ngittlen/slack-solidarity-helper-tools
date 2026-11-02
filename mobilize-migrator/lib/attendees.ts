@@ -1,13 +1,16 @@
 // Reads event signups out of the Mobilize v1 API.
 //
 //   GET /v1/organizations/:orgId/events/:eventId/attendances
+//   GET /v1/organizations/:orgId/attendances?updated_since=…
 //
-// One request per event covers every timeslot on it, so the sync groups its
-// work by event rather than by shift. Status and attendance come back as
+// One request per event covers every timeslot on it, so a full read groups its
+// work by event rather than by shift. The second reads only what changed, on
+// every event at once. Status and attendance come back as
 // documented values — no decoding numeric codes or inferring attendance from a
 // check-in timestamp, both of which the dashboard scrape this replaced had to do.
 
 import {
+	listAttendancesChangedSince,
 	listEventAttendances,
 	type MobilizeApiConfig,
 	type MobilizeAttendance,
@@ -87,7 +90,19 @@ export async function fetchEventParticipations(
 	eventId: number,
 	config: MobilizeApiConfig,
 ): Promise<MobilizeParticipation[]> {
-	const rows = await listEventAttendances(config, eventId);
+	return normalizeAll(await listEventAttendances(config, eventId));
+}
+
+/** Every signup in the organization Mobilize changed at or after `since`
+ *  (unix seconds), on any event. */
+export async function fetchChangedParticipations(
+	since: number,
+	config: MobilizeApiConfig,
+): Promise<MobilizeParticipation[]> {
+	return normalizeAll(await listAttendancesChangedSince(config, since));
+}
+
+function normalizeAll(rows: readonly MobilizeAttendance[]): MobilizeParticipation[] {
 	const out: MobilizeParticipation[] = [];
 	for (const row of rows) {
 		const normalized = normalizeAttendance(row);

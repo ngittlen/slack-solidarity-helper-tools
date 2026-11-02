@@ -160,8 +160,21 @@ export const POST: RequestHandler = async ({ url }) => {
 				(result.zipsMapped > 0
 					? `zips ${result.zipsMapped} mapped/${result.zipsPruned} pruned, `
 					: '') +
-				`events ${result.events}, gone ${result.eventsGone}, ` +
-				`timeslots ${result.timeslots}, ` +
+				(result.changedSince !== null
+					? `changes since ${new Date(result.changedSince * 1000).toISOString()}` +
+						(result.changesHeld ? ' (read again next run)' : '') +
+						', ' +
+						// Events read whole for a retry, when there were any.
+						(result.events > 0 || result.eventsGone > 0 || result.eventsUnread > 0
+							? `retried events ${result.events}, `
+							: '')
+					: `events ${result.events}, `) +
+				(result.eventsGone > 0 || result.changedSince === null
+					? `gone ${result.eventsGone}, `
+					: '') +
+				(result.eventsUnread > 0 ? `unread ${result.eventsUnread}, ` : '') +
+				// A run reading changes takes every upcoming shift, not the window's.
+				`timeslots ${result.timeslots}${result.changedSince !== null ? ' (all upcoming)' : ''}, ` +
 				`signups ${result.participations}: ` +
 				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated} (${result.rsvpsWaitlisted} waitlisted` +
 				(result.rsvpsAdopted > 0 ? `, ${result.rsvpsAdopted} already there` : '') +
@@ -212,7 +225,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			await alert(
 				`:busts_in_silhouette: Attendee sync: ${result.rsvpsCreated} new RSVP(s), ` +
 					`${result.rsvpsUpdated} updated, ${result.profilesCreated} new Solidarity profile(s) ` +
-					`across ${result.timeslots} shift(s).` +
+					`across ${result.shiftsWritten} shift(s).` +
 					(result.rsvpsWaitlisted > 0
 						? ` :ticket: ${result.rsvpsWaitlisted} of the new RSVP(s) were filed as *waitlisted* — ` +
 							'their shift was already at capacity.'

@@ -46,9 +46,4 @@ export const ALLOWED: readonly Allowed[] = [
 			"LIKE '%…%' on name or region can use no index to find matches; it scans " +
 			'van_turfs_name_search, which holds only what it reads, in the order it returns.',
 	},
-	{
-		source: 'src/lib/server/van/turf-placement.ts#loadVoters',
-		table: 'van_turfs',
-		reason: "Placing requested turf whose zip did not resolve: every live turf's centre votes.",
-	},
 ];

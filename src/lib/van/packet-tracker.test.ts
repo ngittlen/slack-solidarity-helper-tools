@@ -451,6 +451,21 @@ describe('sheetDay', () => {
 		expect(sheetDay('2026-09-07')).toBe('2026-09-07');
 	});
 
+	it('reads what an organizer may type: dashes, month names, a time after it', () => {
+		expect(sheetDay('11-02-2026')).toBe('2026-11-02');
+		expect(sheetDay('11/02/2026 9:15')).toBe('2026-11-02');
+		expect(sheetDay('11/2/2026 9:15:00 AM')).toBe('2026-11-02');
+		expect(sheetDay('November 2, 2026')).toBe('2026-11-02');
+		expect(sheetDay('Nov. 2nd 2026')).toBe('2026-11-02');
+	});
+
+	it('gives a date with no year the year that puts it on or before today', () => {
+		expect(sheetDay('11/2', '2026-11-02')).toBe('2026-11-02');
+		expect(sheetDay('Nov 2', '2026-11-02')).toBe('2026-11-02');
+		expect(sheetDay('12/30', '2027-01-02')).toBe('2026-12-30');
+		expect(sheetDay('11/2')).toBeNull();
+	});
+
 	it('is null for anything that is not a date', () => {
 		expect(sheetDay('')).toBeNull();
 		expect(sheetDay('Saturday')).toBeNull();
@@ -474,12 +489,31 @@ describe('campaignAssignments in recanvass mode', () => {
 		expect([...assigned.keys()].sort()).toEqual(['2-2', '4-4']);
 	});
 
-	it('does not count an entry with no readable Date Sent Out', () => {
+	it('does not count an entry with no Date Sent Out', () => {
+		const values = sheet(packet('1-1', { Canvasser: 'Sam', Status: 'Out' }));
+		expect(campaignAssignments(values, LAYOUT, new Map(), { staleBefore }).size).toBe(0);
+	});
+
+	// Freeing it could hand a packet given out today to a second canvasser.
+	it('counts an entry whose Date Sent Out does not read as a date', () => {
 		const values = sheet(
-			packet('1-1', { Canvasser: 'Sam', Status: 'Out' }),
 			packet('2-2', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': 'Saturday' }),
 		);
-		expect(campaignAssignments(values, LAYOUT, new Map(), { staleBefore }).size).toBe(0);
+		expect([...campaignAssignments(values, LAYOUT, new Map(), { staleBefore }).keys()]).toEqual([
+			'2-2',
+		]);
+	});
+
+	it('reads a date typed some other way', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': '9/19' }),
+			packet('2-2', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': 'Sep 18' }),
+			packet('3-3', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': '09-19-2026 9:15' }),
+		);
+		expect([...campaignAssignments(values, LAYOUT, new Map(), { staleBefore }).keys()]).toEqual([
+			'1-1',
+			'3-3',
+		]);
 	});
 
 	it('goes by the Status and name as ever without it', () => {

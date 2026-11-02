@@ -432,26 +432,67 @@ export function cellWrites(cells: PacketCells, layout: ColumnLayout): Array<[num
 	return writes;
 }
 
+const MONTHS = [
+	'jan',
+	'feb',
+	'mar',
+	'apr',
+	'may',
+	'jun',
+	'jul',
+	'aug',
+	'sep',
+	'oct',
+	'nov',
+	'dec',
+] as const;
+
 /**
  * A Date Sent Out as `YYYY-MM-DD`, or null when it does not read as a date.
  *
  * The tab is read formatted, so this is whatever the campaign's column shows:
- * MM/DD/YYYY as the app writes it (`sheetDate`), M/D/YY as a hand-typed one
- * may be, or YYYY-MM-DD.
+ * MM/DD/YYYY as the app writes it (`sheetDate`), or what an organizer types —
+ * M/D/YY, M-D-YYYY, YYYY-MM-DD, "Nov 2" or "November 2, 2026", any of them
+ * with a time after it. A date with no year takes the year that puts it on or
+ * before `today` (a `YYYY-MM-DD` day), as a packet goes out on a day already
+ * come; without `today` it has none, and is null.
  */
-export function sheetDay(value: string): string | null {
-	const trimmed = value.trim();
-	let year: number, month: number, day: number;
-	const us = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(trimmed);
+export function sheetDay(value: string, today?: string): string | null {
+	// A time after the date ("11/02/2026 9:15", "Nov 2 9:15 AM") says nothing
+	// about the day.
+	const trimmed = value
+		.trim()
+		.replace(/[\sT]+\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*(?:[ap]\.?m\.?)?$/i, '')
+		.trim();
+	let year: number | null, month: number, day: number;
+	const us = /^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}|\d{4}))?$/.exec(trimmed);
 	const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(trimmed);
-	if (us) {
-		[month, day, year] = [Number(us[1]), Number(us[2]), Number(us[3])];
-		if (us[3]!.length === 2) year += 2000;
-	} else if (iso) {
+	const named = /^([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?$/i.exec(trimmed);
+	if (iso) {
 		[year, month, day] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+	} else if (us) {
+		[month, day] = [Number(us[1]), Number(us[2])];
+		year = us[3] === undefined ? null : Number(us[3]) + (us[3].length === 2 ? 2000 : 0);
+	} else if (named) {
+		const index = MONTHS.indexOf(named[1]!.toLowerCase() as (typeof MONTHS)[number]);
+		if (index < 0) return null;
+		[month, day] = [index + 1, Number(named[2])];
+		year = named[3] === undefined ? null : Number(named[3]);
 	} else {
 		return null;
 	}
+	if (year === null) {
+		if (today === undefined) return null;
+		const thisYear = Number(today.slice(0, 4));
+		const guess = calendarDay(thisYear, month, day);
+		if (guess === null) return calendarDay(thisYear - 1, month, day);
+		return guess <= today ? guess : calendarDay(thisYear - 1, month, day);
+	}
+	return calendarDay(year, month, day);
+}
+
+/** `YYYY-MM-DD` for a real day; null for one the calendar lacks. */
+function calendarDay(year: number, month: number, day: number): string | null {
 	const date = new Date(Date.UTC(year, month - 1, day));
 	if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
 	return date.toISOString().slice(0, 10);
@@ -459,16 +500,20 @@ export function sheetDay(value: string): string | null {
 
 /**
  * Whether a row's entry is from before `today` (a `YYYY-MM-DD` canvass day),
- * as recanvass mode reads it: anything without a readable Date Sent Out counts
- * as old, so only an entry dated today or later still holds the packet.
+ * as recanvass mode reads it. An entry with no Date Sent Out at all is old:
+ * nothing ties it to today. One whose date does not read as a date is not, so
+ * a packet handed out today under a date written some other way is never
+ * handed out a second time.
  */
 export function isStaleEntry(
 	row: readonly string[] | undefined,
 	layout: ColumnLayout,
 	today: string,
 ): boolean {
-	const sent = sheetDay(cell(row, layout, 'Date Sent Out'));
-	return sent === null || sent < today;
+	const written = cell(row, layout, 'Date Sent Out');
+	if (written === '') return true;
+	const sent = sheetDay(written, today);
+	return sent !== null && sent < today;
 }
 
 /**
