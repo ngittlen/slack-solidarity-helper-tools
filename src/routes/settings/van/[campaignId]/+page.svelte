@@ -147,6 +147,7 @@
 				badgeLabel={campaign.badgeLabel}
 				refreshEnabled={campaign.refreshEnabled}
 				sheetsEnabled={campaign.sheetsEnabled}
+				recanvassMode={campaign.recanvassMode}
 				sheetTabName={campaign.sheetTabName}
 				dailyReportSpreadsheetId={campaign.dailyReportSpreadsheetId}
 				requestedFolderId={campaign.requestedFolderId}

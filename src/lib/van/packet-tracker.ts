@@ -433,6 +433,45 @@ export function cellWrites(cells: PacketCells, layout: ColumnLayout): Array<[num
 }
 
 /**
+ * A Date Sent Out as `YYYY-MM-DD`, or null when it does not read as a date.
+ *
+ * The tab is read formatted, so this is whatever the campaign's column shows:
+ * MM/DD/YYYY as the app writes it (`sheetDate`), M/D/YY as a hand-typed one
+ * may be, or YYYY-MM-DD.
+ */
+export function sheetDay(value: string): string | null {
+	const trimmed = value.trim();
+	let year: number, month: number, day: number;
+	const us = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(trimmed);
+	const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(trimmed);
+	if (us) {
+		[month, day, year] = [Number(us[1]), Number(us[2]), Number(us[3])];
+		if (us[3]!.length === 2) year += 2000;
+	} else if (iso) {
+		[year, month, day] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+	} else {
+		return null;
+	}
+	const date = new Date(Date.UTC(year, month - 1, day));
+	if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+	return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Whether a row's entry is from before `today` (a `YYYY-MM-DD` canvass day),
+ * as recanvass mode reads it: anything without a readable Date Sent Out counts
+ * as old, so only an entry dated today or later still holds the packet.
+ */
+export function isStaleEntry(
+	row: readonly string[] | undefined,
+	layout: ColumnLayout,
+	today: string,
+): boolean {
+	const sent = sheetDay(cell(row, layout, 'Date Sent Out'));
+	return sent === null || sent < today;
+}
+
+/**
  * Packets the campaign has handed out itself, by list number → canvasser.
  *
  * `ours` maps a list number to the canvasser name we filled in; a row whose
@@ -442,17 +481,23 @@ export function cellWrites(cells: PacketCells, layout: ColumnLayout): Array<[num
  * which is back in play. An unnamed Out or Complete still blocks, labelled as
  * the tracker, because an unnamed assignment is still an assignment; an
  * unnamed Unwalked is the campaign's default for a free packet and does not.
+ *
+ * `staleBefore` is recanvass mode: the canvass day before which entries no
+ * longer hold their packet (`isStaleEntry`), so a second pass can walk turf
+ * the tracker shows as already out or walked.
  */
 export function campaignAssignments(
 	values: readonly (readonly string[])[],
 	layout: ColumnLayout,
 	ours: ReadonlyMap<string, string>,
+	options: { staleBefore?: string } = {},
 ): Map<string, string> {
 	const assigned = new Map<string, string>();
 	for (let i = layout.headerRowIndex + 1; i < values.length; i++) {
 		const row = values[i];
 		const listNumber = normaliseListNumber(cell(row, layout, 'List Number'));
 		if (!listNumber) continue;
+		if (options.staleBefore && isStaleEntry(row, layout, options.staleBefore)) continue;
 		const status = cell(row, layout, 'Status').toLowerCase();
 		if (status === RETURNED_STATUS) continue;
 		const canvasser = cell(row, layout, 'Canvasser');

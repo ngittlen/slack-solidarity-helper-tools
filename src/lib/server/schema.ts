@@ -892,6 +892,12 @@ export const vanCampaigns = sqliteTable(
 		 *  creates it. Null or '' means DEFAULT_SHEET_TAB_NAME in
 		 *  $lib/van/packet-tracker.ts. Moved here from app_config. */
 		sheetTabName: text('sheet_tab_name'),
+		/** Recanvass mode: the campaign's Packet Tracker entries block
+		 *  turf only on the canvass day they were sent out. Anything the tracker
+		 *  shows as sent out before today — Complete included — or with no
+		 *  readable Date Sent Out is claimable again, so a second pass can walk
+		 *  it. Off by default; the spreadsheet itself is not changed either way. */
+		recanvassMode: integer('recanvass_mode', { mode: 'boolean' }).notNull().default(false),
 		/** The spreadsheet the nightly door report writes to: one new tab per
 		 *  campaign day (van/daily-door-report.ts). A spreadsheet rather than a
 		 *  Drive folder because the service account owns no Drive storage and so

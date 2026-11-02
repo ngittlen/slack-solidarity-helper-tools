@@ -7,10 +7,11 @@ import { migrate } from 'drizzle-orm/libsql/migrator';
 // enable checks and the disable stamps are all reads and writes of the row.
 // Only VAN is faked.
 
-const { holder, mockClientFor, mockFolders } = vi.hoisted(() => ({
+const { holder, mockClientFor, mockFolders, mockRefreshTracker } = vi.hoisted(() => ({
 	holder: { db: null as unknown },
 	mockClientFor: vi.fn(),
 	mockFolders: vi.fn(),
+	mockRefreshTracker: vi.fn(),
 }));
 
 vi.mock('$lib/server/db.js', () => ({
@@ -19,6 +20,9 @@ vi.mock('$lib/server/db.js', () => ({
 	},
 }));
 vi.mock('$lib/server/van-env.js', () => ({ vanClientFor: mockClientFor }));
+vi.mock('$lib/server/van/packet-tracker-live.js', () => ({
+	refreshPacketTrackerSoon: mockRefreshTracker,
+}));
 
 import { PATCH } from './+server.js';
 import { campaignsStalestFirst } from '$lib/server/van/campaigns.js';
@@ -171,6 +175,21 @@ describe('the switches and fields', () => {
 		await patch({ refreshEnabled: true });
 		await patch({ sheetsEnabled: true });
 		expect(await row()).toMatchObject({ refresh_enabled: 1, sheets_enabled: 1 });
+	});
+
+	it('saves recanvass mode, and re-reads the trackers only when it changes', async () => {
+		await patch({ recanvassMode: true });
+		expect((await row()).recanvass_mode).toBe(1);
+		expect(mockRefreshTracker).toHaveBeenCalledTimes(1);
+		expect(mockRefreshTracker).toHaveBeenCalledWith(expect.anything(), 2);
+
+		await patch({ recanvassMode: true });
+		expect(mockRefreshTracker).toHaveBeenCalledTimes(1);
+
+		await patch({ recanvassMode: false });
+		expect((await row()).recanvass_mode).toBe(0);
+		expect(mockRefreshTracker).toHaveBeenCalledTimes(2);
+		expect((await patch({ recanvassMode: 'true' })).status).toBe(400);
 	});
 
 	// "false" is truthy: taking strings would let a bad client switch re-cuts on.

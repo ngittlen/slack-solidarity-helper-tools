@@ -38,6 +38,7 @@ import {
 	DEFAULT_SHEET_TAB_NAME,
 	FILL_COLUMNS,
 	campaignAssignments,
+	isStaleEntry,
 	cellWrites,
 	changedCells,
 	clearedCells,
@@ -282,6 +283,15 @@ export interface TrackerOptions {
 	/** Limit the run to the spreadsheet this turf routes to — the nudge after
 	 *  one volunteer's action has no business reading a dozen spreadsheets. */
 	onlyTurfId?: number;
+	/** Recanvass mode (van_campaigns.recanvass_mode): the campaign's entries
+	 *  from before today no longer hold their packets. */
+	recanvass?: boolean;
+	/** Whether the result carries the notes about the run as a whole — an
+	 *  unreadable ledger, checkouts no rule routes — which every scheduled run
+	 *  repeats. Default true; off for a one-campaign refresh, which would only
+	 *  say them a second time. Notes about one checkout are told once and
+	 *  always carried. */
+	runNotes?: boolean;
 }
 
 type Candidate = PacketCheckout & {
@@ -496,7 +506,12 @@ async function openTab(
 	tabName: string,
 	deadline: number,
 	ours: ReadonlyMap<string, string>,
-	options: { walkIns?: boolean; urgent?: boolean; signal?: AbortSignal } = {},
+	options: {
+		walkIns?: boolean;
+		urgent?: boolean;
+		signal?: AbortSignal;
+		staleBefore?: string;
+	} = {},
 ): Promise<{ ok: true; tab: OpenTab } | ({ ok: false } & SheetFailure)> {
 	const { urgent, signal } = options;
 	let values: string[][];
@@ -538,7 +553,10 @@ async function openTab(
 	};
 	recentAssignments.set(`${spreadsheetId}\u0000${tabName}`, {
 		at: Date.now(),
-		assigned: campaignAssignments(tab.values, tab.layout, ours),
+		staleBefore: options.staleBefore,
+		assigned: campaignAssignments(tab.values, tab.layout, ours, {
+			staleBefore: options.staleBefore,
+		}),
 	});
 	return { ok: true, tab };
 }
@@ -548,7 +566,12 @@ async function openTab(
  *  people claiming turf out of the same few spreadsheets within a minute. */
 const LIVE_REUSE_MS = 60_000;
 
-const recentAssignments = new Map<string, { at: number; assigned: Map<string, string> }>();
+/** `staleBefore` is the recanvass day the entry was read under: a read from
+ *  before the mode changed, or before the day rolled over, is not reused. */
+const recentAssignments = new Map<
+	string,
+	{ at: number; staleBefore: string | undefined; assigned: Map<string, string> }
+>();
 
 /** How long a spreadsheet found without a Walk Ins tab is not asked again.
  *  Not every campaign sheet has one, and asking every run would spend a read
@@ -636,6 +659,7 @@ async function syncCheckout(
 	candidate: Candidate,
 	deadline: number,
 	warnings: string[],
+	staleBefore: string | undefined,
 ): Promise<Outcome> {
 	const state = parseSheetState(candidate.sheetState) ?? EMPTY_STATE;
 	if (state.gone) return 'unchanged';
@@ -699,12 +723,17 @@ async function syncCheckout(
 			// run, and filled in if their entry is cleared while ours is live.
 			// The sheet's entry should have blocked the claim, so one here means
 			// two people have the turf — an organizer's problem to sort out.
-			if (state.told !== 'taken') {
+			// Not said in recanvass mode when the entry is from an earlier day:
+			// that mode is what let the claim through, and the row stays as it is.
+			const stale = staleBefore !== undefined && isStaleEntry(current, tab.layout, staleBefore);
+			if (state.told !== 'taken' && !stale) {
 				warnings.push(
 					`${LOG} ${label} was claimed, but its packet already has someone else's entry in the Packet Tracker, so that entry was left as it is`,
 				);
 			}
-			await save({ ...base, told: 'taken' });
+			// Nor recorded as told, so it is said if the mode is switched off
+			// while both claims stand.
+			await save(stale ? base : { ...base, told: 'taken' });
 			return 'unchanged';
 		}
 		writes = wanted;
@@ -1446,8 +1475,9 @@ async function refreshAssignments(
 		printedListNumber: string | null;
 		sheetAssignedTo: string | null;
 	}>,
+	staleBefore: string | undefined,
 ): Promise<number> {
-	const assigned = campaignAssignments(tab.values, tab.layout, ours);
+	const assigned = campaignAssignments(tab.values, tab.layout, ours, { staleBefore });
 	// One statement per name rather than per turf: a campaign that writes a
 	// fresh cut into its trackers changes thousands at once, and a write each
 	// took the run's whole budget on the first few spreadsheets.
@@ -1479,8 +1509,16 @@ function workFingerprint(
 	ours: ReadonlyMap<string, string>,
 	tabName: string,
 	day: string,
+	staleBefore: string | undefined,
 ): string {
-	return JSON.stringify([tabName, day, work.candidates, work.turfs, [...ours]]);
+	return JSON.stringify([
+		tabName,
+		day,
+		staleBefore ?? null,
+		work.candidates,
+		work.turfs,
+		[...ours],
+	]);
 }
 
 /**
@@ -1575,7 +1613,8 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			);
 	} catch (err) {
 		console.error(`${LOG} could not read the ledger:`, errText(err));
-		return { ...EMPTY_RESULT, warnings: [`${LOG} could not read the ledger: ${errText(err)}`] };
+		const note = `${LOG} could not read the ledger: ${errText(err)}`;
+		return { ...EMPTY_RESULT, warnings: options.runNotes === false ? [] : [note] };
 	}
 	const oursIn = (spreadsheetId: string) => ourEntries.get(spreadsheetId) ?? new Map();
 
@@ -1620,10 +1659,11 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	// The scheduled run only: a nudge reads its one spreadsheet regardless.
 	const scheduled = options.onlyTurfId === undefined;
 	const today = walkInDay(now.toISOString());
+	const staleBefore = options.recanvass ? today : undefined;
 	const fingerprints = new Map(
 		[...bySpreadsheet].map(([spreadsheetId, work]) => [
 			spreadsheetId,
-			workFingerprint(work, oursIn(spreadsheetId), tabName, today),
+			workFingerprint(work, oursIn(spreadsheetId), tabName, today, staleBefore),
 		]),
 	);
 	const unchanged = scheduled
@@ -1656,6 +1696,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			pending = openTab(client, spreadsheetId, tabName, deadline, oursIn(spreadsheetId), {
 				walkIns: walkInJobs(work.candidates, spreadsheetId, now).length > 0,
 				signal: ahead.signal,
+				staleBefore,
 			});
 			opening.set(spreadsheetId, pending);
 		}
@@ -1705,6 +1746,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 				tab,
 				oursIn(spreadsheetId),
 				work.turfs,
+				staleBefore,
 			);
 		} catch (err) {
 			console.error(`${LOG} could not record assignments for ${spreadsheetId}:`, errText(err));
@@ -1714,7 +1756,15 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		for (const [i, candidate] of work.candidates.entries()) {
 			let outcome: Outcome;
 			try {
-				outcome = await syncCheckout(db, client, tab, candidate, deadline, result.warnings);
+				outcome = await syncCheckout(
+					db,
+					client,
+					tab,
+					candidate,
+					deadline,
+					result.warnings,
+					staleBefore,
+				);
 			} catch (err) {
 				// A ledger write failed after Google accepted. The next run
 				// re-derives and repeats the write, which is harmless.
@@ -1800,7 +1850,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	ahead.abort();
 	for (const pending of opening.values()) void pending.catch(() => undefined);
 
-	if (unrouted > 0) {
+	if (unrouted > 0 && options.runNotes !== false) {
 		result.warnings.push(
 			`${LOG} ${unrouted} checkout(s) match no spreadsheet rule and are waiting: ` +
 				`${result.unroutedRegions.slice(0, 5).join(', ')}` +
@@ -1862,6 +1912,8 @@ export async function liveAssignment(
 		tabName?: string;
 		turf: { turfId: number; regionName: string; printedListNumber: string | null };
 		timeBudgetMs: number;
+		/** As TrackerOptions.recanvass. */
+		recanvass?: boolean;
 	},
 ): Promise<string | null | undefined> {
 	const { turf } = input;
@@ -1870,8 +1922,9 @@ export async function liveAssignment(
 	if (!target) return null;
 	const tabName = input.tabName?.trim() || DEFAULT_SHEET_TAB_NAME;
 	const key = `${target.spreadsheetId}\u0000${tabName}`;
+	const staleBefore = input.recanvass ? walkInDay(new Date().toISOString()) : undefined;
 	let recent = recentAssignments.get(key);
-	if (!recent || Date.now() - recent.at > LIVE_REUSE_MS) {
+	if (!recent || Date.now() - recent.at > LIVE_REUSE_MS || recent.staleBefore !== staleBefore) {
 		const ours = (await loadOurEntries(db)).get(target.spreadsheetId) ?? new Map();
 		const opened = await openTab(
 			input.client,
@@ -1879,7 +1932,7 @@ export async function liveAssignment(
 			tabName,
 			Date.now() + input.timeBudgetMs,
 			ours,
-			{ urgent: true },
+			{ urgent: true, staleBefore },
 		);
 		if (!opened.ok) return undefined;
 		recent = recentAssignments.get(key);
