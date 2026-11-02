@@ -17,7 +17,7 @@ import {
 // The button under "Sync VAN now" that releases every turf held only by a VAN
 // hand-out. Admins only, like that button. The hand-out time limit is the one
 // the turf cards apply, so this frees the turf drawn red there, less the
-// requested-turf folder's.
+// requested-turf folder's and any in a campaign that is switched off.
 //
 // GET → what the release would free, counted by VAN folder for the
 // confirmation, each turf's hand-out time, and when it was counted. POST →
@@ -87,7 +87,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (caller.response) return caller.response;
 	const seen = seenSummary(await request.json().catch(() => null));
 	if (!seen) return json({ error: 'Malformed request' }, { status: 400 });
-	const released = await releaseAllVanAssignments(
+	const result = await releaseAllVanAssignments(
 		db,
 		seen.turfs,
 		seen.countedAt,
@@ -95,5 +95,5 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		new Date(),
 		caller.vanAssignmentTtlHours,
 	);
-	return json({ released, skipped: seen.turfs.length - released });
+	return json(result);
 };

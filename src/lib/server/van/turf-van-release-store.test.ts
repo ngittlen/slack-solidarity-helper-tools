@@ -140,6 +140,17 @@ describe('releaseVanAssignment', () => {
 		expect(rows[0]!.van_released_at).toBe(CARD_BUILT);
 	});
 
+	// A blank stamp would read as never released, and the next sync would hold
+	// the turf again on the export just released.
+	it('releases a hand-out with a blank date as of when the card was built', async () => {
+		await client.execute("UPDATE van_turfs SET van_assigned_at = '' WHERE turf_id = 100");
+		expect(await releaseVanAssignment(db, 100, seen(''), MODERATOR, NOW, 48)).toBe('released');
+		const { rows } = await client.execute(
+			'SELECT van_released_at FROM van_turfs WHERE turf_id = 100',
+		);
+		expect(rows[0]!.van_released_at).toBe(CARD_BUILT);
+	});
+
 	it('never releases as of a time after the click', async () => {
 		await client.execute('UPDATE van_turfs SET van_assigned_at = NULL WHERE turf_id = 100');
 		const future = { since: null, seenAt: new Date('2027-01-01T00:00:00.000Z') };
@@ -191,6 +202,21 @@ describe('releaseVanAssignment — what it leaves held', () => {
 	it('reads a blank Packet Tracker entry as none, as the card does', async () => {
 		await client.execute("UPDATE van_turfs SET sheet_assigned_to = '' WHERE turf_id = 100");
 		expect(await card(100)).toMatchObject({ heldInVan: expect.anything() });
+		expect(await releaseVanAssignment(db, 100, seen(HANDED_OUT), MODERATOR, NOW, 48)).toBe(
+			'released',
+		);
+	});
+
+	// Compared as times, as the card compares them: as text, an expiry without
+	// milliseconds sorts after the same second with them, and this claim,
+	// lapsed at 18:00 exactly, would still hold the turf.
+	it('reads a claim’s expiry as a time, whatever its form', async () => {
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts
+			        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at)
+			      VALUES (100, 'U_VOL', 'Dana', ?, ?)`,
+			args: ['2026-10-08T12:00:00.000Z', '2026-10-10T18:00:00Z'],
+		});
 		expect(await releaseVanAssignment(db, 100, seen(HANDED_OUT), MODERATOR, NOW, 48)).toBe(
 			'released',
 		);
@@ -291,7 +317,12 @@ describe('releaseAllVanAssignments', () => {
 			turfId,
 			since: HANDED_OUT,
 		}));
-		expect(await releaseAllVanAssignments(db, everything, NOW, MODERATOR, NOW, 48)).toBe(1);
+		// 101 was never handed out, 104 is in the requested-turf folder and 105
+		// is past the time limit: none was the release's to keep.
+		expect(await releaseAllVanAssignments(db, everything, NOW, MODERATOR, NOW, 48)).toEqual({
+			released: 1,
+			skipped: { claimed: 1, sheet: 1, 'not-held': 3 },
+		});
 
 		const { rows } = await client.execute(
 			'SELECT turf_id, van_distributed_to, van_released_by FROM van_turfs ORDER BY turf_id',
@@ -328,11 +359,31 @@ describe('releaseAllVanAssignments', () => {
 			"UPDATE van_turfs SET van_assigned_at = '2026-10-10T17:00:00.000Z' WHERE turf_id = 100",
 		);
 		await handedOut(106);
-		expect(await releaseAllVanAssignments(db, counted, NOW, MODERATOR, NOW, 48)).toBe(1);
+		expect(await releaseAllVanAssignments(db, counted, NOW, MODERATOR, NOW, 48)).toEqual({
+			released: 1,
+			skipped: { changed: 1 },
+		});
 		const { rows } = await client.execute(
 			'SELECT turf_id FROM van_turfs WHERE van_distributed_to IS NOT NULL ORDER BY turf_id',
 		);
 		expect(rows.map((r) => r.turf_id)).toEqual([100, 103, 104, 105, 106]);
+	});
+
+	// /turfs draws no turf of a campaign that is switched off, so no organizer
+	// has seen it to judge it free.
+	it('leaves turf in a campaign that is switched off', async () => {
+		await client.execute('UPDATE van_campaigns SET enabled = 0 WHERE id = 1');
+		expect(await vanOnlyHeldTurfs(db, NOW, 48)).toEqual([]);
+		expect(
+			await releaseAllVanAssignments(
+				db,
+				[{ turfId: 100, since: HANDED_OUT }],
+				NOW,
+				MODERATOR,
+				NOW,
+				48,
+			),
+		).toEqual({ released: 0, skipped: { 'not-held': 1 } });
 	});
 });
 

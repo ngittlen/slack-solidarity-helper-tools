@@ -20,6 +20,7 @@ import {
 	type SheetsClient,
 	type ServiceAccountConfig,
 } from './google/sheets.js';
+import { timedFetch } from './request-timing.js';
 
 export type SheetsClientResult = { ok: true; client: SheetsClient } | { ok: false; error: string };
 
@@ -81,7 +82,9 @@ export function sheetsClient(): SheetsClientResult {
 	}
 	const parsed = parseServiceAccount(GOOGLE_SHEETS_SERVICE_ACCOUNT);
 	if (!parsed.ok) return parsed;
-	shared = createSheetsClient(parsed.config);
+	// Timed as `google`, so a slow packet tracker run says how much of it was
+	// Google's answers rather than the client's own pacing.
+	shared = createSheetsClient(parsed.config, { fetchFn: timedFetch('google') });
 	return { ok: true, client: shared };
 }
 

@@ -79,6 +79,7 @@ export async function loadDriftTurfs(db: Db, query: DriftQuery): Promise<DriftTu
 			doorCount: vanTurfs.doorCount,
 			printedListNumber: vanTurfs.printedListNumber,
 			vanDistributedTo: vanTurfs.vanDistributedTo,
+			vanReleasedAt: vanTurfs.vanReleasedAt,
 			retiredAt: vanTurfs.retiredAt,
 		})
 		.from(vanTurfs)

@@ -4,7 +4,8 @@
 // CPU and load sat near idle: requests were waiting, not computing. Every page
 // waits on something outside the machine — Turso for every query (the session
 // lookup included), Slack on the dashboard, VAN on a checkout, Solidarity and
-// Mobilize in the event syncs — and nothing said which. So each request
+// Mobilize in the event syncs, Google's Sheets and Drive in the packet
+// tracker — and nothing said which. So each request
 // carries a tally, in AsyncLocalStorage, of the calls it made to each of them,
 // and one that took SLOW_REQUEST_MS or more is logged with it:
 //
@@ -49,8 +50,15 @@ export const SLOW_CALL_MS = 2_000;
  *  sync call is for, and whether it is the shared stages. */
 const REQUEST_LABEL_PARAMS = ['campaign', 'shared'] as const;
 
-export type Dependency = 'db' | 'slack' | 'van' | 'solidarity' | 'mobilize';
-const DEPENDENCIES: readonly Dependency[] = ['db', 'slack', 'van', 'solidarity', 'mobilize'];
+export type Dependency = 'db' | 'slack' | 'van' | 'solidarity' | 'mobilize' | 'google';
+const DEPENDENCIES: readonly Dependency[] = [
+	'db',
+	'slack',
+	'van',
+	'solidarity',
+	'mobilize',
+	'google',
+];
 
 interface Tally {
 	calls: number;

@@ -23,6 +23,7 @@ function turf(over: Partial<DriftTurfRow> = {}): DriftTurfRow {
 		doorCount: 250,
 		printedListNumber: '35536745-88712',
 		vanDistributedTo: null,
+		vanReleasedAt: null,
 		retiredAt: null,
 		...over,
 	};
@@ -258,6 +259,20 @@ describe('driftReport: exports-unused', () => {
 		expect(report.visibility).toBe('visible');
 		// Turf 1 is claimed and not exported — flagged now that one real export
 		// shows the workflow is in use. Turf 2, exported and unclaimed, is not.
+		expect(report.items.map((i) => i.turfId)).toEqual([1]);
+	});
+
+	// Releasing a hand-out clears the turf's distribution. The export it
+	// released still shows the workflow in use, so the claims beside it are
+	// still checked.
+	it('counts a released hand-out as the workflow being in use', () => {
+		const report = driftReport(
+			[turf({ turfId: 1 }), turf({ turfId: 2, vanReleasedAt: iso(NOW.getTime() - 3 * HOUR) })],
+			[claim({ turfId: 1 })],
+			NOW,
+		);
+
+		expect(report.visibility).toBe('visible');
 		expect(report.items.map((i) => i.turfId)).toEqual([1]);
 	});
 
