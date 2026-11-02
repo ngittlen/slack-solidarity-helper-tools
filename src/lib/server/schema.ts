@@ -528,6 +528,22 @@ export const mobilizeSyncedTimeslots = sqliteTable('mobilize_synced_timeslots', 
 	updatedAt: text('updated_at').notNull(),
 });
 
+// What the attendee sync's next read of changed signups covers. `changesFrom`,
+// in Mobilize's unix seconds: every signup Mobilize changed before it has been
+// read by a run that covered every upcoming shift and settled all it read.
+// `retryEventIds`, a JSON array: the Mobilize events that run could not read,
+// or had a signup on it could not write, which the next run reads whole.
+// `fullReadAt`, unix seconds: when the nightly run last read every event, the
+// read that finds deleted events; the read of changes is used only while that
+// is recent. One row.
+export const attendeeSyncState = sqliteTable('attendee_sync_state', {
+	id: integer('id').primaryKey(),
+	changesFrom: integer('changes_from').notNull(),
+	retryEventIds: text('retry_event_ids').notNull().default('[]'),
+	fullReadAt: integer('full_read_at'),
+	updatedAt: text('updated_at').notNull(),
+});
+
 // One row per Mobilize signup we've mirrored. `mobilizeModifiedDate` lets a run
 // skip rows that haven't changed; `status` records what we last wrote so a
 // cancellation is only pushed once.
@@ -1229,6 +1245,23 @@ export const vanTurfs = sqliteTable(
 		// order, which is the order it returns. Then each name's cuts by
 		// (name, campaign).
 		index('van_turfs_name_search').on(table.name, table.campaignId, table.regionName),
+		// Partial: live turf by where it is. The address search's summary
+		// (nearby-summary.ts) reads the turf inside a box on the map from it,
+		// rather than every live turf to check each. The reads of every live
+		// turf's centre — the signed-out map's starting point, and the votes
+		// that place requested turf (turf-placement.ts) — are answered from
+		// the index alone: what they filter on is in it, `retired_at` too,
+		// as SQLite otherwise reads each row to check the index's condition.
+		index('van_turfs_live_centroid')
+			.on(
+				table.centroidLat,
+				table.centroidLng,
+				table.campaignId,
+				table.folderId,
+				table.hiddenAt,
+				table.retiredAt,
+			)
+			.where(sql`${table.retiredAt} IS NULL`),
 	],
 );
 
@@ -1776,26 +1809,35 @@ export const vanManualSyncRuns = sqliteTable('van_manual_sync_runs', {
 // organizer's choice, which nothing automatic overwrites. See
 // van/turf-placement.ts. Chapter visibility reads this alongside the folder
 // mapping (chapter-visibility.ts).
-export const vanTurfPlacements = sqliteTable('van_turf_placements', {
-	turfId: integer('turf_id').primaryKey(),
-	chapterId: integer('chapter_id').notNull(),
-	chapterName: text('chapter_name').notNull(),
-	/** 'zip' | 'nearby' | 'organizer' */
-	source: text('source').notNull(),
-	/** The ZIP the location fell in, when the Census answered. */
-	zip: text('zip'),
-	/** Whether the Census answered at all. A 'nearby' placement made because
-	 *  it did not is tried by ZIP again on the next run. */
-	zipChecked: integer('zip_checked', { mode: 'boolean' }).notNull().default(false),
-	/** The turf's location when it was placed; a different one now (a re-cut,
-	 *  a new shape) places it again. Null for an organizer's placement of turf
-	 *  with no location yet. */
-	centroidLat: real('centroid_lat'),
-	centroidLng: real('centroid_lng'),
-	placedAt: text('placed_at').notNull(),
-	/** The organizer, for an organizer's placement. */
-	placedByName: text('placed_by_name'),
-});
+export const vanTurfPlacements = sqliteTable(
+	'van_turf_placements',
+	{
+		turfId: integer('turf_id').primaryKey(),
+		chapterId: integer('chapter_id').notNull(),
+		chapterName: text('chapter_name').notNull(),
+		/** 'zip' | 'nearby' | 'organizer' */
+		source: text('source').notNull(),
+		/** The ZIP the location fell in, when the Census answered. */
+		zip: text('zip'),
+		/** Whether the Census answered at all. A 'nearby' placement made because
+		 *  it did not is tried by ZIP again on the next run. */
+		zipChecked: integer('zip_checked', { mode: 'boolean' }).notNull().default(false),
+		/** The turf's location when it was placed; a different one now (a re-cut,
+		 *  a new shape) places it again. Null for an organizer's placement of turf
+		 *  with no location yet. */
+		centroidLat: real('centroid_lat'),
+		centroidLng: real('centroid_lng'),
+		placedAt: text('placed_at').notNull(),
+		/** The organizer, for an organizer's placement. */
+		placedByName: text('placed_by_name'),
+	},
+	(table) => [
+		// A chapter's placed turf, read on every /turfs load and in every
+		// chapter's visibility check (chapter-visibility.ts); with turf_id, the
+		// index answers those reads by itself.
+		index('van_turf_placements_chapter').on(table.chapterId, table.turfId),
+	],
+);
 
 export type VanTurfPlacementRow = typeof vanTurfPlacements.$inferSelect;
 

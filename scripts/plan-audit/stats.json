@@ -1,6 +1,6 @@
 {
 	"pulledAt": "2026-10-31T05:47:30.689Z",
-	"estimated": ["van_turfs_van_held"],
+	"estimated": ["van_turfs_van_held", "van_turfs_live_centroid", "van_turf_placements_chapter"],
 	"rows": [
 		{
 			"tbl": "__drizzle_migrations",
@@ -368,6 +368,11 @@
 			"stat": "1872"
 		},
 		{
+			"tbl": "van_turf_placements",
+			"idx": "van_turf_placements_chapter",
+			"stat": "1872 40 1"
+		},
+		{
 			"tbl": "van_turf_roster",
 			"idx": "sqlite_autoindex_van_turf_roster_1",
 			"stat": "2553559 109 1"
@@ -401,6 +406,11 @@
 			"tbl": "van_turfs",
 			"idx": "van_turfs_hidden",
 			"stat": "4 1"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_live_centroid",
+			"stat": "14679 2 1 1 1 1 1"
 		},
 		{
 			"tbl": "van_turfs",

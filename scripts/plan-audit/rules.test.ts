@@ -55,6 +55,54 @@ describe('largeScans', () => {
 		]);
 	});
 
+	it('counts an automatic index on a small table, as a missing index', () => {
+		const small = sizesFrom([{ tbl: 'van_turf_placements', idx: null, stat: '1872' }]);
+		const placed = 'select turf_id from van_turf_placements p where p.chapter_id = ?';
+		expect(
+			largeScans(['SEARCH p USING AUTOMATIC PARTIAL COVERING INDEX (chapter_id=?)'], placed, small),
+		).toEqual([
+			{
+				table: 'van_turf_placements',
+				rows: 1872,
+				detail: 'SEARCH p USING AUTOMATIC PARTIAL COVERING INDEX (chapter_id=?)',
+			},
+		]);
+		expect(largeScans(['SCAN p'], placed, small)).toEqual([]);
+	});
+
+	it('leaves an automatic index on a subquery or a WITH table alone', () => {
+		const withSql =
+			'with recent as (select turf_id from van_turf_checkouts) select * from van_turfs t join recent r on r.turf_id = t.turf_id';
+		expect(
+			largeScans(
+				[
+					'SEARCH (subquery-1) USING AUTOMATIC COVERING INDEX (k=?)',
+					'SEARCH r USING AUTOMATIC COVERING INDEX (turf_id=?)',
+				],
+				withSql,
+				sizes,
+			),
+		).toEqual([]);
+	});
+
+	it('leaves an automatic index on an aliased subquery alone', () => {
+		const sub =
+			'select * from (select turf_id, max(at) m from van_turf_checkouts group by turf_id) s join van_turfs t on t.turf_id = s.turf_id';
+		expect(largeScans(['SEARCH s USING AUTOMATIC COVERING INDEX (turf_id=?)'], sub, sizes)).toEqual(
+			[],
+		);
+	});
+
+	it('takes a function call’s alias for no subquery', () => {
+		const counted =
+			'select count(*) c from van_turfs t join van_turf_checkouts c on c.turf_id = t.turf_id';
+		expect(
+			largeScans(['SEARCH c USING AUTOMATIC COVERING INDEX (turf_id=?)'], counted, sizes).map(
+				(s) => s.table,
+			),
+		).toEqual(['van_turf_checkouts']);
+	});
+
 	it('counts a scan of a partial index by the rows it covers', () => {
 		const plan = ['SCAN t USING INDEX van_turfs_live_campaign'];
 		expect(largeScans(plan, sql, sizes)).toEqual([]);

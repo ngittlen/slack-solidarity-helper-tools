@@ -523,6 +523,30 @@ so `lib/attendee-sync.ts` groups its timeslot links by event and fans the result
 back out by `timeslot.id`. Signups for shifts outside the requested window come
 back too and are dropped.
 
+**The half-hourly runs read only what changed.** Mobilize answers a run of
+per-event reads with `429`s and 30-second waits after about ten requests, and
+most signups are unchanged from one run to the next. So a windowed run reads
+`GET /v1/organizations/{orgId}/attendances?updated_since=<t>` instead: every
+signup changed since `t`, on any event, in one paginated read. `t` is in
+`attendee_sync_state`, read from ten minutes early for clock skew. It moves
+forward only after a run that took every upcoming shift and the whole default
+lookback, and settled everything it read, and whose read of changes held
+still: a signup that changes while the pages are read can push another past
+them, so a read that returns one changed within ten minutes of its start is
+read again from the same `t` next run. An event the run could not read, or
+with a signup it could not write, whose session's RSVPs it could not read, or
+on a shift whose Solidarity session was missing from that run's read, is in no
+later read of changes unless something on it changes again, so those events
+are stored beside `t`. The next windowed run reads those with a shift inside
+its window whole as well; the rest wait for the nightly run. A changed signup
+can be on any shift, so these runs take every upcoming shift, while the
+over-capacity check reads every capped session in the window. The nightly run
+still reads every event: it is what finds deleted events, and the windowed
+runs read only changes while it has done so in the last 30 hours. Otherwise,
+with no `t` stored, or when the read of changes fails, a windowed run reads
+every event in its window, and logs why when it is the nightly read that is
+missing.
+
 **An event deleted in Mobilize 404s this endpoint forever.** The timeslot pairings
 that point at it stay in `mobilize_synced_timeslots` — the event sync leaves a
 deleted event alone rather than resurrecting it, so nothing ever cleaned them up,

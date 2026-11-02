@@ -645,6 +645,13 @@
       "when": 1793589897961,
       "tag": "0091_van_campaign_recanvass",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "6",
+      "when": 1793607339886,
+      "tag": "0092_read_indexes_and_attendee_changes",
+      "breakpoints": true
     }
   ]
 }

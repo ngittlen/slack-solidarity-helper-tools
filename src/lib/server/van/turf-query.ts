@@ -252,8 +252,10 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// every candidate before the cut: the payload is filled with turf a
 	// volunteer can take first, and `claimableOnly` leaves the rest out.
 	const boxedIds = boxed.map((r) => r.turfId);
-	const claims = await claimsFor(db, boxedIds, viewer.slackUserId);
-	const walkReports = await latestWalkReports(db, boxedIds);
+	const [claims, walkReports] = await Promise.all([
+		claimsFor(db, boxedIds, viewer.slackUserId),
+		latestWalkReports(db, boxedIds),
+	]);
 	// No cap: being at the limit is about the viewer, not the turf — see
 	// `claimableOnly` — and would otherwise rank every turf as taken.
 	const ignoringCap = withoutClaimCap(claimOptions);
@@ -295,44 +297,44 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		band: (row) => (!takeable.has(row.turfId) ? 2 : hasContactHistory(row) ? 1 : 0),
 	});
 
-	// One small read for the whole payload rather than a lookup per row. The
-	// table holds one row per region and only in-flight ones are returned, so
-	// this is usually empty and never more than a handful — and an empty page
-	// skips it entirely, like the claim query above.
-	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<string>();
-	// The uncontacted count's "as of" — per campaign, since each pulls its own
-	// ContactHistory. One small read, skipped for an empty page.
-	const contactMarks =
-		selected.length > 0 ? await loadContactMarks(db) : new Map<number, ContactMarks>();
-	// Badges and disabled campaigns: one read of a table with a row per campaign.
-	const campaigns: TurfCampaigns =
+	// Only this page's holders: `claims` covers every candidate.
+	const selectedIds = new Set(selected.map((r) => r.turfId));
+	// The page's small reads, side by side: none needs another's answer, and
+	// an empty page skips them.
+	const [refreshingRegions, contactMarks, campaigns, holderAccounts] = await Promise.all([
+		// One read for the whole payload rather than a lookup per row. The
+		// table holds one row per region and only in-flight ones are returned,
+		// so this is usually empty and never more than a handful.
+		selected.length > 0 ? refreshingRegionIds(db) : new Set<string>(),
+		// The uncontacted count's "as of" — per campaign, since each pulls its
+		// own ContactHistory.
+		selected.length > 0 ? loadContactMarks(db) : new Map<number, ContactMarks>(),
+		// Badges and disabled campaigns: a table with a row per campaign.
 		selected.length > 0
-			? await loadTurfCampaigns(db)
-			: { badges: {}, showBadges: false, disabled: new Set<number>() };
+			? loadTurfCampaigns(db)
+			: ({ badges: {}, showBadges: false, disabled: new Set<number>() } as TurfCampaigns),
+		// The Slack, Google or Apple mark (and an outside holder's email) beside
+		// each holder name. Admins only — nobody else is shown who holds
+		// anything, so nobody else needs the read.
+		viewer.isAdmin
+			? loadHolderAccounts(
+					db,
+					claims.filter((c) => selectedIds.has(c.turfId)).map((c) => c.slackUserId),
+				)
+			: undefined,
+	]);
 	// The campaigns whose badge this page shows, and only those: a payload
 	// names no campaign it shows no badged turf from.
 	const badged = new Set(
 		selected.map((r) => r.campaignId).filter((id) => badgeShown(campaigns, id)),
 	);
 
-	// The Slack, Google or Apple mark (and an outside holder's email) beside each holder
-	// name. Admins only — nobody else is shown who holds anything, so nobody
-	// else needs the read.
 	// What `total` counts, and the same split by campaign.
 	const counted = claimableOnly ? candidates : rows;
 	const totalsByCampaign = new Map<number, number>();
 	for (const row of counted) {
 		totalsByCampaign.set(row.campaignId, (totalsByCampaign.get(row.campaignId) ?? 0) + 1);
 	}
-
-	// Only this page's holders: `claims` covers every candidate.
-	const selectedIds = new Set(selected.map((r) => r.turfId));
-	const holderAccounts = viewer.isAdmin
-		? await loadHolderAccounts(
-				db,
-				claims.filter((c) => selectedIds.has(c.turfId)).map((c) => c.slackUserId),
-			)
-		: undefined;
 
 	return {
 		// toTurfView is the single gate on what reaches a viewer; see its header.

@@ -1,12 +1,14 @@
 // The plan audit: does any statement the app sends read a whole large table,
-// as production's planner would run it?
+// or build an automatic index for want of one, as production's planner would
+// run it?
 //
 //   npm run test:plans
 //
 // Runs the tests with record.ts, which plans every statement they send
 // against a database with production's planner statistics (stats.json, from
 // pull-stats.ts), then reports each plan that reads every row of a table of
-// LARGE_TABLE_ROWS or more. One the code means to make goes in allow.ts with
+// LARGE_TABLE_ROWS or more, or builds an automatic index on a table of any
+// size (largeScans in rules.ts). One the code means to make goes in allow.ts with
 // its reason. Exits non-zero for any other, for an app statement the planner
 // refused, or when the tests fail.
 
@@ -116,8 +118,8 @@ for (const f of findings) {
 }
 console.log(
 	findings.length === 0
-		? '\nno statement reads a whole large table'
-		: `\n${findings.length} plan(s) read a whole large table`,
+		? '\nno statement reads a whole large table or builds an automatic index'
+		: `\n${findings.length} plan(s) read a whole large table or build an automatic index`,
 );
 if (unplanned.length > 0)
 	console.log(`${unplanned.length} statement(s) from app code could not be planned`);

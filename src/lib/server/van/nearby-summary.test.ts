@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import { loadNearbySummary, loadTurfCentre } from './nearby-summary.js';
+import {
+	cachedTurfCentre,
+	cachedTurfCentreCount,
+	forgetTurfCentres,
+	loadNearbySummary,
+	loadTurfCentre,
+	TURF_CENTRE_TTL_MS,
+} from './nearby-summary.js';
 import { CANVASSER_LEVELS } from '../../van/nearby-summary.js';
 
 // Real in-memory SQLite with the real migrations, so the column names and the
@@ -305,5 +312,44 @@ describe('loadTurfCentre', () => {
 	it('is null with no mapped turf', async () => {
 		await turf(1, null);
 		expect(await loadTurfCentre(db)).toBeNull();
+	});
+});
+
+describe('cachedTurfCentre', () => {
+	beforeEach(() => forgetTurfCentres());
+
+	it('reuses a centre for a while, per set of chapters', async () => {
+		await turf(1, { lat: 42.21, lng: -83.71 });
+		expect(await cachedTurfCentre(db, null, 0)).toEqual({ lat: 42.2, lng: -83.7 });
+		await turf(2, { lat: 44.21, lng: -83.71 });
+		expect(await cachedTurfCentre(db, null, TURF_CENTRE_TTL_MS - 1)).toEqual({
+			lat: 42.2,
+			lng: -83.7,
+		});
+		expect(await cachedTurfCentre(db, null, TURF_CENTRE_TTL_MS)).toEqual({ lat: 43.2, lng: -83.7 });
+	});
+
+	it('lets expired centres go', async () => {
+		await cachedTurfCentre(db, [1], 0);
+		await cachedTurfCentre(db, [2], 0);
+		await cachedTurfCentre(db, [3], TURF_CENTRE_TTL_MS);
+		expect(cachedTurfCentreCount()).toBe(1);
+	});
+
+	it('works one out for another set of chapters', async () => {
+		await turf(1, { lat: 42.21, lng: -83.71 });
+		expect(await cachedTurfCentre(db, null, 0)).not.toBeNull();
+		expect(await cachedTurfCentre(db, [999], 0)).toBeNull();
+	});
+
+	it('does not keep a failed read', async () => {
+		const broken = {
+			select: () => {
+				throw new Error('down');
+			},
+		} as unknown as typeof db;
+		await expect(cachedTurfCentre(broken, null, 0)).rejects.toThrow('down');
+		await turf(1, { lat: 42.21, lng: -83.71 });
+		expect(await cachedTurfCentre(db, null, 1)).toEqual({ lat: 42.2, lng: -83.7 });
 	});
 });

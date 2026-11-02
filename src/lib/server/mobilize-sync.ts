@@ -17,6 +17,7 @@ import { fetchPageDescriptions } from '../../../mobilize-migrator/lib/pages.js';
 import { loadMobilizeApi } from './mobilize-api.js';
 import { TursoLedger } from './mobilize-ledger.js';
 import { fetchAllEvents } from '../../../mobilize-migrator/lib/solidarity.js';
+import { handSolidarityEvents } from './solidarity-events-handoff.js';
 import { listSessionRsvps } from '../../../mobilize-migrator/lib/rsvp.js';
 import { countSeats, type SeatCount } from '../../../mobilize-migrator/lib/seats.js';
 import { runSync, type SyncReport } from '../../../mobilize-migrator/lib/sync.js';
@@ -138,6 +139,8 @@ export async function runMobilizeSync(
 		loadSettings(db),
 		importedSolidarityEventIds(db),
 	]);
+	// For the attendee sync the scheduler runs next (solidarity-events-handoff.ts).
+	handSolidarityEvents(allEvents);
 	// Events the partner-org import created came FROM a Mobilize org; pushing
 	// them into ours would publish a copy of a copy, and the API can't take it
 	// back. The import also tags them mobilize-exclude, but that relies on
