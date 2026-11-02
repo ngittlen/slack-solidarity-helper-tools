@@ -11,6 +11,7 @@ import {
 	priorCells,
 	packetRows,
 	sheetDate,
+	sheetDay,
 	sheetDoors,
 	stillOurs,
 	type ColumnLayout,
@@ -439,5 +440,52 @@ describe('campaignAssignments', () => {
 			packet('2-2', { Status: 'Unwalked', Canvasser: 'Sam' }),
 		);
 		expect([...campaignAssignments(values, LAYOUT, new Map()).keys()]).toEqual(['2-2']);
+	});
+});
+
+describe('sheetDay', () => {
+	it('reads the dates the app writes and the ones typed by hand', () => {
+		expect(sheetDay('09/19/2026')).toBe('2026-09-19');
+		expect(sheetDay(' 9/7/2026 ')).toBe('2026-09-07');
+		expect(sheetDay('9/7/26')).toBe('2026-09-07');
+		expect(sheetDay('2026-09-07')).toBe('2026-09-07');
+	});
+
+	it('is null for anything that is not a date', () => {
+		expect(sheetDay('')).toBeNull();
+		expect(sheetDay('Saturday')).toBeNull();
+		expect(sheetDay('13/01/2026')).toBeNull();
+		expect(sheetDay('02/30/2026')).toBeNull();
+	});
+});
+
+describe('campaignAssignments in recanvass mode', () => {
+	const sheet = (...rows: string[][]) => [[], HEADER, ...rows];
+	const staleBefore = '2026-09-19';
+
+	it('counts only entries sent out today or later', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam', Status: 'Complete', 'Date Sent Out': '09/18/2026' }),
+			packet('2-2', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': '09/19/2026' }),
+			packet('3-3', { Status: 'Out', 'Date Sent Out': '9/12/26' }),
+			packet('4-4', { Canvasser: 'Sam', Status: 'Unwalked', 'Date Sent Out': '09/20/2026' }),
+		);
+		const assigned = campaignAssignments(values, LAYOUT, new Map(), { staleBefore });
+		expect([...assigned.keys()].sort()).toEqual(['2-2', '4-4']);
+	});
+
+	it('does not count an entry with no readable Date Sent Out', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam', Status: 'Out' }),
+			packet('2-2', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': 'Saturday' }),
+		);
+		expect(campaignAssignments(values, LAYOUT, new Map(), { staleBefore }).size).toBe(0);
+	});
+
+	it('goes by the Status and name as ever without it', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam', Status: 'Complete', 'Date Sent Out': '09/18/2026' }),
+		);
+		expect([...campaignAssignments(values, LAYOUT, new Map()).keys()]).toEqual(['1-1']);
 	});
 });

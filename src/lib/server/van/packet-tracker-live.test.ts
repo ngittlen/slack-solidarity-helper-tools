@@ -21,7 +21,11 @@ vi.mock('./packet-tracker-store.js', () => ({
 	liveAssignment: mockLive,
 }));
 
-import { packetTrackerCheck, runPacketTracker } from './packet-tracker-live.js';
+import {
+	packetTrackerCheck,
+	refreshPacketTrackerSoon,
+	runPacketTracker,
+} from './packet-tracker-live.js';
 
 let db: ReturnType<typeof drizzle>;
 let client: ReturnType<typeof createClient>;
@@ -152,6 +156,55 @@ describe('the scheduled run', () => {
 		const result = await runPacketTracker(db, { timeBudgetMs: 30_000, channelId: 'C' });
 
 		expect(result).toMatchObject({ filled: 3, unrouted: 2, unroutedRegions: ['A', 'B'] });
+	});
+});
+
+describe('one campaign', () => {
+	it('re-reads only that campaign’s trackers, with its recanvass mode', async () => {
+		await campaign(2);
+		await rule(2, 'R10C', 'sheet-partner');
+		await client.execute('UPDATE van_campaigns SET recanvass_mode = 1 WHERE id = 2');
+
+		refreshPacketTrackerSoon(db, 2);
+		await vi.waitFor(() => expect(mockSync).toHaveBeenCalledOnce());
+
+		expect(mockSync.mock.calls[0]![1]).toMatchObject({
+			campaignId: 2,
+			recanvass: true,
+			runNotes: false,
+		});
+	});
+
+	it('runs once more, not once per switch, for switches made while it runs', async () => {
+		let finish!: () => void;
+		mockSync.mockImplementationOnce(
+			() => new Promise((resolve) => (finish = () => resolve(EMPTY_RESULT))),
+		);
+
+		refreshPacketTrackerSoon(db, 1);
+		await vi.waitFor(() => expect(mockSync).toHaveBeenCalledOnce());
+		refreshPacketTrackerSoon(db, 1);
+		refreshPacketTrackerSoon(db, 1);
+		refreshPacketTrackerSoon(db, 1);
+		finish();
+
+		await vi.waitFor(() => expect(mockSync).toHaveBeenCalledTimes(2));
+		await new Promise((r) => setTimeout(r, 50));
+		expect(mockSync).toHaveBeenCalledTimes(2);
+
+		// Done: the next switch starts a run of its own.
+		refreshPacketTrackerSoon(db, 1);
+		await vi.waitFor(() => expect(mockSync).toHaveBeenCalledTimes(3));
+	});
+
+	it('makes no Google call for a campaign that keeps no tracker', async () => {
+		await campaign(2, { sheets: false });
+		await rule(2, 'R10C', 'sheet-partner');
+
+		refreshPacketTrackerSoon(db, 2);
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(mockSync).not.toHaveBeenCalled();
 	});
 });
 

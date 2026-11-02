@@ -11,6 +11,7 @@ vi.mock('$lib/server/settings.js', () => ({
 }));
 vi.mock('$lib/server/slack.js', () => ({ slack: { chat: { postMessage: mockPostMessage } } }));
 vi.mock('$lib/server/van/packet-tracker-live.js', () => ({
+	FULL_RUN_BUDGET_MS: 100_000,
 	runPacketTracker: mockRunPacketTracker,
 }));
 
