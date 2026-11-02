@@ -35,7 +35,7 @@ const get = (session: unknown) => GET({ locals: { session } } as never);
 describe('/turfs/organizer/release-van', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockReleaseAll.mockResolvedValue(1);
+		mockReleaseAll.mockResolvedValue({ released: 1, skipped: { claimed: 1 } });
 		mockHeld.mockResolvedValue([
 			{ turfId: 100, campaignId: 1, folderId: 10, chapterName: 'Washtenaw', since: SEEN[0]!.since },
 			{ turfId: 101, campaignId: 1, folderId: 10, chapterName: 'Washtenaw', since: null },
@@ -81,7 +81,7 @@ describe('/turfs/organizer/release-van', () => {
 
 	it('releases what the summary counted, under the admin’s name and the time limit', async () => {
 		const res = await post(ADMIN);
-		expect(await res.json()).toEqual({ released: 1, skipped: 1 });
+		expect(await res.json()).toEqual({ released: 1, skipped: { claimed: 1 } });
 		const [, seen, countedAt, editor, , ttl] = mockReleaseAll.mock.calls[0]!;
 		expect(seen).toEqual(SEEN);
 		expect(countedAt).toEqual(new Date(COUNTED_AT));

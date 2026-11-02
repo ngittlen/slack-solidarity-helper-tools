@@ -14,6 +14,7 @@
 	import { page } from '$app/state';
 	import { campaignSheetStamp } from '$lib/campaign-time.js';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
+	import { vanReleaseLabel, type VanReleaseOutcome } from '$lib/van/van-release-result.js';
 	import type { ActionData } from './$types';
 
 	const { data, form } = $props();
@@ -128,17 +129,10 @@
 		};
 	});
 
-	/** What the last bulk release freed, and how many of the counted turf it
-	 *  left held because they changed after the count. */
-	let vanReleased = $state<{ released: number; skipped: number } | null>(null);
-	const plural = (n: number) => `${n} turf${n === 1 ? '' : 's'}`;
-	const vanReleasedLabel = $derived(
-		vanReleased &&
-			`Released ${plural(vanReleased.released)} back to volunteers.` +
-				(vanReleased.skipped > 0
-					? ` ${plural(vanReleased.skipped)} changed since the count (claimed here, or loaded in MiniVAN again) and stayed held.`
-					: ''),
-	);
+	/** What the last bulk release freed, and why it left the rest of what it
+	 *  counted. */
+	let vanReleased = $state<VanReleaseOutcome | null>(null);
+	const vanReleasedLabel = $derived(vanReleased && vanReleaseLabel(vanReleased));
 	/** The confirmation's summary: what the release frees, by VAN folder. */
 	let vanSummary = $state<{
 		countedAt: string;
@@ -186,7 +180,7 @@
 		});
 		const body = await res.json().catch(() => ({}));
 		if (!res.ok) throw new Error(body.error ?? 'Could not release the turf. Please try again.');
-		vanReleased = { released: body.released, skipped: body.skipped };
+		vanReleased = { released: body.released, skipped: body.skipped ?? {} };
 		await invalidateAll().catch(() => {});
 	}
 

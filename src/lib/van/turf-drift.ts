@@ -49,6 +49,8 @@ export interface DriftTurfRow {
 	/** Canvassers VAN reports for this turf via /minivanExports, or null when
 	 *  VAN has no export for it — or when the tier that reads them is missing. */
 	vanDistributedTo: string | null;
+	/** The time of the VAN hand-out staff released, if they released one. */
+	vanReleasedAt: string | null;
 	retiredAt: string | null;
 }
 
@@ -154,9 +156,12 @@ export function driftReport(
 	//
 	// Our own claims count too: an export inside one of them is recorded on
 	// the claim (`loadedInMinivanAt`), not on the turf, and it is the same
-	// evidence that lists are being loaded.
+	// evidence that lists are being loaded. So does a released hand-out: the
+	// release clears `vanDistributedTo`, and the export it released is as
+	// much evidence as one still standing. It lasts as long as the turf does,
+	// as a retired row's distribution does not.
 	const usesExports =
-		turfs.some((t) => t.retiredAt === null && t.vanDistributedTo) ||
+		turfs.some((t) => t.retiredAt === null && (t.vanDistributedTo || t.vanReleasedAt)) ||
 		claims.some((c) => c.loadedInMinivanAt !== null);
 	if (!usesExports) {
 		return {

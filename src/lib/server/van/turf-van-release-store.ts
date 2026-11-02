@@ -28,7 +28,9 @@ import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanCampaigns, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { heldOnlyInVan } from '../../van/turf-view.js';
+import type { VanReleaseOutcome, VanSkipReason } from '../../van/van-release-result.js';
 import { idRows } from './sql-chunk.js';
+import { turfCampaignEnabled } from './campaigns.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -37,13 +39,14 @@ type Db = ReturnType<typeof drizzle>;
  *  `sheet`: the Packet Tracker lists someone on it. `not-held`: nothing VAN
  *  gave out holds it any more — released already, retired, or past the time
  *  limit. */
-export type VanReleaseResult =
-	'released' | 'not-found' | 'changed' | 'claimed' | 'sheet' | 'not-held';
+export type VanReleaseResult = 'released' | VanSkipReason;
 
 /** A live claim on the turf, as activeClaimFor counts one: not ended and not
- *  lapsed. */
+ *  lapsed. The expiry is compared as a time, not as text, as isActive parses
+ *  it: an ISO time without milliseconds sorts after one with them as text, and
+ *  an expiry that does not parse is no claim (julianday is null). */
 function liveClaim(now: Date) {
-	return sql`exists (select 1 from ${vanTurfCheckouts} where ${vanTurfCheckouts.turfId} = ${vanTurfs.turfId} and ${vanTurfCheckouts.releasedAt} is null and ${vanTurfCheckouts.completedAt} is null and ${vanTurfCheckouts.expiresAt} > ${now.toISOString()})`;
+	return sql`exists (select 1 from ${vanTurfCheckouts} where ${vanTurfCheckouts.turfId} = ${vanTurfs.turfId} and ${vanTurfCheckouts.releasedAt} is null and ${vanTurfCheckouts.completedAt} is null and julianday(${vanTurfCheckouts.expiresAt}) > julianday(${now.toISOString()}))`;
 }
 
 /**
@@ -62,10 +65,17 @@ function heldOnlyInVanWhere(now: Date) {
 	);
 }
 
-/** Outside the campaign's requested-turf folder, whose turf an organizer cut
- *  for a particular request. Left out of the bulk release only: a turf there
- *  is still released from its own card. */
-const outsideRequestedFolder = sql`not exists (select 1 from ${vanCampaigns} where ${vanCampaigns.id} = ${vanTurfs.campaignId} and ${vanCampaigns.requestedFolderId} = ${vanTurfs.folderId})`;
+/** What the bulk release may reach, beyond what a card releases: turf
+ *  outside the campaign's requested-turf folder, whose turf an organizer cut
+ *  for a particular request and still releases from its own card; and only
+ *  in a campaign that is switched on, as /turfs draws no other's turf, so no
+ *  organizer has seen it to judge it free. */
+function inBulkRelease() {
+	return and(
+		sql`not exists (select 1 from ${vanCampaigns} where ${vanCampaigns.id} = ${vanTurfs.campaignId} and ${vanCampaigns.requestedFolderId} = ${vanTurfs.folderId})`,
+		turfCampaignEnabled(),
+	);
+}
 
 /** When the caller saw the turf, never later than now: a time in the future
  *  would ignore MiniVAN loads not made yet. */
@@ -74,12 +84,13 @@ function seenBy(seenAt: Date, now: Date): string {
 }
 
 /** The stamp: the released hand-out's own time, or when the caller saw a
- *  hand-out with no date. */
+ *  hand-out with no date. A blank date is no date, as everywhere a release is
+ *  read: a blank stamp would read as never released. */
 function releaseStamp(seenAt: string, editor: { name: string }) {
 	return {
 		vanDistributedTo: null,
 		vanAssignedAt: null,
-		vanReleasedAt: sql`coalesce(${vanTurfs.vanAssignedAt}, ${seenAt})`,
+		vanReleasedAt: sql`coalesce(nullif(${vanTurfs.vanAssignedAt}, ''), ${seenAt})`,
 		vanReleasedBy: editor.name,
 	};
 }
@@ -148,27 +159,37 @@ function sameHandOut(seen: readonly SeenHandOut[]) {
 	return sql`exists (select 1 from json_each(${JSON.stringify(seen)}) where json_extract(value, '$.turfId') = ${vanTurfs.turfId} and json_extract(value, '$.since') is ${vanTurfs.vanAssignedAt})`;
 }
 
-/** Why `turfId` was not released: the first of what holds it that applies. */
+/** Why each turf in `seen` was not released: the first of what holds it that
+ *  applies. */
 async function whyNotReleased(
 	db: Db,
-	turfId: number,
-	since: string | null,
+	seen: readonly SeenHandOut[],
 	now: Date,
-): Promise<Exclude<VanReleaseResult, 'released'>> {
-	const [row] = await db
-		.select({
-			vanDistributedTo: vanTurfs.vanDistributedTo,
-			vanAssignedAt: vanTurfs.vanAssignedAt,
-			sheetAssignedTo: vanTurfs.sheetAssignedTo,
-			claimed: sql<number>`${liveClaim(now)}`,
-		})
-		.from(vanTurfs)
-		.where(eq(vanTurfs.turfId, turfId));
-	if (!row) return 'not-found';
-	if (row.claimed) return 'claimed';
-	if (row.sheetAssignedTo) return 'sheet';
-	if (row.vanDistributedTo && row.vanAssignedAt !== since) return 'changed';
-	return 'not-held';
+): Promise<Map<number, VanSkipReason>> {
+	const rows =
+		seen.length === 0
+			? []
+			: await db
+					.select({
+						turfId: vanTurfs.turfId,
+						vanDistributedTo: vanTurfs.vanDistributedTo,
+						vanAssignedAt: vanTurfs.vanAssignedAt,
+						sheetAssignedTo: vanTurfs.sheetAssignedTo,
+						claimed: sql<number>`${liveClaim(now)}`,
+					})
+					.from(vanTurfs)
+					.where(sql`${vanTurfs.turfId} in (${idRows(seen.map((s) => s.turfId))})`);
+	const byId = new Map(rows.map((row) => [row.turfId, row]));
+	return new Map(
+		seen.map(({ turfId, since }): [number, VanSkipReason] => {
+			const row = byId.get(turfId);
+			if (!row) return [turfId, 'not-found'];
+			if (row.claimed) return [turfId, 'claimed'];
+			if (row.sheetAssignedTo) return [turfId, 'sheet'];
+			if (row.vanDistributedTo && row.vanAssignedAt !== since) return [turfId, 'changed'];
+			return [turfId, 'not-held'];
+		}),
+	);
 }
 
 /** Release `turfId` from the outside VAN hand-out made at `seen.since`, as
@@ -191,7 +212,7 @@ export async function releaseVanAssignment(
 					.set(releaseStamp(seenBy(seen.seenAt, now), editor))
 					.where(and(eq(vanTurfs.turfId, turfId), heldOnlyInVanWhere(now), sameHandOut(handOut)))
 					.returning({ turfId: vanTurfs.turfId });
-	if (updated.length === 0) return whyNotReleased(db, turfId, seen.since, now);
+	if (updated.length === 0) return (await whyNotReleased(db, handOut, now)).get(turfId)!;
 	console.log(
 		`[van] turf ${turfId} released from its VAN hand-out by ${editor.id} (${editor.name})`,
 	);
@@ -205,13 +226,12 @@ export async function vanOnlyHeldTurfs(
 	now: Date,
 	vanAssignmentTtlHours: number,
 ): Promise<VanHeldTurf[]> {
-	return stillHeld(db, outsideRequestedFolder, now, vanAssignmentTtlHours);
+	return stillHeld(db, inBulkRelease(), now, vanAssignmentTtlHours);
 }
 
 /** Release the turf in `seen` that `vanOnlyHeldTurfs` still finds under the
  *  hand-out the caller saw when it counted them at `countedAt`, in one
- *  statement, so a failure releases none of them. Returns how many it
- *  freed. */
+ *  statement, so a failure releases none of them. */
 export async function releaseAllVanAssignments(
 	db: Db,
 	seen: readonly SeenHandOut[],
@@ -219,11 +239,11 @@ export async function releaseAllVanAssignments(
 	editor: { id: string; name: string },
 	now: Date,
 	vanAssignmentTtlHours: number,
-): Promise<number> {
+): Promise<VanReleaseOutcome> {
 	const wanted = new Map(seen.map((s) => [s.turfId, s.since]));
 	const held = await stillHeld(
 		db,
-		and(sql`${vanTurfs.turfId} in (${idRows([...wanted.keys()])})`, outsideRequestedFolder),
+		and(sql`${vanTurfs.turfId} in (${idRows([...wanted.keys()])})`, inBulkRelease()),
 		now,
 		vanAssignmentTtlHours,
 	);
@@ -240,7 +260,7 @@ export async function releaseAllVanAssignments(
 						and(
 							sql`${vanTurfs.turfId} in (${idRows(release.map((t) => t.turfId))})`,
 							heldOnlyInVanWhere(now),
-							outsideRequestedFolder,
+							inBulkRelease(),
 							sameHandOut(release),
 						),
 					)
@@ -248,7 +268,15 @@ export async function releaseAllVanAssignments(
 	console.log(
 		`[van] ${updated.length} turf released from VAN hand-outs by ${editor.id} (${editor.name})`,
 	);
-	return updated.length;
+	const freed = new Set(updated.map((u) => u.turfId));
+	const left = [...wanted].flatMap(([turfId, since]) =>
+		freed.has(turfId) ? [] : [{ turfId, since }],
+	);
+	const skipped: VanReleaseOutcome['skipped'] = {};
+	for (const reason of (await whyNotReleased(db, left, now)).values()) {
+		skipped[reason] = (skipped[reason] ?? 0) + 1;
+	}
+	return { released: updated.length, skipped };
 }
 
 /** One VAN folder's line in the bulk release's summary. */
