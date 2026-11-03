@@ -109,6 +109,7 @@ const settingsFixture = {
 	vanTurfClaimTtlHours: 48,
 	vanTurfMaxConcurrentClaims: 2,
 	vanAssignmentTtlHours: 48,
+	vanExpiryReminderHours: 6,
 	vanRegionRefreshEnabled: false,
 	vanSheetTabName: 'Packet Tracker',
 	publicJoinUrl: '',

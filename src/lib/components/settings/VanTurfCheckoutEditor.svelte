@@ -1,7 +1,7 @@
 <script lang="ts">
-	// The numbers that govern turf checkout: how long a claim lasts, how many a
-	// volunteer may hold at once, and how long turf handed out in VAN stays out
-	// of the pool.
+	// The numbers that govern turf checkout: how long a claim lasts, when its
+	// holder is reminded, how many a volunteer may hold at once, and how long
+	// turf handed out in VAN stays out of the pool.
 	//
 	// They are `app_config` fields like the ranking α and the ticker speed, and
 	// use the same debounced autosave — but they live in their own section
@@ -30,6 +30,11 @@
 		VAN_ASSIGNMENT_NEVER_RELEASED,
 	} from '$lib/van/checkout.js';
 	import {
+		EXPIRY_REMINDER_OFF,
+		EXPIRY_WARNING_LEAD_HOURS,
+		MIN_EXPIRY_REMINDER_HOURS,
+	} from '$lib/van/expiry-warning.js';
+	import {
 		MENTOR_WALKS_VISIBILITIES,
 		MENTOR_WALKS_VISIBILITY_LABELS,
 		type MentorWalksVisibility,
@@ -37,6 +42,7 @@
 
 	interface Props {
 		ttlHours: number;
+		expiryReminderHours: number;
 		maxConcurrentClaims: number;
 		vanAssignmentTtlHours: number;
 		/** specs/015-mentor-walks, FR-040 and FR-036. */
@@ -47,6 +53,7 @@
 
 	let {
 		ttlHours,
+		expiryReminderHours,
 		maxConcurrentClaims,
 		vanAssignmentTtlHours,
 		mentorWalksVisibility,
@@ -68,6 +75,12 @@
 		initial: ttlHours,
 		parse: (raw) => parseInt(raw, 10),
 		save: (value) => postAppConfig({ vanTurfClaimTtlHours: value }),
+	});
+
+	const reminderSave = createFieldAutosave<number>({
+		initial: expiryReminderHours,
+		parse: (raw) => parseInt(raw, 10),
+		save: (value) => postAppConfig({ vanExpiryReminderHours: value }),
 	});
 
 	const capSave = createFieldAutosave<number>({
@@ -108,6 +121,7 @@
 
 	$effect(() => () => {
 		ttlSave.destroy();
+		reminderSave.destroy();
 		capSave.destroy();
 		vanTtlSave.destroy();
 		visibilitySave.destroy();
@@ -145,9 +159,41 @@
 	</div>
 	<p class="app-config-note">
 		A volunteer who neither walks their turf nor gives it back loses it after this long, and it
-		returns to the pool. They get a reminder six hours before that happens. Default {DEFAULT_CLAIM_TTL_HOURS}
+		returns to the pool. Default {DEFAULT_CLAIM_TTL_HOURS}
 		hours — long enough to cover a weekend, so turf claimed on Friday evening is still theirs on Sunday.
-		Between {MIN_CLAIM_TTL_HOURS} and {MAX_CLAIM_TTL_HOURS} hours.
+		Between {MIN_CLAIM_TTL_HOURS} and {MAX_CLAIM_TTL_HOURS} hours, and longer than the reminder below.
+	</p>
+</SettingsRow>
+
+<SettingsRow
+	label="When to remind them"
+	status={reminderSave.status}
+	error={reminderSave.error}
+	onRetry={reminderSave.status === 'error' ? reminderSave.retry : undefined}
+>
+	<div class="turf-number">
+		<input
+			type="number"
+			min={MIN_EXPIRY_REMINDER_HOURS}
+			max={ttlSave.value - 1}
+			step="1"
+			value={reminderSave.value}
+			oninput={reminderSave.oninput}
+			aria-label="Hours before a claim lapses that its holder is reminded"
+		/>
+		<span class="turf-unit">
+			{reminderSave.value === EXPIRY_REMINDER_OFF
+				? 'hours (no reminder)'
+				: `hours before it lapses${asDays(reminderSave.value)}`}
+		</span>
+	</div>
+	<p class="app-config-note">
+		A volunteer still holding turf gets one message this long before their claim lapses, asking them
+		to walk it or give it back. Whole hours, shorter than a claim lasts; set it to
+		{EXPIRY_REMINDER_OFF} to send no reminder. Reminders go out with the VAN sync, every half hour by
+		day and hourly overnight, so one can arrive up to an hour after this mark. A reminder of an hour or
+		two can be missed altogether overnight, when a claim may lapse before the next sync reaches it. Default
+		{EXPIRY_WARNING_LEAD_HOURS} hours.
 	</p>
 </SettingsRow>
 

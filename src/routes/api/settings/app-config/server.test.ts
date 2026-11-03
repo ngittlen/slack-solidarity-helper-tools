@@ -3,12 +3,16 @@ import { POST } from './+server.js';
 import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '$lib/ticker-speed.js';
 
 const mockSaveAppConfig = vi.hoisted(() => vi.fn());
+const mockLoadSettings = vi.hoisted(() => vi.fn());
 const mockValidateChannel = vi.hoisted(() => vi.fn());
 const mockGetSlackChannels = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/slack', () => ({ slack: {} }));
-vi.mock('$lib/server/settings', () => ({ saveAppConfig: mockSaveAppConfig }));
+vi.mock('$lib/server/settings', () => ({
+	saveAppConfig: mockSaveAppConfig,
+	loadReminderAndClaimHours: mockLoadSettings,
+}));
 vi.mock('$lib/server/settings-validation', () => ({
 	validateSlackChannel: mockValidateChannel,
 }));
@@ -35,6 +39,7 @@ describe('POST /api/settings/app-config', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockSaveAppConfig.mockResolvedValue(undefined);
+		mockLoadSettings.mockResolvedValue({ vanExpiryReminderHours: 6, vanTurfClaimTtlHours: 48 });
 		mockValidateChannel.mockResolvedValue({ ok: true, name: 'general' });
 		mockGetSlackChannels.mockResolvedValue({
 			items: [{ id: 'C_GEN', name: 'general', isPrivate: false }],
@@ -273,6 +278,29 @@ describe('POST /api/settings/app-config', () => {
 			expect(res.status).toBe(400);
 		}
 		expect(mockSaveAppConfig).not.toHaveBeenCalled();
+	});
+
+	it('saves a reminder that fits the saved claim length', async () => {
+		const res = await POST(makeEvent(authed, { vanExpiryReminderHours: 12 }) as never);
+		expect(res.status).toBe(200);
+		expect(mockSaveAppConfig).toHaveBeenCalledWith(
+			expect.anything(),
+			{ vanExpiryReminderHours: 12 },
+			expect.anything(),
+		);
+	});
+
+	it('400 for a reminder longer than the claim, or a claim shorter than the reminder', async () => {
+		const longer = await POST(makeEvent(authed, { vanExpiryReminderHours: 72 }) as never);
+		expect(longer.status).toBe(400);
+		const shorter = await POST(makeEvent(authed, { vanTurfClaimTtlHours: 4 }) as never);
+		expect(shorter.status).toBe(400);
+		expect(mockSaveAppConfig).not.toHaveBeenCalled();
+	});
+
+	it('does not read the saved settings for a patch that touches neither', async () => {
+		await POST(makeEvent(authed, { slackTrackingChannelId: 'C1' }) as never);
+		expect(mockLoadSettings).not.toHaveBeenCalled();
 	});
 
 	it('returns 400 for a non-JSON body', async () => {

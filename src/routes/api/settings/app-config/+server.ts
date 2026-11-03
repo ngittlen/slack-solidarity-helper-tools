@@ -2,10 +2,16 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
-import { saveAppConfig, type AppConfigPatch, type Editor } from '$lib/server/settings.js';
+import {
+	loadReminderAndClaimHours,
+	saveAppConfig,
+	type AppConfigPatch,
+	type Editor,
+} from '$lib/server/settings.js';
 import {
 	APP_CONFIG_FIELDS,
 	APP_CONFIG_FIELD_KEYS,
+	checkReminderFitsClaim,
 	type AppConfigFieldKey,
 } from '$lib/server/app-config-fields.js';
 
@@ -51,6 +57,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	if (Object.keys(patch).length === 0) {
 		return json({ error: 'no recognized app-config fields in body' }, { status: 400 });
+	}
+
+	if (patch.vanExpiryReminderHours !== undefined || patch.vanTurfClaimTtlHours !== undefined) {
+		const fits = checkReminderFitsClaim(patch, await loadReminderAndClaimHours(db));
+		if (!fits.ok) return json({ error: fits.error }, { status: fits.status });
 	}
 
 	const editor: Editor = {

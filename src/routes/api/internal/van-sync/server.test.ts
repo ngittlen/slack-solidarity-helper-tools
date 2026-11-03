@@ -86,7 +86,10 @@ vi.mock('$lib/server/van/placement-chapters.js', () => ({
 	placementChapters: async () => [{ chapterId: 71, name: 'Washtenaw County' }],
 }));
 vi.mock('$lib/server/van/checkout-store.js', () => ({ sweepExpiredClaims: mockSweep }));
-vi.mock('$lib/server/van/expiry-warning-store.js', () => ({ sendExpiryWarnings: mockWarn }));
+vi.mock('$lib/server/van/expiry-warning-store.js', () => ({
+	sendExpiryWarnings: mockWarn,
+	loadExpiryReminderHours: async () => 6,
+}));
 vi.mock('$lib/server/van/holder-notices.js', () => ({ pruneHolderNotices: mockPrune }));
 vi.mock('$lib/server/van/drift-alert-store.js', () => ({ sendDriftAlerts: mockDrift }));
 vi.mock('$lib/server/van/list-expiry-alert-store.js', () => ({

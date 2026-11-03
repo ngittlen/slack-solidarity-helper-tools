@@ -254,6 +254,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		campaignBadges: campaigns.badges,
 		holdings,
 		summary: summarise(holdings),
+		expiryReminderHours: settings.vanExpiryReminderHours,
 		suspects,
 		// Turf an admin hid from volunteers on its /turfs card, to show again.
 		hidden,

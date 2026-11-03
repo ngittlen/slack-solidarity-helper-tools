@@ -4,39 +4,66 @@
 // for the turf and bad for the volunteer: someone who meant to walk it on
 // Sunday finds on Monday that it went back to the pool without a word, and the
 // organizer sees an "expired" row that looks like flakiness rather than a
-// missed reminder. A single DM six hours out turns both of those into a choice
-// — finish it, or hand it back so someone else can.
+// missed reminder. A single DM some hours out — six by default, or what an admin
+// sets — turns both of those into a choice: finish it, or hand it back so
+// someone else can.
 //
 // Pure: no DB, no Slack, no clock of its own. The decision of WHO to warn and
 // WHAT to say is all here and unit-tested; expiry-warning-store.ts does the
 // rows and the sending.
 //
 // One warning per claim, ever. The sweep that sends these runs every half hour
-// across the whole six-hour window, so the stamp on the row (not a timer, not a
-// log line) is what keeps a reminder from becoming twelve.
+// across the whole lead window, so the stamp on the row (not a timer, not a log
+// line) is what keeps one reminder from becoming one per tick.
 
-import { isActive, hoursRemaining, type ClaimSnapshot } from './checkout.js';
+import { isActive, hoursRemaining, MAX_CLAIM_TTL_HOURS, type ClaimSnapshot } from './checkout.js';
 import { campaignTimeLabel, campaignDayLabel } from '../campaign-time.js';
 
 /**
- * How long before expiry to warn.
+ * How long before expiry to warn, unless an admin sets another lead time in
+ * /settings (app_config.vanExpiryReminderHours).
  *
  * Six hours against a 48-hour default TTL: long enough to do something about
  * it — walk it that evening, or give it back before someone else's Saturday
  * planning depends on it — and short enough that the message still reads as
- * urgent rather than as filing. Deliberately not admin-tunable yet; Story 7.4
- * makes the TTL and the claim cap configurable, and a lead time longer than the
- * TTL would mean warning at the moment of claiming, which is the one setting
- * nobody wants.
+ * urgent rather than as filing.
  */
 export const EXPIRY_WARNING_LEAD_HOURS = 6;
+
+/** The lead time that means "send no reminder at all". It doubles as the
+ *  floor, so a hand-edited row below it also reads as off. */
+export const EXPIRY_REMINDER_OFF = 0;
+export const MIN_EXPIRY_REMINDER_HOURS = EXPIRY_REMINDER_OFF;
+/** As long as a claim may last (MAX_CLAIM_TTL_HOURS). A lead time is also
+ *  held to the configured claim length (`reminderFitsClaim`). */
+export const MAX_EXPIRY_REMINDER_HOURS = MAX_CLAIM_TTL_HOURS;
+
+/**
+ * Whether a lead time fits inside a claim of `claimTtlHours`: shorter than it.
+ * One as long as the claim, or longer, warns at the first sweep after claiming,
+ * which is no reminder at all, so the settings page refuses it. Off always fits.
+ */
+export function reminderFitsClaim(reminderHours: number, claimTtlHours: number): boolean {
+	return reminderHours < claimTtlHours;
+}
+
+/**
+ * The configured lead time, clamped. NULL or a non-number means the default.
+ * Clamped rather than rejected, as resolveClaimOptions does: an out-of-range
+ * value is a hand-edited row, and not worth failing a sync over.
+ */
+export function resolveExpiryReminderHours(value: number | null | undefined): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return EXPIRY_WARNING_LEAD_HOURS;
+	return Math.min(MAX_EXPIRY_REMINDER_HOURS, Math.max(MIN_EXPIRY_REMINDER_HOURS, value));
+}
 
 /** A claim as this module needs to see it: the lifecycle stamps, plus whether
  *  it has already been warned. */
 export type WarnableClaim = ClaimSnapshot & { expiryWarnedAt: string | null };
 
 /**
- * Whether this claim is due its one expiry warning.
+ * Whether this claim is due its one expiry warning. Never, with the lead time
+ * set to EXPIRY_REMINDER_OFF.
  *
  * Three conditions, and the order is the interesting part:
  *
@@ -56,6 +83,7 @@ export function needsExpiryWarning(
 	now: Date,
 	leadHours: number = EXPIRY_WARNING_LEAD_HOURS,
 ): boolean {
+	if (leadHours <= EXPIRY_REMINDER_OFF) return false;
 	if (claim.expiryWarnedAt !== null) return false;
 	if (!isActive(claim, now)) return false;
 	return hoursRemaining(claim, now) <= leadHours;
