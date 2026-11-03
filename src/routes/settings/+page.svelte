@@ -247,6 +247,7 @@
 			<h2>Turf checkout</h2>
 			<VanTurfCheckoutEditor
 				ttlHours={data.settings.vanTurfClaimTtlHours}
+				expiryReminderHours={data.settings.vanExpiryReminderHours}
 				maxConcurrentClaims={data.settings.vanTurfMaxConcurrentClaims}
 				vanAssignmentTtlHours={data.settings.vanAssignmentTtlHours}
 				mentorWalksVisibility={data.settings.mentorWalksVisibility}

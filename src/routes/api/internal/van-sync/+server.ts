@@ -29,7 +29,10 @@ import { placeRequestedTurf } from '$lib/server/van/turf-placement.js';
 import { placementChapters } from '$lib/server/van/placement-chapters.js';
 import { exportCallbackUrl } from '$lib/server/van/webhook-token.js';
 import { sweepExpiredClaims } from '$lib/server/van/checkout-store.js';
-import { sendExpiryWarnings } from '$lib/server/van/expiry-warning-store.js';
+import {
+	loadExpiryReminderHours,
+	sendExpiryWarnings,
+} from '$lib/server/van/expiry-warning-store.js';
 import { pruneHolderNotices } from '$lib/server/van/holder-notices.js';
 import { sendDriftAlerts } from '$lib/server/van/drift-alert-store.js';
 import { sendListExpiryAlerts } from '$lib/server/van/list-expiry-alert-store.js';
@@ -51,7 +54,7 @@ import { secretMatches } from '$lib/server/secret-compare.js';
 //
 // Three parts, in order:
 //
-//   1. The ledger housekeeping — expiring lapsed claims, six-hour warnings,
+//   1. The ledger housekeeping — expiring lapsed claims, expiry warnings,
 //      noticing new campaign secrets. Needs no VAN key, so it runs before any
 //      key is checked (runHousekeeping).
 //   2. Each campaign's own sync — catalog, re-cut confirmations and requests,
@@ -248,11 +251,11 @@ interface Housekeeping {
 }
 
 /**
- * The ledger half: expire lapsed claims, send six-hour warnings, and notice new
+ * The ledger half: expire lapsed claims, send expiry warnings, and notice new
  * campaign secrets. Needs no VAN key and covers every campaign at once.
  *
  * Runs before any catalog, and genuinely independent of VAN. An expired claim
- * needs stamping and a volunteer needs their six-hour warning whether or not a
+ * needs stamping and a volunteer needs their expiry warning whether or not a
  * catalog fetch succeeds, and while a missing key means no new turf, it does
  * not mean the turf volunteers are already holding stops mattering. Rotate a
  * key badly on a Friday and an order that checked the key first silently
@@ -279,7 +282,7 @@ async function runHousekeeping(now: Date): Promise<Housekeeping> {
 
 		// Sweep first, then warn: the sweep releases anything already past its
 		// TTL, so nobody is warned about turf that expired moments ago.
-		const warnings = await sendExpiryWarnings(db, now);
+		const warnings = await sendExpiryWarnings(db, now, await loadExpiryReminderHours(db));
 
 		// "Your claim ended", for whoever the sweep just released — or another
 		// volunteer's claim released lazily. Push, or the page for a Google or

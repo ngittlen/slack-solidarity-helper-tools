@@ -281,10 +281,11 @@
 		</label>
 		<p class="app-config-note">
 			For a second pass over turf already walked. Packets sent out on an earlier day, even ones
-			marked Complete, can be checked out again, and so can any packet with no readable Date Sent
-			Out, so some doors will be knocked twice. Only packets sent out today still keep their turf
-			off the map. The spreadsheets are not changed, and a new checkout on a packet that still shows
-			an older entry is not written into it. The map catches up within a few minutes of switching.
+			marked Complete, can be checked out again, and so can any packet with no Date Sent Out, so
+			some doors will be knocked twice. Only packets sent out today still keep their turf off the
+			map. Where the Packet Tracker has a Second Pass section, a new checkout on a packet with an
+			older entry is written there, and the first pass is left as it is; without one, it is not
+			written in. The map catches up within a few minutes of switching.
 		</p>
 	</SettingsRow>
 

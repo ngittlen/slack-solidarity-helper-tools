@@ -38,15 +38,17 @@ import {
 	DEFAULT_SHEET_TAB_NAME,
 	FILL_COLUMNS,
 	campaignAssignments,
-	isStaleEntry,
 	cellWrites,
 	changedCells,
 	clearedCells,
 	desiredCells,
 	findLayout,
 	isPacketRow,
+	isStaleRow,
 	isUnfilled,
 	markedName,
+	passLayout,
+	passToFill,
 	priorCells,
 	normaliseListNumber,
 	packetRows,
@@ -56,6 +58,7 @@ import {
 	type PacketCells,
 	type PacketCheckout,
 	type PacketKey,
+	type Pass,
 } from '../../van/packet-tracker.js';
 import { matchSheetTarget, orderSheetTargets, type SheetTarget } from '../../van/sheet-routing.js';
 import {
@@ -114,10 +117,13 @@ const RATE_LIMITED = 429;
  * checkout alone for good rather than fight them for it. `yellow`: we cleared
  * our entry but Google would not take the highlight off, so it is tried again
  * while the packet is still free — only when it ever went on (`painted`).
+ * `pass`: 2 when the entry is in the tab's Second Pass section; absent for the
+ * first.
  */
 export interface SheetState {
 	spreadsheetId: string | null;
 	cells: PacketCells | null;
+	pass?: 2;
 	prior?: PacketCells;
 	told?: Notice;
 	gone?: true;
@@ -148,6 +154,7 @@ export function parseSheetState(raw: string | null): SheetState | null {
 		return {
 			spreadsheetId: typeof parsed.spreadsheetId === 'string' ? parsed.spreadsheetId : null,
 			cells: renamedCells(parsed.cells),
+			...(parsed.pass === 2 ? { pass: 2 as const } : {}),
 			...(prior ? { prior } : {}),
 			...(parsed.told && NOTICES.has(parsed.told) ? { told: parsed.told } : {}),
 			...(parsed.gone ? { gone: true as const } : {}),
@@ -353,7 +360,7 @@ async function loadCandidates(
  * tracker back. From every checkout that has cells recorded, not just this
  * run's candidates — a packet walked last week is still ours in the sheet.
  */
-async function loadOurEntries(db: Db): Promise<Map<string, Map<string, string>>> {
+async function loadOurEntries(db: Db): Promise<Map<string, Map<string, Set<string>>>> {
 	const rows = await db
 		.select({
 			issuedListNumber: vanTurfCheckouts.issuedListNumber,
@@ -361,13 +368,16 @@ async function loadOurEntries(db: Db): Promise<Map<string, Map<string, string>>>
 		})
 		.from(vanTurfCheckouts)
 		.where(isNotNull(vanTurfCheckouts.sheetState));
-	const ours = new Map<string, Map<string, string>>();
+	const ours = new Map<string, Map<string, Set<string>>>();
 	for (const row of rows) {
 		const state = parseSheetState(row.sheetState);
 		if (!state?.spreadsheetId || !state.cells?.Canvasser || !row.issuedListNumber) continue;
 		let entries = ours.get(state.spreadsheetId);
 		if (!entries) ours.set(state.spreadsheetId, (entries = new Map()));
-		entries.set(normaliseListNumber(row.issuedListNumber), state.cells.Canvasser);
+		const listNumber = normaliseListNumber(row.issuedListNumber);
+		let names = entries.get(listNumber);
+		if (!names) entries.set(listNumber, (names = new Set()));
+		names.add(state.cells.Canvasser.trim());
 	}
 	return ours;
 }
@@ -505,7 +515,7 @@ async function openTab(
 	spreadsheetId: string,
 	tabName: string,
 	deadline: number,
-	ours: ReadonlyMap<string, string>,
+	ours: ReadonlyMap<string, ReadonlySet<string>>,
 	options: {
 		walkIns?: boolean;
 		urgent?: boolean;
@@ -709,6 +719,11 @@ async function syncCheckout(
 	const current = tab.values[rowIndex];
 	let writes: PacketCells;
 	let next: PacketCells | null;
+	/** The pass our entry is in, or goes in. */
+	let pass: Pass = state.pass ?? 1;
+	/** That pass's columns; null for a Second Pass section the tab no longer
+	 *  has. */
+	let entry = passLayout(tab.layout, pass);
 
 	if (state.cells === null) {
 		if (wanted === null) {
@@ -718,14 +733,16 @@ async function syncCheckout(
 			await save(base);
 			return 'unchanged';
 		}
-		if (!isUnfilled(current, tab.layout)) {
+		const free = passToFill(current, tab.layout, staleBefore);
+		if (free === null) {
 			// Somebody has this packet. Theirs — but it is checked again every
 			// run, and filled in if their entry is cleared while ours is live.
 			// The sheet's entry should have blocked the claim, so one here means
 			// two people have the turf — an organizer's problem to sort out.
-			// Not said in recanvass mode when the entry is from an earlier day:
-			// that mode is what let the claim through, and the row stays as it is.
-			const stale = staleBefore !== undefined && isStaleEntry(current, tab.layout, staleBefore);
+			// Not said in recanvass mode when every entry is from an earlier
+			// day: that mode is what let the claim through, and the row stays
+			// as it is.
+			const stale = staleBefore !== undefined && isStaleRow(current, tab.layout, staleBefore);
 			if (state.told !== 'taken' && !stale) {
 				warnings.push(
 					`${LOG} ${label} was claimed, but its packet already has someone else's entry in the Packet Tracker, so that entry was left as it is`,
@@ -736,10 +753,12 @@ async function syncCheckout(
 			await save(stale ? base : { ...base, told: 'taken' });
 			return 'unchanged';
 		}
+		pass = free;
+		entry = passLayout(tab.layout, pass)!;
 		writes = wanted;
 		next = wanted;
 	} else {
-		if (!stillOurs(current, tab.layout, state.cells)) {
+		if (entry === null || !stillOurs(current, entry, state.cells)) {
 			warnings.push(
 				`${LOG} the Packet Tracker entry for ${label} has been changed by hand, so it was left as it is`,
 			);
@@ -771,10 +790,13 @@ async function syncCheckout(
 	});
 	if (!fresh.ok) return { error: fresh.error, status: fresh.status };
 	const samePacket = isPacketRow(fresh.value, tab.layout, key);
+	// A new entry goes where it would on the fresh row: a first pass handed
+	// out again today since the read means the packet is not free for a
+	// second.
 	const stillFree =
 		state.cells === null
-			? isUnfilled(fresh.value, tab.layout)
-			: stillOurs(fresh.value, tab.layout, state.cells);
+			? passToFill(fresh.value, tab.layout, staleBefore) === pass
+			: stillOurs(fresh.value, entry, state.cells);
 	if (!samePacket || !stillFree) return 'moved';
 
 	// Our entry is highlighted while it is ours, so the campaign can tell it
@@ -786,7 +808,7 @@ async function syncCheckout(
 		client,
 		tab.spreadsheetId,
 		rowIndex,
-		FILL_COLUMNS.map((column) => tab.layout.columns[column]),
+		FILL_COLUMNS.map((column) => entry.columns[column]),
 		next !== null,
 		deadline,
 		tab.tabName,
@@ -797,15 +819,16 @@ async function syncCheckout(
 		spreadsheetId: tab.spreadsheetId,
 		tabName: tab.tabName,
 		rowIndex,
-		cells: cellWrites(writes, tab.layout),
+		cells: cellWrites(writes, entry),
 		deadline,
 	});
 	if (!res.ok) return { error: res.error, status: res.status };
 	// A first fill records what it covered, from the row as just re-read.
-	const prior = state.cells === null ? priorCells(fresh.value, tab.layout) : state.prior;
+	const prior = state.cells === null ? priorCells(fresh.value, entry) : state.prior;
 	await save({
 		spreadsheetId: tab.spreadsheetId,
 		cells: next,
+		...(pass === 2 ? { pass } : {}),
 		...(next && prior && Object.keys(prior).length > 0 ? { prior } : {}),
 		...(next !== null && (styled === 'done' || state.painted) ? { painted: true as const } : {}),
 		// Cleared, but the yellow we put on could not come off: try again.
@@ -832,6 +855,13 @@ async function unhighlightFreed(
 	if (refusesHighlight(tab.spreadsheetId, tab.tabName)) return 'unchanged';
 	const rest: SheetState = { ...base };
 	delete rest.yellow;
+	// The highlight went on the pass our entry was in; with that section gone
+	// from the tab, there is nothing left to take it off.
+	const entry = passLayout(tab.layout, base.pass ?? 1);
+	if (entry === null) {
+		await save(rest);
+		return 'unchanged';
+	}
 	const fresh = await client.readRow({
 		spreadsheetId: tab.spreadsheetId,
 		tabName: tab.tabName,
@@ -840,12 +870,12 @@ async function unhighlightFreed(
 	});
 	if (!fresh.ok) return { error: fresh.error, status: fresh.status };
 	if (!isPacketRow(fresh.value, tab.layout, key)) return 'moved';
-	if (isUnfilled(fresh.value, tab.layout)) {
+	if (isUnfilled(fresh.value, entry)) {
 		const off = await highlight(
 			client,
 			tab.spreadsheetId,
 			rowIndex,
-			FILL_COLUMNS.map((column) => tab.layout.columns[column]),
+			FILL_COLUMNS.map((column) => entry.columns[column]),
 			false,
 			deadline,
 			tab.tabName,
@@ -1469,7 +1499,7 @@ async function highlight(
 async function refreshAssignments(
 	db: Db,
 	tab: OpenTab,
-	ours: ReadonlyMap<string, string>,
+	ours: ReadonlyMap<string, ReadonlySet<string>>,
 	turfs: ReadonlyArray<{
 		turfId: number;
 		printedListNumber: string | null;
@@ -1506,7 +1536,7 @@ async function refreshAssignments(
  *  day. */
 function workFingerprint(
 	work: { candidates: Candidate[]; turfs: unknown[] },
-	ours: ReadonlyMap<string, string>,
+	ours: ReadonlyMap<string, ReadonlySet<string>>,
 	tabName: string,
 	day: string,
 	staleBefore: string | undefined,
@@ -1517,7 +1547,8 @@ function workFingerprint(
 		staleBefore ?? null,
 		work.candidates,
 		work.turfs,
-		[...ours],
+		// Sets serialise as {}, so the names are spelled out.
+		[...ours].map(([listNumber, names]) => [listNumber, [...names].sort()]),
 	]);
 }
 
@@ -1577,7 +1608,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		targets.find((t) => t.spreadsheetId === spreadsheetId)?.label ?? spreadsheetId;
 
 	let candidates: Candidate[];
-	let ourEntries: Map<string, Map<string, string>>;
+	let ourEntries: Map<string, Map<string, Set<string>>>;
 	let turfs: Array<{
 		turfId: number;
 		regionName: string;

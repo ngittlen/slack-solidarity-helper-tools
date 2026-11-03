@@ -381,6 +381,10 @@ export const appConfig = sqliteTable(
 		// in turf-view.ts). Same NULL-means-default and clamp-on-read as the two
 		// above.
 		vanAssignmentTtlHours: integer('van_assignment_ttl_hours'),
+		// Hours before a claim lapses that its holder is reminded; 0 sends no
+		// reminder. NULL means EXPIRY_WARNING_LEAD_HOURS in
+		// $lib/van/expiry-warning.ts, clamped on read like the two above.
+		vanExpiryReminderHours: integer('van_expiry_reminder_hours'),
 		// Theme overrides as JSON: {"color-bg":{"light":"#fbf0e4"}}. One column
 		// rather than ~60, because adding a field to this table is a nine-step
 		// checklist across six files and a palette would be unmaintainable that
@@ -1359,12 +1363,12 @@ export const vanTurfCheckouts = sqliteTable(
 		 *  volunteer is told about the same re-cut 37 times a day. Stamped only
 		 *  after Slack accepted the message. */
 		recutNotifiedAt: text('recut_notified_at'),
-		/** When the T-6h expiry warning DM was successfully sent.
+		/** When the expiry warning DM was successfully sent.
 		 *
 		 *  The idempotency key for that DM, and the reason it is a column rather
 		 *  than a log line: the warning sweep runs every half hour for the whole
-		 *  six-hour window, so without a stamp a volunteer would be reminded
-		 *  twelve times about one turf. Stamped only on a successful send, so a
+		 *  lead window (app_config.van_expiry_reminder_hours), so without a stamp
+		 *  a volunteer would be reminded at every tick about one turf. Stamped only on a successful send, so a
 		 *  Slack outage retries on the next tick instead of silently swallowing
 		 *  the one message that stops turf being lost. */
 		expiryWarnedAt: text('expiry_warned_at'),

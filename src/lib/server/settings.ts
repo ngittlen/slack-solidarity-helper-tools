@@ -42,6 +42,7 @@ import {
 import { clampTickerColumnsPerSecond } from '../ticker-speed.js';
 import { errChainText } from '../err-message.js';
 import { resolveClaimOptions } from '../van/checkout.js';
+import { resolveExpiryReminderHours } from '../van/expiry-warning.js';
 import { invalidateThemeCache } from './theme.js';
 import { invalidateSiteNameCache } from './site.js';
 
@@ -187,6 +188,9 @@ export interface Settings {
 	/** Hours a turf handed out in VAN stays out of the pool. Resolved and
 	 *  clamped like the claim TTL. */
 	vanAssignmentTtlHours: number;
+	/** Hours before a claim lapses that its holder is reminded. 0 means no
+	 *  reminder. Resolved and clamped like the claim TTL. */
+	vanExpiryReminderHours: number;
 	/** Where the signed-out /turfs page's "Join our chat" button goes. DB-only;
 	 *  '' means "no button". */
 	publicJoinUrl: string;
@@ -232,6 +236,7 @@ export type AppConfigPatch = Partial<{
 	vanTurfClaimTtlHours: number;
 	vanTurfMaxConcurrentClaims: number;
 	vanAssignmentTtlHours: number;
+	vanExpiryReminderHours: number;
 	/** Theme overrides, serialised. One JSON column rather than ~60 colour
 	 *  columns — see the comment on app_config.themeTokens in schema.ts.
 	 *  Validated by themeTokensField before it ever reaches here. */
@@ -249,6 +254,27 @@ export type AppConfigPatch = Partial<{
  *  same Slack id shape (`^U[A-Z0-9]{10}$`) so generic id validators accept it
  *  without a carve-out. */
 export const SYSTEM_EDITOR: Editor = { id: 'U0000000000', name: 'System' } as const;
+
+/**
+ * The claim length and the expiry reminder, resolved as loadSettings resolves
+ * them, from their two columns alone: what the settings page checks one
+ * against the other with on every save of either.
+ */
+export async function loadReminderAndClaimHours(
+	db: Database,
+): Promise<{ vanExpiryReminderHours: number; vanTurfClaimTtlHours: number }> {
+	const [cfg] = await db
+		.select({
+			reminder: appConfig.vanExpiryReminderHours,
+			ttl: appConfig.vanTurfClaimTtlHours,
+		})
+		.from(appConfig)
+		.limit(1);
+	return {
+		vanExpiryReminderHours: resolveExpiryReminderHours(cfg?.reminder),
+		vanTurfClaimTtlHours: resolveClaimOptions({ ttlHours: cfg?.ttl }).ttlHours,
+	};
+}
 
 export async function loadSettings(db: Database): Promise<Settings> {
 	// Every table in one batch: one round trip to Turso, where eleven separate
@@ -405,6 +431,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		vanTurfClaimTtlHours: claimOptions.ttlHours,
 		vanTurfMaxConcurrentClaims: claimOptions.maxConcurrentClaims,
 		vanAssignmentTtlHours: claimOptions.vanAssignmentTtlHours,
+		vanExpiryReminderHours: resolveExpiryReminderHours(cfg?.vanExpiryReminderHours),
 		publicJoinUrl: cfg?.publicJoinUrl?.trim() ?? '',
 		mentorWalksVisibility: parseVisibility(cfg?.mentorWalksVisibility),
 		volunteerGuidelinesUrl: cfg?.volunteerGuidelinesUrl?.trim() ?? '',
@@ -1083,6 +1110,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'vanTurfClaimTtlHours',
 	'vanTurfMaxConcurrentClaims',
 	'vanAssignmentTtlHours',
+	'vanExpiryReminderHours',
 	'themeTokens',
 	'publicJoinUrl',
 	'mentorWalksVisibility',

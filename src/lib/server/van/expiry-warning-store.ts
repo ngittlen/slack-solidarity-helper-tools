@@ -15,14 +15,16 @@
 
 import { and, eq, isNull, lte } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { appConfig, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { notifyHolder } from './holder-notices.js';
 import { APP_URL } from '../env.js';
 import {
+	EXPIRY_REMINDER_OFF,
 	EXPIRY_WARNING_LEAD_HOURS,
 	hoursRemaining,
 	needsExpiryWarning,
 	renderExpiryWarning,
+	resolveExpiryReminderHours,
 	type WarnableClaim,
 } from '../../van/expiry-warning.js';
 
@@ -96,7 +98,31 @@ async function markWarned(db: Db, checkoutId: number, at: string): Promise<void>
 }
 
 /**
- * DM every volunteer whose turf lapses within the lead window.
+ * The lead time an admin set (app_config.vanExpiryReminderHours), resolved.
+ *
+ * Its one column, not the whole settings bundle, and never throws: a failed
+ * read falls back to the default, so a settings problem cannot stop the
+ * reminders, or the housekeeping after them.
+ */
+export async function loadExpiryReminderHours(db: Db): Promise<number> {
+	try {
+		const [row] = await db
+			.select({ hours: appConfig.vanExpiryReminderHours })
+			.from(appConfig)
+			.limit(1);
+		return resolveExpiryReminderHours(row?.hours);
+	} catch (err) {
+		console.error(
+			`${LOG} could not read the expiry reminder setting, using ${EXPIRY_WARNING_LEAD_HOURS}h:`,
+			err instanceof Error ? err.message : err,
+		);
+		return EXPIRY_WARNING_LEAD_HOURS;
+	}
+}
+
+/**
+ * DM every volunteer whose turf lapses within the lead window. Nothing, with
+ * the lead time set to EXPIRY_REMINDER_OFF.
  *
  * Sends are sequential rather than parallel. The volume is tiny — a handful of
  * claims per tick even on a busy weekend — and Slack's per-workspace rate limit
@@ -110,6 +136,7 @@ export async function sendExpiryWarnings(
 	now: Date,
 	leadHours: number = EXPIRY_WARNING_LEAD_HOURS,
 ): Promise<ExpiryWarningResult> {
+	if (leadHours <= EXPIRY_REMINDER_OFF) return { sent: 0, failed: 0 };
 	const horizon = new Date(now.getTime() + leadHours * 3_600_000).toISOString();
 
 	let candidates: CandidateRow[];

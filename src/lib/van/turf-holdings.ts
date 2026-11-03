@@ -28,7 +28,7 @@ export interface HoldingRow extends ClaimSnapshot {
 	/** The turf's VAN campaign — for its badge, and the campaign filter. */
 	campaignId: number;
 	doorCount: number;
-	/** When the T-6h warning DM landed, or null if it has not (yet) been sent. */
+	/** When the expiry warning DM landed, or null if it has not (yet) been sent. */
 	expiryWarnedAt: string | null;
 }
 
@@ -67,10 +67,11 @@ export interface Holding {
 /**
  * Anything lapsing within this many hours is "expiring".
  *
- * Deliberately the same window the warning DM uses, so the board and the DM
- * agree about what "about to lapse" means. An organizer looking at a row
- * flagged red should be able to assume the volunteer has heard from us — and
- * when they have not, `warned` says so.
+ * The warning DM's default lead time, so with the default setting the board
+ * and the DM agree about what "about to lapse" means. Fixed rather than
+ * following the setting: with reminders off (or set to a few minutes' notice)
+ * the board must still flag turf about to lapse. `warned` says whether the
+ * volunteer has heard from us.
  */
 export const EXPIRING_WITHIN_HOURS = EXPIRY_WARNING_LEAD_HOURS;
 

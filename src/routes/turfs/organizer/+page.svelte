@@ -15,6 +15,7 @@
 	import { campaignSheetStamp } from '$lib/campaign-time.js';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
 	import { vanReleaseLabel, type VanReleaseOutcome } from '$lib/van/van-release-result.js';
+	import { EXPIRY_REMINDER_OFF } from '$lib/van/expiry-warning.js';
 	import type { ActionData } from './$types';
 
 	const { data, form } = $props();
@@ -482,7 +483,11 @@
 		<p class="callout">
 			{data.summary.expiringUnwarned}
 			{data.summary.expiringUnwarned === 1 ? 'turf is' : 'turfs are'} expiring and the volunteer hasn't
-			been reminded yet — the reminder goes out six hours before expiry, so these may need a word directly.
+			been reminded yet —
+			{data.expiryReminderHours === EXPIRY_REMINDER_OFF
+				? 'reminders are turned off in settings'
+				: `the reminder goes out ${data.expiryReminderHours === 1 ? '1 hour' : `${data.expiryReminderHours} hours`} before expiry`},
+			so these may need a word directly.
 		</p>
 	{/if}
 
