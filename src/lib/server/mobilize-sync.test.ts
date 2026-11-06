@@ -83,6 +83,19 @@ describe('runMobilizeSync — the echo guard', () => {
 	});
 });
 
+describe('runMobilizeSync — the attendee sync’s Solidarity events', () => {
+	it('hands on every event it read, imported ones too', async () => {
+		const { takeSolidarityEvents } = await import('./solidarity-events-handoff.js');
+		const all = [
+			{ id: 900, title: 'Imported', tags: [] },
+			{ id: 901, title: 'Ours', tags: [] },
+		];
+		fetchAllEvents.mockResolvedValue(all);
+		await runMobilizeSync(db, { apply: false });
+		expect(takeSolidarityEvents()?.events).toEqual(all);
+	});
+});
+
 describe('runMobilizeSync — the virtual-events switch', () => {
 	beforeEach(() => fetchAllEvents.mockResolvedValue([{ id: 901, title: 'Ours', tags: [] }]));
 

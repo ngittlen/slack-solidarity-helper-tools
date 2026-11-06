@@ -25,6 +25,7 @@
 	import type { CanvassEventCard } from '$lib/canvass-events/types.js';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import KnockedClaimDialog from '$lib/components/turfs/KnockedClaimDialog.svelte';
+	import ConfirmButton from '$lib/components/settings/ConfirmButton.svelte';
 	import { formatRelative } from '$lib/components/settings/format-relative.js';
 	import {
 		campaignStoppedNote,
@@ -784,6 +785,36 @@
 		}
 	}
 
+	/** Why a "Release from VAN" was refused, by turf. Held here rather than in
+	 *  ConfirmButton: the reload after a refusal can take the button away (the
+	 *  turf is no longer VAN's to release), and the reason must outlive it. */
+	let vanReleaseErrors = $state<Record<number, string>>({});
+
+	/** Throws only when the server cannot be reached, when the card is
+	 *  unchanged and ConfirmButton can show the reason itself. */
+	async function releaseVan(turf: TurfView) {
+		delete vanReleaseErrors[turf.turfId];
+		const res = await fetch(`/api/turfs/${turf.turfId}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			// The hand-out this card shows, so a newer one is not released.
+			body: JSON.stringify({
+				action: 'release-van',
+				since: turf.heldInVan?.since ?? null,
+				seenAt: turf.heldInVan?.seenAt,
+			}),
+		}).catch(() => {
+			throw new Error("Couldn't reach the server. Check your signal and try again.");
+		});
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({}));
+			vanReleaseErrors[turf.turfId] = body.error ?? 'Something went wrong. Try again.';
+		}
+		// A refusal means the card is stale (someone else released it, a claim
+		// took it, or VAN handed it out again): the reload shows it as it is.
+		await invalidateAll().catch(() => {});
+	}
+
 	function moreHours(hours: number): string {
 		return hours === 1 ? '1 more hour' : `${hours} more hours`;
 	}
@@ -1088,6 +1119,10 @@
 						<li><span class="swatch swatch-no-list"></span> No list number</li>
 						<li><span class="swatch swatch-mine"></span> Yours</li>
 						<li><span class="swatch swatch-other"></span> Checked out</li>
+						{#if canShowCleared}
+							<!-- Staff only, like the red it explains (TurfView.heldInVan). -->
+							<li><span class="swatch swatch-held-in-van"></span> Held in VAN</li>
+						{/if}
 						{#if location}<li><span class="swatch swatch-me"></span> You</li>{/if}
 						<!-- Buttons, not swatches: each shows or hides its markers. -->
 						{#if mapWalks.length > 0}
@@ -1447,20 +1482,41 @@
 											nearby.
 										</p>
 									{/if}
-									{#if data.isAdmin}
-										<!-- Last, under the volunteer's view of the card, so an admin
-										     reads the turf as a volunteer would before changing who
-										     sees it. The API refuses anyone else. -->
-										<label class="hide-check admin-only">
-											<Checkbox
-												bind:checked={
-													() => hideShown[turf.turfId] ?? turf.hidden === true,
-													(next) => void setHidden(turf, next)
-												}
-												disabled={hiding[turf.turfId]}
-											/>
-											Hide from volunteers
-										</label>
+									{#if data.isAdmin || turf.heldInVan || vanReleaseErrors[turf.turfId]}
+										<!-- Last, under the volunteer's view of the card, so staff
+										     read the turf as a volunteer would before changing who
+										     sees it or who holds it. The API refuses anyone else.
+										     The release sits on the right whether or not the
+										     admin-only checkbox is beside it. -->
+										<div class="staff-actions">
+											{#if data.isAdmin}
+												<label class="hide-check admin-only">
+													<Checkbox
+														bind:checked={
+															() => hideShown[turf.turfId] ?? turf.hidden === true,
+															(next) => void setHidden(turf, next)
+														}
+														disabled={hiding[turf.turfId]}
+													/>
+													Hide from volunteers
+												</label>
+											{/if}
+											{#if turf.heldInVan}
+												<div class="release-van">
+													<ConfirmButton
+														label="Release from VAN"
+														confirmLabel="Release"
+														description="VAN shows this turf's list loaded in MiniVAN by someone outside this site. Releasing puts it back in the pool for volunteers here. If anyone loads the list in MiniVAN again, it goes back to being held."
+														onConfirm={() => releaseVan(turf)}
+													/>
+												</div>
+											{/if}
+											{#if vanReleaseErrors[turf.turfId]}
+												<p class="release-van-error" role="alert">
+													{vanReleaseErrors[turf.turfId]}
+												</p>
+											{/if}
+										</div>
 									{/if}
 								</div>
 							{/if}

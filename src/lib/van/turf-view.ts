@@ -29,6 +29,7 @@ import {
 	type TurfSnapshot,
 } from './checkout.js';
 import { visibleTurfState, type VolunteerStatus } from './turf-status.js';
+import { isTurfStaff } from './access.js';
 import { campaignDayLabel } from '../campaign-time.js';
 import type { HolderAccount } from '../holder-account.js';
 
@@ -60,6 +61,9 @@ export interface TurfRowInput {
 	/** When an admin hid it from volunteers. Optional so fixtures predating
 	 *  it need not name it. */
 	hiddenAt?: string | null;
+	/** When an admin or moderator released it from its VAN hand-out. Optional
+	 *  so fixtures predating it need not name it. */
+	vanReleasedAt?: string | null;
 	lastRefreshedAt: string | null;
 	/** Doors with no in-person contact since the cut, from ContactHistory
 	 *  (van/contact-sync.ts). Optional so fixtures predating it need not name
@@ -135,16 +139,46 @@ export function needsKnockedConfirm(turf: Pick<TurfView, 'contactHistory'>): boo
  * so the next volunteer is not sent to re-knock theirs. Without a count it
  * would come back at VAN's full doorCount, so it stays out as before. So does
  * a hand-out with no date, which there is no clock to run on.
+ *
+ * A hand-out at or before an organizer's release never blocks. The release
+ * clears the columns and the catalog sync does not write such a hand-out
+ * back (unlessReleased in sync.ts); this keeps the claim rules to the same
+ * cutoff whatever the columns hold.
  */
 export function vanAssignmentBlocks(
-	row: CountedRow & Pick<TurfRowInput, 'vanDistributedTo' | 'vanAssignedAt'>,
+	row: CountedRow & Pick<TurfRowInput, 'vanDistributedTo' | 'vanAssignedAt' | 'vanReleasedAt'>,
 	now: Date,
 	ttlHours = DEFAULT_VAN_ASSIGNMENT_TTL_HOURS,
 ): boolean {
 	if (!row.vanDistributedTo) return false;
+	if (row.vanReleasedAt && (!row.vanAssignedAt || row.vanAssignedAt <= row.vanReleasedAt)) {
+		return false;
+	}
 	if (ttlHours === VAN_ASSIGNMENT_NEVER_RELEASED) return true;
 	if (!row.vanAssignedAt || currentUncontacted(row) === null) return true;
 	return now.getTime() - Date.parse(row.vanAssignedAt) < ttlHours * 3_600_000;
+}
+
+/**
+ * Held by a VAN hand-out and nothing else: no live claim here (`claimed`), no
+ * Packet Tracker entry, not retired, and the hand-out still blocks under the
+ * time limit. The one rule for which turf an organizer may release from VAN:
+ * the card shows the button by it (TurfView.heldInVan) and the release store
+ * authorizes by it, so the two cannot disagree.
+ */
+export function heldOnlyInVan(
+	row: CountedRow &
+		Pick<
+			TurfRowInput,
+			'vanDistributedTo' | 'vanAssignedAt' | 'vanReleasedAt' | 'sheetAssignedTo' | 'retiredAt'
+		>,
+	claimed: boolean,
+	now: Date,
+	ttlHours?: number,
+): boolean {
+	return (
+		!claimed && !row.sheetAssignedTo && !row.retiredAt && vanAssignmentBlocks(row, now, ttlHours)
+	);
 }
 
 /**
@@ -333,6 +367,17 @@ export interface TurfView {
 	 * their card has nothing to say about it. Omitted when it does not apply.
 	 */
 	hidden?: true;
+	/**
+	 * True when what keeps the turf out of the pool is a hand-out in VAN — no
+	 * claim here, and not the Packet Tracker — so its card offers admins and
+	 * moderators the release (heldOnlyInVan). The card sends both times back
+	 * with the release. `since` is the hand-out's, so a hand-out VAN made after
+	 * the card loaded is not the one released. `seenAt` is when the card was
+	 * built: a hand-out with no date is released as of then, so a MiniVAN load
+	 * after it still holds the turf once the sync reads it. Staff only.
+	 * Omitted when it does not apply.
+	 */
+	heldInVan?: { since: string | null; seenAt: string };
 }
 
 /** A walk report as the view needs it: the percentage, and when. `percent`
@@ -554,7 +599,7 @@ export function turfSnapshot(
 export function toTurfView(
 	row: TurfRowInput,
 	claims: readonly ClaimSnapshot[],
-	viewer: { slackUserId: string; isAdmin: boolean },
+	viewer: { slackUserId: string; isAdmin: boolean; isModerator?: boolean },
 	now: Date,
 	options: TurfViewOptions = {},
 ): TurfView {
@@ -622,5 +667,9 @@ export function toTurfView(
 		...(options.showCampaign ? { campaignId: row.campaignId } : {}),
 		...(options.disabledCampaigns?.has(row.campaignId) ? { campaignDisabled: true as const } : {}),
 		...(viewer.isAdmin && row.hiddenAt != null ? { hidden: true as const } : {}),
+		...(isTurfStaff(viewer) &&
+		heldOnlyInVan(row, active !== null, now, options.vanAssignmentTtlHours)
+			? { heldInVan: { since: row.vanAssignedAt ?? null, seenAt: now.toISOString() } }
+			: {}),
 	};
 }

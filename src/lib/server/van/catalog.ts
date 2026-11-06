@@ -41,9 +41,10 @@ export interface CatalogInput {
 	 *  campaign's rows must not be here: retirement is decided against this
 	 *  list, and VAN's route ids only mean something within one campaign. */
 	existing: VanTurfRow[];
-	/** Every turfId in use, across ALL campaigns. A new turf takes its VAN
-	 *  route id as its turfId unless that id is already taken; then it gets
-	 *  one above every id in use and every VAN id in this sync. */
+	/** The turfIds in use, across ALL campaigns, among this sync's route ids,
+	 *  and the highest in use. A new turf takes its VAN route id as its turfId
+	 *  unless that id is already taken; then it gets one above every id in
+	 *  use and every VAN id in this sync. */
 	takenTurfIds?: ReadonlySet<number>;
 	/** Optional — Tier 3, and a key without it should still sync a catalog. */
 	minivanExports?: VanMinivanExport[];
@@ -460,21 +461,31 @@ function insideClaim(at: number, claims: readonly CatalogClaim[]): boolean {
  * forward is keyed on `vanAssignedAt` rather than on `vanDistributedTo`,
  * because rows written before this rule may carry a name that came from our
  * own volunteer's export.
+ *
+ * An organizer's release (`vanReleasedAt`) ends the hand-out: no export at or
+ * before it counts, and no carried-forward hand-out from before it.
  */
 function outsideAssignment(
 	exports: readonly DatedExport[],
 	claims: readonly CatalogClaim[],
 	prior: VanTurfRow | undefined,
 ): { vanDistributedTo: string | null; vanAssignedAt: string | null } {
-	const latest = exports.filter((e) => !insideClaim(e.at, claims)).at(-1);
+	const releasedAt = prior?.vanReleasedAt ? Date.parse(prior.vanReleasedAt) : null;
+	const latest = exports
+		.filter((e) => !insideClaim(e.at, claims) && (releasedAt === null || e.at > releasedAt))
+		.at(-1);
 	const latestAt = latest ? new Date(latest.at).toISOString() : null;
-	if (latest && latestAt && !(prior?.vanAssignedAt && prior.vanAssignedAt > latestAt)) {
+	const carried =
+		prior?.vanAssignedAt && (releasedAt === null || Date.parse(prior.vanAssignedAt) > releasedAt)
+			? prior.vanAssignedAt
+			: null;
+	if (latest && latestAt && !(carried && carried > latestAt)) {
 		return { vanDistributedTo: latest.names, vanAssignedAt: latestAt };
 	}
-	if (prior?.vanAssignedAt) {
+	if (prior && carried) {
 		return {
 			vanDistributedTo: prior.vanDistributedTo ?? UNKNOWN_CANVASSER,
-			vanAssignedAt: prior.vanAssignedAt,
+			vanAssignedAt: carried,
 		};
 	}
 	return { vanDistributedTo: null, vanAssignedAt: null };

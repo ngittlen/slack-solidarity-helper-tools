@@ -853,6 +853,291 @@ describe('the campaign’s own assignments', () => {
 	});
 });
 
+describe('recanvass mode', () => {
+	// NOW is 2pm on 2026-09-19 in the campaign's clock.
+	const recanvass = (api: SheetsClient) => run(api, { recanvass: true });
+
+	it('frees turf the tracker shows as sent out on an earlier day', async () => {
+		await turf();
+		const fake = fakeSheets({
+			'sheet-downriver': tracker(
+				packet(LIST, { Canvasser: 'Olu', Status: 'Complete', 'Date Sent Out': '09/18/2026' }),
+			),
+		});
+		await run(fake.api);
+		expect(await assignedTo()).toBe('Olu');
+
+		await recanvass(fake.api);
+
+		expect(await assignedTo()).toBeNull();
+	});
+
+	it('still holds turf sent out today', async () => {
+		await turf();
+		const fake = fakeSheets({
+			'sheet-downriver': tracker(
+				packet(LIST, { Canvasser: 'Olu', Status: 'Out', 'Date Sent Out': '09/19/2026' }),
+			),
+		});
+
+		await recanvass(fake.api);
+
+		expect(await assignedTo()).toBe('Olu');
+	});
+
+	it('frees turf whose entry has no Date Sent Out', async () => {
+		await turf();
+		const fake = fakeSheets({
+			'sheet-downriver': tracker(packet(LIST, { Canvasser: 'Olu', Status: 'Out' })),
+		});
+
+		await recanvass(fake.api);
+
+		expect(await assignedTo()).toBeNull();
+	});
+
+	// The earlier entry is why the claim was allowed: nothing to tell anyone.
+	it('leaves an earlier entry as it is, without a warning, when the turf is claimed', async () => {
+		await turf();
+		await checkout();
+		const theirs = packet(LIST, {
+			Canvasser: 'Sam',
+			Status: 'Complete',
+			'Date Sent Out': '09/12/2026',
+		});
+		const fake = fakeSheets({ 'sheet-downriver': tracker(theirs) });
+
+		const result = await recanvass(fake.api);
+
+		expect(fake.sheet('sheet-downriver')[2]).toEqual(theirs);
+		expect(writes(fake.calls)).toEqual([]);
+		expect(result.warnings).toEqual([]);
+	});
+
+	// Two people hold the packet once the earlier entry counts again.
+	it('warns about that entry once the mode is switched off', async () => {
+		await turf();
+		await checkout();
+		const theirs = packet(LIST, {
+			Canvasser: 'Sam',
+			Status: 'Complete',
+			'Date Sent Out': '09/12/2026',
+		});
+		const fake = fakeSheets({ 'sheet-downriver': tracker(theirs) });
+		await recanvass(fake.api);
+
+		const off = await run(fake.api);
+
+		expect(off.warnings).toEqual([expect.stringContaining("someone else's entry")]);
+	});
+
+	it('still warns about an entry from today', async () => {
+		await turf();
+		await checkout();
+		const theirs = packet(LIST, { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': '09/19/2026' });
+		const fake = fakeSheets({ 'sheet-downriver': tracker(theirs) });
+
+		const result = await recanvass(fake.api);
+
+		expect(writes(fake.calls)).toEqual([]);
+		expect(result.warnings).toEqual([expect.stringContaining("someone else's entry")]);
+	});
+
+	describe('live, for a claim', () => {
+		beforeEach(() => {
+			vi.useFakeTimers({ toFake: ['Date'] });
+			vi.setSystemTime(NOW);
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		const liveFor = (api: SheetsClient, recanvass: boolean) =>
+			liveAssignment(db, {
+				client: api,
+				targets: [DOWNRIVER],
+				turf: {
+					turfId: 100,
+					regionName: 'R10C_Wayne_TaylorCity004_9.11',
+					printedListNumber: LIST,
+				},
+				timeBudgetMs: 6_000,
+				recanvass,
+			});
+
+		it('frees an earlier entry, and does not reuse a read made under the other mode', async () => {
+			await turf();
+			const fake = fakeSheets({
+				'sheet-downriver': tracker(
+					packet(LIST, { Canvasser: 'Olu', Status: 'Complete', 'Date Sent Out': '09/18/2026' }),
+				),
+			});
+
+			expect(await liveFor(fake.api, false)).toBe('Olu');
+			expect(await liveFor(fake.api, true)).toBeNull();
+
+			expect(fake.calls.filter((c) => c.startsWith('read'))).toHaveLength(2);
+			expect(await assignedTo()).toBeNull();
+		});
+	});
+});
+
+describe('a tab with a Second Pass section', () => {
+	// The campaign's layout for walking a list again, seen 2026-11-02: the
+	// canvasser columns repeated after a Pass # column.
+	const PASS = [
+		'Canvasser',
+		'Shift Time',
+		'Date Sent Out',
+		'Time Departed',
+		'Walk Mode',
+		'Phone Number',
+		'Knocked #',
+		'Status',
+	];
+	const TWO_PASS = [
+		...HEADER.slice(0, HEADER.indexOf('Today?')),
+		'Pass #',
+		...PASS,
+		'Today?',
+		'Knocked %',
+	];
+	const second = (name: string) => TWO_PASS.lastIndexOf(name);
+	const firstPass = (name: string) => TWO_PASS.indexOf(name);
+
+	function twoPass(first: Record<string, string>, again: Record<string, string> = {}): string[] {
+		const row = TWO_PASS.map(() => '');
+		row[firstPass('List Number')] = LIST;
+		row[firstPass('Doors')] = '80';
+		for (const [h, v] of Object.entries(first)) row[firstPass(h)] = v;
+		for (const [h, v] of Object.entries(again)) row[second(h)] = v;
+		return row;
+	}
+	/** Row 1, as the campaign's: each section's label over its first column. */
+	const LABELS = TWO_PASS.map((h, i) =>
+		i === firstPass('Canvasser') ? 'First Pass' : h === 'Pass #' ? 'Second Pass' : '',
+	);
+	const sheet = (row: string[]) => [LABELS, TWO_PASS, row];
+	const walked = { Canvasser: 'Sam', Status: 'Complete', 'Date Sent Out': '09/12/2026' };
+
+	it('fills in the second pass in recanvass mode when the first is from an earlier day', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': sheet(twoPass(walked, { Status: 'Unwalked' })) });
+
+		const result = await run(fake.api, { recanvass: true });
+
+		const row = fake.sheet('sheet-downriver')[2]!;
+		expect(result.filled).toBe(1);
+		expect(result.warnings).toEqual([]);
+		expect(row[firstPass('Canvasser')]).toBe('Sam');
+		expect(row[firstPass('Status')]).toBe('Complete');
+		expect(row[second('Canvasser')]).toBe('*Dana');
+		expect(row[second('Date Sent Out')]).toBe('09/19/2026');
+		expect(row[second('Status')]).toBe('Unwalked');
+		expect((await stateOf(1))?.pass).toBe(2);
+		expect(await assignedTo()).toBeNull();
+
+		await update(1, "loaded_in_minivan_at = '2026-09-19T14:41:00.000Z'");
+		await run(fake.api, { recanvass: true });
+
+		const later = fake.sheet('sheet-downriver')[2]!;
+		expect(later[second('Status')]).toBe('Out');
+		expect(later[second('Time Departed')]).toBe('10:41 AM');
+		expect(later[firstPass('Status')]).toBe('Complete');
+	});
+
+	it('highlights the second pass’s columns, not the first’s', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': sheet(twoPass(walked)) });
+		const highlights: number[][] = [];
+		const highlightCells = fake.api.highlightCells.bind(fake.api);
+		fake.api.highlightCells = async (input) => {
+			highlights.push([...input.columns]);
+			return highlightCells(input);
+		};
+
+		await run(fake.api, { recanvass: true });
+
+		expect(highlights).toEqual([FILL_COLUMNS.map((c) => second(c))]);
+	});
+
+	// Handed out again in the first pass, today, between the read and the write.
+	it('does not take the second pass once the first is today’s', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': sheet(twoPass(walked)) });
+		fake.between(() => {
+			const row = fake.sheet('sheet-downriver')[2]!;
+			row[firstPass('Canvasser')] = 'Lee';
+			row[firstPass('Date Sent Out')] = '09/19/2026';
+		});
+
+		const result = await run(fake.api, { recanvass: true });
+
+		expect(writes(fake.calls)).toEqual([]);
+		expect(result.deferred).toBe(1);
+		expect(fake.sheet('sheet-downriver')[2]![second('Canvasser')]).toBe('');
+	});
+
+	it('fills in the first pass while it is free', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': sheet(twoPass({ Status: 'Unwalked' })) });
+
+		await run(fake.api, { recanvass: true });
+
+		const row = fake.sheet('sheet-downriver')[2]!;
+		expect(row[firstPass('Canvasser')]).toBe('*Dana');
+		expect(row[second('Canvasser')]).toBe('');
+		expect((await stateOf(1))?.pass).toBeUndefined();
+	});
+
+	it('leaves the second pass alone outside recanvass mode', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': sheet(twoPass(walked)) });
+
+		const result = await run(fake.api);
+
+		expect(writes(fake.calls)).toEqual([]);
+		expect(result.warnings).toEqual([expect.stringContaining("someone else's entry")]);
+	});
+
+	it('holds turf for a second pass entry from today', async () => {
+		await turf();
+		const fake = fakeSheets({
+			'sheet-downriver': sheet(
+				twoPass(walked, { Canvasser: 'Lee', Status: 'Out', 'Date Sent Out': '09/19/2026' }),
+			),
+		});
+
+		await run(fake.api, { recanvass: true });
+
+		expect(await assignedTo()).toBe('Lee');
+	});
+
+	// Both passes walked on earlier days: nowhere to write, and nothing current.
+	it('leaves a row whose passes are both from earlier days, without a warning', async () => {
+		await turf();
+		await checkout();
+		const row = twoPass(walked, {
+			Canvasser: 'Lee',
+			Status: 'Complete',
+			'Date Sent Out': '09/18/2026',
+		});
+		const fake = fakeSheets({ 'sheet-downriver': sheet(row) });
+
+		const result = await run(fake.api, { recanvass: true });
+
+		expect(await assignedTo()).toBeNull();
+		expect(writes(fake.calls)).toEqual([]);
+		expect(result.warnings).toEqual([]);
+	});
+});
+
 describe('Google’s 60-a-minute quota and the run’s time', () => {
 	it('reads each spreadsheet once, plus the re-check before a write', async () => {
 		await turf();
@@ -1028,6 +1313,34 @@ describe('spreadsheets that have not changed', () => {
 		expect(fake.calls).toEqual(['drive']);
 	});
 
+	it('are read again when recanvass mode is switched', async () => {
+		const fake = await settled();
+
+		await run(fake.api, { recanvass: true });
+
+		expect(reads(fake.calls)).toEqual(['read:sheet-downriver']);
+	});
+
+	// Our names decide which of the tracker's entries are the campaign's.
+	it('are read again when the name on one of our entries changes', async () => {
+		const fake = await settled();
+		await partnerCampaign();
+		await turf({ turfId: 200, campaignId: 2, list: '9-9' });
+		const ours = (name: string) =>
+			JSON.stringify({ spreadsheetId: 'sheet-downriver', cells: { Canvasser: name } });
+		await checkout({ id: 2, turfId: 200, list: '9-9', sheetState: ours('*Lee') });
+		await run(fake.api);
+		later(5);
+		fake.calls.length = 0;
+		await run(fake.api);
+		expect(reads(fake.calls)).toEqual([]);
+
+		await update(2, `sheet_state = '${ours('*Lee Ann')}'`);
+		await run(fake.api);
+
+		expect(reads(fake.calls)).toEqual(['read:sheet-downriver']);
+	});
+
 	it('are read once someone edits them', async () => {
 		const fake = await settled();
 		fake.edit('sheet-downriver');
@@ -1191,6 +1504,17 @@ describe('one campaign at a time', () => {
 
 		expect(result.unrouted).toBe(1);
 		expect(result.unroutedRegions).toEqual(['R10C_Wayne_Partner']);
+		expect(result.warnings).toEqual([expect.stringContaining('match no spreadsheet rule')]);
+	});
+
+	// A refresh: the scheduled run says it every time already.
+	it('leaves out the note about unrouted checkouts when asked to', async () => {
+		const fake = fakeSheets({ 'sheet-western': tracker() });
+
+		const result = await run(fake.api, { campaignId: 2, targets: [WESTERN], runNotes: false });
+
+		expect(result.unrouted).toBe(1);
+		expect(result.warnings).toEqual([]);
 	});
 
 	it('records assignments only on its own turf, even for a list number both use', async () => {

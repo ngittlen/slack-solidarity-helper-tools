@@ -7,10 +7,14 @@ import {
 	desiredCells,
 	findLayout,
 	isPacketRow,
+	isStaleRow,
 	isUnfilled,
+	passLayout,
+	passToFill,
 	priorCells,
 	packetRows,
 	sheetDate,
+	sheetDay,
 	sheetDoors,
 	stillOurs,
 	type ColumnLayout,
@@ -401,14 +405,16 @@ describe('campaignAssignments', () => {
 			packet('1-1', { Canvasser: 'Dana', Status: 'Out' }),
 			packet('2-2', { Canvasser: 'Sam', Status: 'Out' }),
 		);
-		const assigned = campaignAssignments(values, LAYOUT, new Map([['1-1', 'Dana']]));
+		const assigned = campaignAssignments(values, LAYOUT, new Map([['1-1', new Set(['Dana'])]]));
 		expect([...assigned.keys()]).toEqual(['2-2']);
 	});
 
 	// We filled it in, then an organizer handed it to someone else.
 	it('counts a packet of ours that now names someone else', () => {
 		const values = sheet(packet('1-1', { Canvasser: 'Sam', Status: 'Out' }));
-		expect(campaignAssignments(values, LAYOUT, new Map([['1-1', 'Dana']])).get('1-1')).toBe('Sam');
+		expect(
+			campaignAssignments(values, LAYOUT, new Map([['1-1', new Set(['Dana'])]])).get('1-1'),
+		).toBe('Sam');
 	});
 
 	it('names an unnamed holder as the tracker', () => {
@@ -439,5 +445,186 @@ describe('campaignAssignments', () => {
 			packet('2-2', { Status: 'Unwalked', Canvasser: 'Sam' }),
 		);
 		expect([...campaignAssignments(values, LAYOUT, new Map()).keys()]).toEqual(['2-2']);
+	});
+});
+
+describe('sheetDay', () => {
+	it('reads the dates the app writes and the ones typed by hand', () => {
+		expect(sheetDay('09/19/2026')).toBe('2026-09-19');
+		expect(sheetDay(' 9/7/2026 ')).toBe('2026-09-07');
+		expect(sheetDay('9/7/26')).toBe('2026-09-07');
+		expect(sheetDay('2026-09-07')).toBe('2026-09-07');
+	});
+
+	it('reads what an organizer may type: dashes, month names, a time after it', () => {
+		expect(sheetDay('11-02-2026')).toBe('2026-11-02');
+		expect(sheetDay('11/02/2026 9:15')).toBe('2026-11-02');
+		expect(sheetDay('11/2/2026 9:15:00 AM')).toBe('2026-11-02');
+		expect(sheetDay('November 2, 2026')).toBe('2026-11-02');
+		expect(sheetDay('Nov. 2nd 2026')).toBe('2026-11-02');
+	});
+
+	it('gives a date with no year the year that puts it on or before today', () => {
+		expect(sheetDay('11/2', '2026-11-02')).toBe('2026-11-02');
+		expect(sheetDay('Nov 2', '2026-11-02')).toBe('2026-11-02');
+		expect(sheetDay('12/30', '2027-01-02')).toBe('2026-12-30');
+		expect(sheetDay('11/2')).toBeNull();
+	});
+
+	it('is null for anything that is not a date', () => {
+		expect(sheetDay('')).toBeNull();
+		expect(sheetDay('Saturday')).toBeNull();
+		expect(sheetDay('13/01/2026')).toBeNull();
+		expect(sheetDay('02/30/2026')).toBeNull();
+	});
+});
+
+describe('campaignAssignments in recanvass mode', () => {
+	const sheet = (...rows: string[][]) => [[], HEADER, ...rows];
+	const staleBefore = '2026-09-19';
+
+	it('counts only entries sent out today or later', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam', Status: 'Complete', 'Date Sent Out': '09/18/2026' }),
+			packet('2-2', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': '09/19/2026' }),
+			packet('3-3', { Status: 'Out', 'Date Sent Out': '9/12/26' }),
+			packet('4-4', { Canvasser: 'Sam', Status: 'Unwalked', 'Date Sent Out': '09/20/2026' }),
+		);
+		const assigned = campaignAssignments(values, LAYOUT, new Map(), { staleBefore });
+		expect([...assigned.keys()].sort()).toEqual(['2-2', '4-4']);
+	});
+
+	it('does not count an entry with no Date Sent Out', () => {
+		const values = sheet(packet('1-1', { Canvasser: 'Sam', Status: 'Out' }));
+		expect(campaignAssignments(values, LAYOUT, new Map(), { staleBefore }).size).toBe(0);
+	});
+
+	// Freeing it could hand a packet given out today to a second canvasser.
+	it('counts an entry whose Date Sent Out does not read as a date', () => {
+		const values = sheet(
+			packet('2-2', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': 'Saturday' }),
+		);
+		expect([...campaignAssignments(values, LAYOUT, new Map(), { staleBefore }).keys()]).toEqual([
+			'2-2',
+		]);
+	});
+
+	it('reads a date typed some other way', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': '9/19' }),
+			packet('2-2', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': 'Sep 18' }),
+			packet('3-3', { Canvasser: 'Sam', Status: 'Out', 'Date Sent Out': '09-19-2026 9:15' }),
+		);
+		expect([...campaignAssignments(values, LAYOUT, new Map(), { staleBefore }).keys()]).toEqual([
+			'1-1',
+			'3-3',
+		]);
+	});
+
+	it('goes by the Status and name as ever without it', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam', Status: 'Complete', 'Date Sent Out': '09/18/2026' }),
+		);
+		expect([...campaignAssignments(values, LAYOUT, new Map()).keys()]).toEqual(['1-1']);
+	});
+});
+
+describe('a Second Pass section', () => {
+	const PASS = HEADER.slice(HEADER.indexOf('Canvasser'), HEADER.indexOf('Today?'));
+	const TWO_PASS = [
+		...HEADER.slice(0, HEADER.indexOf('Today?')),
+		'Pass #',
+		...PASS,
+		'Today?',
+		'Knocked %',
+	];
+	const first = (name: string) => TWO_PASS.indexOf(name);
+	const again = (name: string) => TWO_PASS.lastIndexOf(name);
+	function row(one: Record<string, string>, two: Record<string, string> = {}, list = '1-1') {
+		const cells = TWO_PASS.map(() => '');
+		cells[first('List Number')] = list;
+		for (const [h, v] of Object.entries(one)) cells[first(h)] = v;
+		for (const [h, v] of Object.entries(two)) cells[again(h)] = v;
+		return cells;
+	}
+	/** The row above the header: each section's label over its first column. */
+	const LABELS = TWO_PASS.map((h, i) =>
+		i === first('Canvasser') ? 'First Pass' : i === TWO_PASS.indexOf('Pass #') ? 'Second Pass' : '',
+	);
+	const TWO = layoutOf([LABELS, TWO_PASS]);
+	const today = '2026-09-19';
+	const walked = { Canvasser: 'Sam', Status: 'Complete', 'Date Sent Out': '09/18/2026' };
+
+	it('is found from the canvasser columns’ second appearance', () => {
+		expect(TWO.columns.Canvasser).toBe(first('Canvasser'));
+		expect(TWO.secondPass?.Canvasser).toBe(again('Canvasser'));
+		expect(TWO.secondPass?.Status).toBe(again('Status'));
+		expect(passLayout(TWO, 2)?.columns['List Number']).toBe(first('List Number'));
+		expect(passLayout(TWO, 2)?.columns.Status).toBe(again('Status'));
+	});
+
+	it('is absent from a tab with one pass', () => {
+		expect(LAYOUT.secondPass).toBeNull();
+		expect(passLayout(LAYOUT, 2)).toBeNull();
+	});
+
+	// A repeat of the headers is not enough: it could be a summary block.
+	it('is absent without the Second Pass label above it', () => {
+		expect(layoutOf([[], TWO_PASS]).secondPass).toBeNull();
+	});
+
+	it('is found with the label over its first canvasser column, or reworded', () => {
+		const over = TWO_PASS.map((_, i) => (i === again('Canvasser') ? 'SECOND PASS (GOTV)' : ''));
+		expect(layoutOf([[], over, TWO_PASS]).secondPass?.Canvasser).toBe(again('Canvasser'));
+	});
+
+	// The label partway into the section leaves columns before it unfound.
+	it('is absent when the label is past the section’s start', () => {
+		const late = TWO_PASS.map((_, i) => (i === again('Status') ? 'Second Pass' : ''));
+		expect(layoutOf([late, TWO_PASS]).secondPass).toBeNull();
+	});
+
+	it('takes a new entry in recanvass mode once the first pass is from an earlier day', () => {
+		expect(passToFill(row({ Status: 'Unwalked' }), TWO, today)).toBe(1);
+		expect(passToFill(row(walked, { Status: 'Unwalked' }), TWO, today)).toBe(2);
+		expect(passToFill(row(walked), TWO)).toBeNull();
+		expect(passToFill(row({ ...walked, 'Date Sent Out': '09/19/2026' }), TWO, today)).toBeNull();
+		expect(passToFill(row(walked, { Canvasser: 'Lee' }), TWO, today)).toBeNull();
+		expect(passToFill(row(walked), LAYOUT, today)).toBeNull();
+	});
+
+	it('holds the packet for either pass’s entry', () => {
+		const values = [
+			LABELS,
+			TWO_PASS,
+			row(walked, {}, '1-1'),
+			row({ Status: 'Incomplete', Canvasser: 'Sam' }, { Canvasser: 'Lee' }, '2-2'),
+			row({ Status: 'Unwalked' }, { Status: 'Unwalked' }, '3-3'),
+		];
+		expect(Object.fromEntries(campaignAssignments(values, TWO, new Map()))).toEqual({
+			'1-1': 'Sam',
+			'2-2': 'Lee',
+		});
+	});
+
+	it('holds it in recanvass mode only for an entry from today', () => {
+		const values = [
+			LABELS,
+			TWO_PASS,
+			row(walked, {}, '1-1'),
+			row(walked, { Canvasser: 'Lee', 'Date Sent Out': '09/19/2026' }, '2-2'),
+			row(walked, { Canvasser: 'Lee', 'Date Sent Out': '09/18/2026' }, '3-3'),
+		];
+		expect(
+			Object.fromEntries(campaignAssignments(values, TWO, new Map(), { staleBefore: today })),
+		).toEqual({ '2-2': 'Lee' });
+		expect(isStaleRow(values[4], TWO, today)).toBe(true);
+		expect(isStaleRow(values[3], TWO, today)).toBe(false);
+	});
+
+	it('does not count our own entry in either pass', () => {
+		const values = [LABELS, TWO_PASS, row(walked, { Canvasser: '*Dana', Status: 'Out' })];
+		const ours = new Map([['1-1', new Set(['Sam', '*Dana'])]]);
+		expect(campaignAssignments(values, TWO, ours).size).toBe(0);
 	});
 });

@@ -381,6 +381,10 @@ export const appConfig = sqliteTable(
 		// in turf-view.ts). Same NULL-means-default and clamp-on-read as the two
 		// above.
 		vanAssignmentTtlHours: integer('van_assignment_ttl_hours'),
+		// Hours before a claim lapses that its holder is reminded; 0 sends no
+		// reminder. NULL means EXPIRY_WARNING_LEAD_HOURS in
+		// $lib/van/expiry-warning.ts, clamped on read like the two above.
+		vanExpiryReminderHours: integer('van_expiry_reminder_hours'),
 		// Theme overrides as JSON: {"color-bg":{"light":"#fbf0e4"}}. One column
 		// rather than ~60, because adding a field to this table is a nine-step
 		// checklist across six files and a palette would be unmaintainable that
@@ -525,6 +529,22 @@ export const mobilizeSyncedTimeslots = sqliteTable('mobilize_synced_timeslots', 
 	// and no cap — so this is the only way to tell an unchanged cap from one that
 	// has moved. NULL means uncapped, which is not the same as 0 (full).
 	pushedMaxAttendees: integer('pushed_max_attendees'),
+	updatedAt: text('updated_at').notNull(),
+});
+
+// What the attendee sync's next read of changed signups covers. `changesFrom`,
+// in Mobilize's unix seconds: every signup Mobilize changed before it has been
+// read by a run that covered every upcoming shift and settled all it read.
+// `retryEventIds`, a JSON array: the Mobilize events that run could not read,
+// or had a signup on it could not write, which the next run reads whole.
+// `fullReadAt`, unix seconds: when the nightly run last read every event, the
+// read that finds deleted events; the read of changes is used only while that
+// is recent. One row.
+export const attendeeSyncState = sqliteTable('attendee_sync_state', {
+	id: integer('id').primaryKey(),
+	changesFrom: integer('changes_from').notNull(),
+	retryEventIds: text('retry_event_ids').notNull().default('[]'),
+	fullReadAt: integer('full_read_at'),
 	updatedAt: text('updated_at').notNull(),
 });
 
@@ -892,6 +912,12 @@ export const vanCampaigns = sqliteTable(
 		 *  creates it. Null or '' means DEFAULT_SHEET_TAB_NAME in
 		 *  $lib/van/packet-tracker.ts. Moved here from app_config. */
 		sheetTabName: text('sheet_tab_name'),
+		/** Recanvass mode: the campaign's Packet Tracker entries block
+		 *  turf only on the canvass day they were sent out. Anything the tracker
+		 *  shows as sent out before today — Complete included — or with no
+		 *  readable Date Sent Out is claimable again, so a second pass can walk
+		 *  it. Off by default; the spreadsheet itself is not changed either way. */
+		recanvassMode: integer('recanvass_mode', { mode: 'boolean' }).notNull().default(false),
 		/** The spreadsheet the nightly door report writes to: one new tab per
 		 *  campaign day (van/daily-door-report.ts). A spreadsheet rather than a
 		 *  Drive folder because the service account owns no Drive storage and so
@@ -1165,6 +1191,17 @@ export const vanTurfs = sqliteTable(
 		/** The display name of the admin who hid it, for /turfs/organizer. Their
 		 *  id is in the log line setTurfHidden writes. */
 		hiddenBy: text('hidden_by'),
+		/** When an admin or moderator released this turf from an outside VAN
+		 *  hand-out, from its card on /turfs. Exports at or before it are not
+		 *  read as anyone holding the turf, by the catalog sync or by
+		 *  vanAssignmentBlocks; a later export holds it again, because that is
+		 *  someone loading the list after the release. NOT part of the catalog
+		 *  upsert, so a sync never clears it. The time of the hand-out released,
+		 *  not of the click (turf-van-release-store.ts). */
+		vanReleasedAt: text('van_released_at'),
+		/** The display name of whoever released it. Their id is in the log line
+		 *  releaseVanAssignment writes. */
+		vanReleasedBy: text('van_released_by'),
 		/** Stamped, never deleted, so a live checkout pointing at a vanished
 		 *  route still renders. */
 		retiredAt: text('retired_at'),
@@ -1174,12 +1211,6 @@ export const vanTurfs = sqliteTable(
 		index('van_turfs_region').on(table.mapRegionId),
 		uniqueIndex('van_turfs_campaign_route').on(table.campaignId, table.vanMapRouteId),
 		index('van_turfs_campaign_folder').on(table.campaignId, table.folderId),
-		// Partial: most rows are retired routes from earlier cuts, kept for
-		// their checkouts, and the readers that want only live turf (the drift
-		// report on every organizer page load) would otherwise read them all.
-		index('van_turfs_live_campaign')
-			.on(table.campaignId)
-			.where(sql`${table.retiredAt} IS NULL`),
 		// Partial, and holding every column the catalog sync reads of a retired
 		// turf (sync.ts): the turf id comes with it, as the row's key. Retired
 		// routes outnumber live ones several times over and each row carries its
@@ -1191,6 +1222,50 @@ export const vanTurfs = sqliteTable(
 		index('van_turfs_drift_alerted')
 			.on(table.campaignId)
 			.where(sql`${table.driftAlertedKind} IS NOT NULL`),
+		// Partial: live turf, by campaign and folder. Most rows are retired
+		// routes from earlier cuts, kept for their checkouts, and the readers
+		// that want only live turf would otherwise read them all: /turfs on
+		// every load finds a chapter's turf by its folders, and the drift
+		// report and others a campaign's by its leading column. `retired_at`
+		// is in it, though always null, so those reads are answered from the
+		// index: SQLite checks a partial index's condition against the row
+		// unless the column is in the index.
+		index('van_turfs_live_folder')
+			.on(table.campaignId, table.folderId, table.retiredAt)
+			.where(sql`${table.retiredAt} IS NULL`),
+		// Partial: turf handed out in VAN, a small share of live turf, for the
+		// VAN release's count on the organizer page (turf-van-release-store.ts).
+		index('van_turfs_van_held')
+			.on(table.vanDistributedTo)
+			.where(sql`${table.vanDistributedTo} IS NOT NULL`),
+		// Partial: the few hidden turfs, for the organizer page.
+		index('van_turfs_hidden')
+			.on(table.hiddenAt)
+			.where(sql`${table.hiddenAt} IS NOT NULL`),
+		// The turf history search (turf-history-store.ts): a `LIKE '%…%'` on
+		// name or region can use no index to find its matches, so it reads
+		// every turf, retired ones included. This holds what it reads, so it
+		// reads these short entries rather than rows with outlines, in name
+		// order, which is the order it returns. Then each name's cuts by
+		// (name, campaign).
+		index('van_turfs_name_search').on(table.name, table.campaignId, table.regionName),
+		// Partial: live turf by where it is. The address search's summary
+		// (nearby-summary.ts) reads the turf inside a box on the map from it,
+		// rather than every live turf to check each. The reads of every live
+		// turf's centre — the signed-out map's starting point, and the votes
+		// that place requested turf (turf-placement.ts) — are answered from
+		// the index alone: what they filter on is in it, `retired_at` too,
+		// as SQLite otherwise reads each row to check the index's condition.
+		index('van_turfs_live_centroid')
+			.on(
+				table.centroidLat,
+				table.centroidLng,
+				table.campaignId,
+				table.folderId,
+				table.hiddenAt,
+				table.retiredAt,
+			)
+			.where(sql`${table.retiredAt} IS NULL`),
 	],
 );
 
@@ -1288,12 +1363,12 @@ export const vanTurfCheckouts = sqliteTable(
 		 *  volunteer is told about the same re-cut 37 times a day. Stamped only
 		 *  after Slack accepted the message. */
 		recutNotifiedAt: text('recut_notified_at'),
-		/** When the T-6h expiry warning DM was successfully sent.
+		/** When the expiry warning DM was successfully sent.
 		 *
 		 *  The idempotency key for that DM, and the reason it is a column rather
 		 *  than a log line: the warning sweep runs every half hour for the whole
-		 *  six-hour window, so without a stamp a volunteer would be reminded
-		 *  twelve times about one turf. Stamped only on a successful send, so a
+		 *  lead window (app_config.van_expiry_reminder_hours), so without a stamp
+		 *  a volunteer would be reminded at every tick about one turf. Stamped only on a successful send, so a
 		 *  Slack outage retries on the next tick instead of silently swallowing
 		 *  the one message that stops turf being lost. */
 		expiryWarnedAt: text('expiry_warned_at'),
@@ -1738,26 +1813,35 @@ export const vanManualSyncRuns = sqliteTable('van_manual_sync_runs', {
 // organizer's choice, which nothing automatic overwrites. See
 // van/turf-placement.ts. Chapter visibility reads this alongside the folder
 // mapping (chapter-visibility.ts).
-export const vanTurfPlacements = sqliteTable('van_turf_placements', {
-	turfId: integer('turf_id').primaryKey(),
-	chapterId: integer('chapter_id').notNull(),
-	chapterName: text('chapter_name').notNull(),
-	/** 'zip' | 'nearby' | 'organizer' */
-	source: text('source').notNull(),
-	/** The ZIP the location fell in, when the Census answered. */
-	zip: text('zip'),
-	/** Whether the Census answered at all. A 'nearby' placement made because
-	 *  it did not is tried by ZIP again on the next run. */
-	zipChecked: integer('zip_checked', { mode: 'boolean' }).notNull().default(false),
-	/** The turf's location when it was placed; a different one now (a re-cut,
-	 *  a new shape) places it again. Null for an organizer's placement of turf
-	 *  with no location yet. */
-	centroidLat: real('centroid_lat'),
-	centroidLng: real('centroid_lng'),
-	placedAt: text('placed_at').notNull(),
-	/** The organizer, for an organizer's placement. */
-	placedByName: text('placed_by_name'),
-});
+export const vanTurfPlacements = sqliteTable(
+	'van_turf_placements',
+	{
+		turfId: integer('turf_id').primaryKey(),
+		chapterId: integer('chapter_id').notNull(),
+		chapterName: text('chapter_name').notNull(),
+		/** 'zip' | 'nearby' | 'organizer' */
+		source: text('source').notNull(),
+		/** The ZIP the location fell in, when the Census answered. */
+		zip: text('zip'),
+		/** Whether the Census answered at all. A 'nearby' placement made because
+		 *  it did not is tried by ZIP again on the next run. */
+		zipChecked: integer('zip_checked', { mode: 'boolean' }).notNull().default(false),
+		/** The turf's location when it was placed; a different one now (a re-cut,
+		 *  a new shape) places it again. Null for an organizer's placement of turf
+		 *  with no location yet. */
+		centroidLat: real('centroid_lat'),
+		centroidLng: real('centroid_lng'),
+		placedAt: text('placed_at').notNull(),
+		/** The organizer, for an organizer's placement. */
+		placedByName: text('placed_by_name'),
+	},
+	(table) => [
+		// A chapter's placed turf, read on every /turfs load and in every
+		// chapter's visibility check (chapter-visibility.ts); with turf_id, the
+		// index answers those reads by itself.
+		index('van_turf_placements_chapter').on(table.chapterId, table.turfId),
+	],
+);
 
 export type VanTurfPlacementRow = typeof vanTurfPlacements.$inferSelect;
 

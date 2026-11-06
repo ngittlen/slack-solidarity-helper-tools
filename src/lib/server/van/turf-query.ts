@@ -22,9 +22,10 @@
 // cut, so the payload fills with turf a volunteer can take first, and
 // `claimableOnly` can leave out the rest.
 
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { vanChapterFolders, vanTurfCheckouts, vanTurfPlacements, vanTurfs } from '../schema.js';
+
 import {
 	badgeShown,
 	loadTurfCampaigns,
@@ -35,7 +36,7 @@ import {
 import { refreshingRegionIds } from './refresh.js';
 import { latestWalkReports } from './checkout-store.js';
 import { loadContactMarks, marksFor, type ContactMarks } from './contact-sync.js';
-import { chunked } from './sql-chunk.js';
+import { chunked, idRows } from './sql-chunk.js';
 import {
 	activeClaimFor,
 	canClaim,
@@ -68,7 +69,7 @@ type Db = ReturnType<typeof drizzle>;
 
 export interface TurfQueryInput {
 	chapterId: number;
-	viewer: { slackUserId: string; isAdmin: boolean };
+	viewer: { slackUserId: string; isAdmin: boolean; isModerator?: boolean };
 	/** Where the volunteer is, when we know. Null means name-ordered. */
 	location?: LatLng | null;
 	/** `densest` puts the most doors per area first, ahead of distance — and
@@ -145,6 +146,60 @@ export interface TurfQueryResult {
 	campaignTotals: CampaignTotals | null;
 }
 
+/**
+ * The rows `loadChapterTurfs` works from: the chapter's live turf, and the
+ * viewer's own wherever the chapter can see it.
+ *
+ * The chapter's turf ids are picked first, each half of its visibility by an
+ * index — its live turf by folder (`van_turfs_live_folder`), its placed turf
+ * from the placements — and the rows are then read by key. Written as one
+ * `where` over van_turfs instead, the `or`s rule out every index: the
+ * viewer's own turf stays visible retired, hidden or in a disabled campaign,
+ * and `retired_at is null or turf_id in (…)` makes the read every turf in the
+ * table, retired routes and outlines included, for anyone holding a turf.
+ */
+function chapterTurfsWhere(input: {
+	chapterId: number | null;
+	turfIds: readonly number[] | undefined;
+	myRouteIds: readonly number[];
+	isAdmin: boolean;
+}): SQL | undefined {
+	const { chapterId, turfIds, myRouteIds, isAdmin } = input;
+	const mine = myRouteIds.length > 0 ? inArray(vanTurfs.turfId, [...myRouteIds]) : undefined;
+	const offered = and(
+		isNull(vanTurfs.retiredAt),
+		// A disabled campaign's turf is not handed out, and turf an admin hid is
+		// for admins alone, who un-hide it from the card. Turf the viewer holds
+		// stays visible to them until the claim ends: these stop new claims,
+		// not the ones in progress.
+		turfCampaignEnabled(),
+		isAdmin ? undefined : isNull(vanTurfs.hiddenAt),
+	);
+	const chapterTurf =
+		chapterId === null
+			? undefined
+			: sql`${vanTurfs.turfId} in (
+				select ${vanTurfs.turfId} from ${vanTurfs}
+				where (${vanTurfs.campaignId}, ${vanTurfs.folderId}) in (
+					select ${vanChapterFolders.campaignId}, ${vanChapterFolders.folderId}
+					from ${vanChapterFolders} where ${vanChapterFolders.chapterId} = ${chapterId}
+				) and ${vanTurfs.retiredAt} is null
+				union all
+				select ${vanTurfPlacements.turfId} from ${vanTurfPlacements}
+				where ${vanTurfPlacements.chapterId} = ${chapterId}
+				${myRouteIds.length > 0 ? sql`union all ${idRows(myRouteIds)}` : sql``}
+			)`;
+	return and(
+		chapterTurf,
+		// Every folder this chapter is mapped to, so turf in a folder shared by
+		// several chapters appears for each of them. Checked on every row, as
+		// the viewer's own turf comes in above whatever chapter it is in.
+		visibleToChapter(chapterId),
+		turfIds ? inArray(vanTurfs.turfId, [...turfIds]) : undefined,
+		mine ? or(offered, mine) : offered,
+	);
+}
+
 /** The turf a viewer may see in one chapter, ordered, cut, and serialisable. */
 export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<TurfQueryResult> {
 	const {
@@ -186,30 +241,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	const rows = await db
 		.select()
 		.from(vanTurfs)
-		.where(
-			and(
-				// Every folder this chapter is mapped to, so turf in a folder shared
-				// by several chapters appears for each of them.
-				visibleToChapter(chapterId),
-				turfIds ? inArray(vanTurfs.turfId, turfIds) : undefined,
-				myRouteIds.length > 0
-					? or(isNull(vanTurfs.retiredAt), inArray(vanTurfs.turfId, myRouteIds))
-					: isNull(vanTurfs.retiredAt),
-				// A disabled campaign's turf is not handed out. Turf the viewer
-				// already holds there stays visible to them until the claim ends —
-				// disabling stops new claims, not the ones in progress.
-				myRouteIds.length > 0
-					? or(turfCampaignEnabled(), inArray(vanTurfs.turfId, myRouteIds))
-					: turfCampaignEnabled(),
-				// Turf an admin hid is for admins alone, who un-hide it from the
-				// card. Like a disabled campaign, it stays with whoever holds it.
-				viewer.isAdmin
-					? undefined
-					: myRouteIds.length > 0
-						? or(isNull(vanTurfs.hiddenAt), inArray(vanTurfs.turfId, myRouteIds))
-						: isNull(vanTurfs.hiddenAt),
-			),
-		);
+		.where(chapterTurfsWhere({ chapterId, turfIds, myRouteIds, isAdmin: viewer.isAdmin }));
 
 	// Bounded twice when a viewport is given: by the box, then by the payload
 	// budget. A volunteer zoomed out to the whole county is still asking for a
@@ -220,8 +252,10 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// every candidate before the cut: the payload is filled with turf a
 	// volunteer can take first, and `claimableOnly` leaves the rest out.
 	const boxedIds = boxed.map((r) => r.turfId);
-	const claims = await claimsFor(db, boxedIds, viewer.slackUserId);
-	const walkReports = await latestWalkReports(db, boxedIds);
+	const [claims, walkReports] = await Promise.all([
+		claimsFor(db, boxedIds, viewer.slackUserId),
+		latestWalkReports(db, boxedIds),
+	]);
 	// No cap: being at the limit is about the viewer, not the turf — see
 	// `claimableOnly` — and would otherwise rank every turf as taken.
 	const ignoringCap = withoutClaimCap(claimOptions);
@@ -263,44 +297,44 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		band: (row) => (!takeable.has(row.turfId) ? 2 : hasContactHistory(row) ? 1 : 0),
 	});
 
-	// One small read for the whole payload rather than a lookup per row. The
-	// table holds one row per region and only in-flight ones are returned, so
-	// this is usually empty and never more than a handful — and an empty page
-	// skips it entirely, like the claim query above.
-	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<string>();
-	// The uncontacted count's "as of" — per campaign, since each pulls its own
-	// ContactHistory. One small read, skipped for an empty page.
-	const contactMarks =
-		selected.length > 0 ? await loadContactMarks(db) : new Map<number, ContactMarks>();
-	// Badges and disabled campaigns: one read of a table with a row per campaign.
-	const campaigns: TurfCampaigns =
+	// Only this page's holders: `claims` covers every candidate.
+	const selectedIds = new Set(selected.map((r) => r.turfId));
+	// The page's small reads, side by side: none needs another's answer, and
+	// an empty page skips them.
+	const [refreshingRegions, contactMarks, campaigns, holderAccounts] = await Promise.all([
+		// One read for the whole payload rather than a lookup per row. The
+		// table holds one row per region and only in-flight ones are returned,
+		// so this is usually empty and never more than a handful.
+		selected.length > 0 ? refreshingRegionIds(db) : new Set<string>(),
+		// The uncontacted count's "as of" — per campaign, since each pulls its
+		// own ContactHistory.
+		selected.length > 0 ? loadContactMarks(db) : new Map<number, ContactMarks>(),
+		// Badges and disabled campaigns: a table with a row per campaign.
 		selected.length > 0
-			? await loadTurfCampaigns(db)
-			: { badges: {}, showBadges: false, disabled: new Set<number>() };
+			? loadTurfCampaigns(db)
+			: ({ badges: {}, showBadges: false, disabled: new Set<number>() } as TurfCampaigns),
+		// The Slack, Google or Apple mark (and an outside holder's email) beside
+		// each holder name. Admins only — nobody else is shown who holds
+		// anything, so nobody else needs the read.
+		viewer.isAdmin
+			? loadHolderAccounts(
+					db,
+					claims.filter((c) => selectedIds.has(c.turfId)).map((c) => c.slackUserId),
+				)
+			: undefined,
+	]);
 	// The campaigns whose badge this page shows, and only those: a payload
 	// names no campaign it shows no badged turf from.
 	const badged = new Set(
 		selected.map((r) => r.campaignId).filter((id) => badgeShown(campaigns, id)),
 	);
 
-	// The Slack, Google or Apple mark (and an outside holder's email) beside each holder
-	// name. Admins only — nobody else is shown who holds anything, so nobody
-	// else needs the read.
 	// What `total` counts, and the same split by campaign.
 	const counted = claimableOnly ? candidates : rows;
 	const totalsByCampaign = new Map<number, number>();
 	for (const row of counted) {
 		totalsByCampaign.set(row.campaignId, (totalsByCampaign.get(row.campaignId) ?? 0) + 1);
 	}
-
-	// Only this page's holders: `claims` covers every candidate.
-	const selectedIds = new Set(selected.map((r) => r.turfId));
-	const holderAccounts = viewer.isAdmin
-		? await loadHolderAccounts(
-				db,
-				claims.filter((c) => selectedIds.has(c.turfId)).map((c) => c.slackUserId),
-			)
-		: undefined;
 
 	return {
 		// toTurfView is the single gate on what reaches a viewer; see its header.

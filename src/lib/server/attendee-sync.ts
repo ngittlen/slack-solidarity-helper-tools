@@ -24,6 +24,8 @@ import {
 	type RsvpRecord,
 	type TimeslotLink,
 } from '../../../mobilize-migrator/lib/attendee-sync.js';
+import { fetchChangedParticipations } from '../../../mobilize-migrator/lib/attendees.js';
+import type { MobilizeParticipation } from '../../../mobilize-migrator/lib/attendees.js';
 import { buildZipChapterMap } from '../../../mobilize-migrator/lib/people.js';
 import { fetchAllEvents } from '../../../mobilize-migrator/lib/solidarity.js';
 import { loadMobilizeApi } from './mobilize-api.js';
@@ -32,9 +34,15 @@ import {
 	SOLIDARITY_DEFAULT_CHAPTER_ID,
 	SOLIDARITY_API_TOKEN,
 } from './env.js';
-import { mobilizeSyncedRsvps, mobilizeSyncedTimeslots, zipChapterMap } from './schema.js';
+import {
+	attendeeSyncState,
+	mobilizeSyncedRsvps,
+	mobilizeSyncedTimeslots,
+	zipChapterMap,
+} from './schema.js';
 import { fetchPaginated } from './solidarity-paginate.js';
 import { withSolidarityWalkLock } from './solidarity-walk-lock.js';
+import { fresh, takeSolidarityEvents } from './solidarity-events-handoff.js';
 
 /** Matches the autocomplete roster walk: under Solidarity's 60-per-30s limit,
  *  so a long walk never earns a 429 in the first place. */
@@ -141,6 +149,12 @@ export interface AttendeeSyncOptions {
 
 export interface AttendeeSyncResult extends AttendeeSyncReport {
 	dryRun: boolean;
+	/** Unix seconds: the run read only the signups Mobilize changed since this,
+	 *  in place of every event's. Null when it read every event. */
+	changedSince: number | null;
+	/** The read of changes had a signup change while it was read, so the next
+	 *  run reads from the same start (readHeldStill). */
+	changesHeld: boolean;
 	windowHours: number | null;
 	lookbackHours: number;
 	zipsMapped: number;
@@ -293,6 +307,143 @@ export async function refreshZipChapterMap(
 	return { mapped: rows.length, pruned: stale.length };
 }
 
+/**
+ * How long ago the nightly run may have last read every event for the
+ * windowed runs still to read only changes. Past this, it has been failing,
+ * so nothing has been finding events Mobilize deleted, and the windowed runs
+ * read every event in their window, and say why, until it reads again.
+ */
+const FULL_READ_MAX_AGE_MS = 30 * 3600_000;
+/** Read from this long before the stored start: Mobilize's clock and ours may
+ *  disagree. What is read again is skipped as unchanged, from the ledger. */
+const CHANGES_OVERLAP_S = 10 * 60;
+/** The lookback a run takes unless told otherwise. One that looks back less
+ *  drops changed signups on sessions inside this, so it stores nothing. */
+const DEFAULT_LOOKBACK_HOURS = 48;
+
+/** What the next read of changed signups covers: see attendeeSyncState. */
+export interface ChangesState {
+	changesFrom: number;
+	retryEventIds: number[];
+	fullReadAt: number | null;
+}
+
+/** The stored state, or null for none. An unreadable one is none: the run
+ *  reads every event in its window rather than not running. */
+async function loadChangesState(db: Db): Promise<ChangesState | null> {
+	try {
+		const [row] = await db
+			.select({
+				changesFrom: attendeeSyncState.changesFrom,
+				retryEventIds: attendeeSyncState.retryEventIds,
+				fullReadAt: attendeeSyncState.fullReadAt,
+			})
+			.from(attendeeSyncState)
+			.where(eq(attendeeSyncState.id, 1));
+		if (!row) return null;
+		let ids: unknown = [];
+		try {
+			ids = JSON.parse(row.retryEventIds);
+		} catch {
+			// Unreadable: no retries, rather than no sync. The nightly read of
+			// every event tries any failed signup again.
+		}
+		return {
+			changesFrom: row.changesFrom,
+			retryEventIds: Array.isArray(ids) ? ids.filter((id) => Number.isSafeInteger(id)) : [],
+			fullReadAt: row.fullReadAt,
+		};
+	} catch (err) {
+		console.error(
+			'[attendee-sync] could not read where the last run left off, so every event in the ' +
+				`window is read: ${err instanceof Error ? err.message : err}`,
+		);
+		return null;
+	}
+}
+
+/** Store `state`. A failure is logged, not thrown: the run's writes to
+ *  Solidarity are done, and its alerts still go out. The next run reads from
+ *  the state stored before, which covers more, not less. */
+async function saveChangesState(db: Db, state: ChangesState): Promise<void> {
+	const set = {
+		changesFrom: state.changesFrom,
+		retryEventIds: JSON.stringify(state.retryEventIds),
+		fullReadAt: state.fullReadAt,
+		updatedAt: new Date().toISOString(),
+	};
+	try {
+		await db
+			.insert(attendeeSyncState)
+			.values({ id: 1, ...set })
+			.onConflictDoUpdate({ target: attendeeSyncState.id, set });
+	} catch (err) {
+		console.error(
+			`[attendee-sync] could not store where this run left off: ${err instanceof Error ? err.message : err}`,
+		);
+	}
+}
+
+/** What the run was, for nextChangesState. */
+export interface RunScope {
+	/** Unix seconds: when the run began reading. */
+	readFrom: number;
+	/** Every upcoming shift was in scope, not just a window's. */
+	allUpcoming: boolean;
+	/** The run read every event, as the nightly run does. */
+	fullRead: boolean;
+	/** The run looked back no less than DEFAULT_LOOKBACK_HOURS. */
+	fullLookback: boolean;
+	/** No signup in the run's read of changes changed while it was being
+	 *  read: see readHeldStill. */
+	readSettled: boolean;
+}
+
+/**
+ * Whether a read of changes came back with nothing changed while it was being
+ * read, so no row can have slipped between its pages. The read is paged, and
+ * a row that changes as the pages are read can move within the list; if it
+ * moves back, the rows behind it shift forward, one onto a page already read,
+ * and that one is skipped. Such a row is in the read with a time near its
+ * start, so one of those, within the clocks' disagreement, means the read is
+ * not trusted to have seen every row, and the next starts where it did.
+ */
+export function readHeldStill(
+	changed: readonly { modifiedDate: number }[] | undefined,
+	readFrom: number,
+): boolean {
+	return !changed?.some((p) => p.modifiedDate >= readFrom - CHANGES_OVERLAP_S);
+}
+
+/**
+ * What the next read of changed signups covers, after a run of `scope`: null
+ * when the run leaves signups unsettled that the stored state would have the
+ * next run read, so it stands.
+ *
+ * The read of changes must have held still while it was read (readHeldStill),
+ * and every upcoming shift and the whole lookback must have been in scope: a
+ * windowed read of every event leaves out signups on later shifts, a shorter
+ * lookback those on earlier ones, and a read of changes after it would never
+ * see them again. And everything read must have been settled: written,
+ * skipped for a reason no retry changes, or put on the run's `retryEvents` —
+ * an event it could not read, or one with a signup it could not write. The
+ * next run reads those whole, so an event or signup that fails every time
+ * costs one event read a run, never the read of changes.
+ */
+export function nextChangesState(
+	report: AttendeeSyncReport,
+	scope: RunScope,
+	stored: ChangesState | null,
+): ChangesState | null {
+	if (!scope.allUpcoming || !scope.fullLookback || !scope.readSettled) return null;
+	if (report.incomplete || report.authFailed || report.abortedReason !== undefined) return null;
+	return {
+		changesFrom: scope.readFrom,
+		retryEventIds: report.retryEvents,
+		fullReadAt: scope.fullRead ? scope.readFrom : (stored?.fullReadAt ?? null),
+	};
+}
+
 // drizzle has no typed `excluded` helper for sqlite upserts; this keeps the
 // raw reference in one place.
 function sqlExcluded(column: string) {
@@ -314,7 +465,12 @@ export async function runSolidarityAttendeeSync(
 			: undefined;
 	const api = loadMobilizeApi('the attendee sync');
 	const windowHours = options.windowHours ?? null;
-	const lookbackHours = options.lookbackHours ?? 48;
+	const lookbackHours = options.lookbackHours ?? DEFAULT_LOOKBACK_HOURS;
+
+	// Taken first: the zip map's rebuild below walks every Solidarity user for
+	// minutes, and the Mobilize sync's read is only good for so long. Its age
+	// is asked again where it is used, after the rebuild.
+	const handed = takeSolidarityEvents();
 
 	// Rebuilt on staleness rather than on a separate nightly schedule, so this
 	// whole sync needs only one cron entry. Walking every Solidarity user is
@@ -328,7 +484,45 @@ export async function runSolidarityAttendeeSync(
 	}
 
 	const now = Date.now();
-	const upperBound = windowHours === null ? null : now + windowHours * 3600_000;
+	// Before any read: a signup Mobilize changes while this run reads must
+	// fall after it.
+	const readFrom = Math.floor(now / 1000);
+
+	// The windowed runs, every half hour, read only the signups Mobilize has
+	// changed since the last run that mirrored everything: one paginated
+	// request in place of one per event, which Mobilize answers with 429s
+	// and 30-second waits. A changed signup can be on any shift, so these runs
+	// take every upcoming shift, not just the window's. The nightly run reads
+	// every event, which also finds events Mobilize has deleted. Any trouble
+	// reading the changes, and the run reads every event in its window.
+	let changed: MobilizeParticipation[] | undefined;
+	let changedSince: number | null = null;
+	const stored = await loadChangesState(db);
+	const fullReadFresh =
+		stored?.fullReadAt != null && now - stored.fullReadAt * 1000 <= FULL_READ_MAX_AGE_MS;
+	if (windowHours !== null && stored !== null && !fullReadFresh) {
+		console.warn(
+			'[attendee-sync] no nightly read of every event since ' +
+				(stored.fullReadAt == null
+					? 'this state was stored'
+					: new Date(stored.fullReadAt * 1000).toISOString()) +
+				', so every event in the window is read',
+		);
+	}
+	if (windowHours !== null && stored !== null && fullReadFresh) {
+		try {
+			changed = await fetchChangedParticipations(stored.changesFrom - CHANGES_OVERLAP_S, api);
+			changedSince = stored.changesFrom - CHANGES_OVERLAP_S;
+		} catch (err) {
+			console.warn(
+				'[attendee-sync] could not read the signups changed since the last run, ' +
+					`so every event in the window is read: ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	}
+
+	const allUpcoming = windowHours === null || changed !== undefined;
+	const upperBound = allUpcoming ? null : now + windowHours! * 3600_000;
 	const lowerBound = now - lookbackHours * 3600_000;
 
 	// Which Mobilize timeslots to read, from pairings the event sync recorded.
@@ -336,7 +530,8 @@ export async function runSolidarityAttendeeSync(
 
 	// Session start times come from Solidarity, which is also where the owning
 	// chapter lives (the fallback when a zip can't be mapped).
-	const events = await fetchAllEvents(SOLIDARITY_API_TOKEN);
+	const events =
+		handed && fresh(handed) ? handed.events : await fetchAllEvents(SOLIDARITY_API_TOKEN);
 	const sessionMeta = new Map<
 		number,
 		{
@@ -366,9 +561,15 @@ export async function runSolidarityAttendeeSync(
 	}
 
 	const links: TimeslotLink[] = [];
+	// Paired timeslots whose session Solidarity did not list this time: a
+	// changed signup on one is not lost to a session missing for one run.
+	const unlinkedTimeslots = new Map<number, number>();
 	for (const pairing of pairings) {
 		const meta = sessionMeta.get(pairing.solidaritySessionId);
-		if (!meta || !Number.isFinite(meta.startsAt)) continue;
+		if (!meta || !Number.isFinite(meta.startsAt)) {
+			unlinkedTimeslots.set(pairing.mobilizeTimeslotId, pairing.mobilizeEventId);
+			continue;
+		}
 		if (meta.startsAt < lowerBound) continue;
 		if (upperBound !== null && meta.startsAt > upperBound) continue;
 		links.push({
@@ -396,13 +597,38 @@ export async function runSolidarityAttendeeSync(
 			maxNewProfiles: options.maxNewProfiles ?? ATTENDEE_SYNC_MAX_NEW_PROFILES,
 			writeDeadline,
 			log: (message) => console.log(`[attendee-sync] ${message}`),
+			changed,
+			retryEvents: changed !== undefined ? stored!.retryEventIds : undefined,
+			unlinkedTimeslots,
+			// The over-capacity check and the retries stay on the window's
+			// shifts, as when the run reads only the window.
+			windowEnd: changed !== undefined ? now + windowHours! * 3600_000 : undefined,
 		},
 		new TursoAttendeeLedger(db),
 		zipChapters,
 		SOLIDARITY_DEFAULT_CHAPTER_ID || null,
 	);
 
-	return { ...report, dryRun: !apply, windowHours, lookbackHours, zipsMapped, zipsPruned };
+	const scope: RunScope = {
+		readFrom,
+		allUpcoming,
+		fullRead: windowHours === null,
+		fullLookback: lookbackHours >= DEFAULT_LOOKBACK_HOURS,
+		readSettled: readHeldStill(changed, readFrom),
+	};
+	const next = apply ? nextChangesState(report, scope, stored) : null;
+	if (next !== null) await saveChangesState(db, next);
+
+	return {
+		...report,
+		dryRun: !apply,
+		changedSince,
+		changesHeld: changed !== undefined && !scope.readSettled,
+		windowHours,
+		lookbackHours,
+		zipsMapped,
+		zipsPruned,
+	};
 }
 
 export type { AttendeeSyncReport };

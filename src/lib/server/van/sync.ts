@@ -12,7 +12,7 @@
 // we skipped — a partial sync is safe because retirement is scoped to the
 // folders actually fetched (see planCatalogSync).
 
-import { and, eq, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 // Relative, not `$lib/...`: scripts/van-sync-once.ts runs this under tsx,
 // outside the Vite bundle, where the alias does not resolve.
@@ -27,7 +27,7 @@ import {
 } from '../schema.js';
 import { UNPLACED_LABEL } from './turf-placement.js';
 import { planCatalogSync, vanTimestamp, type CatalogFolder, type CatalogPlan } from './catalog.js';
-import { chunked } from './sql-chunk.js';
+import { chunked, idRows } from './sql-chunk.js';
 import { RETIRED_ROSTER_KEEP_MS } from './contact-sync.js';
 import { VanError, type VanClient } from './client.js';
 import {
@@ -41,6 +41,21 @@ import type { VanPrintedList } from './types.js';
 // Matches the alias in settings.ts, which this file calls into — the
 // narrower LibSQLDatabase<...> lacks the $client those helpers require.
 type Db = ReturnType<typeof drizzle>;
+
+/**
+ * The hand-out a sync writes, unless the turf was released from VAN since:
+ * a hand-out at or before `van_released_at` is written as none. A sync that
+ * read the row before an organizer's release plans the old hand-out, and
+ * without this would put it back for every reader of the column until the
+ * next run. One with no date is the hand-out a release with no date cleared.
+ */
+export function unlessReleased(distributedTo: SQL, assignedAt: SQL) {
+	const released = sql`${vanTurfs.vanReleasedAt} is not null and coalesce(${assignedAt}, '') <= ${vanTurfs.vanReleasedAt}`;
+	return {
+		vanDistributedTo: sql`case when ${released} then null else ${distributedTo} end`,
+		vanAssignedAt: sql`case when ${released} then null else ${assignedAt} end`,
+	};
+}
 
 const DEFAULT_TIME_BUDGET_MS = 4 * 60 * 1000;
 
@@ -356,9 +371,23 @@ export async function runCatalogSync(
 	// elsewhere (catalog.ts, outsideAssignment).
 	const claims = await loadClaimsForExports(db, campaignId, now);
 
-	// Every campaign's ids, so a new turf never takes an id another one holds.
+	// What a new turf's id is checked against, across every campaign: whether
+	// its own route id is held already, and the highest id in use, which the
+	// ids for those that are start above. Each by key, in one request; not
+	// every id in the table.
+	const routeIds = [...routesRead].filter((id): id is number => typeof id === 'number');
 	const takenTurfIds = new Set(
-		(await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs)).map((r) => r.turfId),
+		(
+			await db
+				.select({ turfId: vanTurfs.turfId })
+				.from(vanTurfs)
+				.where(
+					or(
+						sql`${vanTurfs.turfId} in (${idRows(routeIds)})`,
+						sql`${vanTurfs.turfId} = (select max(${vanTurfs.turfId}) from ${vanTurfs})`,
+					),
+				)
+		).map((r) => r.turfId),
 	);
 	const placements = new Map(
 		(
@@ -445,7 +474,13 @@ export async function runCatalogSync(
 			db
 				.insert(vanTurfs)
 				.values(row)
-				.onConflictDoUpdate({ target: [vanTurfs.campaignId, vanTurfs.vanMapRouteId], set: row }),
+				.onConflictDoUpdate({
+					target: [vanTurfs.campaignId, vanTurfs.vanMapRouteId],
+					set: {
+						...row,
+						...unlessReleased(sql`excluded.van_distributed_to`, sql`excluded.van_assigned_at`),
+					},
+				}),
 		);
 		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
@@ -596,7 +631,10 @@ export async function runCatalogSync(
 	// Held turf VAN no longer returns gets no upsert, so who has it outside the
 	// app is written here. Last and not counted, with the holds.
 	const assignmentStatements = plan.heldAssignments.map(({ turfId, ...assignment }) =>
-		db.update(vanTurfs).set(assignment).where(eq(vanTurfs.turfId, turfId)),
+		db
+			.update(vanTurfs)
+			.set(unlessReleased(sql`${assignment.vanDistributedTo}`, sql`${assignment.vanAssignedAt}`))
+			.where(eq(vanTurfs.turfId, turfId)),
 	);
 
 	let claimsReleased = 0;

@@ -1,0 +1,1 @@
+ALTER TABLE `van_campaigns` ADD `recanvass_mode` integer DEFAULT false NOT NULL;

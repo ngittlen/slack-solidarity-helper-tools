@@ -222,6 +222,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			vanTurfClaimTtlHours: 48,
 			vanTurfMaxConcurrentClaims: 2,
 			vanAssignmentTtlHours: 48,
+			vanExpiryReminderHours: 6,
 			// Off with no row: a re-cut can leave turf unclaimable.
 			// DB-only; no row means no "Join our chat" button.
 			publicJoinUrl: '',
@@ -533,6 +534,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
 				'vanAssignmentTtlHours',
+				'vanExpiryReminderHours',
 				'publicJoinUrl',
 				'mentorWalksVisibility',
 				'volunteerGuidelinesUrl',

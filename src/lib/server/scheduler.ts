@@ -2,9 +2,9 @@
 //
 // These used to be GitHub Actions crons alone, and GitHub treats a schedule as
 // a suggestion: from 2026-09-20 to 09-25 the VAN catalog sync, asked for 37
-// times a day, ran 5 to 7 times, with gaps of up to 6h23m. That gap broke the
-// six-hour expiry warning, which only reaches a volunteer if a run lands inside
-// the six hours before their claim lapses. The machine Fly keeps running
+// times a day, ran 5 to 7 times, with gaps of up to 6h23m. A gap that long misses
+// the expiry warning, which only reaches a volunteer if a run lands inside the
+// lead window an admin set before their claim lapses. The machine Fly keeps running
 // (`min_machines_running = 1`) keeps better time than that.
 //
 // Each job calls its existing /api/internal endpoint on this machine, exactly
@@ -106,7 +106,7 @@ const VAN_SHARED_WAIT_MS = 3 * MINUTE;
  * sync an arbitrary number of catalogs, and a press's map shapes wait on the
  * slowest campaign rather than on all of them in turn. One failing does not
  * stop the rest. With none enabled the endpoint is still called once, because it also
- * runs the ledger housekeeping — expiring claims and the six-hour warnings —
+ * runs the ledger housekeeping — expiring claims and the expiry warnings —
  * which must not depend on VAN at all.
  *
  * Calls ask for `budget=long`: this waits longer than the GitHub workflow's
@@ -349,6 +349,16 @@ const mentorWalksSweep: Job = {
 	},
 };
 
+/** The query planner's statistics (planner-stats.ts), nightly in the small
+ *  hours of the campaign's day, on a minute no other job starts on. */
+const plannerStats: Job = {
+	name: 'planner-stats',
+	schedule: [{ hours: [8], minutes: [25] }],
+	run: async (_slot, call) => {
+		await call('/api/internal/planner-stats', {}, 5 * MINUTE);
+	},
+};
+
 export const JOBS: readonly Job[] = [
 	vanSync,
 	packetTrackerSync,
@@ -357,6 +367,7 @@ export const JOBS: readonly Job[] = [
 	slackInviteAudit,
 	vanDailyReport,
 	mentorWalksSweep,
+	plannerStats,
 ];
 
 /**

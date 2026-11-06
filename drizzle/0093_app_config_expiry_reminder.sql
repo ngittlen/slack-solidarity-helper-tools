@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `van_expiry_reminder_hours` integer;

@@ -91,7 +91,7 @@ vi.mock('$lib/server/van/zip-centroid.js', async (importOriginal) => ({
 // The query has its own tests on real SQLite (nearby-summary.test.ts).
 vi.mock('$lib/server/van/nearby-summary.js', () => ({
 	loadNearbySummary: mockNearby,
-	loadTurfCentre: mockTurfCentre,
+	cachedTurfCentre: mockTurfCentre,
 }));
 // Partial: the turf query still needs the real visibleToChapter. The folder
 // lookup is stubbed so it does not take a turn in stubQueries' ordered script;

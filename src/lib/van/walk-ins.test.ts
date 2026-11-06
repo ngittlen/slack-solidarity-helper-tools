@@ -7,6 +7,8 @@ import {
 	walkInWrites,
 	walkInCells,
 	findOurWalkIn,
+	filledWalkInColumns,
+	isEmptyWalkIn,
 	shiftFor,
 	shiftMinutes,
 	walkInDay,
@@ -62,6 +64,22 @@ describe('firstEmptyWalkInRow', () => {
 
 	it('counts a row with only the campaign’s notes as used', () => {
 		expect(firstEmptyWalkInRow([HEADER, ['', '', '', '', '', 'came back later']], layout)).toBe(2);
+	});
+
+	it('takes a row whose tick boxes are unticked, as every emptied row is', () => {
+		const ticks = ['', '', '', '', '', '', '', 'FALSE', 'FALSE'];
+		expect(firstEmptyWalkInRow([HEADER, ['Ari', ...ticks.slice(1)], ticks, ticks], layout)).toBe(2);
+	});
+
+	it('counts a ticked box as used', () => {
+		const ticked = ['', '', '', '', '', '', '', 'TRUE', 'FALSE'];
+		expect(isEmptyWalkIn(ticked, layout)).toBe(false);
+		expect(filledWalkInColumns(ticked, layout)).toEqual(['In VAN?']);
+	});
+
+	it('reads FALSE as blank only in a tick box column', () => {
+		expect(isEmptyWalkIn(['', '', '', '', '', 'FALSE'], layout)).toBe(false);
+		expect(filledWalkInColumns(['', '', '', '', '', '', '', 'false', 'FALSE'], layout)).toEqual([]);
 	});
 
 	it('goes past the last row read, and past rows this run already took', () => {

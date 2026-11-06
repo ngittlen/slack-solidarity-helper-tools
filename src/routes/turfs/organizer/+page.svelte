@@ -6,6 +6,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
+	import ConfirmButton from '$lib/components/settings/ConfirmButton.svelte';
 	import LoadMore from '$lib/components/ui/LoadMore.svelte';
 	import TableFilter from '$lib/components/ui/TableFilter.svelte';
 	import { matchesText } from '$lib/row-filter.js';
@@ -13,6 +14,8 @@
 	import { page } from '$app/state';
 	import { campaignSheetStamp } from '$lib/campaign-time.js';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
+	import { vanReleaseLabel, type VanReleaseOutcome } from '$lib/van/van-release-result.js';
+	import { EXPIRY_REMINDER_OFF } from '$lib/van/expiry-warning.js';
 	import type { ActionData } from './$types';
 
 	const { data, form } = $props();
@@ -126,6 +129,61 @@
 			clearInterval(timer);
 		};
 	});
+
+	/** What the last bulk release freed, and why it left the rest of what it
+	 *  counted. */
+	let vanReleased = $state<VanReleaseOutcome | null>(null);
+	const vanReleasedLabel = $derived(vanReleased && vanReleaseLabel(vanReleased));
+	/** The confirmation's summary: what the release frees, by VAN folder. */
+	let vanSummary = $state<{
+		countedAt: string;
+		turfs: Array<{ turfId: number; since: string | null }>;
+		folders: Array<{
+			campaignId: number;
+			campaign: string | null;
+			folderId: number;
+			name: string | null;
+			chapterName: string;
+			count: number;
+		}>;
+	} | null>(null);
+	let vanSummaryError = $state<string | null>(null);
+
+	/** Which opening of the dialog the summary is for: an answer to an earlier
+	 *  one, arriving late, is dropped. */
+	let vanSummaryRequest = 0;
+
+	/** Read as the dialog opens, so the counts are the ones the release frees. */
+	async function loadVanSummary() {
+		const request = ++vanSummaryRequest;
+		vanSummary = null;
+		vanSummaryError = null;
+		try {
+			const res = await fetch(resolve('/turfs/organizer/release-van'));
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok) throw new Error(body.error ?? 'Could not load the turf to release.');
+			if (request === vanSummaryRequest) vanSummary = body;
+		} catch (e) {
+			if (request !== vanSummaryRequest) return;
+			vanSummaryError = e instanceof Error ? e.message : 'Could not load the turf to release.';
+		}
+	}
+
+	/** Throws on a refusal, so ConfirmButton shows the reason beside it. */
+	async function releaseAllVan() {
+		if (!vanSummary) throw new Error('The turf to release has not loaded yet.');
+		const res = await fetch(resolve('/turfs/organizer/release-van'), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ countedAt: vanSummary.countedAt, turfs: vanSummary.turfs }),
+		}).catch(() => {
+			throw new Error("Couldn't reach the server. Try again.");
+		});
+		const body = await res.json().catch(() => ({}));
+		if (!res.ok) throw new Error(body.error ?? 'Could not release the turf. Please try again.');
+		vanReleased = { released: body.released, skipped: body.skipped ?? {} };
+		await invalidateAll().catch(() => {});
+	}
 
 	/** Hidden turf whose "show again" is in flight, so its box cannot be
 	 *  ticked back mid-request. */
@@ -335,6 +393,59 @@
 				{/if}
 			</div>
 		{/if}
+
+		<!-- Under the sync, in red: frees every turf held only by a MiniVAN load
+		     outside this site, the turf drawn red on the /turfs map. A claim
+		     here, a Packet Tracker entry and the requested-turf folder are left
+		     alone (van/turf-van-release-store.ts). -->
+		<div class="van-release">
+			<ConfirmButton
+				label="Release all MiniVAN-held turf"
+				description="Are you sure you want to release all miniVAN-held turf?"
+				confirmLabel="Release Turf"
+				onOpen={loadVanSummary}
+				confirmDisabled={!vanSummary?.turfs.length}
+				onConfirm={releaseAllVan}
+			>
+				{#snippet details()}
+					<div class="van-release-summary">
+						{#if vanSummaryError}
+							<p class="van-release-error" role="alert">{vanSummaryError}</p>
+						{:else if !vanSummary}
+							<p>Counting the turf by VAN folder…</p>
+						{:else if vanSummary.folders.length === 0}
+							<p>No turf is held only in MiniVAN any more.</p>
+						{:else}
+							<table>
+								<thead>
+									<tr><th scope="col">VAN folder</th><th scope="col">Turf</th></tr>
+								</thead>
+								<tbody>
+									{#each vanSummary.folders as folder (`${folder.campaignId}:${folder.folderId}`)}
+										<tr>
+											<td>
+												{#if folder.campaign}<span class="van-release-campaign"
+														>{folder.campaign} ·</span
+													>{/if}
+												{folder.name ?? `Folder ${folder.folderId}`}
+												<span class="van-release-chapter">{folder.chapterName}</span>
+											</td>
+											<td>{folder.count}</td>
+										</tr>
+									{/each}
+								</tbody>
+								<tfoot>
+									<tr><th scope="row">Total</th><td>{vanSummary.turfs.length}</td></tr>
+								</tfoot>
+							</table>
+						{/if}
+					</div>
+				{/snippet}
+			</ConfirmButton>
+			{#if vanReleased !== null}
+				<p class="van-sync-status" role="status">{vanReleasedLabel}</p>
+			{/if}
+		</div>
 	{/if}
 
 	<!-- Counts first: on a canvass morning this row is the whole answer. -->
@@ -372,7 +483,11 @@
 		<p class="callout">
 			{data.summary.expiringUnwarned}
 			{data.summary.expiringUnwarned === 1 ? 'turf is' : 'turfs are'} expiring and the volunteer hasn't
-			been reminded yet — the reminder goes out six hours before expiry, so these may need a word directly.
+			been reminded yet —
+			{data.expiryReminderHours === EXPIRY_REMINDER_OFF
+				? 'reminders are turned off in settings'
+				: `the reminder goes out ${data.expiryReminderHours === 1 ? '1 hour' : `${data.expiryReminderHours} hours`} before expiry`},
+			so these may need a word directly.
 		</p>
 	{/if}
 

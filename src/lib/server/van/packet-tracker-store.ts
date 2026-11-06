@@ -44,8 +44,11 @@ import {
 	desiredCells,
 	findLayout,
 	isPacketRow,
+	isStaleRow,
 	isUnfilled,
 	markedName,
+	passLayout,
+	passToFill,
 	priorCells,
 	normaliseListNumber,
 	packetRows,
@@ -55,6 +58,7 @@ import {
 	type PacketCells,
 	type PacketCheckout,
 	type PacketKey,
+	type Pass,
 } from '../../van/packet-tracker.js';
 import { matchSheetTarget, orderSheetTargets, type SheetTarget } from '../../van/sheet-routing.js';
 import {
@@ -62,6 +66,7 @@ import {
 	DEFAULT_SHIFT_STARTS,
 	WALK_IN_TAB_NAME,
 	findOurWalkIn,
+	filledWalkInColumns,
 	findWalkInLayout,
 	firstEmptyWalkInRow,
 	highlightSweepDay,
@@ -112,10 +117,13 @@ const RATE_LIMITED = 429;
  * checkout alone for good rather than fight them for it. `yellow`: we cleared
  * our entry but Google would not take the highlight off, so it is tried again
  * while the packet is still free — only when it ever went on (`painted`).
+ * `pass`: 2 when the entry is in the tab's Second Pass section; absent for the
+ * first.
  */
 export interface SheetState {
 	spreadsheetId: string | null;
 	cells: PacketCells | null;
+	pass?: 2;
 	prior?: PacketCells;
 	told?: Notice;
 	gone?: true;
@@ -146,6 +154,7 @@ export function parseSheetState(raw: string | null): SheetState | null {
 		return {
 			spreadsheetId: typeof parsed.spreadsheetId === 'string' ? parsed.spreadsheetId : null,
 			cells: renamedCells(parsed.cells),
+			...(parsed.pass === 2 ? { pass: 2 as const } : {}),
 			...(prior ? { prior } : {}),
 			...(parsed.told && NOTICES.has(parsed.told) ? { told: parsed.told } : {}),
 			...(parsed.gone ? { gone: true as const } : {}),
@@ -281,6 +290,15 @@ export interface TrackerOptions {
 	/** Limit the run to the spreadsheet this turf routes to — the nudge after
 	 *  one volunteer's action has no business reading a dozen spreadsheets. */
 	onlyTurfId?: number;
+	/** Recanvass mode (van_campaigns.recanvass_mode): the campaign's entries
+	 *  from before today no longer hold their packets. */
+	recanvass?: boolean;
+	/** Whether the result carries the notes about the run as a whole — an
+	 *  unreadable ledger, checkouts no rule routes — which every scheduled run
+	 *  repeats. Default true; off for a one-campaign refresh, which would only
+	 *  say them a second time. Notes about one checkout are told once and
+	 *  always carried. */
+	runNotes?: boolean;
 }
 
 type Candidate = PacketCheckout & {
@@ -342,7 +360,7 @@ async function loadCandidates(
  * tracker back. From every checkout that has cells recorded, not just this
  * run's candidates — a packet walked last week is still ours in the sheet.
  */
-async function loadOurEntries(db: Db): Promise<Map<string, Map<string, string>>> {
+async function loadOurEntries(db: Db): Promise<Map<string, Map<string, Set<string>>>> {
 	const rows = await db
 		.select({
 			issuedListNumber: vanTurfCheckouts.issuedListNumber,
@@ -350,13 +368,16 @@ async function loadOurEntries(db: Db): Promise<Map<string, Map<string, string>>>
 		})
 		.from(vanTurfCheckouts)
 		.where(isNotNull(vanTurfCheckouts.sheetState));
-	const ours = new Map<string, Map<string, string>>();
+	const ours = new Map<string, Map<string, Set<string>>>();
 	for (const row of rows) {
 		const state = parseSheetState(row.sheetState);
 		if (!state?.spreadsheetId || !state.cells?.Canvasser || !row.issuedListNumber) continue;
 		let entries = ours.get(state.spreadsheetId);
 		if (!entries) ours.set(state.spreadsheetId, (entries = new Map()));
-		entries.set(normaliseListNumber(row.issuedListNumber), state.cells.Canvasser);
+		const listNumber = normaliseListNumber(row.issuedListNumber);
+		let names = entries.get(listNumber);
+		if (!names) entries.set(listNumber, (names = new Set()));
+		names.add(state.cells.Canvasser.trim());
 	}
 	return ours;
 }
@@ -494,8 +515,13 @@ async function openTab(
 	spreadsheetId: string,
 	tabName: string,
 	deadline: number,
-	ours: ReadonlyMap<string, string>,
-	options: { walkIns?: boolean; urgent?: boolean; signal?: AbortSignal } = {},
+	ours: ReadonlyMap<string, ReadonlySet<string>>,
+	options: {
+		walkIns?: boolean;
+		urgent?: boolean;
+		signal?: AbortSignal;
+		staleBefore?: string;
+	} = {},
 ): Promise<{ ok: true; tab: OpenTab } | ({ ok: false } & SheetFailure)> {
 	const { urgent, signal } = options;
 	let values: string[][];
@@ -537,7 +563,10 @@ async function openTab(
 	};
 	recentAssignments.set(`${spreadsheetId}\u0000${tabName}`, {
 		at: Date.now(),
-		assigned: campaignAssignments(tab.values, tab.layout, ours),
+		staleBefore: options.staleBefore,
+		assigned: campaignAssignments(tab.values, tab.layout, ours, {
+			staleBefore: options.staleBefore,
+		}),
 	});
 	return { ok: true, tab };
 }
@@ -547,7 +576,12 @@ async function openTab(
  *  people claiming turf out of the same few spreadsheets within a minute. */
 const LIVE_REUSE_MS = 60_000;
 
-const recentAssignments = new Map<string, { at: number; assigned: Map<string, string> }>();
+/** `staleBefore` is the recanvass day the entry was read under: a read from
+ *  before the mode changed, or before the day rolled over, is not reused. */
+const recentAssignments = new Map<
+	string,
+	{ at: number; staleBefore: string | undefined; assigned: Map<string, string> }
+>();
 
 /** How long a spreadsheet found without a Walk Ins tab is not asked again.
  *  Not every campaign sheet has one, and asking every run would spend a read
@@ -635,6 +669,7 @@ async function syncCheckout(
 	candidate: Candidate,
 	deadline: number,
 	warnings: string[],
+	staleBefore: string | undefined,
 ): Promise<Outcome> {
 	const state = parseSheetState(candidate.sheetState) ?? EMPTY_STATE;
 	if (state.gone) return 'unchanged';
@@ -684,6 +719,11 @@ async function syncCheckout(
 	const current = tab.values[rowIndex];
 	let writes: PacketCells;
 	let next: PacketCells | null;
+	/** The pass our entry is in, or goes in. */
+	let pass: Pass = state.pass ?? 1;
+	/** That pass's columns; null for a Second Pass section the tab no longer
+	 *  has. */
+	let entry = passLayout(tab.layout, pass);
 
 	if (state.cells === null) {
 		if (wanted === null) {
@@ -693,23 +733,32 @@ async function syncCheckout(
 			await save(base);
 			return 'unchanged';
 		}
-		if (!isUnfilled(current, tab.layout)) {
+		const free = passToFill(current, tab.layout, staleBefore);
+		if (free === null) {
 			// Somebody has this packet. Theirs — but it is checked again every
 			// run, and filled in if their entry is cleared while ours is live.
 			// The sheet's entry should have blocked the claim, so one here means
 			// two people have the turf — an organizer's problem to sort out.
-			if (state.told !== 'taken') {
+			// Not said in recanvass mode when every entry is from an earlier
+			// day: that mode is what let the claim through, and the row stays
+			// as it is.
+			const stale = staleBefore !== undefined && isStaleRow(current, tab.layout, staleBefore);
+			if (state.told !== 'taken' && !stale) {
 				warnings.push(
 					`${LOG} ${label} was claimed, but its packet already has someone else's entry in the Packet Tracker, so that entry was left as it is`,
 				);
 			}
-			await save({ ...base, told: 'taken' });
+			// Nor recorded as told, so it is said if the mode is switched off
+			// while both claims stand.
+			await save(stale ? base : { ...base, told: 'taken' });
 			return 'unchanged';
 		}
+		pass = free;
+		entry = passLayout(tab.layout, pass)!;
 		writes = wanted;
 		next = wanted;
 	} else {
-		if (!stillOurs(current, tab.layout, state.cells)) {
+		if (entry === null || !stillOurs(current, entry, state.cells)) {
 			warnings.push(
 				`${LOG} the Packet Tracker entry for ${label} has been changed by hand, so it was left as it is`,
 			);
@@ -741,10 +790,13 @@ async function syncCheckout(
 	});
 	if (!fresh.ok) return { error: fresh.error, status: fresh.status };
 	const samePacket = isPacketRow(fresh.value, tab.layout, key);
+	// A new entry goes where it would on the fresh row: a first pass handed
+	// out again today since the read means the packet is not free for a
+	// second.
 	const stillFree =
 		state.cells === null
-			? isUnfilled(fresh.value, tab.layout)
-			: stillOurs(fresh.value, tab.layout, state.cells);
+			? passToFill(fresh.value, tab.layout, staleBefore) === pass
+			: stillOurs(fresh.value, entry, state.cells);
 	if (!samePacket || !stillFree) return 'moved';
 
 	// Our entry is highlighted while it is ours, so the campaign can tell it
@@ -756,7 +808,7 @@ async function syncCheckout(
 		client,
 		tab.spreadsheetId,
 		rowIndex,
-		FILL_COLUMNS.map((column) => tab.layout.columns[column]),
+		FILL_COLUMNS.map((column) => entry.columns[column]),
 		next !== null,
 		deadline,
 		tab.tabName,
@@ -767,15 +819,16 @@ async function syncCheckout(
 		spreadsheetId: tab.spreadsheetId,
 		tabName: tab.tabName,
 		rowIndex,
-		cells: cellWrites(writes, tab.layout),
+		cells: cellWrites(writes, entry),
 		deadline,
 	});
 	if (!res.ok) return { error: res.error, status: res.status };
 	// A first fill records what it covered, from the row as just re-read.
-	const prior = state.cells === null ? priorCells(fresh.value, tab.layout) : state.prior;
+	const prior = state.cells === null ? priorCells(fresh.value, entry) : state.prior;
 	await save({
 		spreadsheetId: tab.spreadsheetId,
 		cells: next,
+		...(pass === 2 ? { pass } : {}),
 		...(next && prior && Object.keys(prior).length > 0 ? { prior } : {}),
 		...(next !== null && (styled === 'done' || state.painted) ? { painted: true as const } : {}),
 		// Cleared, but the yellow we put on could not come off: try again.
@@ -802,6 +855,13 @@ async function unhighlightFreed(
 	if (refusesHighlight(tab.spreadsheetId, tab.tabName)) return 'unchanged';
 	const rest: SheetState = { ...base };
 	delete rest.yellow;
+	// The highlight went on the pass our entry was in; with that section gone
+	// from the tab, there is nothing left to take it off.
+	const entry = passLayout(tab.layout, base.pass ?? 1);
+	if (entry === null) {
+		await save(rest);
+		return 'unchanged';
+	}
 	const fresh = await client.readRow({
 		spreadsheetId: tab.spreadsheetId,
 		tabName: tab.tabName,
@@ -810,12 +870,12 @@ async function unhighlightFreed(
 	});
 	if (!fresh.ok) return { error: fresh.error, status: fresh.status };
 	if (!isPacketRow(fresh.value, tab.layout, key)) return 'moved';
-	if (isUnfilled(fresh.value, tab.layout)) {
+	if (isUnfilled(fresh.value, entry)) {
 		const off = await highlight(
 			client,
 			tab.spreadsheetId,
 			rowIndex,
-			FILL_COLUMNS.map((column) => tab.layout.columns[column]),
+			FILL_COLUMNS.map((column) => entry.columns[column]),
 			false,
 			deadline,
 			tab.tabName,
@@ -1057,6 +1117,22 @@ async function syncWalkIns(
 			const fresh = await readRow(rowIndex);
 			if (!fresh.ok) return fail(fresh, waiting);
 			if (!isEmptyWalkIn(fresh.value, layout)) {
+				// Which columns, never what is in them. Someone writing in the
+				// row between the two reads gives this, and so would two reads
+				// that disagree about the same row; the row number against the
+				// read's length, and how often it happens, tell them apart.
+				if (outcome.deferred === 0) {
+					const where =
+						rowIndex < read.value.length
+							? `blank in the tab read (${read.value.length} rows`
+							: `past the end of the tab read (${read.value.length} rows`;
+					console.warn(
+						`${LOG} ${spreadsheetId} ${WALK_IN_TAB_NAME} row ${rowIndex + 1}: ${where}, ` +
+							`header row ${layout.headerRowIndex + 1}), filled on re-read in ` +
+							`${filledWalkInColumns(fresh.value, layout).join(', ')}; ` +
+							`re-read has ${fresh.value.length} cells`,
+					);
+				}
 				outcome.deferred += 1;
 				continue;
 			}
@@ -1228,6 +1304,13 @@ async function syncWalkIns(
 			...(styled !== 'done' && state!.painted ? { yellowRow: rowIndex } : {}),
 		});
 		outcome.cleared += 1;
+	}
+	if (outcome.deferred > 1) {
+		const fills = jobs.filter((j) => j.work === 'fill').length;
+		console.warn(
+			`${LOG} ${spreadsheetId} ${WALK_IN_TAB_NAME}: ${outcome.deferred} of ${fills} new ` +
+				'row(s) found filled on re-read',
+		);
 	}
 	return outcome;
 }
@@ -1416,14 +1499,15 @@ async function highlight(
 async function refreshAssignments(
 	db: Db,
 	tab: OpenTab,
-	ours: ReadonlyMap<string, string>,
+	ours: ReadonlyMap<string, ReadonlySet<string>>,
 	turfs: ReadonlyArray<{
 		turfId: number;
 		printedListNumber: string | null;
 		sheetAssignedTo: string | null;
 	}>,
+	staleBefore: string | undefined,
 ): Promise<number> {
-	const assigned = campaignAssignments(tab.values, tab.layout, ours);
+	const assigned = campaignAssignments(tab.values, tab.layout, ours, { staleBefore });
 	// One statement per name rather than per turf: a campaign that writes a
 	// fresh cut into its trackers changes thousands at once, and a write each
 	// took the run's whole budget on the first few spreadsheets.
@@ -1452,11 +1536,20 @@ async function refreshAssignments(
  *  day. */
 function workFingerprint(
 	work: { candidates: Candidate[]; turfs: unknown[] },
-	ours: ReadonlyMap<string, string>,
+	ours: ReadonlyMap<string, ReadonlySet<string>>,
 	tabName: string,
 	day: string,
+	staleBefore: string | undefined,
 ): string {
-	return JSON.stringify([tabName, day, work.candidates, work.turfs, [...ours]]);
+	return JSON.stringify([
+		tabName,
+		day,
+		staleBefore ?? null,
+		work.candidates,
+		work.turfs,
+		// Sets serialise as {}, so the names are spelled out.
+		[...ours].map(([listNumber, names]) => [listNumber, [...names].sort()]),
+	]);
 }
 
 /**
@@ -1515,7 +1608,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		targets.find((t) => t.spreadsheetId === spreadsheetId)?.label ?? spreadsheetId;
 
 	let candidates: Candidate[];
-	let ourEntries: Map<string, Map<string, string>>;
+	let ourEntries: Map<string, Map<string, Set<string>>>;
 	let turfs: Array<{
 		turfId: number;
 		regionName: string;
@@ -1551,7 +1644,8 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			);
 	} catch (err) {
 		console.error(`${LOG} could not read the ledger:`, errText(err));
-		return { ...EMPTY_RESULT, warnings: [`${LOG} could not read the ledger: ${errText(err)}`] };
+		const note = `${LOG} could not read the ledger: ${errText(err)}`;
+		return { ...EMPTY_RESULT, warnings: options.runNotes === false ? [] : [note] };
 	}
 	const oursIn = (spreadsheetId: string) => ourEntries.get(spreadsheetId) ?? new Map();
 
@@ -1596,10 +1690,11 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	// The scheduled run only: a nudge reads its one spreadsheet regardless.
 	const scheduled = options.onlyTurfId === undefined;
 	const today = walkInDay(now.toISOString());
+	const staleBefore = options.recanvass ? today : undefined;
 	const fingerprints = new Map(
 		[...bySpreadsheet].map(([spreadsheetId, work]) => [
 			spreadsheetId,
-			workFingerprint(work, oursIn(spreadsheetId), tabName, today),
+			workFingerprint(work, oursIn(spreadsheetId), tabName, today, staleBefore),
 		]),
 	);
 	const unchanged = scheduled
@@ -1632,6 +1727,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			pending = openTab(client, spreadsheetId, tabName, deadline, oursIn(spreadsheetId), {
 				walkIns: walkInJobs(work.candidates, spreadsheetId, now).length > 0,
 				signal: ahead.signal,
+				staleBefore,
 			});
 			opening.set(spreadsheetId, pending);
 		}
@@ -1681,6 +1777,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 				tab,
 				oursIn(spreadsheetId),
 				work.turfs,
+				staleBefore,
 			);
 		} catch (err) {
 			console.error(`${LOG} could not record assignments for ${spreadsheetId}:`, errText(err));
@@ -1690,7 +1787,15 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		for (const [i, candidate] of work.candidates.entries()) {
 			let outcome: Outcome;
 			try {
-				outcome = await syncCheckout(db, client, tab, candidate, deadline, result.warnings);
+				outcome = await syncCheckout(
+					db,
+					client,
+					tab,
+					candidate,
+					deadline,
+					result.warnings,
+					staleBefore,
+				);
 			} catch (err) {
 				// A ledger write failed after Google accepted. The next run
 				// re-derives and repeats the write, which is harmless.
@@ -1776,7 +1881,7 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 	ahead.abort();
 	for (const pending of opening.values()) void pending.catch(() => undefined);
 
-	if (unrouted > 0) {
+	if (unrouted > 0 && options.runNotes !== false) {
 		result.warnings.push(
 			`${LOG} ${unrouted} checkout(s) match no spreadsheet rule and are waiting: ` +
 				`${result.unroutedRegions.slice(0, 5).join(', ')}` +
@@ -1838,6 +1943,8 @@ export async function liveAssignment(
 		tabName?: string;
 		turf: { turfId: number; regionName: string; printedListNumber: string | null };
 		timeBudgetMs: number;
+		/** As TrackerOptions.recanvass. */
+		recanvass?: boolean;
 	},
 ): Promise<string | null | undefined> {
 	const { turf } = input;
@@ -1846,8 +1953,9 @@ export async function liveAssignment(
 	if (!target) return null;
 	const tabName = input.tabName?.trim() || DEFAULT_SHEET_TAB_NAME;
 	const key = `${target.spreadsheetId}\u0000${tabName}`;
+	const staleBefore = input.recanvass ? walkInDay(new Date().toISOString()) : undefined;
 	let recent = recentAssignments.get(key);
-	if (!recent || Date.now() - recent.at > LIVE_REUSE_MS) {
+	if (!recent || Date.now() - recent.at > LIVE_REUSE_MS || recent.staleBefore !== staleBefore) {
 		const ours = (await loadOurEntries(db)).get(target.spreadsheetId) ?? new Map();
 		const opened = await openTab(
 			input.client,
@@ -1855,7 +1963,7 @@ export async function liveAssignment(
 			tabName,
 			Date.now() + input.timeBudgetMs,
 			ours,
-			{ urgent: true },
+			{ urgent: true, staleBefore },
 		);
 		if (!opened.ok) return undefined;
 		recent = recentAssignments.get(key);

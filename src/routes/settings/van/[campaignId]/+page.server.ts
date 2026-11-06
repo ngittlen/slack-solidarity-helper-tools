@@ -65,6 +65,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 				campaign.exportJobTypeId === null ? vanExportJobTypeIdFor(campaign) : null,
 			refreshEnabled: campaign.refreshEnabled,
 			sheetsEnabled: campaign.sheetsEnabled,
+			recanvassMode: campaign.recanvassMode,
 			sheetTabName: campaign.sheetTabName ?? '',
 			dailyReportSpreadsheetId: campaign.dailyReportSpreadsheetId ?? '',
 			requestedFolderId:

@@ -52,15 +52,25 @@ const LIVE_CHECK_BUDGET_MS = 6_000;
 interface TrackedCampaign {
 	id: number;
 	sheetTabName: string | null;
+	recanvassMode: boolean;
 }
 
 /** Campaigns with sheets on — disabled ones included, so the claims they still
- *  have running are recorded to the end. */
-async function trackedCampaigns(db: Db): Promise<TrackedCampaign[]> {
+ *  have running are recorded to the end. Just `onlyCampaignId`, when given. */
+async function trackedCampaigns(db: Db, onlyCampaignId?: number): Promise<TrackedCampaign[]> {
 	return db
-		.select({ id: vanCampaigns.id, sheetTabName: vanCampaigns.sheetTabName })
+		.select({
+			id: vanCampaigns.id,
+			sheetTabName: vanCampaigns.sheetTabName,
+			recanvassMode: vanCampaigns.recanvassMode,
+		})
 		.from(vanCampaigns)
-		.where(eq(vanCampaigns.sheetsEnabled, true))
+		.where(
+			and(
+				eq(vanCampaigns.sheetsEnabled, true),
+				onlyCampaignId === undefined ? undefined : eq(vanCampaigns.id, onlyCampaignId),
+			),
+		)
 		.orderBy(vanCampaigns.id);
 }
 
@@ -68,7 +78,11 @@ async function trackedCampaigns(db: Db): Promise<TrackedCampaign[]> {
  *  does not, or the turf is gone. */
 async function trackedCampaignOf(db: Db, turfId: number): Promise<TrackedCampaign | null> {
 	const [row] = await db
-		.select({ id: vanCampaigns.id, sheetTabName: vanCampaigns.sheetTabName })
+		.select({
+			id: vanCampaigns.id,
+			sheetTabName: vanCampaigns.sheetTabName,
+			recanvassMode: vanCampaigns.recanvassMode,
+		})
 		.from(vanTurfs)
 		.innerJoin(vanCampaigns, eq(vanCampaigns.id, vanTurfs.campaignId))
 		.where(and(eq(vanTurfs.turfId, turfId), eq(vanCampaigns.sheetsEnabled, true)));
@@ -106,19 +120,26 @@ function mergeResults(a: TrackerResult, b: TrackerResult): TrackerResult {
 
 /**
  * One tracker run, under the lock: every campaign with sheets on, each with its
- * own rules and tab, or just the one turf's campaign for a nudge. Null when the
+ * own rules and tab, or just the one turf's campaign for a nudge, or just
+ * `onlyCampaignId`. Null when the
  * tracker is not configured, no such campaign has any rules, or another run
  * holds the lock.
  */
 export async function runPacketTracker(
 	db: Db,
-	input: { timeBudgetMs: number; channelId: string; onlyTurfId?: number },
+	input: {
+		timeBudgetMs: number;
+		channelId: string;
+		onlyTurfId?: number;
+		onlyCampaignId?: number;
+		runNotes?: boolean;
+	},
 ): Promise<TrackerResult | null> {
 	const configured = sheetsClient();
 	if (!configured.ok) return null;
 	const campaigns =
 		input.onlyTurfId === undefined
-			? await trackedCampaigns(db)
+			? await trackedCampaigns(db, input.onlyCampaignId)
 			: [await trackedCampaignOf(db, input.onlyTurfId)].filter(
 					(c): c is TrackedCampaign => c !== null,
 				);
@@ -144,6 +165,8 @@ export async function runPacketTracker(
 				timeBudgetMs: Math.max(0, deadline - Date.now()),
 				channelId: input.channelId,
 				onlyTurfId: input.onlyTurfId,
+				recanvass: campaign.recanvassMode,
+				runNotes: input.runNotes,
 			});
 			merged = merged ? mergeResults(merged, result) : result;
 		}
@@ -166,31 +189,95 @@ export function nudgePacketTracker(db: Db, turfId: number): void {
 		// as "the sync holds the lock" and the nudge would wait and retry for a
 		// minute over a turf whose campaign keeps no tracker at all.
 		if (!sheetsClient().ok || !(await trackedCampaignOf(db, turfId))) return;
-		for (let attempt = 0; ; attempt++) {
-			if (!sheetsClient().ok) return;
-			const result = await runPacketTracker(db, {
-				timeBudgetMs: NUDGE_BUDGET_MS,
-				// Alerts belong to the scheduled sync; see above.
-				channelId: '',
-				onlyTurfId: turfId,
-			});
-			if (result !== null) {
-				// Notes about this checkout — a packet the tracker does not list,
-				// say — are recorded as told once written, so they are posted here
-				// rather than dropped: the sync will not say them again.
-				if (result.warnings.length > 0) {
-					const { slackTurfChannelId } = await loadSettings(db);
-					if (slackTurfChannelId) {
-						await postAlert(slackTurfChannelId, result.warnings.join('\n'), LOG);
-					}
-				}
-				return;
-			}
-			const wait = NUDGE_RETRY_MS[attempt];
-			if (wait === undefined) return;
-			await new Promise((r) => setTimeout(r, wait));
-		}
+		await runOnceFree(db, { timeBudgetMs: NUDGE_BUDGET_MS, onlyTurfId: turfId });
 	})().catch((err) => console.error(`${LOG} packet tracker nudge failed:`, errMessage(err)));
+}
+
+/**
+ * A run over every spreadsheet: the scheduled sync's
+ * (api/internal/packet-tracker-sync), and a campaign's refresh.
+ *
+ * A run reads every spreadsheet the campaigns route to — seventy-odd, one read
+ * each, plus a re-read of each row before it is written. The Sheets client
+ * paces them at 45 a minute (the rest of Google's 60 is the claims' live
+ * checks'), so seventy-odd take a little over a minute; this leaves room for
+ * the writes. Well inside TRACKER_LOCK_TTL_MS, which nothing renews: the
+ * budget stops new spreadsheets, not the one under way, and a run past the
+ * lock could write a row a nudge is writing too. The order is shuffled each
+ * run, so whatever one run does not reach, the next does.
+ */
+export const FULL_RUN_BUDGET_MS = 100 * 1000;
+
+/** Campaigns with a refresh under way on this machine, each to whether
+ *  another was asked for while it ran. */
+const refreshing = new Map<number, boolean>();
+
+/**
+ * Re-read one campaign's trackers now, in the background.
+ *
+ * Called when the campaign's recanvass mode is switched, so the turf it frees
+ * (or holds again) changes on the map within a minute or two rather than at
+ * the next scheduled run. Alerts and the notes about the run as a whole are
+ * left to the scheduled sync.
+ *
+ * One at a time per campaign: switching back and forth while a refresh runs
+ * asks for one more run after it, not one per switch, so the switches do not
+ * queue up on the lock ahead of the scheduled sync and volunteers' nudges.
+ * The run after reads the mode as it is by then.
+ */
+export function refreshPacketTrackerSoon(db: Db, campaignId: number): void {
+	if (refreshing.has(campaignId)) {
+		refreshing.set(campaignId, true);
+		return;
+	}
+	refreshing.set(campaignId, false);
+	void (async () => {
+		do {
+			refreshing.set(campaignId, false);
+			// Checked up front, as in the nudge: a campaign with no tracker would
+			// otherwise read as a held lock and be retried for minutes.
+			if (!sheetsClient().ok) return;
+			const [campaign] = await trackedCampaigns(db, campaignId);
+			if (!campaign || (await loadVanSheetTargets(db, campaign.id)).length === 0) return;
+			await runOnceFree(db, {
+				timeBudgetMs: FULL_RUN_BUDGET_MS,
+				onlyCampaignId: campaignId,
+				runNotes: false,
+			});
+		} while (refreshing.get(campaignId));
+	})()
+		.catch((err) => console.error(`${LOG} packet tracker refresh failed:`, errMessage(err)))
+		.finally(() => refreshing.delete(campaignId));
+}
+
+/** One run, waiting out another that holds the lock, with its notes posted. */
+async function runOnceFree(
+	db: Db,
+	input: { timeBudgetMs: number; onlyTurfId?: number; onlyCampaignId?: number; runNotes?: boolean },
+): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		if (!sheetsClient().ok) return;
+		const result = await runPacketTracker(db, {
+			...input,
+			// Alerts belong to the scheduled sync; see nudgePacketTracker.
+			channelId: '',
+		});
+		if (result !== null) {
+			// Notes about a checkout — a packet the tracker does not list, say —
+			// are recorded as told once written, so they are posted here rather
+			// than dropped: the sync will not say them again.
+			if (result.warnings.length > 0) {
+				const { slackTurfChannelId } = await loadSettings(db);
+				if (slackTurfChannelId) {
+					await postAlert(slackTurfChannelId, result.warnings.join('\n'), LOG);
+				}
+			}
+			return;
+		}
+		const wait = NUDGE_RETRY_MS[attempt];
+		if (wait === undefined) return;
+		await new Promise((r) => setTimeout(r, wait));
+	}
 }
 
 /**
@@ -220,6 +307,7 @@ export function packetTrackerCheck(db: Db) {
 				tabName: campaign.sheetTabName ?? undefined,
 				turf,
 				timeBudgetMs: LIVE_CHECK_BUDGET_MS,
+				recanvass: campaign.recanvassMode,
 			});
 		} catch (err) {
 			console.warn(`${LOG} live packet tracker check failed:`, errMessage(err));

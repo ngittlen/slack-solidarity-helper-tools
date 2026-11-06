@@ -624,6 +624,41 @@
       "when": 1793339610805,
       "tag": "0088_retired_turf_routes",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "6",
+      "when": 1793424307231,
+      "tag": "0089_turf_read_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "6",
+      "when": 1793476801825,
+      "tag": "0090_van_turf_release",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "6",
+      "when": 1793589897961,
+      "tag": "0091_van_campaign_recanvass",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "6",
+      "when": 1793607339886,
+      "tag": "0092_read_indexes_and_attendee_changes",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "6",
+      "when": 1793657298613,
+      "tag": "0093_app_config_expiry_reminder",
+      "breakpoints": true
     }
   ]
 }

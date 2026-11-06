@@ -28,6 +28,7 @@
 		badgeLabel: string;
 		refreshEnabled: boolean;
 		sheetsEnabled: boolean;
+		recanvassMode: boolean;
 		sheetTabName: string;
 		dailyReportSpreadsheetId: string;
 		/** The folder id as typed, '' for none. */
@@ -46,6 +47,7 @@
 		badgeLabel,
 		refreshEnabled,
 		sheetsEnabled,
+		recanvassMode,
 		sheetTabName,
 		dailyReportSpreadsheetId,
 		requestedFolderId,
@@ -112,6 +114,11 @@
 		parse: (raw) => raw === 'true',
 		save: (value) => patch({ sheetsEnabled: value }),
 	});
+	const recanvassSave = createFieldAutosave<boolean>({
+		initial: untrack(() => recanvassMode),
+		parse: (raw) => raw === 'true',
+		save: (value) => patch({ recanvassMode: value }),
+	});
 
 	/** The autosave helper reads `event.target.value`, which on a checkbox is
 	 *  the constant "on" — so hand it the checked state as the string it parses. */
@@ -127,6 +134,7 @@
 		requestedSave.destroy();
 		refreshSave.destroy();
 		sheetsSave.destroy();
+		recanvassSave.destroy();
 	});
 </script>
 
@@ -258,6 +266,26 @@
 		/>
 		<p class="app-config-note">
 			The tab in every one of this campaign's spreadsheets. The app never creates it. Empty means “{DEFAULT_SHEET_TAB_NAME}”.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		label="Recanvass mode"
+		status={recanvassSave.status}
+		error={recanvassSave.error}
+		onRetry={recanvassSave.status === 'error' ? recanvassSave.retry : undefined}
+	>
+		<label class="toggle">
+			<Checkbox checked={recanvassSave.value} onCheckedChange={toggle(recanvassSave)} />
+			<span>Let volunteers check out turf the Packet Tracker shows as sent out before today</span>
+		</label>
+		<p class="app-config-note">
+			For a second pass over turf already walked. Packets sent out on an earlier day, even ones
+			marked Complete, can be checked out again, and so can any packet with no Date Sent Out, so
+			some doors will be knocked twice. Only packets sent out today still keep their turf off the
+			map. Where the Packet Tracker has a Second Pass section, a new checkout on a packet with an
+			older entry is written there, and the first pass is left as it is; without one, it is not
+			written in. The map catches up within a few minutes of switching.
 		</p>
 	</SettingsRow>
 

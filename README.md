@@ -367,6 +367,14 @@ npm run db:migrate    # apply pending migrations to TURSO_DATABASE_URL
 
 In production, migrations run via Fly's `release_command` (`node bin/migrate.js`) — see `fly.toml`. Each deploy applies any pending migrations before the new image starts serving traffic.
 
+#### Query plans
+
+SQLite picks each query's plan from its planner statistics (`sqlite_stat1`), which the `planner-stats` job refreshes nightly in production. `npm run test:plans` runs the tests and plans every statement the app sends as production would, with a copy of production's statistics in `scripts/plan-audit/stats.json`, then lists each plan that reads every row of a large table. A scan the code means to make goes in `scripts/plan-audit/allow.ts` with its reason. Refresh the copy when the tables have grown a lot or an index has been added:
+
+```bash
+npx tsx --env-file=.env.local scripts/plan-audit/pull-stats.ts
+```
+
 ## Local development
 
 A minimal `.env.local` for local development — no real Slack credentials needed:
@@ -969,6 +977,8 @@ The volunteer turf page. Any signed-in Slack member may use it, minus the block 
 **Two numbers are tunable at Settings → Turf checkout**: how long a claim lasts (default 48 hours) and how many turfs one volunteer may hold at once (default 2). Both are read wherever they matter — the page's claim button, the map's viewport endpoint, the claim route that enforces them, the `/turfs` Slack command and its Claim buttons, and the copy telling a volunteer how long they've got — so the greyed-out button, the promise on it and the expiry written to the ledger cannot drift apart, and the same volunteer gets the same rules whether they open the page or type the command. Out-of-range values are refused on write and clamped again on read, so a row predating the bounds degrades to something sane rather than handing someone a claim that lapses in a minute.
 
 Four gates, all server-side: session, block list, chapter, and the two rate limits below. The chapter filter runs in the load function _before serialising_ — shipping every chapter and filtering in the browser would make the compartment cosmetic, because the payload is the boundary. Before a chapter is chosen the page returns no turf at all.
+
+**Admins and moderators can release turf held in VAN.** A turf whose list was loaded in MiniVAN outside any claim here stays out of the pool for the hand-out time limit, and indefinitely when there is no current door count to show what its holder left. When an organizer knows it is free, **Release from VAN** at the bottom right of its open card puts it back, after a confirm. It stamps `van_released_at` on the turf with the time of the hand-out released (for a hand-out with no date, the time the card loaded), and no export at or before it counts as a hand-out, for the catalog sync or for the claim rules. A later export holds it again, since that is someone loading the list after the release. The card sends the hand-out time it shows, and a release is refused when VAN has handed the turf out again since the card loaded. A refused release says why — handed out again, claimed here, listed in the Packet Tracker, or no longer held — under the card. The button shows only when the VAN hand-out is what holds the turf: a claim here is the volunteer's to give back, and a Packet Tracker entry is the campaign's to clear. The same turf is filled red on an admin's or moderator's map, with a **Held in VAN** legend entry; volunteers see it as plain checked out. Under **Sync VAN now** on `/turfs/organizer`, admins have **Release all MiniVAN-held turf**, which does the same for every such turf in every campaign at once. Its confirmation counts the turf by VAN folder, named from VAN when the campaign's key can list folders, and the release frees only the turf counted there, under the hand-out each had when counted. It leaves out each campaign's requested-turf folder, whose turf was cut for a particular request.
 
 **The MiniVAN list number is only sent for turf you currently hold.** It is the credential — it is what pulls the doors down in MiniVAN — so serialising it for every turf on the map would let anyone load any turf regardless of who holds it, making the checkout ledger advisory. It is issued by the claim response and withdrawn on release, expiry, or completion.
 

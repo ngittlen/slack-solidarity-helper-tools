@@ -51,6 +51,7 @@
 		turfShade,
 	} from '$lib/van/turf-shade.js';
 	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
+	import { paintOrder } from '$lib/van/turf-paint-order.js';
 	import {
 		focusZoom,
 		isBoxVisible,
@@ -542,13 +543,18 @@
 	 * 2. **One pass.** Projection, pin-vs-polygon and labelling are decided
 	 *    together instead of in three functions each re-projecting the same
 	 *    bounds from the template.
+	 *
+	 * The output keeps the order of `painted`, so a smaller turf draws over a
+	 * larger one and stays tappable.
 	 */
+	const painted = $derived(paintOrder(turfs));
+
 	const rendered = $derived.by((): RenderedTurf[] => {
 		// A margin keeps turfs that straddle the edge from popping in and out.
 		const margin = 64;
 		const out: RenderedTurf[] = [];
 
-		for (const turf of turfs) {
+		for (const turf of painted) {
 			const nw = view.project({ lat: turf.bounds.maxLat, lng: turf.bounds.minLng });
 			const se = view.project({ lat: turf.bounds.minLat, lng: turf.bounds.maxLng });
 
@@ -987,7 +993,8 @@
 		const selected = turf.turfId === selectedId ? ' is-selected' : '';
 		const noList = turf.noListNumber ? ' is-no-list' : '';
 		const knocked = turf.contactHistory ? ' is-knocked' : '';
-		return `turf turf-${turf.status} shade-${shade}${noList}${knocked}${selected}`;
+		const inVan = turf.heldInVan ? ' is-held-in-van' : '';
+		return `turf turf-${turf.status} shade-${shade}${noList}${knocked}${inVan}${selected}`;
 	}
 
 	function ariaLabelFor(turf: MappableTurf): string {
@@ -1001,9 +1008,10 @@
 				: '';
 		const noList = turf.noListNumber ? ', no list number yet' : '';
 		const knocked = turf.contactHistory ? `, ${KNOCKED_LABEL}` : '';
+		const inVan = turf.heldInVan ? ', held in VAN' : '';
 		const badge = turf.campaignId === undefined ? undefined : campaignBadges[turf.campaignId];
 		const campaign = badge ? `, ${badge}` : '';
-		return `${turf.name}${campaign}, ${statusLabel(status)}${noList}${doors}${knocked}`;
+		return `${turf.name}${campaign}, ${statusLabel(status)}${inVan}${noList}${doors}${knocked}`;
 	}
 </script>
 
@@ -1813,6 +1821,15 @@
 	.turf-checked-out circle {
 		fill: var(--color-warm-dark);
 		stroke: var(--color-warm-dark);
+	}
+
+	/* Checked out only by a MiniVAN load outside this site, which staff can
+	   release from the card. Admins and moderators only: nobody else is sent
+	   `heldInVan`. Red fill, where the no-list red is an outline on blue. */
+	.turf-checked-out.is-held-in-van polygon,
+	.turf-checked-out.is-held-in-van circle {
+		fill: var(--color-error);
+		stroke: var(--color-error);
 	}
 
 	/* The door ramp. Hue and opacity move together, from a deep purple-blue

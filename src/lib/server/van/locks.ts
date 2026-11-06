@@ -78,7 +78,7 @@ export function vanLiveContactLock(campaignId: number): string {
 
 /**
  * The ledger housekeeping every van-sync request starts with: expiring lapsed
- * claims, the six-hour warnings, and noticing new campaign secrets. It reads
+ * claims, the expiry warnings, and noticing new campaign secrets. It reads
  * only our own tables and covers every campaign at once, so it takes one lock
  * of its own rather than any campaign's — a request for one campaign must not
  * wait on another campaign's catalog to expire claims.

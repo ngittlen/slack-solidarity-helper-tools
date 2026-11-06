@@ -146,10 +146,30 @@ function cell(row: readonly string[] | undefined, layout: WalkInLayout, column: 
 	return index === undefined ? '' : (row?.[index] ?? '').trim();
 }
 
+/** The campaign's tick boxes. Every row of the tab has them, down to its last,
+ *  and an unticked one reads as FALSE: in these, FALSE is as blank as an empty
+ *  cell. Otherwise no row would read as empty, and every walk-in would go to a
+ *  row past the end that the tick boxes fill as soon as it is added. */
+const CHECKBOX_COLUMNS: ReadonlySet<WalkInColumn> = new Set(['In VAN?', 'Reshifted?']);
+
+function isBlank(row: readonly string[] | undefined, layout: WalkInLayout, column: WalkInColumn) {
+	const value = cell(row, layout, column);
+	return value === '' || (CHECKBOX_COLUMNS.has(column) && value.toUpperCase() === 'FALSE');
+}
+
 /** Whether nobody has written in this row: every known column blank. An
- *  unpicked drop-down reads as blank. */
+ *  unpicked drop-down reads as blank, and so does an unticked box. */
 export function isEmptyWalkIn(row: readonly string[] | undefined, layout: WalkInLayout): boolean {
-	return WALK_IN_COLUMNS.every((c) => cell(row, layout, c) === '');
+	return WALK_IN_COLUMNS.every((c) => isBlank(row, layout, c));
+}
+
+/** The columns of ours with something in them. Names only, for a log line:
+ *  never the cells themselves. */
+export function filledWalkInColumns(
+	row: readonly string[] | undefined,
+	layout: WalkInLayout,
+): WalkInColumn[] {
+	return WALK_IN_COLUMNS.filter((c) => !isBlank(row, layout, c));
 }
 
 /**

@@ -11,7 +11,7 @@ vi.mock('$lib/server/env.js', () => ({
 	VAPID_PRIVATE_KEY: '',
 }));
 
-const { sendExpiryWarnings } = await import('./expiry-warning-store.js');
+const { loadExpiryReminderHours, sendExpiryWarnings } = await import('./expiry-warning-store.js');
 
 // Real in-memory libsql rather than a chained fake, as in activity-store.test.ts
 // and sync-lock.test.ts. The guarantee under test is that a volunteer gets ONE
@@ -91,6 +91,21 @@ async function warnedStamps(): Promise<(string | null)[]> {
 afterEach(() => {
 	client.close();
 	vi.restoreAllMocks();
+});
+
+describe('loadExpiryReminderHours', () => {
+	it('is the default with nothing set, and what an admin set otherwise', async () => {
+		expect(await loadExpiryReminderHours(db)).toBe(6);
+		await client.execute(`INSERT INTO app_config (id, van_expiry_reminder_hours, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (1, 2, 'U1', 'Admin', 'x')`);
+		expect(await loadExpiryReminderHours(db)).toBe(2);
+	});
+
+	// The reminders, and the housekeeping after them, go on regardless.
+	it('falls back to the default when the setting cannot be read', async () => {
+		await client.execute('DROP TABLE app_config');
+		expect(await loadExpiryReminderHours(db)).toBe(6);
+	});
 });
 
 describe('sendExpiryWarnings', () => {
@@ -255,6 +270,15 @@ describe('sendExpiryWarnings', () => {
 		await checkout({ expires_at: iso(NOW.getTime() + 10 * HOUR) });
 		expect(await sendExpiryWarnings(db, NOW, 6)).toEqual({ sent: 0, failed: 0 });
 		expect(await sendExpiryWarnings(db, NOW, 12)).toEqual({ sent: 1, failed: 0 });
+	});
+
+	// 0 is the off switch: no read, no DM, no stamp — so turning reminders
+	// back on still warns a claim that was inside the window meanwhile.
+	it('sends nothing with reminders off', async () => {
+		await checkout({ expires_at: iso(NOW.getTime() + HOUR) });
+		expect(await sendExpiryWarnings(db, NOW, 0)).toEqual({ sent: 0, failed: 0 });
+		expect(mockSendDm).not.toHaveBeenCalled();
+		expect(await sendExpiryWarnings(db, NOW, 6)).toEqual({ sent: 1, failed: 0 });
 	});
 
 	it('does nothing on an empty ledger', async () => {

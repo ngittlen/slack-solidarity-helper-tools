@@ -24,8 +24,8 @@ import {
 	resolveLocation,
 } from '$lib/server/van/zip-centroid.js';
 import {
+	cachedTurfCentre,
 	loadNearbySummary,
-	loadTurfCentre,
 	type NearbySummary,
 } from '$lib/server/van/nearby-summary.js';
 import {
@@ -175,7 +175,7 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 		const visitorSettings = await loadSettings(db);
 		const { publicJoinUrl } = visitorSettings;
 		// Centred on turf a chapter /turfs offers can see, like the summary.
-		const turfCentre = await loadTurfCentre(db, offeredChapterIds(visitorSettings));
+		const turfCentre = await cachedTurfCentre(db, offeredChapterIds(visitorSettings));
 		return {
 			mode: 'public' as const,
 			pageTitle: 'Canvass near you',
@@ -413,7 +413,11 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 	const [{ turfs, total, campaignBadges, campaignTotals }, canvassEvents] = await Promise.all([
 		loadChapterTurfs(db, {
 			chapterId: chapter.chapterId,
-			viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+			viewer: {
+				slackUserId: session.slackUserId,
+				isAdmin: session.isAdmin,
+				isModerator: session.isModerator,
+			},
 			location,
 			sort,
 			includeHeldByViewer: true,

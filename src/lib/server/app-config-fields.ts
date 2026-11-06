@@ -28,6 +28,11 @@ import {
 	MIN_CONCURRENT_CLAIMS,
 	MIN_VAN_ASSIGNMENT_TTL_HOURS,
 } from '../van/checkout.js';
+import {
+	MAX_EXPIRY_REMINDER_HOURS,
+	MIN_EXPIRY_REMINDER_HOURS,
+	reminderFitsClaim,
+} from '../van/expiry-warning.js';
 import { parseOverrides } from '$lib/styles/theme-css.js';
 import { SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
 import { extractSpreadsheetId, isSpreadsheetId } from '$lib/google-sheet-id.js';
@@ -108,6 +113,37 @@ function numberInRangeField(label: string, min: number, max: number): FieldValid
 		}
 		return { ok: true, value };
 	};
+}
+
+/** A whole number of hours in [min, max]. */
+function wholeHoursField(label: string, min: number, max: number): FieldValidator<number> {
+	const inRange = numberInRangeField(label, min, max);
+	return (value, ctx) => {
+		if (typeof value === 'number' && !Number.isInteger(value)) {
+			return fail(`${label} must be a whole number of hours`);
+		}
+		return inRange(value, ctx);
+	};
+}
+
+/**
+ * The rule between two fields: an expiry reminder shorter than the claim it
+ * reminds about (`reminderFitsClaim`). Checked against whichever of the two the
+ * patch sets and the saved value of the other, so lowering the claim length to
+ * the reminder or below is refused as well as raising the reminder to it.
+ */
+export function checkReminderFitsClaim(
+	patch: Pick<AppConfigPatch, 'vanExpiryReminderHours' | 'vanTurfClaimTtlHours'>,
+	saved: { vanExpiryReminderHours: number; vanTurfClaimTtlHours: number },
+): FieldResult<true> {
+	const reminder = patch.vanExpiryReminderHours ?? saved.vanExpiryReminderHours;
+	const claim = patch.vanTurfClaimTtlHours ?? saved.vanTurfClaimTtlHours;
+	if (reminderFitsClaim(reminder, claim)) return { ok: true, value: true };
+	return fail(
+		patch.vanExpiryReminderHours !== undefined
+			? `The reminder must be shorter than a claim lasts (${claim} hours)`
+			: `A claim must last longer than the reminder (${reminder} hours) — shorten the reminder first`,
+	);
 }
 
 /** A real boolean. Strict on purpose: `"false"` is truthy, and a switch that a
@@ -365,6 +401,12 @@ export const APP_CONFIG_FIELDS: {
 		'vanAssignmentTtlHours',
 		MIN_VAN_ASSIGNMENT_TTL_HOURS,
 		MAX_VAN_ASSIGNMENT_TTL_HOURS,
+	),
+	// Also held to the claim length: checkReminderFitsClaim, in the route.
+	vanExpiryReminderHours: wholeHoursField(
+		'vanExpiryReminderHours',
+		MIN_EXPIRY_REMINDER_HOURS,
+		MAX_EXPIRY_REMINDER_HOURS,
 	),
 
 	themeTokens: themeTokensField('themeTokens'),

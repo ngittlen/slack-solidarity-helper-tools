@@ -11,6 +11,7 @@ import {
 	APP_CONFIG_FIELDS,
 	APP_CONFIG_FIELD_KEYS,
 	checkBoolean,
+	checkReminderFitsClaim,
 	checkSheetTabName,
 } from './app-config-fields.js';
 import { MAX_TICKER_COLUMNS_PER_SECOND, MIN_TICKER_COLUMNS_PER_SECOND } from '../ticker-speed.js';
@@ -50,6 +51,7 @@ describe('the table', () => {
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
 				'vanAssignmentTtlHours',
+				'vanExpiryReminderHours',
 				'doorTickerColumnsPerSecond',
 				'siteName',
 				'countdownLabel',
@@ -63,7 +65,7 @@ describe('the table', () => {
 				'canvassEventTag',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(25);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(26);
 	});
 });
 
@@ -254,6 +256,51 @@ describe('numeric fields', () => {
 		expect(
 			await run('doorTickerColumnsPerSecond', MIN_TICKER_COLUMNS_PER_SECOND - 1),
 		).toMatchObject({ ok: false });
+	});
+
+	// 0 is the off switch, so it is in range; a week is the longest claim.
+	it.each([0, 1, 6, 168])('accepts a reminder lead of %p hours', async (value) => {
+		expect(await run('vanExpiryReminderHours', value)).toEqual({ ok: true, value });
+	});
+
+	it.each([-1, 169, 2.5, '6', null])('rejects a reminder lead of %p', async (value) => {
+		expect(await run('vanExpiryReminderHours', value)).toMatchObject({ ok: false });
+	});
+
+	describe('checkReminderFitsClaim', () => {
+		const saved = { vanExpiryReminderHours: 6, vanTurfClaimTtlHours: 48 };
+
+		it('accepts a reminder shorter than the claim, and a claim longer than the reminder', () => {
+			expect(checkReminderFitsClaim({ vanExpiryReminderHours: 47 }, saved).ok).toBe(true);
+			expect(checkReminderFitsClaim({ vanTurfClaimTtlHours: 7 }, saved).ok).toBe(true);
+			expect(
+				checkReminderFitsClaim({ vanExpiryReminderHours: 23, vanTurfClaimTtlHours: 24 }, saved).ok,
+			).toBe(true);
+		});
+
+		it('refuses a reminder as long as the claim or longer, saying how long a claim lasts', () => {
+			expect(checkReminderFitsClaim({ vanExpiryReminderHours: 49 }, saved).ok).toBe(false);
+			expect(checkReminderFitsClaim({ vanExpiryReminderHours: 48 }, saved)).toMatchObject({
+				ok: false,
+				status: 400,
+				error: expect.stringContaining('48 hours'),
+			});
+		});
+
+		it('refuses a claim as short as the reminder or shorter', () => {
+			expect(checkReminderFitsClaim({ vanTurfClaimTtlHours: 6 }, saved).ok).toBe(false);
+			expect(checkReminderFitsClaim({ vanTurfClaimTtlHours: 4 }, saved)).toMatchObject({
+				ok: false,
+				error: expect.stringContaining('shorten the reminder first'),
+			});
+		});
+
+		it('lets the reminder be turned off whatever the claim length', () => {
+			expect(
+				checkReminderFitsClaim({ vanExpiryReminderHours: 0 }, { ...saved, vanTurfClaimTtlHours: 1 })
+					.ok,
+			).toBe(true);
+		});
 	});
 
 	it('names the bounds in the error so the admin knows the range', async () => {

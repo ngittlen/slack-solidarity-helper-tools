@@ -11,6 +11,7 @@ import {
 import { vanClientFor } from '$lib/server/van-env.js';
 import { loadCampaign } from '$lib/server/van/campaigns.js';
 import { loadCampaignStatus } from '$lib/server/van/campaign-status-store.js';
+import { refreshPacketTrackerSoon } from '$lib/server/van/packet-tracker-live.js';
 import { errChainText, errMessage } from '$lib/err-message.js';
 
 // One VAN campaign's settings (specs/012-multi-van-campaigns, Phase 5): the
@@ -33,6 +34,7 @@ interface CampaignBody {
 	exportJobTypeId?: unknown;
 	refreshEnabled?: unknown;
 	sheetsEnabled?: unknown;
+	recanvassMode?: unknown;
 	sheetTabName?: unknown;
 	dailyReportSpreadsheetId?: unknown;
 	requestedFolderId?: unknown;
@@ -122,7 +124,7 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 		patch.requestedFolderId = value;
 	}
 
-	for (const key of ['refreshEnabled', 'sheetsEnabled'] as const) {
+	for (const key of ['refreshEnabled', 'sheetsEnabled', 'recanvassMode'] as const) {
 		if (!(key in body)) continue;
 		const parsed = checkBoolean(key, body[key]);
 		if (!parsed.ok) return json({ error: parsed.error }, { status: 400 });
@@ -209,6 +211,11 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 	console.log(
 		`[van] campaign ${id} (${campaign.credentialKey}) updated: ${Object.keys(patch).join(', ')} by ${locals.session.slackUserId} (${editorName})`,
 	);
+	// Recanvass mode changes which turf the trackers hold: read them again now
+	// rather than leave the map as it was until the next scheduled run.
+	if (patch.recanvassMode !== undefined && patch.recanvassMode !== campaign.recanvassMode) {
+		refreshPacketTrackerSoon(db, id);
+	}
 	const updated = await loadCampaign(db, id);
 	return json({ ok: true, campaign: updated });
 };

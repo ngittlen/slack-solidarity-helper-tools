@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+	EXPIRY_REMINDER_OFF,
 	EXPIRY_WARNING_LEAD_HOURS,
+	MAX_EXPIRY_REMINDER_HOURS,
 	needsExpiryWarning,
+	reminderFitsClaim,
+	resolveExpiryReminderHours,
 	renderExpiryWarning,
 	type WarnableClaim,
 } from './expiry-warning.js';
@@ -27,6 +31,12 @@ function claim(over: Partial<WarnableClaim> = {}): WarnableClaim {
 describe('needsExpiryWarning', () => {
 	it('warns a live claim inside the lead window', () => {
 		expect(needsExpiryWarning(claim(), NOW)).toBe(true);
+	});
+
+	it('never warns with reminders off', () => {
+		expect(needsExpiryWarning(claim(), NOW, 0)).toBe(false);
+		const minutesLeft = claim({ expiresAt: new Date(NOW.getTime() + 60_000).toISOString() });
+		expect(needsExpiryWarning(minutesLeft, NOW, 0)).toBe(false);
 	});
 
 	it('stays quiet outside the lead window', () => {
@@ -158,5 +168,33 @@ describe('renderExpiryWarning', () => {
 		for (const field of ['printedlist', 'list number', 'minivan']) {
 			expect(text).not.toContain(field);
 		}
+	});
+});
+
+describe('resolveExpiryReminderHours', () => {
+	it('defaults when unset', () => {
+		expect(resolveExpiryReminderHours(null)).toBe(EXPIRY_WARNING_LEAD_HOURS);
+		expect(resolveExpiryReminderHours(undefined)).toBe(EXPIRY_WARNING_LEAD_HOURS);
+	});
+
+	it('keeps 0, which turns reminders off', () => {
+		expect(resolveExpiryReminderHours(0)).toBe(0);
+	});
+
+	// A hand-edited row: below the floor reads as off, above the cap as the cap.
+	it('clamps out-of-range values', () => {
+		expect(resolveExpiryReminderHours(-3)).toBe(0);
+		expect(resolveExpiryReminderHours(10_000)).toBe(MAX_EXPIRY_REMINDER_HOURS);
+		expect(resolveExpiryReminderHours(12)).toBe(12);
+	});
+});
+
+describe('reminderFitsClaim', () => {
+	it('fits a reminder shorter than the claim, and off always', () => {
+		expect(reminderFitsClaim(6, 48)).toBe(true);
+		expect(reminderFitsClaim(47, 48)).toBe(true);
+		expect(reminderFitsClaim(48, 48)).toBe(false);
+		expect(reminderFitsClaim(49, 48)).toBe(false);
+		expect(reminderFitsClaim(EXPIRY_REMINDER_OFF, 1)).toBe(true);
 	});
 });

@@ -26,8 +26,11 @@
 // they still hold what we wrote. Verified against a live tracker 2026-09-24.
 //
 // Columns are found by header name, not position — the header is on row 2 of
-// the campaign's tab, not row 1, and they rearrange it. Pure — no DB, no
-// network. The store is packet-tracker-store.ts.
+// the campaign's tab, not row 1, and they rearrange it. A tab may repeat the
+// canvasser columns under a Second Pass heading, for walking its packets a
+// second time; in recanvass mode, a packet whose first pass is from an earlier
+// day is filled in there instead. Pure — no DB, no network. The store is
+// packet-tracker-store.ts.
 
 import { campaignTimeLabel, CAMPAIGN_TIME_ZONE } from '../campaign-time.js';
 
@@ -208,10 +211,27 @@ const PACKET_NAME_COLUMN = 'Packet Name';
 /** Where each column sits in the tab, and which row is the header. */
 export interface ColumnLayout {
 	headerRowIndex: number;
-	/** 0-based column index per column. */
+	/** 0-based column index per column. The first pass's, where the tab has
+	 *  two. */
 	columns: Record<PacketColumn, number>;
 	/** 0-based index of Packet Name, or null when the tab has none. */
 	packetName: number | null;
+	/** The Second Pass section's canvasser columns, under the "Second Pass"
+	 *  label above the header (`secondPassColumns`). Null for a tab without
+	 *  one. */
+	secondPass: Record<FillColumn, number> | null;
+}
+
+/** Which set of canvasser columns an entry is in. */
+export type Pass = 1 | 2;
+
+/** The layout with `pass`'s canvasser columns in place of the first pass's,
+ *  so everything that reads or writes an entry works on that pass. Null for
+ *  a second pass the tab does not have. */
+export function passLayout(layout: ColumnLayout, pass: Pass): ColumnLayout | null {
+	if (pass === 1) return layout;
+	if (!layout.secondPass) return null;
+	return { ...layout, columns: { ...layout.columns, ...layout.secondPass } };
 }
 
 /** Header text as compared: case, spacing and punctuation ignored. */
@@ -232,33 +252,77 @@ export const HEADER_SEARCH_ROWS = 10;
 export function findLayout(
 	values: readonly (readonly string[])[],
 ): { ok: true; layout: ColumnLayout } | { ok: false; missing: PacketColumn[] } {
-	let best: { row: number; found: Map<PacketColumn, number>; name: number | null } | null = null;
+	let best: {
+		row: number;
+		found: Map<PacketColumn, number>;
+		byName: Map<string, number[]>;
+	} | null = null;
 	for (let row = 0; row < Math.min(values.length, HEADER_SEARCH_ROWS); row++) {
-		const byName = new Map<string, number>();
+		const byName = new Map<string, number[]>();
 		(values[row] ?? []).forEach((cell, i) => {
 			const key = normaliseHeader(cell ?? '');
-			if (key && !byName.has(key)) byName.set(key, i);
+			if (!key) return;
+			const seen = byName.get(key);
+			if (seen) seen.push(i);
+			else byName.set(key, [i]);
 		});
 		const found = new Map<PacketColumn, number>();
 		for (const column of PACKET_COLUMNS) {
-			const index = byName.get(normaliseHeader(column));
+			const index = byName.get(normaliseHeader(column))?.[0];
 			if (index !== undefined) found.set(column, index);
 		}
-		if (!best || found.size > best.found.size) {
-			best = { row, found, name: byName.get(normaliseHeader(PACKET_NAME_COLUMN)) ?? null };
-		}
+		if (!best || found.size > best.found.size) best = { row, found, byName };
 	}
 
 	const missing = PACKET_COLUMNS.filter((c) => !best?.found.has(c));
 	if (!best || missing.length > 0) return { ok: false, missing };
+	const { byName } = best;
 	return {
 		ok: true,
 		layout: {
 			headerRowIndex: best.row,
 			columns: Object.fromEntries(best.found) as Record<PacketColumn, number>,
-			packetName: best.name,
+			packetName: byName.get(normaliseHeader(PACKET_NAME_COLUMN))?.[0] ?? null,
+			secondPass: secondPassColumns(values, best.row, byName, best.found),
 		},
 	};
+}
+
+/** The label over the second set of canvasser columns, as compared. */
+const SECOND_PASS_LABEL = normaliseHeader('Second Pass');
+
+/**
+ * The Second Pass section's canvasser columns, or null when the tab has none.
+ *
+ * The campaign labels the section "Second Pass" in a row above the header,
+ * over its first column, and repeats the canvasser columns' headers under
+ * it. Each fill column is the first of its name from the label on that is
+ * not the first pass's. Null unless the label is there and every fill column
+ * is found under it: a stray repeat of a header elsewhere in the row is not
+ * a section to write into.
+ */
+function secondPassColumns(
+	values: readonly (readonly string[])[],
+	headerRow: number,
+	byName: ReadonlyMap<string, readonly number[]>,
+	firstPass: ReadonlyMap<PacketColumn, number>,
+): Record<FillColumn, number> | null {
+	let start = -1;
+	for (let row = 0; row < headerRow && start < 0; row++) {
+		start = (values[row] ?? []).findIndex((cell) =>
+			normaliseHeader(cell ?? '').startsWith(SECOND_PASS_LABEL),
+		);
+	}
+	if (start < 0) return null;
+	const columns: Partial<Record<FillColumn, number>> = {};
+	for (const column of FILL_COLUMNS) {
+		const index = byName
+			.get(normaliseHeader(column))
+			?.find((i) => i >= start && i !== firstPass.get(column));
+		if (index === undefined) return null;
+		columns[column] = index;
+	}
+	return columns as Record<FillColumn, number>;
 }
 
 /** Hand-typed list numbers pick up stray spaces; nothing else is forgiven. */
@@ -432,34 +496,178 @@ export function cellWrites(cells: PacketCells, layout: ColumnLayout): Array<[num
 	return writes;
 }
 
+const MONTHS = [
+	'jan',
+	'feb',
+	'mar',
+	'apr',
+	'may',
+	'jun',
+	'jul',
+	'aug',
+	'sep',
+	'oct',
+	'nov',
+	'dec',
+] as const;
+
+/**
+ * A Date Sent Out as `YYYY-MM-DD`, or null when it does not read as a date.
+ *
+ * The tab is read formatted, so this is whatever the campaign's column shows:
+ * MM/DD/YYYY as the app writes it (`sheetDate`), or what an organizer types —
+ * M/D/YY, M-D-YYYY, YYYY-MM-DD, "Nov 2" or "November 2, 2026", any of them
+ * with a time after it. A date with no year takes the year that puts it on or
+ * before `today` (a `YYYY-MM-DD` day), as a packet goes out on a day already
+ * come; without `today` it has none, and is null.
+ */
+export function sheetDay(value: string, today?: string): string | null {
+	// A time after the date ("11/02/2026 9:15", "Nov 2 9:15 AM") says nothing
+	// about the day.
+	const trimmed = value
+		.trim()
+		.replace(/[\sT]+\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*(?:[ap]\.?m\.?)?$/i, '')
+		.trim();
+	let year: number | null, month: number, day: number;
+	const us = /^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}|\d{4}))?$/.exec(trimmed);
+	const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(trimmed);
+	const named = /^([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?$/i.exec(trimmed);
+	if (iso) {
+		[year, month, day] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+	} else if (us) {
+		[month, day] = [Number(us[1]), Number(us[2])];
+		year = us[3] === undefined ? null : Number(us[3]) + (us[3].length === 2 ? 2000 : 0);
+	} else if (named) {
+		const index = MONTHS.indexOf(named[1]!.toLowerCase() as (typeof MONTHS)[number]);
+		if (index < 0) return null;
+		[month, day] = [index + 1, Number(named[2])];
+		year = named[3] === undefined ? null : Number(named[3]);
+	} else {
+		return null;
+	}
+	if (year === null) {
+		if (today === undefined) return null;
+		const thisYear = Number(today.slice(0, 4));
+		const guess = calendarDay(thisYear, month, day);
+		if (guess === null) return calendarDay(thisYear - 1, month, day);
+		return guess <= today ? guess : calendarDay(thisYear - 1, month, day);
+	}
+	return calendarDay(year, month, day);
+}
+
+/** `YYYY-MM-DD` for a real day; null for one the calendar lacks. */
+function calendarDay(year: number, month: number, day: number): string | null {
+	const date = new Date(Date.UTC(year, month - 1, day));
+	if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+	return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Whether a row's entry is from before `today` (a `YYYY-MM-DD` canvass day),
+ * as recanvass mode reads it. An entry with no Date Sent Out at all is old:
+ * nothing ties it to today. One whose date does not read as a date is not, so
+ * a packet handed out today under a date written some other way is never
+ * handed out a second time.
+ */
+export function isStaleEntry(
+	row: readonly string[] | undefined,
+	layout: ColumnLayout,
+	today: string,
+): boolean {
+	const written = cell(row, layout, 'Date Sent Out');
+	if (written === '') return true;
+	const sent = sheetDay(written, today);
+	return sent !== null && sent < today;
+}
+
+/**
+ * Where a new entry goes on a packet's row, or null when it has no room.
+ *
+ * The first pass, while it is free. In recanvass mode (`staleBefore`, as in
+ * `campaignAssignments`), a first pass from an earlier day is the walk this
+ * claim repeats, so the entry goes in the Second Pass section while that is
+ * free.
+ */
+export function passToFill(
+	row: readonly string[] | undefined,
+	layout: ColumnLayout,
+	staleBefore?: string,
+): Pass | null {
+	if (isUnfilled(row, layout)) return 1;
+	const second = passLayout(layout, 2);
+	if (
+		second &&
+		staleBefore !== undefined &&
+		isStaleEntry(row, layout, staleBefore) &&
+		isUnfilled(row, second)
+	) {
+		return 2;
+	}
+	return null;
+}
+
+/** Whether every entry on the row is from before `today`, as recanvass mode
+ *  reads it (`isStaleEntry`): a row with nothing current on it. */
+export function isStaleRow(
+	row: readonly string[] | undefined,
+	layout: ColumnLayout,
+	today: string,
+): boolean {
+	const second = passLayout(layout, 2);
+	return isStaleEntry(row, layout, today) && (second === null || isStaleEntry(row, second, today));
+}
+
 /**
  * Packets the campaign has handed out itself, by list number → canvasser.
  *
- * `ours` maps a list number to the canvasser name we filled in; a row whose
- * Canvasser matches is our own entry, which the ledger already knows about.
+ * Each pass's entry is read the same way, and either holds the packet; the
+ * Second Pass's names it when both do.
+ *
+ * `ours` maps a list number to the canvasser names we filled in; an entry whose
+ * Canvasser matches is our own, which the ledger already knows about.
  * A named canvasser blocks whatever the Status says, blank included —
  * an organizer may write only the name (seen 2026-09-25) — except Incomplete,
  * which is back in play. An unnamed Out or Complete still blocks, labelled as
  * the tracker, because an unnamed assignment is still an assignment; an
  * unnamed Unwalked is the campaign's default for a free packet and does not.
+ *
+ * `staleBefore` is recanvass mode: the canvass day before which entries no
+ * longer hold their packet (`isStaleEntry`), so a second pass can walk turf
+ * the tracker shows as already out or walked.
  */
 export function campaignAssignments(
 	values: readonly (readonly string[])[],
 	layout: ColumnLayout,
-	ours: ReadonlyMap<string, string>,
+	ours: ReadonlyMap<string, ReadonlySet<string>>,
+	options: { staleBefore?: string } = {},
 ): Map<string, string> {
+	const passes = [layout, passLayout(layout, 2)].filter((p) => p !== null);
 	const assigned = new Map<string, string>();
 	for (let i = layout.headerRowIndex + 1; i < values.length; i++) {
 		const row = values[i];
 		const listNumber = normaliseListNumber(cell(row, layout, 'List Number'));
 		if (!listNumber) continue;
-		const status = cell(row, layout, 'Status').toLowerCase();
-		if (status === RETURNED_STATUS) continue;
-		const canvasser = cell(row, layout, 'Canvasser');
-		if (!canvasser && !BLOCKING_STATUSES.has(status)) continue;
-		const mine = ours.get(listNumber);
-		if (mine !== undefined && mine.trim() === canvasser) continue;
-		assigned.set(listNumber, canvasser || 'Packet Tracker');
+		for (const pass of passes) {
+			const holder = entryHolder(row, pass, ours.get(listNumber), options.staleBefore);
+			if (holder !== null) assigned.set(listNumber, holder);
+		}
 	}
 	return assigned;
+}
+
+/** Who one pass's entry says has the packet, by `campaignAssignments`' rules,
+ *  or null when it does not hold it. */
+function entryHolder(
+	row: readonly string[] | undefined,
+	layout: ColumnLayout,
+	mine: ReadonlySet<string> | undefined,
+	staleBefore: string | undefined,
+): string | null {
+	if (staleBefore && isStaleEntry(row, layout, staleBefore)) return null;
+	const status = cell(row, layout, 'Status').toLowerCase();
+	if (status === RETURNED_STATUS) return null;
+	const canvasser = cell(row, layout, 'Canvasser');
+	if (!canvasser && !BLOCKING_STATUSES.has(status)) return null;
+	if (mine?.has(canvasser)) return null;
+	return canvasser || 'Packet Tracker';
 }

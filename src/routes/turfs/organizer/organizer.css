@@ -78,6 +78,80 @@ main {
 	color: var(--color-error);
 }
 
+/* Release every MiniVAN-held turf, under the sync. Filled red rather than
+   ConfirmButton's outline, since it frees turf across every campaign at once. */
+.van-release {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-3);
+	margin-bottom: var(--space-5);
+}
+
+.van-release .delete-confirm-trigger {
+	padding: var(--space-2) var(--space-4);
+	font-size: var(--font-size-base);
+	font-weight: 600;
+	color: var(--color-surface);
+	background: var(--color-error);
+	border-color: var(--color-error);
+	border-radius: var(--radius-md);
+}
+
+.van-release .delete-confirm-trigger:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--color-error) 85%, black);
+}
+
+/* The confirmation's count of what the release frees, by VAN folder. */
+.van-release-summary {
+	margin: 0 0 var(--space-4);
+	max-height: 50vh;
+	overflow-y: auto;
+	font-size: var(--font-size-sm);
+}
+
+.van-release-summary p {
+	margin: 0;
+}
+
+.van-release-summary table {
+	width: 100%;
+	border-collapse: collapse;
+}
+
+.van-release-summary th,
+.van-release-summary td {
+	padding: var(--space-1) var(--space-2);
+	text-align: left;
+	border-bottom: 1px solid var(--color-border);
+}
+
+.van-release-summary td:last-child,
+.van-release-summary th:last-child {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+.van-release-summary tfoot th,
+.van-release-summary tfoot td {
+	font-weight: 600;
+	border-bottom: none;
+}
+
+.van-release-chapter,
+.van-release-campaign {
+	color: var(--color-text-muted);
+}
+
+.van-release-chapter {
+	display: block;
+	font-size: var(--font-size-xs);
+}
+
+.van-release-error {
+	color: var(--color-error);
+}
+
 /* What the latest press found, under the button. */
 .van-sync-report {
 	margin: calc(-1 * var(--space-3)) 0 var(--space-5);

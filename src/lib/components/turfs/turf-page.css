@@ -346,6 +346,48 @@ main {
 	cursor: pointer;
 }
 
+/* The bottom row of a staff card: "Hide from volunteers" on the left, the VAN
+   release on the right. Wraps under the checkbox on a narrow card rather than
+   squeezing it. */
+.staff-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2) var(--space-3);
+	margin-top: var(--space-3);
+}
+
+/* The row carries the spacing above it. */
+.staff-actions .hide-check {
+	margin-top: 0;
+}
+
+.release-van {
+	margin-left: auto;
+}
+
+/* Filled red rather than ConfirmButton's red outline, so it reads as the
+   consequential action on the card. Surface text on --color-error is the pair
+   the theme editor checks for contrast. */
+/* A refused release, kept after the reload takes the button away. */
+.release-van-error {
+	flex-basis: 100%;
+	margin: 0;
+	font-size: var(--font-size-sm);
+	color: var(--color-error);
+}
+
+.release-van .delete-confirm-trigger {
+	background: var(--color-error);
+	color: var(--color-surface);
+	border-color: var(--color-error);
+	font-weight: 600;
+}
+
+.release-van .delete-confirm-trigger:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--color-error) 85%, black);
+}
+
 /* --- Map + list --------------------------------------------------------- */
 
 .turf-layout {
@@ -576,6 +618,10 @@ main {
 }
 .swatch-other {
 	background: color-mix(in srgb, var(--color-warm-dark) 42%, transparent);
+}
+/* Matching the map's red fill on turf held only by a VAN hand-out. */
+.swatch-held-in-van {
+	background: color-mix(in srgb, var(--color-error) 42%, transparent);
 }
 .swatch-me {
 	background: var(--color-coral);

@@ -125,7 +125,11 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 
 	const { turfs, total, campaignBadges, campaignTotals } = await loadChapterTurfs(db, {
 		chapterId,
-		viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+		viewer: {
+			slackUserId: session.slackUserId,
+			isAdmin: session.isAdmin,
+			isModerator: session.isModerator,
+		},
 		bounds,
 		location: near,
 		// The page's sort, so a viewport with more turf than one payload holds
